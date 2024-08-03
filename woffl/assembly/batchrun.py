@@ -240,6 +240,30 @@ class BatchPump:
 
         return self.df
 
+    def plot_data(self, water: str, curve: bool = False) -> None:
+        """Plot Data
+
+        Plot the results from the jet pump batch run to visualize the performance
+        of each jet pump.
+
+        Args:
+            water (str): "lift" or "total" depending on the desired x axis
+            curve (bool): Show the curve fit or not
+        """
+        pass
+
+    def plot_derv(self, water: str, curve: bool = False) -> None:
+        """Plot Derivative
+
+        Plot the derivative results from the jet pump batch run to visualize how
+        well of a match occured between the data and curve for each jet pump
+
+        Args:
+            water (str): "lift" or "total" depending on the desired x axis
+            curve (bool): Show the curve fit or not
+        """
+        pass
+
 
 def batch_results_mask(
     qoil_std: np.ndarray | pd.Series,
