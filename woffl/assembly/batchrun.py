@@ -136,10 +136,7 @@ class BatchPump:
             jp_list.append(JetPump(nozzle, throat, knz, ken, kth, kdi))
         return jp_list
 
-    def batch_run(
-        self,
-        jetpumps: list[JetPump],
-    ) -> list:
+    def batch_run(self, jetpumps: list[JetPump], debug: bool = False) -> list:
         """Batch Run of Jet Pumps
 
         Run through multiple different types of jet pumps. Results will be stored in
@@ -147,6 +144,7 @@ class BatchPump:
 
         Args:
             jetpump_list (list): List of JetPumps
+            debug (bool): If True Errors are Raised Instead of Cached
 
         Returns:
             results (list): List of Dictionaries of Jet Pump Results
@@ -154,7 +152,7 @@ class BatchPump:
         results = []
         for jetpump in jetpumps:
             try:
-                psu_solv, sonic_status, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = so.jetpump_solver(
+                psu_solv, sonic_status, qoil_std, fwat_bpd, lwat_bpd, mach_te = so.jetpump_solver(
                     self.pwh,
                     self.tsu,
                     self.rho_pf,
@@ -166,87 +164,39 @@ class BatchPump:
                     self.prop_su,
                 )
                 result = {
-                    "wellname": self.wellname,
-                    "res_pres": self.ipr_su.pres,
-                    "pf_pres": self.ppf_surf,
                     "nozzle": jetpump.noz_no,
                     "throat": jetpump.rat_ar,
-                    "psu_solv": psu_solv,
                     "sonic_status": sonic_status,
-                    "qoil_std": qoil_std,
-                    "fwat_bwpd": fwat_bwpd,
-                    "qnz_bwpd": qnz_bwpd,
                     "mach_te": mach_te,
-                    "total_water": fwat_bwpd + qnz_bwpd,
-                    "total_wc": fwat_bwpd + qnz_bwpd / (fwat_bwpd + qnz_bwpd + qoil_std),
+                    "psu_solv": psu_solv,
+                    "qoil_std": qoil_std,
+                    "form_wat": fwat_bpd,
+                    "lift_wat": lwat_bpd,
+                    "totl_wat": fwat_bpd + lwat_bpd,
+                    "form_wor": fwat_bpd / qoil_std,
+                    "totl_wor": (fwat_bpd + lwat_bpd) / qoil_std,
                     "error": "na",
                 }
+
             except Exception as exc:
-                result = {
-                    "wellname": self.wellname,
-                    "res_pres": self.ipr_su.pres,
-                    "pf_pres": self.ppf_surf,
-                    "nozzle": jetpump.noz_no,
-                    "throat": jetpump.rat_ar,
-                    "psu_solv": np.nan,
-                    "sonic_status": False,
-                    "qoil_std": np.nan,
-                    "fwat_bwpd": np.nan,
-                    "qnz_bwpd": np.nan,
-                    "mach_te": np.nan,
-                    "total_water": np.nan,
-                    "total_wc": np.nan,
-                    "error": exc,
-                }
-            results.append(result)  # add some progress bar code here?
-        return results
-
-    def batch_debug(
-        self,
-        jetpumps: list[JetPump],
-    ) -> list:
-        """Batch Run of Jet Pumps
-
-        Run through multiple different types of jet pumps. Results will be stored in
-        a data class where the results can be graphed and selected for the optimal pump.
-        Debugging method omits the try statement so places that the code fails can be
-        seen and a method of fixing them can attempt to be put in place.
-
-        Args:
-            jetpump_list (list): List of JetPumps
-
-        Returns:
-            results (list): List of Dictionaries of Jet Pump Results
-        """
-        results = []
-        for jetpump in jetpumps:
-            print(f"Nozzle {jetpump.noz_no} and Throat: {jetpump.rat_ar} started")
-            psu_solv, sonic_status, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = so.jetpump_solver(
-                self.pwh,
-                self.tsu,
-                self.rho_pf,
-                self.ppf_surf,
-                jetpump,
-                self.wellbore,
-                self.wellprof,
-                self.ipr_su,
-                self.prop_su,
-            )
-            result = {
-                "wellname": self.wellname,
-                "res_pres": self.ipr_su.pres,
-                "pf_pres": self.ppf_surf,
-                "nozzle": jetpump.noz_no,
-                "throat": jetpump.rat_ar,
-                "psu_solv": psu_solv,
-                "sonic_status": sonic_status,
-                "qoil_std": qoil_std,
-                "fwat_bwpd": fwat_bwpd,
-                "qnz_bwpd": qnz_bwpd,
-                "mach_te": mach_te,
-                "total_water": fwat_bwpd + qnz_bwpd,
-                "total_wc": fwat_bwpd + qnz_bwpd / (fwat_bwpd + qnz_bwpd + qoil_std),
-            }
+                if debug:
+                    print(f"Failed on nozzle {jetpump.noz_no} and throat: {jetpump.rat_ar}")
+                    raise exc
+                else:
+                    result = {
+                        "nozzle": jetpump.noz_no,
+                        "throat": jetpump.rat_ar,
+                        "sonic_status": False,
+                        "mach_te": np.nan,
+                        "psu_solv": np.nan,
+                        "qoil_std": np.nan,
+                        "form_wat": np.nan,
+                        "lift_wat": np.nan,
+                        "totl_wat": np.nan,
+                        "form_wor": np.nan,
+                        "totl_wor": np.nan,
+                        "error": exc,
+                    }
             results.append(result)  # add some progress bar code here?
         return results
 
