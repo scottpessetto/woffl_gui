@@ -136,18 +136,19 @@ class BatchPump:
             jp_list.append(JetPump(nozzle, throat, knz, ken, kth, kdi))
         return jp_list
 
-    def batch_run(self, jetpumps: list[JetPump], debug: bool = False) -> list:
+    def batch_run(self, jetpumps: list[JetPump], debug: bool = False) -> pd.DataFrame:
         """Batch Run of Jet Pumps
 
         Run through multiple different types of jet pumps. Results will be stored in
-        a data class where the results can be graphed and selected for the optimal pump.
+        a dataframe where the results can be graphed and selected for the optimal pump.
+        The dataframe is added to the class as a variable for future inspection.
 
         Args:
             jetpump_list (list): List of JetPumps
             debug (bool): If True Errors are Raised Instead of Cached
 
         Returns:
-            results (list): List of Dictionaries of Jet Pump Results
+            df (DataFrame): DataFrame of Jet Pump Results
         """
         results = []
         for jetpump in jetpumps:
@@ -198,59 +199,89 @@ class BatchPump:
                         "error": exc,
                     }
             results.append(result)  # add some progress bar code here?
-        return results
+        self.df = pd.DataFrame(results)
+        return self.df  # should this be returned as none?
 
+    def process_results(self) -> pd.DataFrame:
+        """Process Results
 
-# create a couple small functions that could be used across a pandas dataframe later
-# need graphing, cleaning, and dropping variables, calculating gradients, finalized picking?
-# could make these static methods inside the class if desired?
+        Identify the semi-finalist jet pumps, calculate numerical gradients and curve fits.
+        The semi-fialist jet pump means no other jet pump makes more oil for less water.
+        The gradients are MOTWR, stands for marginal oil total water ratio and MOLWR, stands
+        for marginal oil lift water ratio. Calculate curve fit coefficients for the jet
+        pump lift and total water vs oil.
+
+        Args:
+            self
+
+        Returns:
+            df (DataFrame): Adds semi (bool) column, motwr, molwr.
+        """
+        semi_mask = batch_results_mask(self.df["qoil_std"], self.df["totl_wat"], self.df["nozzle"])
+        self.df["mask"] = semi_mask
+
+        semi_df = self.df[self.df["semi"]].copy()
+        if semi_df.empty:
+            raise ValueError("No Semi-Finalist Jet Pumps Found")
+
+        semi_df = semi_df.sort_values(by="qoil_std", ascending=True)
+
+        qoil_semi = semi_df["qoil_std"].to_numpy()
+        twat_semi = semi_df["totl_wat"].to_numpy()
+        lwat_semi = semi_df["lift_wat"].to_numpy()
+
+        semi_df["motwr"] = gradient_back(qoil_semi, twat_semi)
+        semi_df["molwr"] = gradient_back(qoil_semi, lwat_semi)
+
+        self.df = self.df.merge(semi_df[["motwr", "molwr"]], left_index=True, right_index=True, how="left")
+
+        self.coeff_totl = batch_curve_fit(qoil_semi, twat_semi)
+        self.coeff_lift = batch_curve_fit(qoil_semi, lwat_semi)
+
+        return self.df
 
 
 def batch_results_mask(
-    qoil_std: list[float] | np.ndarray | pd.Series,
-    qwat_tot: list[float] | np.ndarray | pd.Series,
-    nozzles: list[str] | np.ndarray | pd.Series,
-) -> list[bool]:
+    qoil_std: np.ndarray | pd.Series,
+    qwat_tot: np.ndarray | pd.Series,
+    nozzles: np.ndarray | pd.Series,
+) -> np.ndarray:
     """Batch Results Mask
 
-    Create a mask of booleans for the batch results that can be passed into either a dataframe,
-    numpy array or list as a filter. The initial filter is selecting the throat with the highest
+    Create a mask of booleans from batch results. The initial filter is selecting the throat with the highest
     oil rate for each nozzle size. Any points where the oil rate is lower for a higher amount of
     water are then next removed. The filtered points can be passed to a function to calculate the gradient.
 
     Args:
-        qoil_std (list): Oil Prod. Rate, BOPD
-        qwat_tot (list): Total Water Rate, BWPD
-        nozzles (list): List of the Nozzles, strings
+        qoil_std (np.ndarray | pd.Series): Oil Prod. Rate, BOPD
+        qwat_tot (np.ndarray | pd.Series): Total Water Rate, BWPD
+        nozzles (np.ndarray | pd.Series): List of the Nozzles
 
     Returns:
-        mask (list): True is a point to calc gradient, False means a point exists with better oil and less water
+        np.ndarray: True is a point to calc gradient, False means a point exists with better oil and less water
     """
-    # convert all the lists into numpy arrays
-    if isinstance(qoil_std, list):
-        qoil_std = np.array(qoil_std)
-    if isinstance(qwat_tot, list):
-        qwat_tot = np.array(qwat_tot)
-    if isinstance(nozzles, list):
-        nozzles = np.array(nozzles)
+    # convert into numpy arrays
+    qoil_std = np.asarray(qoil_std)
+    qwat_tot = np.asarray(qwat_tot)
+    nozzles = np.asarray(nozzles)
 
     mask = np.zeros(len(qoil_std), dtype=bool)
 
     unique_nozzles = np.unique(nozzles)  # unique nozzles in the list
     for noz in unique_nozzles:
-        idxs = np.where(nozzles == noz)[0]  # indicies where the nozzle is a specific nozzle
-        max_idx = idxs[np.argmax(qoil_std[idxs])]
-        mask[max_idx] = True
+        noz_idxs = np.where(nozzles == noz)[0]  # indicies where the nozzle is a specific nozzle
+        best_idx = noz_idxs[np.argmax(qoil_std[noz_idxs])]
+        mask[best_idx] = True
 
     # compare the points to themselves to look for where oil is higher for less water
-    for idx_main in np.where(mask)[0]:
-        for idx_sub in np.where(mask)[0]:
-            if idx_main != idx_sub:
-                if qoil_std[idx_main] < qoil_std[idx_sub] and qwat_tot[idx_main] > qwat_tot[idx_sub]:
-                    mask[idx_main] = False
-                    break
+    for idx in np.where(mask)[0]:
+        higher_wat_mask = qwat_tot > qwat_tot[idx]
+        lower_oil_mask = qoil_std < qoil_std[idx]
+        if np.any(higher_wat_mask & lower_oil_mask):
+            mask[idx] = False
+            break
 
-    return mask.tolist()
+    return mask
 
 
 def exp_model(x, a, b, c):
@@ -298,9 +329,7 @@ def rev_exp_deriv(s, b, c):
     return x
 
 
-def batch_curve_fit(
-    qoil_filt: list[float] | np.ndarray | pd.Series, qwat_filt: list[float] | np.ndarray | pd.Series
-) -> tuple[float, float, float]:
+def batch_curve_fit(qoil_filt: np.ndarray, qwat_filt: np.ndarray) -> tuple[float, float, float]:
     """Batch Curve Fit
 
     Curve fit the filtered datapoints from the Batch Results
@@ -389,7 +418,7 @@ def gradient_back(oil_rate: np.ndarray, water_rate: np.ndarray) -> list:
 
     grad = []
     for i in range(len(oil_rate)):
-        if i != 0:
+        if i != 0:  # skip the first value of 0,0, since you aren't returning that value
             grad.append((oil_rate[i] - oil_rate[i - 1]) / (water_rate[i] - water_rate[i - 1]))
         else:
             pass
