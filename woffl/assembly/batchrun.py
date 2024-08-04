@@ -76,35 +76,26 @@ class BatchPump:
         self.prop_su = prop_su
         self.wellname = wellname
 
-    def update_pressure_wellhead(self, pwh: float) -> None:
-        """Update the Wellhead Pressure
+    def update_press(self, kind: str, psig: float) -> None:
+        """Update Pressure
 
-        Used to update the wellhead pressure instead of re-initializing everything.
-
-        Args:
-            pwh (float): Pressure Wellhead, psig
-        """
-        self.pwh = pwh
-
-    def update_pressure_powerfluid(self, ppf_surf: float) -> None:
-        """Update the Powerfluid Surface Pressure
-
-        Used to update the powerfluid surface pressure instead of re-initializing everything.
+        Used to update different pressures instead of re-initializing everything. Components that
+        can be updated include the well head, the power fluid or the reservoir pressure.
 
         Args:
-            ppf_surf (float): Pressure Power Fluid at Surface, psig
+            kind (str): Kind of Pressure to update. Either "wellhead", "powerfluid" or "reservoir"
+            psig (float): Pressure to update with, psig
         """
-        self.ppf_surf = ppf_surf
+        # chat gpt thinks using the reservoir method will fail, since you are calling ipr_su
+        press_map = {"wellhead": "pwh", "powerfluid": "ppf_surf", "reservoir": "ipr_su.pres"}
 
-    def update_pressure_reservoir(self, pres: float) -> None:
-        """Update the Reservoir Pressure in IPR
+        # Validate the 'kind' argument
+        if kind not in press_map:
+            valid_kind = ", ".join(press_map.keys())
+            raise ValueError(f"Invalid value for 'kind': {kind}. Expected {valid_kind}.")
 
-        Used to update reservoir pressure instead of re-initalizing everything.
-
-        Args:
-            pres (float): Pressure Reservoir, psig
-        """
-        self.ipr_su.pres = pres
+        attr_name = press_map[kind]
+        setattr(self, attr_name, psig)
 
     @staticmethod
     def jetpump_list(

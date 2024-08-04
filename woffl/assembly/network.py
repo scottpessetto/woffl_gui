@@ -36,10 +36,48 @@ class WellNetwork:
         self.ppf_hdr = ppf_hdr
         self.well_list = well_list
         self.pad_name = pad_name
+        self._update_wells()
+
+    def update_press(self, kind: str, psig: float) -> None:
+        """Update Header Pressures
+
+        Used to update different header pressure instead of re-initializing everything.
+        Header pressures that can be updated include wellhead (production) or power fluid.
+
+        Args:
+            kind (str): Kind of Pressure to update. "wellhead" or "powerfluid".
+            psig (float): Pressure to update with, psig
+        """
+        # chat gpt thinks using the reservoir method will fail, since you are calling ipr_su
+        press_map = {"wellhead": "pwh_hdr", "powerfluid": "ppf_hdr"}
+
+        # Validate the 'kind' argument
+        if kind not in press_map:
+            valid_kind = ", ".join(press_map.keys())
+            raise ValueError(f"Invalid value for 'kind': {kind}. Expected {valid_kind}.")
+
+        attr_name = press_map[kind]
+        setattr(self, attr_name, psig)
+        self._update_wells()
+
+    def _update_wells(self) -> None:
+        """Internal Method for Updating Well Pressures
+
+        Can be run anytime a pressure is modified to update all of the wells in the list.
+        Cascades network power fluid header pressure or well head header pressure.
+        """
+        if self.pwh_hdr is not None:
+            for well in self.well_list:
+                well.update_press("wellhead", self.pwh_hdr)
+
+        if self.ppf_hdr is not None:
+            for well in self.well_list:
+                well.update_press("powerfluid", self.ppf_hdr)
 
     def add_well(self, well: BatchPump) -> None:
         """Add Well onto the Network"""
         self.well_list.append(well)
+        self._update_wells()
 
     def drop_well(self, well: BatchPump) -> None:
         """Remove Well from the Network"""
