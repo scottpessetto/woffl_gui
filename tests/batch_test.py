@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from woffl.assembly.batchrun import BatchPump, batch_results_mask, batch_results_plot
+from woffl.assembly.batchrun import BatchPump
 from woffl.flow.inflow import InFlow
 from woffl.geometry.jetpump import JetPump
 from woffl.geometry.pipe import Annulus, Pipe
@@ -41,11 +41,12 @@ nozs = ["9", "10", "11", "12", "13", "14", "15", "16"]
 thrs = ["X", "A", "B", "C", "D", "E"]
 
 jp_list = BatchPump.jetpump_list(nozs, thrs)
-e41_batch = BatchPump(surf_pres, tsu, rho_pf, ppf_surf, tube, e41_profile, e41_ipr, e41_res)
-result_dict = e41_batch.batch_run(jp_list)
+e41_batch = BatchPump(surf_pres, tsu, rho_pf, ppf_surf, tube, e41_profile, e41_ipr, e41_res, wellname="MPE-41")
 
-df = pd.DataFrame(result_dict)
+df = e41_batch.batch_run(jp_list)
+print(df)
+df = e41_batch.process_results()
+print(df)
 
-mask_pump = batch_results_mask(df["qoil_std"], df["total_water"], df["nozzle"])
-
-batch_results_plot(df["qoil_std"], df["total_water"], df["nozzle"], df["throat"], wellname="MPE-41", mask=mask_pump)
+e41_batch.plot_data(water="lift", curve=True)
+e41_batch.plot_derv(water="lift", curve=True)

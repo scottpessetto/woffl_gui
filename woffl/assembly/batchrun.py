@@ -218,7 +218,7 @@ class BatchPump:
             df (DataFrame): Adds semi (bool) column, motwr, molwr.
         """
         semi_mask = batch_results_mask(self.df["qoil_std"], self.df["totl_wat"], self.df["nozzle"])
-        self.df["mask"] = semi_mask
+        self.df["semi"] = semi_mask
 
         semi_df = self.df[self.df["semi"]].copy()
         if semi_df.empty:
@@ -250,7 +250,30 @@ class BatchPump:
             water (str): "lift" or "total" depending on the desired x axis
             curve (bool): Show the curve fit or not
         """
-        pass
+
+        # Validate the 'water' argument
+        if water not in {"lift", "total", "totl"}:
+            raise ValueError(f"Invalid value for 'water': {water}. Expected 'lift', 'total', or 'totl'.")
+
+        # Standardize "totl" to "total"
+        if water == "totl":
+            water = "total"
+
+        # Determine the correct water data and coefficients
+        qwat_bpd = self.df["lift_wat"] if water == "lift" else self.df["totl_wat"]
+        coeff = self.coeff_lift if water == "lift" else self.coeff_totl  # type: ignore
+        coeff = coeff if curve else None
+
+        batch_plot_data(
+            qoil_std=self.df["qoil_std"],
+            qwat_bpd=qwat_bpd,
+            water=water,
+            nozzles=self.df["nozzle"],
+            throats=self.df["throat"],
+            semi=self.df["semi"],
+            wellname=self.wellname,
+            coeff=coeff,
+        )
 
     def plot_derv(self, water: str, curve: bool = False) -> None:
         """Plot Derivative
@@ -262,7 +285,30 @@ class BatchPump:
             water (str): "lift" or "total" depending on the desired x axis
             curve (bool): Show the curve fit or not
         """
-        pass
+        # Validate the 'water' argument
+        if water not in {"lift", "total", "totl"}:
+            raise ValueError(f"Invalid value for 'water': {water}. Expected 'lift', 'total', or 'totl'.")
+
+        # Standardize "totl" to "total"
+        if water == "totl":
+            water = "total"
+
+        # Determine the correct water data and coefficients
+        marginal = self.df["molwr"] if water == "lift" else self.df["motwr"]
+        qwat_bpd = self.df["lift_wat"] if water == "lift" else self.df["totl_wat"]
+        coeff = self.coeff_lift if water == "lift" else self.coeff_totl  # type: ignore
+        coeff = coeff if curve else None
+
+        batch_plot_derv(
+            marginal=marginal,
+            qwat_bpd=qwat_bpd,
+            water=water,
+            nozzles=self.df["nozzle"],
+            throats=self.df["throat"],
+            semi=self.df["semi"],
+            wellname=self.wellname,
+            coeff=coeff,
+        )
 
 
 def batch_results_mask(
@@ -291,6 +337,7 @@ def batch_results_mask(
 
     mask = np.zeros(len(qoil_std), dtype=bool)
 
+    # start by picking the highest oil rate for each nozzle
     unique_nozzles = np.unique(nozzles)  # unique nozzles in the list
     for noz in unique_nozzles:
         noz_idxs = np.where(nozzles == noz)[0]  # indicies where the nozzle is a specific nozzle
@@ -299,12 +346,10 @@ def batch_results_mask(
 
     # compare the points to themselves to look for where oil is higher for less water
     for idx in np.where(mask)[0]:
-        higher_wat_mask = qwat_tot > qwat_tot[idx]
-        lower_oil_mask = qoil_std < qoil_std[idx]
+        higher_wat_mask = qwat_tot < qwat_tot[idx]
+        lower_oil_mask = qoil_std > qoil_std[idx]
         if np.any(higher_wat_mask & lower_oil_mask):
             mask[idx] = False
-            break
-
     return mask
 
 
@@ -370,56 +415,6 @@ def batch_curve_fit(qoil_filt: np.ndarray, qwat_filt: np.ndarray) -> tuple[float
     return coeff
 
 
-def batch_results_plot(
-    qoil_std: list[float] | np.ndarray | pd.Series,
-    qwat_tot: list[float] | np.ndarray | pd.Series,
-    nozzles: list[str] | np.ndarray | pd.Series,
-    throats: list[str] | np.ndarray | pd.Series,
-    wellname: str = "na",
-    mask: list[bool] = [],
-) -> None:
-    """Batch Results Plot
-
-    Create a plot to view the results from the batch run.
-    Add an additional argument that would be the coefficients for
-    the curve fit of the upper portion of the data.
-
-    Args:
-        qoil_std (list): Oil Prod. Rate, BOPD
-        qwat_tot (list): Total Water Rate, BWPD
-        nozzles (list): Nozzle Numbers
-        throats (list): Throat Ratios
-        wellname (str): Wellname String
-        mask (list): List of Booleans used for filtering data
-    """
-    jp_names = [noz + thr for noz, thr in zip(nozzles, throats)]  # create a list of all the jetpump names
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-
-    if not mask:  # if the mask is an empty list
-        mask = [False for noz in nozzles]  # create a list of falses
-
-    for oil, water, jp, status in zip(qoil_std, qwat_tot, jp_names, mask):
-        if oil == np.nan:
-            pass
-        else:
-            if status:  # booleaan true of false
-                ax.plot(water, oil, marker="o", linestyle="", color="r")  # one of the main point
-            else:
-                ax.plot(water, oil, marker="o", linestyle="", color="b")  # a one optimized point
-
-            ax.annotate(jp, xy=(water, oil), xycoords="data", xytext=(1.5, 1.5), textcoords="offset points")
-
-    ax.set_xlabel("Total Water Rate, BWPD")
-    ax.set_ylabel("Produced Oil Rate, BOPD")
-
-    if wellname == "na":
-        ax.title.set_text("Jet Pump Performance")
-    else:
-        ax.title.set_text(f"{wellname} Jet Pump Performance")
-    plt.show()
-
-
 def gradient_back(oil_rate: np.ndarray, water_rate: np.ndarray) -> list:
     """Gradient Calculations Feed Backwards
 
@@ -449,47 +444,104 @@ def gradient_back(oil_rate: np.ndarray, water_rate: np.ndarray) -> list:
     return grad
 
 
-def batch_fit_plot(
-    qoil_filt: list[float] | np.ndarray | pd.Series,
-    qwat_filt: list[float] | np.ndarray | pd.Series,
-    coeff: tuple[float, float, float],
+def batch_plot_data(
+    qoil_std: pd.Series,
+    qwat_bpd: pd.Series,
+    water: str,
+    nozzles: pd.Series,
+    throats: pd.Series,
+    semi: pd.Series,
+    wellname: str,
+    coeff: tuple[float, float, float] | None,
 ) -> None:
-    """Batch Fit Plot
+    """Batch Plot Data
 
-    Create a plot to view the analytical curve fit and derivative.
-    Used for QC of Data and Information.
-
+    Create a plot to view the results from the batch run.
+    Add an additional argument that would be the coefficients for
+    the curve fit of the upper portion of the data.
 
     Args:
-        qoil_filt (list): Filtered Oil Prod. Rate, BOPD
-        qwat_filt (list): Filtered Total Water Rate, BWPD
-        coeff (tuple): Tuple of Curve Fit Coefficients
+        qoil_std (pd.Series): Oil Prod. Rate, BOPD
+        qwat_bpd (pd.Series): Water Rate, "Lift" or "Total", BPD
+        water (str): Water Type, "Lift" or "Total"
+        nozzles (pd.Series): Nozzle Numbers
+        throats (pd.Series): Throat Ratios
+        semi (pd.Series): Pandas Series of if the jet pump is a semi finalist or not
+        wellname (str): Wellname String
+        coeff (tuple): Exponential Curve Fit Coefficients, A, B, C
     """
-    a, b, c = coeff  # parse out the coefficients for easier understanding
+    jp_names = [noz + thr for noz, thr in zip(nozzles, throats)]  # create a list of all the jetpump names
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
 
-    fit_water = np.linspace(0, np.nanmax(qwat_filt), 1000)
+    # plot semi-finalist
+    ax.plot(qwat_bpd[semi], qoil_std[semi], marker="o", linestyle="", color="r", label="Semi")
 
-    fit_oil = [exp_model(wat, a, b, c) for wat in fit_water]
-    fit_grad = [exp_deriv(wat, b, c) for wat in fit_water]
-    num_grad = gradient_back(qoil_filt, qwat_filt)  # type: ignore
+    # plot non-semi finalist
+    ax.plot(qwat_bpd[~semi], qoil_std[~semi], marker="o", linestyle="", color="b", label="Non-Semi")
 
-    # Plotting the original data and the fitted curve
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))  # 1 row, 2 columns
+    for qoil, qwat, jp in zip(qoil_std, qwat_bpd, jp_names):
+        if not pd.isna(qoil):
+            ax.annotate(jp, xy=(qwat, qoil), xycoords="data", xytext=(1.5, 1.5), textcoords="offset points")
 
-    ax1.scatter(qwat_filt, qoil_filt, label="Original Data")
-    ax1.plot(fit_water, fit_oil, color="red", linestyle="--", label="Exponential Fit")
-    ax1.set_title("f(x) = a-b*exp(-c*x)")
-    ax1.set_xlabel("Water Rate BWPD")
-    ax1.set_ylabel("Oil Rate, BOPD")
-    ax1.legend()
+    # show the curve fit data
+    if coeff is not None:
+        a, b, c = coeff  # parse out the coefficients for easier understanding
+        fit_water = np.linspace(0, qwat_bpd.max(), 1000)
+        fit_oil = [exp_model(wat, a, b, c) for wat in fit_water]
+        ax.plot(fit_water, fit_oil, color="red", linestyle="--", label="Exponential Fit")
 
-    ax2.plot(qwat_filt, num_grad, marker="o", linestyle="", label="Numerical Derivative")
-    ax2.plot(fit_water, fit_grad, color="r", linestyle="--", label="Derivative Fit")
-    ax2.set_title("df/dx = c*b*exp(-c*x)")
-    ax2.set_xlabel("Water Rate BWPD")
-    ax2.set_ylabel("Marginal Oil Water Ratio, BBL/BBL")
-    ax2.legend()
+    ax.set_xlabel(f"{water.capitalize()} Water Rate, BWPD")
+    ax.set_ylabel("Produced Oil Rate, BOPD")
+    ax.title.set_text(f"{wellname} Jet Pump Performance")
+    ax.legend()
+    plt.show()
 
-    fig.suptitle(f"Model Coeff: a = {round(a, 1)}, b = {round(b, 1)}, c = {round(c, 5)}")
 
+def batch_plot_derv(
+    marginal: pd.Series,
+    qwat_bpd: pd.Series,
+    water: str,
+    nozzles: pd.Series,
+    throats: pd.Series,
+    semi: pd.Series,
+    wellname: str,
+    coeff: tuple[float, float, float] | None,
+) -> None:
+    """Batch Plot Derivative
+
+    Create a plot showing the derivative / marginal oil results.
+    Visualize how good the curve fit actually is for the data.
+
+    Args:
+        marginal (pd.Series): Marginal Oil - Water Ratio Rate, BOWPD
+        qwat_bpd (pd.Series): Water Rate, "Lift" or "Total", BPD
+        water (str): Water Type, "Lift" or "Total"
+        nozzles (pd.Series): Nozzle Numbers
+        throats (pd.Series): Throat Ratios
+        semi (pd.Series): Is the jet pump is a semi finalist or not
+        wellname (str): Wellname String
+        coeff (tuple): Exponential Curve Fit Coefficients, A, B, C
+    """
+    jp_names = [noz + thr for noz, thr in zip(nozzles, throats)]  # create a list of all the jetpump names
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+
+    # plot semi-finalist
+    ax.plot(qwat_bpd[semi], marginal[semi], marker="o", linestyle="", color="r", label="Numerical")
+
+    for marg, qwat, jp in zip(marginal, qwat_bpd, jp_names):
+        if not pd.isna(marg):  # skip blank marginal names
+            ax.annotate(jp, xy=(qwat, marg), xycoords="data", xytext=(1.5, 1.5), textcoords="offset points")
+
+    if coeff is not None:
+        a, b, c = coeff  # parse out the coefficients for easier understanding
+        fit_water = np.linspace(0, qwat_bpd[semi].max(), 1000)
+        fit_grad = [exp_deriv(wat, b, c) for wat in fit_water]
+        ax.plot(fit_water, fit_grad, color="red", linestyle="--", label="Analytical")
+
+    ax.set_xlabel(f"{water.capitalize()} Water Rate, BWPD")
+    ax.set_ylabel("Marginal Oil Rate, BBL/BBL")
+    ax.title.set_text(f"{wellname} Jet Pump Performance")
+    ax.legend()
     plt.show()
