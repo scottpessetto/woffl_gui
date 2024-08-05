@@ -1,1 +1,1 @@
-__version__ = "1.0.12"  # bumpver automatically updates
+__version__ = "1.0.13"  # bumpver automatically updates
