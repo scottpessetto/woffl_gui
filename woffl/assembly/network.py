@@ -4,10 +4,11 @@ Add mutliple BatchPumps to a network and provide a shared resource. The shared
 resource can be either lift water (power fluid) or total water.
 """
 
+import numpy as np
 import pandas as pd
 
 import woffl.assembly.curvefit as cf
-from woffl.assembly import BatchPump
+from woffl.assembly.batchrun import BatchPump, validate_water
 from woffl.geometry import JetPump
 
 
@@ -104,19 +105,94 @@ class WellNetwork:
             well.process_results()
         self.results = True  # tracker to know if results have been ran
 
-    def master_curves(self) -> None:
+    def master_curves(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Create the Network Master Curves
 
         Creates two master curves that are used for optimizing jet pumps selection
-        on the network selection. The curves are made by taking the coefficients
-        for each well and summing them together. (I don't know if this works?)
+        on the network selection.
+
+        Args:
+            None
+
+        Returns:
+            mowr_ray (np.ndarray): Marginal Oil Water Ratio
+            lwat_pad (np.ndarray): Lift Water of the Pad, BWPD
+            twat_pad (np.ndarray): Total Water of the Pad, BWPD
         """
         if self.results is False:
             raise ValueError("Run network before generating master curves")
 
-        coeff_totl = []
-        coeff_lift = []
+        mowr_ray = np.arange(0, 1, 0.01)
+        lwat_pad = np.zeros_like(mowr_ray)
+        twat_pad = np.zeros_like(mowr_ray)
 
         for well in self.well_list:
-            coeff_totl.append(well.coeff_totl)
-            coeff_lift.append(well.coeff_lift)
+
+            qoil_lift, lwat_well = well.theory_curves(mowr_ray, "lift")
+            qoil_totl, twat_well = well.theory_curves(mowr_ray, "total")
+
+            lwat_pad = lwat_pad + lwat_well  # add numpy arrays element by element
+            twat_pad = twat_pad + twat_well  # add numpy arrays element by element
+
+        self.mowr_ray = mowr_ray
+        self.lwat_pad = lwat_pad  # rename these?
+        self.twat_pad = twat_pad  # rename these?
+
+        return mowr_ray, lwat_pad, twat_pad
+
+    def equal_slope(self, qwat_pad: float, water: str) -> float:
+        """Calculate Equal Slope of Wells on Network
+
+        Provide the shared water resource of all the wells that are on the
+        same network together. Method will calculate the approximate slope
+        that all the wells should be operating at to evenly distribute water.
+
+        Args:
+            qwat_pad (float): Flow of Water for the Pad / Network, BPD
+            water (str): "lift" or "total" depending on the desired analysis
+
+        Returns:
+            mowr (float): Target Marginal Oil Water Rate for Wells to Operate
+        """
+        water = validate_water(water)
+        self.master_curves()
+
+        # Determine the correct water data and coefficients
+        qwat_ray = self.lwat_pad if water == "lift" else self.twat_pad
+        mowr = np.interp(qwat_pad, qwat_ray, self.mowr_ray)
+        return float(mowr)
+
+    def dist_slope(self, mowr_pad: float, water: str) -> pd.DataFrame:
+        """Distribute the Slope Equally
+
+        Provide a target mowr and constraint on the wells. The method will
+        go through and select all the wells. (Should this just be added to
+        the other method? equal_slope). Ideally you would total up all the
+        wells and look for additional capacity, then go bump that well up.
+
+        Args:
+            mowr_pad (float):
+            water (str): "lift" or "total" depending on the desired analysis
+        """
+        water = validate_water(water)
+        attr_name = "coeff_lift" if water == "lift" else "coeff_totl"
+        col_name = "lift_wat" if water == "lift" else "totl_wat"
+
+        result_list = []
+
+        for well in self.well_list:
+            a, b, c = getattr(well, attr_name)  # pull out exponetial coefficients
+            qwat_tgt = cf.rev_exp_deriv(mowr_pad, b, c)  # target water rate
+
+            # semi is true and the water rate is less than the target rate, is there a way to say
+            # the datapoint that is closer instead of just the one that is less? Will this mess you up?
+            df_semi = well.df[(well.df["semi"] == True) & (well.df[col_name] < qwat_tgt)]  # noqa: E712
+            idx_jp = df_semi[col_name].idmax()  # index the desired jetpump is at
+            row_jp = well.df[idx_jp]
+            row_jp["wellname"] = well.wellname
+
+            result_list.append(row_jp)
+
+        df_net = pd.DataFrame(result_list)
+        self.df = df_net
+        return df_net

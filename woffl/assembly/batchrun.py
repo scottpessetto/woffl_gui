@@ -240,7 +240,7 @@ class BatchPump:
 
         Args:
             mowr_ray (np.ndarry): Marginal Oil Water Ratio, bbl/bbl
-            water (str): "lift" or "total" depending on the desired x axis
+            water (str): "lift" or "total" depending on the desired analysis
 
         Returns:
             qoil_std (np.ndarray): Oil Rate at different MOWR values
@@ -397,6 +397,7 @@ def batch_curve_fit(qoil_filt: np.ndarray, qwat_filt: np.ndarray) -> tuple[float
     Returns:
         coeff (float): a, b and c coefficients for curve fit
     """
+    # could add a fake point at 0,0 to try to force intercepting origin
     initial_guesses = [max(qoil_filt), max(qoil_filt), 0.001]
     coeff, _ = opt.curve_fit(cf.exp_model, qwat_filt, qoil_filt, p0=initial_guesses)
     return coeff
