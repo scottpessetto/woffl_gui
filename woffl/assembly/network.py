@@ -4,7 +4,11 @@ Add mutliple BatchPumps to a network and provide a shared resource. The shared
 resource can be either lift water (power fluid) or total water.
 """
 
+import pandas as pd
+
+import woffl.assembly.curvefit as cf
 from woffl.assembly import BatchPump
+from woffl.geometry import JetPump
 
 
 class WellNetwork:
@@ -37,6 +41,7 @@ class WellNetwork:
         self.well_list = well_list
         self.pad_name = pad_name
         self._update_wells()
+        self.results = False  # used for easily viewing if results have been processed
 
     def update_press(self, kind: str, psig: float) -> None:
         """Update Header Pressures
@@ -82,3 +87,36 @@ class WellNetwork:
     def drop_well(self, well: BatchPump) -> None:
         """Remove Well from the Network"""
         self.well_list.remove(well)
+
+    def network_run(self, jetpumps: list[JetPump], debug: bool = False) -> None:
+        """Network Run of Wells
+
+        Run through multiple wells with different types of jet pumps. Results are
+        stored as dataframes on each BatchPump and can be viewed later. Results
+        are processed for creating master curve and future plotting.
+
+        Args:
+            jetpumps (list): List of JetPumps
+            debug (bool): True - Errors are Raised, False - Errors are Stored
+        """
+        for well in self.well_list:
+            well.batch_run(jetpumps, debug)
+            well.process_results()
+        self.results = True  # tracker to know if results have been ran
+
+    def master_curves(self) -> None:
+        """Create the Network Master Curves
+
+        Creates two master curves that are used for optimizing jet pumps selection
+        on the network selection. The curves are made by taking the coefficients
+        for each well and summing them together. (I don't know if this works?)
+        """
+        if self.results is False:
+            raise ValueError("Run network before generating master curves")
+
+        coeff_totl = []
+        coeff_lift = []
+
+        for well in self.well_list:
+            coeff_totl.append(well.coeff_totl)
+            coeff_lift.append(well.coeff_lift)

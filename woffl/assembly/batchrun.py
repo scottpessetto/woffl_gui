@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 from scipy import optimize as opt
 
+import woffl.assembly.curvefit as cf
 import woffl.assembly.sysops as so
 from woffl.flow.inflow import InFlow
 from woffl.geometry.jetpump import JetPump
@@ -135,8 +136,8 @@ class BatchPump:
         The dataframe is added to the class as a variable for future inspection.
 
         Args:
-            jetpump_list (list): List of JetPumps
-            debug (bool): If True Errors are Raised Instead of Cached
+            jetpumps (list): List of JetPumps
+            debug (bool): True - Errors are Raised, False - Errors are Stored
 
         Returns:
             df (DataFrame): DataFrame of Jet Pump Results
@@ -213,7 +214,7 @@ class BatchPump:
 
         semi_df = self.df[self.df["semi"]].copy()
         if semi_df.empty:
-            raise ValueError("No Semi-Finalist Jet Pumps Found")
+            raise ValueError(f"No Semi-Finalist Jet Pumps on {self.wellname}")
 
         semi_df = semi_df.sort_values(by="qoil_std", ascending=True)
 
@@ -231,6 +232,29 @@ class BatchPump:
 
         return self.df
 
+    def theory_curves(self, mowr_ray: np.ndarray, water: str) -> tuple[np.ndarray, np.ndarray]:
+        """Theoretical Performace Curves
+
+        Create theoretical jet pump performance curves using marginal oil water rate
+        as the input. Generate arrays of the theoretical oil rat and water rate.
+
+        Args:
+            mowr_ray (np.ndarry): Marginal Oil Water Ratio, bbl/bbl
+            water (str): "lift" or "total" depending on the desired x axis
+
+        Returns:
+            qoil_std (np.ndarray): Oil Rate at different MOWR values
+            qwat_bpd (np.ndarray): Water Rate at different MOWR values
+        """
+        water = validate_water(water)
+        coeff = self.coeff_lift if water == "lift" else self.coeff_totl
+        a, b, c = coeff
+
+        qwat_bpd = np.array([cf.rev_exp_deriv(mowr, b, c) for mowr in mowr_ray])
+        qoil_std = np.array([cf.exp_model(qwat, a, b, c) for qwat in qwat_bpd])
+
+        return qoil_std, qwat_bpd
+
     def plot_data(self, water: str, curve: bool = False) -> None:
         """Plot Data
 
@@ -241,20 +265,14 @@ class BatchPump:
             water (str): "lift" or "total" depending on the desired x axis
             curve (bool): Show the curve fit or not
         """
-
-        # Validate the 'water' argument
-        if water not in {"lift", "total", "totl"}:
-            raise ValueError(f"Invalid value for 'water': {water}. Expected 'lift', 'total', or 'totl'.")
-
-        # Standardize "totl" to "total"
-        if water == "totl":
-            water = "total"
+        water = validate_water(water)
 
         # Determine the correct water data and coefficients
         qwat_bpd = self.df["lift_wat"] if water == "lift" else self.df["totl_wat"]
         coeff = self.coeff_lift if water == "lift" else self.coeff_totl  # type: ignore
         coeff = coeff if curve else None
 
+        # calling the function to plot the data
         batch_plot_data(
             qoil_std=self.df["qoil_std"],
             qwat_bpd=qwat_bpd,
@@ -290,6 +308,7 @@ class BatchPump:
         coeff = self.coeff_lift if water == "lift" else self.coeff_totl  # type: ignore
         coeff = coeff if curve else None
 
+        # calling the function to plot the derivatives
         batch_plot_derv(
             marginal=marginal,
             qwat_bpd=qwat_bpd,
@@ -300,6 +319,28 @@ class BatchPump:
             wellname=self.wellname,
             coeff=coeff,
         )
+
+
+def validate_water(water: str) -> str:
+    """Validate Type of Water String
+
+    Checks that the string passed into a method or arguement fits the required description.
+    This is used when the water type wants to be defined as lift or total
+
+    Args:
+        water (str): "lift" or "total" depending on the desired x axis
+
+    Returns:
+        water (str): Properly formatted as either "lift" or "total"
+    """
+    # Validate the 'water' argument
+    if water not in {"lift", "total", "totl"}:
+        raise ValueError(f"Invalid value for 'water': {water}. Expected 'lift', 'total', or 'totl'.")
+
+    # Standardize "totl" to "total"
+    if water == "totl":
+        water = "total"
+    return water
 
 
 def batch_results_mask(
@@ -344,51 +385,6 @@ def batch_results_mask(
     return mask
 
 
-def exp_model(x, a, b, c):
-    """Exponential Curve Fit
-
-    Args:
-        x (float): Input Value
-        a (float): Asymptote of the Curve
-        b (float): Constant
-        c (float): Constant
-
-    Returns
-        y (float): Value at point x
-    """
-    return a - b * np.exp(-c * x)
-
-
-def exp_deriv(x, b, c):
-    """Derivative of Exponential Curve Fit
-
-    Args:
-        x (float): Input Value
-        b (float): Constant
-        c (float): Constant
-
-    Returns
-        s (float): Slope at point x
-    """
-    return c * b * np.exp(-c * x)
-
-
-def rev_exp_deriv(s, b, c):
-    """Derivative of Exponential Curve Fit, solve for x
-
-    Args:
-        s (float): Slope of the curve
-        b (float): Constant
-        c (float): Constant
-
-    Returns
-        x (float): Output x value
-    """
-    x = -1 / c * np.log(s / (c * b))
-    x = max(x, 0)  # make sure s doesn't drop below zero
-    return x
-
-
 def batch_curve_fit(qoil_filt: np.ndarray, qwat_filt: np.ndarray) -> tuple[float, float, float]:
     """Batch Curve Fit
 
@@ -402,7 +398,7 @@ def batch_curve_fit(qoil_filt: np.ndarray, qwat_filt: np.ndarray) -> tuple[float
         coeff (float): a, b and c coefficients for curve fit
     """
     initial_guesses = [max(qoil_filt), max(qoil_filt), 0.001]
-    coeff, _ = opt.curve_fit(exp_model, qwat_filt, qoil_filt, p0=initial_guesses)
+    coeff, _ = opt.curve_fit(cf.exp_model, qwat_filt, qoil_filt, p0=initial_guesses)
     return coeff
 
 
@@ -479,7 +475,7 @@ def batch_plot_data(
     if coeff is not None:
         a, b, c = coeff  # parse out the coefficients for easier understanding
         fit_water = np.linspace(0, qwat_bpd.max(), 1000)
-        fit_oil = [exp_model(wat, a, b, c) for wat in fit_water]
+        fit_oil = [cf.exp_model(wat, a, b, c) for wat in fit_water]
         ax.plot(fit_water, fit_oil, color="red", linestyle="--", label="Exponential Fit")
 
     ax.set_xlabel(f"{water.capitalize()} Water Rate, BWPD")
@@ -528,7 +524,7 @@ def batch_plot_derv(
     if coeff is not None:
         a, b, c = coeff  # parse out the coefficients for easier understanding
         fit_water = np.linspace(0, qwat_bpd[semi].max(), 1000)
-        fit_grad = [exp_deriv(wat, b, c) for wat in fit_water]
+        fit_grad = [cf.exp_deriv(wat, b, c) for wat in fit_water]
         ax.plot(fit_water, fit_grad, color="red", linestyle="--", label="Analytical")
 
     ax.set_xlabel(f"{water.capitalize()} Water Rate, BWPD")
