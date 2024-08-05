@@ -4,6 +4,7 @@ Add mutliple BatchPumps to a network and provide a shared resource. The shared
 resource can be either lift water (power fluid) or total water.
 """
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -196,3 +197,30 @@ class WellNetwork:
         df_net = pd.DataFrame(result_list)
         self.df = df_net
         return df_net
+
+    def network_plot_data(self, water: str, curve: bool = False) -> None:
+        """Plot Data
+
+        Plot an array to visualize the performance of all the wells that are
+        on the prescribed network.
+
+        Args:
+            water (str): "lift" or "total" depending on the desired x axis
+            curve (bool): Show the curve fit or not
+        """
+        water = validate_water(water)
+        n_wells = len(self.well_list)  # how many wells are there
+        n_cols = 4
+        n_rows = (n_wells + 1) // n_cols  # integer division
+
+        fig, axs = plt.subplots(nrows=n_rows, ncols=n_cols, figsize=(15, 5 * n_rows))
+
+        axs = axs.flatten() if n_wells > 1 else [axs]
+        for well, ax in zip(self.well_list, axs):
+            well.plot_data(water, curve, ax)
+
+        # hide the extra subplots
+        for i in range(len(self.well_list), len(axs)):
+            axs[i].axis["off"]
+
+        plt.show()

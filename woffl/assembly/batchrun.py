@@ -255,7 +255,7 @@ class BatchPump:
 
         return qoil_std, qwat_bpd
 
-    def plot_data(self, water: str, curve: bool = False) -> None:
+    def plot_data(self, water: str, curve: bool = False, ax: plt.Axes | None = None) -> None:  # type: ignore
         """Plot Data
 
         Plot the results from the jet pump batch run to visualize the performance
@@ -272,6 +272,10 @@ class BatchPump:
         coeff = self.coeff_lift if water == "lift" else self.coeff_totl  # type: ignore
         coeff = coeff if curve else None
 
+        if ax is None:
+            hold = None  # transfer None value to something not used
+            fig, ax = plt.subplots()
+
         # calling the function to plot the data
         batch_plot_data(
             qoil_std=self.df["qoil_std"],
@@ -282,9 +286,13 @@ class BatchPump:
             semi=self.df["semi"],
             wellname=self.wellname,
             coeff=coeff,
+            ax=ax,  # type: ignore
         )
 
-    def plot_derv(self, water: str, curve: bool = False) -> None:
+        if hold is None:
+            plt.show()
+
+    def plot_derv(self, water: str, curve: bool = False, ax: plt.Axes | None = None) -> None:  # type: ignore
         """Plot Derivative
 
         Plot the derivative results from the jet pump batch run to visualize how
@@ -308,6 +316,10 @@ class BatchPump:
         coeff = self.coeff_lift if water == "lift" else self.coeff_totl  # type: ignore
         coeff = coeff if curve else None
 
+        if ax is None:
+            hold = None  # transfer None value to something not used
+            fig, ax = plt.subplots()
+
         # calling the function to plot the derivatives
         batch_plot_derv(
             marginal=marginal,
@@ -318,7 +330,11 @@ class BatchPump:
             semi=self.df["semi"],
             wellname=self.wellname,
             coeff=coeff,
+            ax=ax,  # type: ignore
         )
+
+        if hold is None:
+            plt.show()
 
 
 def validate_water(water: str) -> str:
@@ -441,6 +457,7 @@ def batch_plot_data(
     semi: pd.Series,
     wellname: str,
     coeff: tuple[float, float, float] | None,
+    ax: plt.Axes,  # type: ignore
 ) -> None:
     """Batch Plot Data
 
@@ -457,10 +474,11 @@ def batch_plot_data(
         semi (pd.Series): Pandas Series of if the jet pump is a semi finalist or not
         wellname (str): Wellname String
         coeff (tuple): Exponential Curve Fit Coefficients, A, B, C
+        ax (plt.Axes): Matplotlib Axes
     """
     jp_names = [noz + thr for noz, thr in zip(nozzles, throats)]  # create a list of all the jetpump names
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    # fig = plt.figure()
+    # ax = fig.add_subplot(111)
 
     # plot semi-finalist
     ax.plot(qwat_bpd[semi], qoil_std[semi], marker="o", linestyle="", color="r", label="Semi")
@@ -483,7 +501,6 @@ def batch_plot_data(
     ax.set_ylabel("Produced Oil Rate, BOPD")
     ax.title.set_text(f"{wellname} Jet Pump Performance")
     ax.legend()
-    plt.show()
 
 
 def batch_plot_derv(
@@ -495,6 +512,7 @@ def batch_plot_derv(
     semi: pd.Series,
     wellname: str,
     coeff: tuple[float, float, float] | None,
+    ax: plt.Axes,  # type: ignore
 ) -> None:
     """Batch Plot Derivative
 
@@ -510,10 +528,11 @@ def batch_plot_derv(
         semi (pd.Series): Is the jet pump is a semi finalist or not
         wellname (str): Wellname String
         coeff (tuple): Exponential Curve Fit Coefficients, A, B, C
+        ax (plt.Axes): Matplotlib Axes
     """
     jp_names = [noz + thr for noz, thr in zip(nozzles, throats)]  # create a list of all the jetpump names
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    # fig = plt.figure()
+    # ax = fig.add_subplot(111)
 
     # plot semi-finalist
     ax.plot(qwat_bpd[semi], marginal[semi], marker="o", linestyle="", color="r", label="Numerical")
@@ -532,4 +551,3 @@ def batch_plot_derv(
     ax.set_ylabel("Marginal Oil Rate, BBL/BBL")
     ax.title.set_text(f"{wellname} Jet Pump Performance")
     ax.legend()
-    plt.show()
