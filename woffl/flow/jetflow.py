@@ -482,7 +482,7 @@ def throat_discharge(
     while abs(bal_list[-2]) > 1:  # attempt to find ptm convergence
         ptm = max(
             ptm_secant(ptm_list[-2], ptm_list[-1], bal_list[-2], bal_list[-1]), 15
-        )  # force ptm to never go below 100 psig
+        )  # force ptm to never go below 15 psig
 
         rho_tm = prop_tm.condition(ptm, tte).rho_mix()  # density of total mixture
         vtm = sp.velocity(mtm / rho_tm, ath)
