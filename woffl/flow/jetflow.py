@@ -469,7 +469,7 @@ def throat_discharge(
     ptm_list = [3 * pte, 2 * pte]  # initial guesses, 3 and 2 times pte
     bal_list = []
 
-    # generate the list of guesses to work off of
+    # generate the first two guesses to work off of
     for ptm in ptm_list:
         rho_tm = prop_tm.condition(ptm, tte).rho_mix()  # density of total mixture
         vtm = sp.velocity(mtm / rho_tm, ath)
@@ -481,7 +481,7 @@ def throat_discharge(
     n = 0
     while abs(bal_list[-2]) > 1:  # attempt to find ptm convergence
         ptm = max(
-            ptm_secant(ptm_list[-2], ptm_list[-1], bal_list[-2], bal_list[-1]), 100
+            ptm_secant(ptm_list[-2], ptm_list[-1], bal_list[-2], bal_list[-1]), 15
         )  # force ptm to never go below 100 psig
 
         rho_tm = prop_tm.condition(ptm, tte).rho_mix()  # density of total mixture
