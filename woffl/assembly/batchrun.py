@@ -548,6 +548,6 @@ def batch_plot_derv(
         ax.plot(fit_water, fit_grad, color="red", linestyle="--", label="Analytical")
 
     ax.set_xlabel(f"{water.capitalize()} Water Rate, BWPD")
-    ax.set_ylabel("Marginal Oil Rate, BBL/BBL")
+    ax.set_ylabel("Marginal Oil Water Rate, Oil_BBL/Water_BBL")
     ax.title.set_text(f"{wellname} Jet Pump Performance")
     ax.legend()
