@@ -221,6 +221,6 @@ class WellNetwork:
 
         # hide the extra subplots
         for i in range(len(self.well_list), len(axs)):
-            axs[i].axis["off"]
+            axs[i].axis("off")
 
         plt.show()
