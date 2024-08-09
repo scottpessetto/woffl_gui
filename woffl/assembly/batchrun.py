@@ -272,6 +272,7 @@ class BatchPump:
         coeff = self.coeff_lift if water == "lift" else self.coeff_totl  # type: ignore
         coeff = coeff if curve else None
 
+        hold = 1  # define the variable with anything, need to trade
         if ax is None:
             hold = None  # transfer None value to something not used
             fig, ax = plt.subplots()
@@ -316,6 +317,7 @@ class BatchPump:
         coeff = self.coeff_lift if water == "lift" else self.coeff_totl  # type: ignore
         coeff = coeff if curve else None
 
+        hold = 1  # define the variable with anything, need to trade
         if ax is None:
             hold = None  # transfer None value to something not used
             fig, ax = plt.subplots()
