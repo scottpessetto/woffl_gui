@@ -492,8 +492,6 @@ def batch_plot_data(
         ax (plt.Axes): Matplotlib Axes
     """
     jp_names = [noz + thr for noz, thr in zip(nozzles, throats)]  # create a list of all the jetpump names
-    # fig = plt.figure()
-    # ax = fig.add_subplot(111)
 
     # plot semi-finalist
     ax.plot(qwat_bpd[semi], qoil_std[semi], marker="o", linestyle="", color="r", label="Semi")
