@@ -4,6 +4,7 @@ Add mutliple BatchPumps to a network and provide a shared resource. The shared
 resource can be either lift water (power fluid) or total water.
 """
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -222,5 +223,30 @@ class WellNetwork:
         # hide the extra subplots
         for i in range(len(self.well_list), len(axs)):
             axs[i].axis("off")
+
+        plt.show()
+
+    def network_plot_derv(self, water: str) -> None:
+        """Plot Derivative Marginal
+
+        Plot the various wells marginal oil water ratio on one graph
+        to show how the various curves would line up if trying to match
+        the mwor value.
+
+        Args:
+            water (str): "lift" or "total" depending on the desired x axis
+        """
+        water = validate_water(water)
+
+        fig, ax = plt.subplots()
+        cmap = plt.get_cmap("tab20", len(self.well_list))
+
+        for i, well in enumerate(self.well_list):
+            well._plot_derv_network(water, ax, mcolor=cmap(i))
+
+        ax.set_xlabel(f"{water.capitalize()} Water Rate, BWPD")
+        ax.set_ylabel("Marginal Oil Water Rate, Oil BBL / Water BBL")
+        ax.title.set_text("Marginal Network Jet Pump Performance")
+        ax.legend()
 
         plt.show()

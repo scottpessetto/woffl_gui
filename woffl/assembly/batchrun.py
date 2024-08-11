@@ -8,10 +8,11 @@ can be converted to a Pandas Dataframe or equivalent for analysis.
 from dataclasses import dataclass
 from itertools import product
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from scipy import optimize as opt
+from matplotlib.axes import Axes
 
 import woffl.assembly.curvefit as cf
 import woffl.assembly.sysops as so
@@ -227,8 +228,8 @@ class BatchPump:
 
         self.df = self.df.merge(semi_df[["motwr", "molwr"]], left_index=True, right_index=True, how="left")
 
-        self.coeff_totl = batch_curve_fit(qoil_semi, twat_semi)
-        self.coeff_lift = batch_curve_fit(qoil_semi, lwat_semi)
+        self.coeff_totl = cf.batch_curve_fit(qoil_semi, twat_semi)
+        self.coeff_lift = cf.batch_curve_fit(qoil_semi, lwat_semi)
 
         return self.df
 
@@ -255,7 +256,7 @@ class BatchPump:
 
         return qoil_std, qwat_bpd
 
-    def plot_data(self, water: str, curve: bool = False, ax: plt.Axes | None = None) -> None:  # type: ignore
+    def plot_data(self, water: str, curve: bool = False, ax: Axes | None = None) -> None:
         """Plot Data
 
         Plot the results from the jet pump batch run to visualize the performance
@@ -264,6 +265,7 @@ class BatchPump:
         Args:
             water (str): "lift" or "total" depending on the desired x axis
             curve (bool): Show the curve fit or not
+            ax (Axes): Matplotlib axes
         """
         water = validate_water(water)
 
@@ -293,7 +295,7 @@ class BatchPump:
         if hold is None:
             plt.show()
 
-    def plot_derv(self, water: str, curve: bool = False, ax: plt.Axes | None = None) -> None:  # type: ignore
+    def plot_derv(self, water: str) -> None:
         """Plot Derivative
 
         Plot the derivative results from the jet pump batch run to visualize how
@@ -301,42 +303,71 @@ class BatchPump:
 
         Args:
             water (str): "lift" or "total" depending on the desired x axis
-            curve (bool): Show the curve fit or not
         """
         # Validate the 'water' argument
-        if water not in {"lift", "total", "totl"}:
-            raise ValueError(f"Invalid value for 'water': {water}. Expected 'lift', 'total', or 'totl'.")
-
-        # Standardize "totl" to "total"
-        if water == "totl":
-            water = "total"
+        water = validate_water(water)
+        df_semi = self.df[self.df["semi"]]  # filter out the bad parts
 
         # Determine the correct water data and coefficients
-        marginal = self.df["molwr"] if water == "lift" else self.df["motwr"]
-        qwat_bpd = self.df["lift_wat"] if water == "lift" else self.df["totl_wat"]
-        coeff = self.coeff_lift if water == "lift" else self.coeff_totl  # type: ignore
-        coeff = coeff if curve else None
+        marg_semi = df_semi["molwr"] if water == "lift" else df_semi["motwr"]
+        qwat_semi = df_semi["lift_wat"] if water == "lift" else df_semi["totl_wat"]
+        coeff = self.coeff_lift if water == "lift" else self.coeff_totl
 
-        hold = 1  # define the variable with anything, need to trade
-        if ax is None:
-            hold = None  # transfer None value to something not used
-            fig, ax = plt.subplots()
+        fig, ax = plt.subplots()
 
         # calling the function to plot the derivatives
-        batch_plot_derv(
-            marginal=marginal,
-            qwat_bpd=qwat_bpd,
-            water=water,
-            nozzles=self.df["nozzle"],
-            throats=self.df["throat"],
-            semi=self.df["semi"],
+        batch_plot_derv_base(
+            marg_filt=marg_semi,
+            qwat_filt=qwat_semi,
+            nozz_filt=df_semi["nozzle"],
+            thrt_filt=df_semi["throat"],
             wellname=self.wellname,
             coeff=coeff,
-            ax=ax,  # type: ignore
+            ax=ax,
+            mcolor="blue",
+            network=False,
         )
 
-        if hold is None:
-            plt.show()
+        ax.set_xlabel(f"{water.capitalize()} Water Rate, BWPD")
+        ax.set_ylabel("Marginal Oil Water Rate, Oil BBL / Water BBL")
+        ax.title.set_text(f"{self.wellname} Jet Pump Performance")
+        ax.legend()
+
+        plt.show()
+
+    def _plot_derv_network(self, water: str, ax: Axes, mcolor: str | mcolors.Colormap) -> None:
+        """Plot Derivative in a Network
+
+        Plot the derivative results from the jet pump batch run to visualize how
+        well of a match occured between the data and curve for each jet pump
+
+        Args:
+            water (str): "lift" or "total" depending on the desired x axis
+            curve (bool): Show the curve fit or not
+            ax (Axes): Matplotlib axes
+            mcolor (str): Matplotlib color
+        """
+        # Validate the 'water' argument
+        water = validate_water(water)
+        df_semi = self.df[self.df["semi"]]  # filter out the bad parts
+
+        # Determine the correct water data and coefficients
+        marg_semi = df_semi["molwr"] if water == "lift" else df_semi["motwr"]
+        qwat_semi = df_semi["lift_wat"] if water == "lift" else df_semi["totl_wat"]
+        coeff = self.coeff_lift if water == "lift" else self.coeff_totl
+
+        # calling the function to plot the derivatives
+        batch_plot_derv_base(
+            marg_filt=marg_semi,
+            qwat_filt=qwat_semi,
+            nozz_filt=df_semi["nozzle"],
+            thrt_filt=df_semi["throat"],
+            wellname=self.wellname,
+            coeff=coeff,
+            ax=ax,
+            mcolor=mcolor,
+            network=True,
+        )
 
 
 def validate_water(water: str) -> str:
@@ -401,24 +432,6 @@ def batch_results_mask(
         if np.any(higher_wat_mask & lower_oil_mask):
             mask[idx] = False
     return mask
-
-
-def batch_curve_fit(qoil_filt: np.ndarray, qwat_filt: np.ndarray) -> tuple[float, float, float]:
-    """Batch Curve Fit
-
-    Curve fit the filtered datapoints from the Batch Results
-
-    Args:
-        qoil_filt (list): Filtered Oil Array, bopd
-        qwat_filt (list): Filtered Water Array, bwpd
-
-    Returns:
-        coeff (float): a, b and c coefficients for curve fit
-    """
-    # could add a fake point at 0,0 to try to force intercepting origin
-    initial_guesses = [max(qoil_filt), max(qoil_filt), 0.001]
-    coeff, _ = opt.curve_fit(cf.exp_model, qwat_filt, qoil_filt, p0=initial_guesses)
-    return coeff
 
 
 def gradient_back(oil_rate: np.ndarray, water_rate: np.ndarray) -> list:
@@ -505,51 +518,48 @@ def batch_plot_data(
     ax.legend()
 
 
-def batch_plot_derv(
-    marginal: pd.Series,
-    qwat_bpd: pd.Series,
-    water: str,
-    nozzles: pd.Series,
-    throats: pd.Series,
-    semi: pd.Series,
+def batch_plot_derv_base(
+    marg_filt: pd.Series,
+    qwat_filt: pd.Series,
+    nozz_filt: pd.Series,
+    thrt_filt: pd.Series,
     wellname: str,
-    coeff: tuple[float, float, float] | None,
-    ax: plt.Axes,  # type: ignore
+    coeff: tuple[float, float, float],
+    ax: Axes,
+    mcolor: str | mcolors.Colormap,
+    network: bool = False,
 ) -> None:
-    """Batch Plot Derivative
+    """Batch Plot Derivative Base
 
     Create a plot showing the derivative / marginal oil results.
     Visualize how good the curve fit actually is for the data.
+    Data needs to be filtered prior to passing to this function.
 
     Args:
-        marginal (pd.Series): Marginal Oil - Water Ratio Rate, BOWPD
-        qwat_bpd (pd.Series): Water Rate, "Lift" or "Total", BPD
-        water (str): Water Type, "Lift" or "Total"
-        nozzles (pd.Series): Nozzle Numbers
-        throats (pd.Series): Throat Ratios
-        semi (pd.Series): Is the jet pump is a semi finalist or not
+        marg_filt (pd.Series): Filtered Marginal Oil - Water Ratio Rate, BOWPD
+        qwat_filt (pd.Series): Filtered Water Rate, "Lift" or "Total", BPD
+        nozz_filt (pd.Series): Filtered Nozzle Numbers
+        thrt_filt (pd.Series): Filtered Throat Ratios
         wellname (str): Wellname String
         coeff (tuple): Exponential Curve Fit Coefficients, A, B, C
         ax (plt.Axes): Matplotlib Axes
+        mcolor (str): Matplotlib Color
+        network (bool): Will this be used in a network plot or not
     """
-    jp_names = [noz + thr for noz, thr in zip(nozzles, throats)]  # create a list of all the jetpump names
-    # fig = plt.figure()
-    # ax = fig.add_subplot(111)
+    if network:
+        label1 = wellname
+        label2 = "_hidden"
+    else:
+        label1 = "Numerical"
+        label2 = "Analytical"
 
-    # plot semi-finalist
-    ax.plot(qwat_bpd[semi], marginal[semi], marker="o", linestyle="", color="r", label="Numerical")
+    ax.plot(qwat_filt, marg_filt, marker="o", linestyle="", color=mcolor, label=label1)
 
-    for marg, qwat, jp in zip(marginal, qwat_bpd, jp_names):
-        if not pd.isna(marg):  # skip blank marginal names
-            ax.annotate(jp, xy=(qwat, marg), xycoords="data", xytext=(1.5, 1.5), textcoords="offset points")
+    jp_filt = [noz + thr for noz, thr in zip(nozz_filt, thrt_filt)]  # create a list of all the jetpump names
+    for marg, qwat, jp in zip(marg_filt, qwat_filt, jp_filt):
+        ax.annotate(jp, xy=(qwat, marg), xycoords="data", xytext=(1.5, 1.5), textcoords="offset points")
 
-    if coeff is not None:
-        a, b, c = coeff  # parse out the coefficients for easier understanding
-        fit_water = np.linspace(0, qwat_bpd[semi].max(), 1000)
-        fit_grad = [cf.exp_deriv(wat, b, c) for wat in fit_water]
-        ax.plot(fit_water, fit_grad, color="red", linestyle="--", label="Analytical")
-
-    ax.set_xlabel(f"{water.capitalize()} Water Rate, BWPD")
-    ax.set_ylabel("Marginal Oil Water Rate, Oil_BBL/Water_BBL")
-    ax.title.set_text(f"{wellname} Jet Pump Performance")
-    ax.legend()
+    a, b, c = coeff  # parse out the coefficients for easier understanding
+    fit_water = np.linspace(0, qwat_filt.max(), 1000)
+    fit_grad = [cf.exp_deriv(wat, b, c) for wat in fit_water]
+    ax.plot(fit_water, fit_grad, color=mcolor, linestyle="--", label=label2)
