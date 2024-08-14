@@ -48,6 +48,8 @@ def rev_exp_deriv(s: float, b: float, c: float) -> float:
     Returns
         x (float): Water Rate, bwpd
     """
+    if s == 0:
+        s = 0.00001
     x = -1 / c * np.log(s / (c * b))
     x = max(x, 0)  # make sure s doesn't drop below zero
     return x

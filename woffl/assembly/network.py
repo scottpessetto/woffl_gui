@@ -124,9 +124,12 @@ class WellNetwork:
         if self.results is False:
             raise ValueError("Run network before generating master curves")
 
-        mowr_ray = np.arange(0, 1, 0.01)
+        mowr_ray = np.arange(0.01, 1.1, 0.01)
         lwat_pad = np.zeros_like(mowr_ray)
         twat_pad = np.zeros_like(mowr_ray)
+
+        loil_pad = np.zeros_like(mowr_ray)  # oil rate predicted using lift water coeff
+        toil_pad = np.zeros_like(mowr_ray)  # oil rate predicted using total water coeff
 
         for well in self.well_list:
 
@@ -136,9 +139,15 @@ class WellNetwork:
             lwat_pad = lwat_pad + lwat_well  # add numpy arrays element by element
             twat_pad = twat_pad + twat_well  # add numpy arrays element by element
 
+            loil_pad = loil_pad + qoil_lift
+            toil_pad = toil_pad + qoil_totl
+
         self.mowr_ray = mowr_ray
         self.lwat_pad = lwat_pad  # rename these?
         self.twat_pad = twat_pad  # rename these?
+
+        self.loil_pad = loil_pad
+        self.toil_pad = toil_pad
 
         return mowr_ray, lwat_pad, twat_pad
 
@@ -161,7 +170,7 @@ class WellNetwork:
 
         # Determine the correct water data and coefficients
         qwat_ray = self.lwat_pad if water == "lift" else self.twat_pad
-        mowr = np.interp(qwat_pad, qwat_ray, self.mowr_ray)
+        mowr = np.interp(qwat_pad, np.flip(qwat_ray), np.flip(self.mowr_ray))  # not sorted from largest to smallest...
         return float(mowr)
 
     def dist_slope(self, mowr_pad: float, water: str) -> pd.DataFrame:
@@ -216,13 +225,13 @@ class WellNetwork:
 
         fig, axs = plt.subplots(nrows=n_rows, ncols=n_cols, figsize=(15, 5 * n_rows))
 
-        axs = axs.flatten() if n_wells > 1 else [axs]
+        axs = axs.flatten() if n_wells > 1 else [axs]  # type: ignore
         for well, ax in zip(self.well_list, axs):
-            well.plot_data(water, curve, ax)
+            well.plot_data(water, curve, ax)  # type: ignore
 
         # hide the extra subplots
         for i in range(len(self.well_list), len(axs)):
-            axs[i].axis("off")
+            axs[i].axis("off")  # type: ignore
 
         plt.show()
 
@@ -238,15 +247,49 @@ class WellNetwork:
         """
         water = validate_water(water)
 
+        # add a horizontal line where the pad mwor was calculated to be at
+
         fig, ax = plt.subplots()
-        cmap = plt.get_cmap("tab20", len(self.well_list))
+        cmap = plt.get_cmap("tab20", len(self.well_list))  # generate list of colors to plot
 
         for i, well in enumerate(self.well_list):
-            well._plot_derv_network(water, ax, mcolor=cmap(i))
+            well._plot_derv_network(water, ax, mcolor=cmap(i))  # type: ignore
 
         ax.set_xlabel(f"{water.capitalize()} Water Rate, BWPD")
         ax.set_ylabel("Marginal Oil Water Rate, Oil BBL / Water BBL")
         ax.title.set_text("Marginal Network Jet Pump Performance")
         ax.legend()
 
+        plt.show()
+
+    def network_plot_master(self, water: str) -> None:
+        """Plot Network Master Curves
+
+        Plot the master curve that is produced by adding up.
+
+        Args:
+            water (str): "lift" or "total" depending on the desired x axis
+        """
+        water = validate_water(water)
+        self.master_curves()
+        # Determine the correct water data and coefficients
+        qwat_ray = self.lwat_pad if water == "lift" else self.twat_pad
+        qoil_ray = self.loil_pad if water == "lift" else self.toil_pad
+
+        fig, ax = plt.subplots()
+        ax2 = ax.twinx()
+
+        pri = ax.plot(qwat_ray, self.mowr_ray, color="blue", linestyle="--", label="marginal")
+        sec = ax2.plot(qwat_ray, qoil_ray, color="red", linestyle="--", label="oil")  # type: ignore
+
+        leg_nms = pri + sec
+        labs = [leg.get_label() for leg in leg_nms]
+        ax.legend(leg_nms, labs, loc="center right")
+
+        ax.set_xlabel(f"Network Required {water.capitalize()} Water, BWPD")
+        ax.set_ylabel(f"Network Marginal Oil {water.capitalize()} Water Ratio, bbl oil / bbl water")
+
+        ax2.set_ylabel("Oil Rate, BOPD")
+
+        plt.title(f"{self.pad_name} Pad Master {water.capitalize()} Water Curve")
         plt.show()
