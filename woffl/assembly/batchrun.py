@@ -228,8 +228,8 @@ class BatchPump:
 
         self.df = self.df.merge(semi_df[["motwr", "molwr"]], left_index=True, right_index=True, how="left")
 
-        self.coeff_totl = cf.batch_curve_fit(qoil_semi, twat_semi)
-        self.coeff_lift = cf.batch_curve_fit(qoil_semi, lwat_semi)
+        self.coeff_totl = cf.batch_curve_fit(qoil_semi, twat_semi, origin=False)
+        self.coeff_lift = cf.batch_curve_fit(qoil_semi, lwat_semi, origin=False)
 
         return self.df
 
@@ -431,6 +431,10 @@ def batch_results_mask(
         lower_oil_mask = qoil_std > qoil_std[idx]
         if np.any(higher_wat_mask & lower_oil_mask):
             mask[idx] = False
+
+    # anyplace that you have np.Nan, flip from True to False
+    mask[np.isnan(qoil_std)] = False
+
     return mask
 
 
@@ -494,10 +498,10 @@ def batch_plot_data(
     jp_names = [noz + thr for noz, thr in zip(nozzles, throats)]  # create a list of all the jetpump names
 
     # plot semi-finalist
-    ax.plot(qwat_bpd[semi], qoil_std[semi], marker="o", linestyle="", color="r", label="Semi")
+    ax.plot(qwat_bpd[semi], qoil_std[semi], marker="o", linestyle="", color="r", label="Semi-Final")
 
     # plot non-semi finalist
-    ax.plot(qwat_bpd[~semi], qoil_std[~semi], marker="o", linestyle="", color="b", label="Non-Semi")
+    ax.plot(qwat_bpd[~semi], qoil_std[~semi], marker="o", linestyle="", color="b", label="Elim")
 
     for qoil, qwat, jp in zip(qoil_std, qwat_bpd, jp_names):
         if not pd.isna(qoil):
