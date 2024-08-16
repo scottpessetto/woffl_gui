@@ -27,8 +27,10 @@ class WellProfile:
         if max(md_list) < max(vd_list):
             raise ValueError("Measured Depth needs to extend farther than Vertical Depth")
 
-        self.md_ray = np.array(md_list)
-        self.vd_ray = np.array(vd_list)
+        md_ray, vd_ray = sort_profile(np.array(md_list), np.array(vd_list))
+
+        self.md_ray = md_ray
+        self.vd_ray = vd_ray
         self.hd_ray = self._horz_dist(self.md_ray, self.vd_ray)
         self.jetpump_md = jetpump_md
 
@@ -116,7 +118,16 @@ class WellProfile:
         # have to use md since the valve will always be increasing
         md_fit, vd_fit = segments_fit(self.md_ray, self.vd_ray)
         md_fit[0], vd_fit[0] = 0, 0  # first values always need to start at zero
-        idx = np.searchsorted(self.md_ray, md_fit)
+        idx = np.searchsorted(self.md_ray, md_fit)  # why is this pulling one more? because md_ray and
+
+        print(md_fit, vd_fit)
+        plt.plot(self.md_ray, self.vd_ray, marker=".", label="raw")
+        plt.plot(md_fit, vd_fit, marker="o", linestyle="--", label="fit")
+        plt.legend()
+        plt.show()
+        print(idx)
+        # print(self.hd_ray)
+
         hd_fit = self.hd_ray[idx]
         return hd_fit, vd_fit, md_fit
 
@@ -897,6 +908,27 @@ class WellProfile:
         return cls(md_list=c23_md, vd_list=c23_vd, jetpump_md=7926)
 
 
+def sort_profile(md_ray: np.ndarray, vd_ray: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Sort Well Profile
+
+    Take in the raw data from various databases. Sort the measured
+    depth in ascending order from smallest to largest. Mirror the new
+    ordered sort on the vertical array.
+
+    Args:
+        md_ray (np array): Measured Depth array, feet
+        vd_ray (np array): Vertical Depth array, feet
+
+    Returns:
+        md_sort (np array): Sorted Measured Depth array, feet
+        vd_sort (np array): Sorted Vertical Depth array, feet
+    """
+    sort_idxs = np.argsort(md_ray)
+    md_sort = md_ray[sort_idxs]
+    vd_sort = vd_ray[sort_idxs]
+    return md_sort, vd_sort
+
+
 def segments_fit(X: np.ndarray, Y: np.ndarray, maxcount: int = 18) -> tuple[np.ndarray, np.ndarray]:
     """Segments Fit DankOC
 
@@ -917,14 +949,13 @@ def segments_fit(X: np.ndarray, Y: np.ndarray, maxcount: int = 18) -> tuple[np.n
         - https://discovery.ucl.ac.uk/id/eprint/10070516/1/AIC_BIC_Paper.pdf
         - Comment from user: dankoc
     """
-    xmin = X.min()
-    xmax = X.max()
+    xmin, xmax = X.min(), X.max()
 
     n = len(X)
 
-    AIC_ = float("inf")
-    BIC_ = float("inf")
-    r_ = None
+    best_AIC = float("inf")
+    best_BIC = float("inf")
+    best_fit = None
 
     for count in range(1, maxcount + 1):
         seg = np.full(count - 1, (xmax - xmin) / count)
@@ -943,18 +974,46 @@ def segments_fit(X: np.ndarray, Y: np.ndarray, maxcount: int = 18) -> tuple[np.n
             Y2 = np.interp(X, px, py)
             return np.mean((Y - Y2) ** 2)
 
-        r = optimize.minimize(err, x0=np.r_[seg, py_init], method="Nelder-Mead")
+        res = optimize.minimize(err, x0=np.r_[seg, py_init], method="Nelder-Mead")
 
         # Compute AIC/ BIC.
-        AIC = n * np.log10(err(r.x)) + 4 * count
-        BIC = n * np.log10(err(r.x)) + 2 * count * np.log(n)
+        AIC = n * np.log(err(res.x)) + 4 * count
+        BIC = n * np.log(err(res.x)) + 2 * count * np.log(n)
 
-        if (BIC < BIC_) & (AIC < AIC_):  # Continue adding complexity.
-            r_ = r
-            AIC_ = AIC
-            BIC_ = BIC
+        if (BIC < best_BIC) & (AIC < best_AIC):  # Continue adding complexity.
+            best_fit = res
+            best_AIC, best_BIC = AIC, BIC
         else:  # Stop.
             count = count - 1
             break
 
-    return func(r_.x)  # type: ignore [return the last (n-1)]
+    px, py = func(best_fit.x)  # type: ignore
+    px, py = segments_guardrails(px, py, X.max(), Y.max())
+
+    return px, py  # type: ignore [return the last (n-1)]
+
+
+def segments_guardrails(px: np.ndarray, py: np.ndarray, xmax: float, ymax: float) -> tuple[np.ndarray, np.ndarray]:
+    """Segments Guardrails
+
+    Add some guardrails to ensure the returned datapoints don't go past the max values.
+    Eliminate any redundant values for ease of coding.
+
+    Args:
+        px (np.array): Filtered x data
+        py (np.array): Filtered y data
+        xmax (float): Maximum x value from the non-filtered data
+        ymax (float): Maximum y value from the non-filtered data
+
+    Returns:
+        px (np.array): Filtered x data with guardrails
+        py (np.array): Filtered y data with guardrails
+    """
+    px = np.clip(px, None, xmax)  # Replace any px values longer than xmax with xmax.
+    py[px == xmax] = ymax  # Any place that xmax exists in px, replace the corresponding py with ymax.
+
+    combo = np.stack((px, py), axis=-1)  # zip together 1D into 2D that you can review
+    unq_vals, unq_idxs = np.unique(combo, return_index=True, axis=0)
+
+    px, py = px[unq_idxs], py[unq_idxs]
+    return px, py

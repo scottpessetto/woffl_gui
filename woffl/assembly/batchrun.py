@@ -422,7 +422,11 @@ def batch_results_mask(
     unique_nozzles = np.unique(nozzles)  # unique nozzles in the list
     for noz in unique_nozzles:
         noz_idxs = np.where(nozzles == noz)[0]  # indicies where the nozzle is a specific nozzle
-        best_idx = noz_idxs[np.argmax(qoil_std[noz_idxs])]
+
+        if np.all(np.isnan(qoil_std[noz_idxs])):  # skip the nozzle if they are all nan
+            continue
+
+        best_idx = noz_idxs[np.nanargmax(qoil_std[noz_idxs])]
         mask[best_idx] = True
 
     # compare the points to themselves to look for where oil is higher for less water
@@ -431,9 +435,6 @@ def batch_results_mask(
         lower_oil_mask = qoil_std > qoil_std[idx]
         if np.any(higher_wat_mask & lower_oil_mask):
             mask[idx] = False
-
-    # anyplace that you have np.Nan, flip from True to False
-    mask[np.isnan(qoil_std)] = False
 
     return mask
 
@@ -501,7 +502,7 @@ def batch_plot_data(
     ax.plot(qwat_bpd[semi], qoil_std[semi], marker="o", linestyle="", color="r", label="Semi-Final")
 
     # plot non-semi finalist
-    ax.plot(qwat_bpd[~semi], qoil_std[~semi], marker="o", linestyle="", color="b", label="Elim")
+    ax.plot(qwat_bpd[~semi], qoil_std[~semi], marker="o", linestyle="", color="b", label="Eliminate")
 
     for qoil, qwat, jp in zip(qoil_std, qwat_bpd, jp_names):
         if not pd.isna(qoil):
@@ -512,7 +513,7 @@ def batch_plot_data(
         a, b, c = coeff  # parse out the coefficients for easier understanding
         fit_water = np.linspace(0, qwat_bpd.max(), 1000)
         fit_oil = [cf.exp_model(wat, a, b, c) for wat in fit_water]
-        ax.plot(fit_water, fit_oil, color="red", linestyle="--", label="Exponential Fit")
+        ax.plot(fit_water, fit_oil, color="red", linestyle="--", label="Exp. Fit")
 
     ax.set_xlabel(f"{water.capitalize()} Water Rate, BWPD")
     ax.set_ylabel("Produced Oil Rate, BOPD")
