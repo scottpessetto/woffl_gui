@@ -5,6 +5,8 @@
 batch_debug.py
 exp_curve_fit.py
 i15_debug.py
+b35_debug.py
+random_debug.py
 
 # Editors
 .vscode/

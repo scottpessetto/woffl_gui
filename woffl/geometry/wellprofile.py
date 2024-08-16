@@ -261,6 +261,7 @@ class WellProfile:
         """Schrader Bluff Generic Well Profile
 
         Generic Schrader Bluff well profile based on MPE-42 geometry.
+        Add these into a .json file and just read from that?
 
         Args:
             md_list (list): MPE-42 Measured Depth
@@ -657,6 +658,7 @@ class WellProfile:
 
         Generic Kuparuk well profile based on MPC-23 geometry.
         MPC-23 is a slant Kuparuk Well, so not a perfect canidate.
+        Add these to a .json file and read?
 
         Args:
             md_list (list): MPC-23 Measured Depth
