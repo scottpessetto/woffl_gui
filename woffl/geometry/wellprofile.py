@@ -120,14 +120,6 @@ class WellProfile:
         md_fit[0], vd_fit[0] = 0, 0  # first values always need to start at zero
         idx = np.searchsorted(self.md_ray, md_fit)  # why is this pulling one more? because md_ray and
 
-        print(md_fit, vd_fit)
-        plt.plot(self.md_ray, self.vd_ray, marker=".", label="raw")
-        plt.plot(md_fit, vd_fit, marker="o", linestyle="--", label="fit")
-        plt.legend()
-        plt.show()
-        print(idx)
-        # print(self.hd_ray)
-
         hd_fit = self.hd_ray[idx]
         return hd_fit, vd_fit, md_fit
 
@@ -997,7 +989,8 @@ def segments_guardrails(px: np.ndarray, py: np.ndarray, xmax: float, ymax: float
     """Segments Guardrails
 
     Add some guardrails to ensure the returned datapoints don't go past the max values.
-    Eliminate any redundant values for ease of coding.
+    Eliminate one of the values that are redundant. Maybe add something where the first
+    values in the array need to be 0,0 as well? That code is repeated in other places.
 
     Args:
         px (np.array): Filtered x data
