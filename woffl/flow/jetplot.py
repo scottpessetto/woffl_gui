@@ -17,8 +17,10 @@ Returns:
         grad_ray (np array): Gradient of tde/dp Array, ft2/(s2*psig)
 """
 
+import matplotlib as mpl
+import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib import pyplot as plt
+import scipy.optimize as opt
 from matplotlib.axes._axes import Axes
 
 from woffl.flow import jetflow as jf  # legacy
@@ -96,21 +98,24 @@ class JetBook:
         grad = (self.tde_ray[-2] - self.tde_ray[-1]) / (self.prs_ray[-2] - self.prs_ray[-1])
         self.grad_ray = np.append(self.grad_ray, grad)  # gradient of tde vs prs
 
-    def plot_te(self) -> None:
+    def plot_te(self, pte_min=200) -> None:
         """Throat Entry Plots
 
         Create a series of graphs to use for visualization of the results
         in the book from the throat entry area.
+
+        Args:
+            pte_min (float): Minimum Throat Entrance Pressure to Display, psig
         """
         self._throat_entry_graphs(
-            self.prs_ray,
-            self.vel_ray,
-            self.rho_ray,
-            self.snd_ray,
-            self.kde_ray,
-            self.ede_ray,
-            self.tde_ray,
-            self.grad_ray,
+            self.prs_ray[self.prs_ray >= pte_min],
+            self.vel_ray[self.prs_ray >= pte_min],
+            self.rho_ray[self.prs_ray >= pte_min],
+            self.snd_ray[self.prs_ray >= pte_min],
+            self.kde_ray[self.prs_ray >= pte_min],
+            self.ede_ray[self.prs_ray >= pte_min],
+            self.tde_ray[self.prs_ray >= pte_min],
+            self.grad_ray[self.prs_ray >= pte_min],
         )
         return None
 
@@ -205,43 +210,67 @@ class JetBook:
     ) -> None:
 
         mach_ray = vel_ray / snd_ray
+        colors = mpl.colormaps["tab10"].colors
         # grad_ray = np.gradient(tde_ray, prs_ray)
         psu = prs_ray[0]
+        idx_sort = np.argsort(mach_ray)
+        pidx = np.searchsorted(mach_ray, 1, side="left", sorter=idx_sort)  # find index location where mach is 1
         pmo = float(np.interp(1, mach_ray, prs_ray))  # interpolate for pressure at mach 1, pmo
         pgo = float(np.interp(0, np.flip(grad_ray), np.flip(prs_ray)))  # find point where gradient is zero
         pte, vte, rho_te, mach_te = JetBook._dete_zero(prs_ray, vel_ray, rho_ray, tde_ray, mach_ray)
 
-        fig, axs = plt.subplots(4, sharex=True)
+        fig, axs = plt.subplots(4, sharex=True, figsize=(4.75, 7))
         plt.rcParams["mathtext.default"] = "regular"
-        fig.suptitle(f"Suction at {round(psu,0)} psi, Mach 1 at {round(pmo,0)} psi")
+        # fig.suptitle(f"Suction at {round(psu,0)} psi, Mach 1 at {round(pmo,0)} psi")
 
-        axs[0].scatter(prs_ray, 1 / rho_ray)
-        axs[0].set_ylabel("Specific Volume, ft3/lbm")
+        marker_style = "."
+        line_style = "-"
 
-        axs[1].scatter(prs_ray, vel_ray, label="Mixture Velocity")
-        axs[1].scatter(prs_ray, snd_ray, label="Speed of Sound")
+        # first plot
+        axs[0].plot(prs_ray, 1 / rho_ray, marker=marker_style, linestyle=line_style, color=colors[0])
+        axs[0].set_ylabel("Spec. Vol, $ft^{3}/lb_{m}$")
+
+        # second plot
+        axs[1].plot(
+            prs_ray, vel_ray, label="Mixture Velocity", marker=marker_style, linestyle=line_style, color=colors[3]
+        )
+        axs[1].plot(
+            prs_ray, snd_ray, label="Speed of Sound", marker=marker_style, linestyle=line_style, color=colors[0]
+        )
+        vel_span = vel_ray[pidx] - min(vel_ray)
+        axs[1].annotate(
+            text="Mach 1", xy=(pmo, vel_ray[pidx] - (1 / 8) * vel_span), rotation=90, ha="center", va="top", fontsize=8
+        )
         axs[1].set_ylabel("Velocity, ft/s")
         axs[1].legend()
 
-        axs[2].scatter(prs_ray, ede_ray, label="Expansion")
-        axs[2].scatter(prs_ray, kde_ray, label="Kinetic")
-        axs[2].axhline(y=0, color="black", linestyle="--", linewidth=1)
-        axs[2].set_ylabel("Energy, ft2/s2")
-        axs[2].legend()
+        # third plot
+        axs[2].plot(prs_ray, kde_ray, label="Kinetic", marker=marker_style, linestyle=line_style, color=colors[3])
+        axs[2].plot(prs_ray, ede_ray, label="Expansion", marker=marker_style, linestyle=line_style, color=colors[0])
+        axs[2].set_ylabel("Energy, $ft^{2}/s^{2}$")
+        axs[2].ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+        axs[2].legend(loc="center left")
 
-        ycoord = (max(tde_ray) + min(tde_ray)) / 2
-        axs[3].scatter(prs_ray, tde_ray)
-        axs[3].axhline(y=0, color="black", linestyle="--", linewidth=1)
-        axs[3].axvline(x=pmo, color="black", linestyle="--", linewidth=1)
-        axs[3].annotate(text="Mach 1", xy=(pmo, ycoord), rotation=90)
-        axs[3].axvline(x=pte, color="black", linestyle="--", linewidth=1)
-        axs[3].annotate(text="TEE 0", xy=(pte, ycoord), rotation=90)
-        axs[3].axvline(x=pgo, color="black", linestyle="--", linewidth=1)
-        axs[3].annotate(text="Grad 0", xy=(pgo, 2 * ycoord / 8), rotation=90)
-        axs[3].set_ylabel("$dE_{te}$, ft2/s2")
+        # fourth plot
+        axs[3].plot(prs_ray, tde_ray, marker=marker_style, linestyle=line_style, color=colors[4])
+
+        tde_span = max(tde_ray) - tde_ray[pidx]
+        axs[3].annotate(
+            text="Grad 0",
+            xy=(pgo, tde_ray[pidx] + 1 / 16 * tde_span),
+            rotation=90,
+            ha="right",
+            va="bottom",
+            fontsize=8,
+        )
+        axs[3].ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+        axs[3].axhline(y=0, linestyle="--", linewidth=1, color=colors[7])
+        axs[3].set_ylabel("$dE_{te}$, $ft^{2}/s^{2}$")
         axs[3].set_xlabel("Throat Entry Pressure, psig")
-
-        plt.show()
+        plt.subplots_adjust(left=0.13, bottom=0.075, right=0.975, top=0.99, wspace=0.2, hspace=0.1)
+        plt.tight_layout()
+        plt.savefig(fname=r"C:\Users\ka9612\OneDrive - Hilcorp\Grad_School\thesis_figs\entry_four.png")
+        # plt.show()
         return None
 
     @staticmethod
@@ -255,31 +284,41 @@ class JetBook:
         tde_ray: np.ndarray,
     ) -> None:
 
+        colors = mpl.colormaps["tab10"].colors
         ptm = prs_ray[0]
 
-        fig, axs = plt.subplots(4, sharex=True)
+        marker_style = "."
+        line_style = "-"
+        fig, axs = plt.subplots(4, sharex=True, figsize=(4.75, 7))
         plt.rcParams["mathtext.default"] = "regular"
 
-        axs[0].scatter(prs_ray, 1 / rho_ray)
-        axs[0].set_ylabel("Specific Volume, ft3/lbm")
+        axs[0].plot(prs_ray, 1 / rho_ray, marker=marker_style, linestyle=line_style, color=colors[0])
+        axs[0].set_ylabel("Spec. Vol, $ft^{3}/lb_{m}$")
 
-        axs[1].scatter(prs_ray, vel_ray, label="Diffuser Outlet")
-        axs[1].scatter(prs_ray, snd_ray, label="Speed of Sound")
+        axs[1].plot(
+            prs_ray, vel_ray, label="Diffuser Outlet", marker=marker_style, linestyle=line_style, color=colors[3]
+        )
+        axs[1].plot(
+            prs_ray, snd_ray, label="Speed of Sound", marker=marker_style, linestyle=line_style, color=colors[0]
+        )
         # axs[1].scatter(ptm, vtm, label="Diffuser Inlet")
         axs[1].set_ylabel("Velocity, ft/s")
-        axs[1].legend()
+        axs[1].legend(loc="center right")
 
-        axs[2].scatter(prs_ray, ede_ray, label="Expansion")
-        axs[2].scatter(prs_ray, kde_ray, label="Kinetic")
-        axs[2].axhline(y=0, color="black", linestyle="--", linewidth=1)
-        axs[2].set_ylabel("Energy, ft2/s2")
+        axs[2].plot(prs_ray, kde_ray, label="Kinetic", marker=marker_style, linestyle=line_style, color=colors[3])
+        axs[2].plot(prs_ray, ede_ray, label="Expansion", marker=marker_style, linestyle=line_style, color=colors[0])
+        # axs[2].axhline(y=0, linestyle="--", linewidth=1, color=colors[7])
+        axs[2].set_ylabel("Energy, $ft^{2}/s^{2}$")
+        axs[2].ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
         axs[2].legend()
 
-        axs[3].scatter(prs_ray, tde_ray)
-        axs[3].axhline(y=0, color="black", linestyle="--", linewidth=1)
-        axs[3].set_ylabel("$dE_{di}$, ft2/s2")
+        axs[3].plot(prs_ray, tde_ray, marker=marker_style, linestyle=line_style, color=colors[4])
+        axs[3].axhline(y=0, linestyle="--", linewidth=1, color=colors[7])
+        axs[3].ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+        axs[3].set_ylabel("$dE_{di}$, $ft^{2}/s^{2}$")
         axs[3].set_xlabel("Diffuser Outlet Pressure, psig")
 
+        """
         if max(tde_ray) >= 0 and min(tde_ray) <= 0:  # make sure a solution exists
             pdi = np.interp(0, tde_ray, prs_ray)
             vdi = np.interp(pdi, prs_ray, vel_ray)
@@ -293,7 +332,12 @@ class JetBook:
             fig.suptitle(f"Diffuser Inlet and Outlet at {round(ptm,0)} and {round(pdi,0)} psi")  # type: ignore
         else:
             fig.suptitle(f"Diffuser Inlet at {round(ptm,0)} psi")
-        plt.show()
+        """
+        plt.subplots_adjust(left=0.13, bottom=0.075, right=0.975, top=0.99, wspace=0.2, hspace=0.1)
+        plt.tight_layout()
+        plt.savefig(fname=r"C:\Users\ka9612\OneDrive - Hilcorp\Grad_School\thesis_figs\diffuser_four.png")
+        # plt.show()
+        return None
 
 
 # this goes all the way down to 200 psig
@@ -421,7 +465,7 @@ def multi_throat_entry_books(
     return qoil_list, book_list
 
 
-def te_tde_subsonic_plot(qoil_std: float, te_book: JetBook, color: str) -> Axes:
+def te_tde_subsonic_plot(qoil_std: float, te_book: JetBook, color: str) -> tuple[Axes, float, float, float, float]:
     """Throat Entry (TE) Total Differential Energy (TDE) for Subsonic Values Plot
 
     Args:
@@ -431,18 +475,114 @@ def te_tde_subsonic_plot(qoil_std: float, te_book: JetBook, color: str) -> Axes:
 
     Return:
         ax (Axis): Matplotlib Axis to be used later
-    """
-    psu = te_book.prs_ray[0]
-    pmo = np.interp(1, te_book.mach_ray, te_book.prs_ray)
-    tde_pmo = np.interp(pmo, np.flip(te_book.prs_ray), np.flip(te_book.tde_ray))
+        x_ipr (float): X Value of IPR Boundary
+        y_ipr (float): Y Value of IPR Boundary
+        x_mach (float): X Value of Mach Boundary
+        y_mach (float): Y Value of Mach Boundary
 
-    pte_ray = te_book.prs_ray[te_book.prs_ray >= pmo]
-    tee_ray = te_book.tde_ray[te_book.prs_ray >= pmo]
+    """
+    # psu = te_book.prs_ray[0]
+    pgo = float(np.interp(0, np.flip(te_book.grad_ray), np.flip(te_book.prs_ray)))  # find point where gradient is zero
+    # pmo = np.interp(1, te_book.mach_ray, te_book.prs_ray)
+
+    # idx_sort = np.argsort(te_book.prs_ray)
+    # pmo_idx = np.searchsorted(te_book.prs_ray, pmo, side="left", sorter=idx_sort)  # find index location where mach is 1
+    tde_pgo = np.interp(pgo, np.flip(te_book.prs_ray), np.flip(te_book.tde_ray))
+
+    pte_ray = te_book.prs_ray[te_book.prs_ray >= pgo]
+    tee_ray = te_book.tde_ray[te_book.prs_ray >= pgo]
 
     ax = plt.gca()
-    ax.scatter(pte_ray, tee_ray, color=color, label=f"{int(qoil_std)} bopd, {int(psu)} psi")
-    ax.scatter(pmo, tde_pmo, marker="v", color=color)  # type: ignore
-    return ax
+    ax.scatter(pte_ray, tee_ray, color=color, marker=".", label=f"{int(qoil_std)} bopd")
+    x_ipr = te_book.prs_ray[0]
+    y_ipr = te_book.tde_ray[0]
+    x_mach = pgo
+    y_mach = tde_pgo
+
+    ax.scatter(pgo, tde_pgo, marker=".", color=color)  # type: ignore
+    return ax, float(x_ipr), float(y_ipr), float(x_mach), float(y_mach)
+
+
+def func_line(x, m, b):
+    """Used for curve fitting Mach / IPR Lines"""
+    return m * x + b
+
+
+def inv_line(y, m, b):
+    """Used to find x value of pte when dete=0"""
+    return (y - b) / m
+
+
+def mach_annotate(x_mach: list, y_mach: list) -> None:
+    """Annotate Mach Line
+
+    Args:
+        x_mach (list): List of pte values at Mach Boundary
+        y_mach (list): List of dete values at Mach Boundary
+
+    Returns:
+        Nothing
+    """
+    # curve fit data
+    popt, pcov = opt.curve_fit(func_line, x_mach, y_mach)
+    x_min, x_max = min(x_mach), inv_line(0, popt[0], popt[1])
+    y_min, y_max = min(y_mach), 0
+    x_coord = (x_min + x_max) / 2
+    y_coord = (y_min + y_max) / 2
+    x_dist = x_max - x_min
+    y_dist = y_max - y_min
+
+    offset = 5 / 64
+    ax = plt.gca()
+    ax.plot(x_mach, y_mach, linestyle="--", linewidth=1, color="#7f7f7f")
+    # ax.plot(x_coord, y_coord, marker="x")
+
+    rot_angle = np.rad2deg(np.arctan(popt[0]))
+    ax.annotate(
+        text="Sonic Limit",
+        xy=(x_coord - (1 / 8) * x_dist, y_coord + offset * y_dist),
+        rotation=rot_angle,
+        transform_rotates_text=True,
+        ha="center",
+        va="center",
+        fontsize=8,
+    )
+
+
+def inflow_annotate(x_ipr: list, y_ipr: list) -> None:
+    """Annotate Mach Line
+
+    Args:
+        x_ipr (list): List of pte values at IPR Boundary
+        y_ipr (list): List of dete values at IPR Boundary
+
+    Returns:
+        Nothing
+    """
+    # curve fit data
+    popt, pcov = opt.curve_fit(func_line, x_ipr, y_ipr)
+    x_min, x_max = min(x_ipr), max(x_ipr)
+    y_min, y_max = min(y_ipr), max(y_ipr)
+    x_coord = (x_min + x_max) / 2
+    y_coord = (y_min + y_max) / 2
+    x_dist = x_max - x_min
+    y_dist = y_max - y_min
+
+    offset = 5 / 64
+    ax = plt.gca()
+    ax.plot(x_ipr, y_ipr, linestyle="--", linewidth=1, color="#7f7f7f")
+    # ax.plot(x_coord + x_dist / 16, y_coord + y_dist / 16, marker="x")
+
+    rot_angle = np.rad2deg(np.arctan(popt[0]))
+    ax.annotate(
+        text="Inflow Limit",
+        xy=(x_coord + offset * x_dist, y_coord + offset * y_dist),
+        rotation=rot_angle,
+        transform_rotates_text=True,
+        ha="center",
+        va="center",
+        fontsize=8,
+    )
 
 
 def multi_suction_graphs(qoil_list: list, book_list: list) -> None:
@@ -457,18 +597,33 @@ def multi_suction_graphs(qoil_list: list, book_list: list) -> None:
     Returns:
         Graphs
     """
+
     plt.rcParams["mathtext.default"] = "regular"
     prop_cycle = plt.rcParams["axes.prop_cycle"]()  # convert to iterator
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(4.75, 3.5))
+    ipr_x = []
+    ipr_y = []
+    mach_x = []
+    mach_y = []
 
     for qoil_std, te_book in zip(qoil_list, book_list):
         color = next(prop_cycle)["color"]  # new color method
-        te_tde_subsonic_plot(qoil_std, te_book, color)  # need parent and children classes
+        ax, x_ipr, y_ipr, x_mach, y_mach = te_tde_subsonic_plot(
+            qoil_std, te_book, color
+        )  # need parent and children classes
+        ipr_x.append(x_ipr)
+        ipr_y.append(y_ipr)
+        mach_x.append(x_mach)
+        mach_y.append(y_mach)
 
+    mach_annotate(mach_x, mach_y)
+    inflow_annotate(ipr_x, ipr_y)
     ax.set_xlabel("Throat Entry Pressure, psig")
-    ax.set_ylabel("$dE_{te}$, ft2/s2")
-    ax.axhline(y=0, color="black", linestyle="--", linewidth=1)
-    ax.set_title("Figure 5 of SPE-202928-MS, Mach 1 at \u25BC")
+    ax.set_ylabel("$dE_{te}$, $ft^{2}/s^{2}$")
+    ax.axhline(y=0, linestyle="--", linewidth=1, color="#7f7f7f")  # grey color from tab10
     ax.legend()
-
-    plt.show()
+    plt.subplots_adjust(left=0.2, bottom=0.135, right=0.975, top=0.975, wspace=0.2, hspace=0.15)
+    plt.tight_layout()
+    plt.savefig(fname=r"C:\Users\ka9612\OneDrive - Hilcorp\Grad_School\thesis_figs\entry_multi.png")
+    # plt.show()
+    return None

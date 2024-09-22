@@ -221,7 +221,7 @@ class WellNetwork:
         water = validate_water(water)
         n_wells = len(self.well_list)  # how many wells are there
         n_cols = 4
-        n_rows = (n_wells + 1) // n_cols  # integer division
+        n_rows = 1 + ((n_wells - 1) // n_cols)  # integer division
 
         fig, axs = plt.subplots(nrows=n_rows, ncols=n_cols, figsize=(15, 5 * n_rows))
 

@@ -1,7 +1,7 @@
 import numpy as np
 
-from woffl.flow import jetcheck as jc
 from woffl.flow import jetflow as jf
+from woffl.flow import jetgraphs as jg
 from woffl.flow import jetplot as jplt
 from woffl.flow.inflow import InFlow
 from woffl.geometry.jetpump import JetPump
@@ -40,8 +40,8 @@ e41_res = ResMix(wc=form_wc, fgor=form_gor, oil=mpu_oil, wat=mpu_wat, gas=mpu_ga
 
 e42_profile = WellProfile.schrader()
 
-jc.discharge_check(surf_pres, form_temp, rho_pf, ppf_surf, e41_jp, tube, e42_profile, e41_ipr, e41_res)
-# jc.jet_check(form_temp, jpump_tvd, rho_pf, ppf_surf, e41_jp, tube, e41_ipr, e41_res)
+jg.choked_figures(form_temp, rho_pf, ppf_surf, e41_jp, tube, e42_profile, e41_ipr, e41_res)
+# jg.discharge_check(surf_pres, form_temp, rho_pf, ppf_surf, e41_jp, tube, e42_profile, e41_ipr, e41_res)
 
 psu_ray = np.linspace(1106, 1250, 5)
 qoil_list, book_list = jplt.multi_throat_entry_books(psu_ray, form_temp, e41_jp.ken, e41_jp.ate, e41_ipr, e41_res)

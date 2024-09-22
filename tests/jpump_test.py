@@ -1,9 +1,8 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
-import woffl.flow.outflow as of
 from woffl.flow import jetflow as jf
-from woffl.flow import jetplot as jplt
+from woffl.flow import jetgraphs as jg
 from woffl.flow import singlephase as sp
 from woffl.flow.inflow import InFlow
 from woffl.geometry.jetpump import JetPump
@@ -41,48 +40,4 @@ prop_su = ResMix(wc=form_wc, fgor=form_gor, oil=mpu_oil, wat=mpu_wat, gas=mpu_ga
 
 wellprof = WellProfile.schrader()
 
-# find the minimum psu, then find maximum, calculate pdi and compare?
-# also calculate pdi_of for each case / residual?
-
-psu_min, qoil_std, te_book = jf.psu_minimize(form_temp, e41_jp.ken, e41_jp.ate, ipr_su, prop_su)
-psu_max = ipr_su.pres - 10
-
-psu_list = np.linspace(psu_min, psu_max, 10)
-
-pte_list = []
-ptm_list = []
-pdi_list = []
-qoil_list = []
-
-pni = ppf_surf + sp.diff_press_static(rho_pf, wellprof.jetpump_vd)  # static
-
-for psu in psu_list:
-    pte, ptm, pdi, qoil_std, fwat_bwpd, qnz_bwpd, mach_te, prop_tm = jf.jetpump_overall(
-        psu,
-        form_temp,
-        pni,
-        rho_pf,
-        e41_jp.ken,
-        e41_jp.knz,
-        e41_jp.kth,
-        e41_jp.kdi,
-        e41_jp.ath,
-        e41_jp.anz,
-        tube.inn_area,
-        ipr_su,
-        prop_su,
-    )
-
-    pte_list.append(pte)
-    ptm_list.append(ptm)
-    pdi_list.append(pdi)
-    qoil_list.append(qoil_std)
-
-plt.scatter(psu_list, pdi_list, label="Discharge")
-plt.scatter(psu_list, ptm_list, label="Throat Mix")
-plt.scatter(psu_list, pte_list, label="Throat Entry")
-plt.xlabel("Suction Pressure, psig")
-plt.ylabel("Pressure, psig")
-plt.title("Comparison of Jet Pump Pressures Against Suction")
-plt.legend()
-plt.show()
+jg.pump_pressure_relation(form_temp, rho_pf, ppf_surf, e41_jp, tube, wellprof, ipr_su, prop_su)
