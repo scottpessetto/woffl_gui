@@ -210,9 +210,9 @@ class JetBook:
     ) -> None:
 
         mach_ray = vel_ray / snd_ray
-        colors = mpl.colormaps["tab10"].colors
+        colors = mpl.colormaps["tab10"].colors  # type: ignore
         # grad_ray = np.gradient(tde_ray, prs_ray)
-        psu = prs_ray[0]
+        # psu = prs_ray[0]
         idx_sort = np.argsort(mach_ray)
         pidx = np.searchsorted(mach_ray, 1, side="left", sorter=idx_sort)  # find index location where mach is 1
         pmo = float(np.interp(1, mach_ray, prs_ray))  # interpolate for pressure at mach 1, pmo
@@ -269,8 +269,8 @@ class JetBook:
         axs[3].set_xlabel("Throat Entry Pressure, psig")
         plt.subplots_adjust(left=0.13, bottom=0.075, right=0.975, top=0.99, wspace=0.2, hspace=0.1)
         plt.tight_layout()
-        plt.savefig(fname=r"C:\Users\ka9612\OneDrive - Hilcorp\Grad_School\thesis_figs\entry_four.png")
-        # plt.show()
+        # plt.savefig(fname=r"C:\Users\ka9612\OneDrive - Hilcorp\Grad_School\thesis_figs\entry_four.png")
+        plt.show()
         return None
 
     @staticmethod
@@ -284,8 +284,8 @@ class JetBook:
         tde_ray: np.ndarray,
     ) -> None:
 
-        colors = mpl.colormaps["tab10"].colors
-        ptm = prs_ray[0]
+        colors = mpl.colormaps["tab10"].colors  # type: ignore
+        # ptm = prs_ray[0]
 
         marker_style = "."
         line_style = "-"
@@ -335,8 +335,8 @@ class JetBook:
         """
         plt.subplots_adjust(left=0.13, bottom=0.075, right=0.975, top=0.99, wspace=0.2, hspace=0.1)
         plt.tight_layout()
-        plt.savefig(fname=r"C:\Users\ka9612\OneDrive - Hilcorp\Grad_School\thesis_figs\diffuser_four.png")
-        # plt.show()
+        # plt.savefig(fname=r"C:\Users\ka9612\OneDrive - Hilcorp\Grad_School\thesis_figs\diffuser_four.png")
+        plt.show()
         return None
 
 
@@ -624,6 +624,6 @@ def multi_suction_graphs(qoil_list: list, book_list: list) -> None:
     ax.legend()
     plt.subplots_adjust(left=0.2, bottom=0.135, right=0.975, top=0.975, wspace=0.2, hspace=0.15)
     plt.tight_layout()
-    plt.savefig(fname=r"C:\Users\ka9612\OneDrive - Hilcorp\Grad_School\thesis_figs\entry_multi.png")
-    # plt.show()
+    # plt.savefig(fname=r"C:\Users\ka9612\OneDrive - Hilcorp\Grad_School\thesis_figs\entry_multi.png")
+    plt.show()
     return None
