@@ -69,6 +69,32 @@ class BlackOil:
         return cls(oil_api=24, bubblepoint=2250, gas_sg=0.65)
 
     @classmethod
+    def sag(cls):
+        """Sagavanirktok Black Oil
+
+        Generic Sagavanirktok black oil with preset properties
+
+        Args:
+            oil_api (float): 28 API
+            bubblepoint (float): 2700 psig
+            gas_sg (float): 0.65
+        """
+        return cls(oil_api=28, bubblepoint=2700, gas_sg=0.65)
+
+    @classmethod
+    def ugnu(cls):
+        """Ugnu Black Oil
+
+        Generic Ugnu black oil with preset properties
+
+        Args:
+            oil_api (float): 14 API
+            bubblepoint (float): 1500 psig
+            gas_sg (float): 0.65
+        """
+        return cls(oil_api=14, bubblepoint=1500, gas_sg=0.65)
+
+    @classmethod
     def test_oil(cls):
         """Test Oil
 

@@ -44,6 +44,24 @@ class FormGas:
         return cls(gas_sg=0.65)
 
     @classmethod
+    def sag(cls):
+        """Sagavanirktok Generic Formation Gas
+
+        Args:
+            gas_sg (float): 0.65
+        """
+        return cls(gas_sg=0.65)
+
+    @classmethod
+    def ugnu(cls):
+        """Ugnu Generic Formation Gas
+
+        Args:
+            gas_sg (float): 0.65
+        """
+        return cls(gas_sg=0.65)
+
+    @classmethod
     def methane_gas(cls):
         """Pure Methane Formation Gas
 

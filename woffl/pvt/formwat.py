@@ -33,6 +33,24 @@ class FormWater:
             wat_sg (float): 1.02"""
         return cls(wat_sg=1.02)
 
+    @classmethod
+    def sag(cls):
+        """Sagavanirktok Generic Formation Water
+
+        Args:
+            wat_sg (float): 1.02
+        """
+        return cls(wat_sg=1.02)
+
+    @classmethod
+    def ugnu(cls):
+        """Ugnu Generic Formation Water
+
+        Args:
+            wat_sg (float): 1.02
+        """
+        return cls(wat_sg=1.02)
+
     def condition(self, press: float, temp: float):
         """Set condition of evaluation
 
