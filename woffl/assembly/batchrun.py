@@ -5,6 +5,7 @@ current conditions. Code outputs a formatted list of python dictionaries that
 can be converted to a Pandas Dataframe or equivalent for analysis.
 """
 
+import os
 from dataclasses import dataclass
 from itertools import product
 
@@ -256,16 +257,19 @@ class BatchPump:
 
         return qoil_std, qwat_bpd
 
-    def plot_data(self, water: str, curve: bool = False, ax: Axes | None = None) -> None:
+    def plot_data(
+        self, water: str, curve: bool = False, ax: Axes | None = None, fig_path: str | os.PathLike | None = None
+    ) -> None:
         """Plot Data
 
         Plot the results from the jet pump batch run to visualize the performance
-        of each jet pump.
+        of each jet pump. The figure path allows the figure to be locally saved if passed.
 
         Args:
             water (str): "lift" or "total" depending on the desired x axis
             curve (bool): Show the curve fit or not
             ax (Axes): Matplotlib axes
+            fig_path (Path): Path to optional output file, saves files to be viewed later
         """
         water = validate_water(water)
 
@@ -277,7 +281,7 @@ class BatchPump:
         hold = 1  # define the variable with anything, need to trade
         if ax is None:
             hold = None  # transfer None value to something not used
-            fig, ax = plt.subplots()
+            fig, ax = plt.subplots(figsize=(5.5, 4))
 
         # calling the function to plot the data
         batch_plot_data(
@@ -293,9 +297,12 @@ class BatchPump:
         )
 
         if hold is None:
-            plt.show()
+            if fig_path is not None:
+                plt.savefig(fig_path, bbox_inches="tight", dpi=300)
+            else:
+                plt.show()
 
-    def plot_derv(self, water: str) -> None:
+    def plot_derv(self, water: str, fig_path: str | os.PathLike | None = None) -> None:
         """Plot Derivative
 
         Plot the derivative results from the jet pump batch run to visualize how
@@ -303,6 +310,7 @@ class BatchPump:
 
         Args:
             water (str): "lift" or "total" depending on the desired x axis
+            fig_path (Path): Path to optional output file, saves files to be viewed later
         """
         # Validate the 'water' argument
         water = validate_water(water)
@@ -313,7 +321,7 @@ class BatchPump:
         qwat_semi = df_semi["lift_wat"] if water == "lift" else df_semi["totl_wat"]
         coeff = self.coeff_lift if water == "lift" else self.coeff_totl
 
-        fig, ax = plt.subplots()
+        fig, ax = plt.subplots(figsize=(5.5, 4))
 
         # calling the function to plot the derivatives
         batch_plot_derv_base(
@@ -333,7 +341,10 @@ class BatchPump:
         ax.title.set_text(f"{self.wellname} Jet Pump Performance")
         ax.legend()
 
-        plt.show()
+        if fig_path is not None:
+            plt.savefig(fig_path, bbox_inches="tight", dpi=300)
+        else:
+            plt.show()
 
     def _plot_derv_network(self, water: str, ax: Axes, mcolor: str | mcolors.Colormap) -> None:
         """Plot Derivative in a Network
@@ -368,6 +379,8 @@ class BatchPump:
             mcolor=mcolor,
             network=True,
         )
+
+        return None
 
 
 def validate_water(water: str) -> str:
@@ -520,6 +533,8 @@ def batch_plot_data(
     ax.title.set_text(f"{wellname} Jet Pump Performance")
     ax.legend()
 
+    return None
+
 
 def batch_plot_derv_base(
     marg_filt: pd.Series,
@@ -566,3 +581,5 @@ def batch_plot_derv_base(
     fit_water = np.linspace(0, qwat_filt.max(), 1000)
     fit_grad = [cf.exp_deriv(wat, b, c) for wat in fit_water]
     ax.plot(fit_water, fit_grad, color=mcolor, linestyle="--", label=label2)
+
+    return None

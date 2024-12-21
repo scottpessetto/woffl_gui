@@ -17,11 +17,15 @@ Returns:
         grad_ray (np array): Gradient of tde/dp Array, ft2/(s2*psig)
 """
 
+import os
+from typing import Any, cast
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.optimize as opt
-from matplotlib.axes._axes import Axes
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 
 from woffl.flow import jetflow as jf  # legacy
 from woffl.flow import singlephase as sp
@@ -98,7 +102,7 @@ class JetBook:
         grad = (self.tde_ray[-2] - self.tde_ray[-1]) / (self.prs_ray[-2] - self.prs_ray[-1])
         self.grad_ray = np.append(self.grad_ray, grad)  # gradient of tde vs prs
 
-    def plot_te(self, pte_min=200) -> None:
+    def plot_te(self, pte_min=200, fig_path: str | os.PathLike | None = None) -> None:
         """Throat Entry Plots
 
         Create a series of graphs to use for visualization of the results
@@ -106,26 +110,39 @@ class JetBook:
 
         Args:
             pte_min (float): Minimum Throat Entrance Pressure to Display, psig
+            fig_path (Path): Path to optional output file, saves files to be viewed later
         """
-        self._throat_entry_graphs(
-            self.prs_ray[self.prs_ray >= pte_min],
-            self.vel_ray[self.prs_ray >= pte_min],
-            self.rho_ray[self.prs_ray >= pte_min],
-            self.snd_ray[self.prs_ray >= pte_min],
-            self.kde_ray[self.prs_ray >= pte_min],
-            self.ede_ray[self.prs_ray >= pte_min],
-            self.tde_ray[self.prs_ray >= pte_min],
-            self.grad_ray[self.prs_ray >= pte_min],
+        mask = self.prs_ray >= pte_min
+
+        fig, axs = self._throat_entry_graphs(
+            self.prs_ray[mask],
+            self.vel_ray[mask],
+            self.rho_ray[mask],
+            self.snd_ray[mask],
+            self.kde_ray[mask],
+            self.ede_ray[mask],
+            self.tde_ray[mask],
+            self.grad_ray[mask],
         )
+        plt.tight_layout()  # Apply tight layout
+
+        if fig_path is not None:
+            plt.savefig(fig_path, bbox_inches="tight", dpi=300)
+            plt.close(fig)  # Close the figure to free memory
+        else:
+            plt.show()
         return None
 
-    def plot_di(self) -> None:
+    def plot_di(self, fig_path: str | os.PathLike | None = None) -> None:
         """Diffuser Plots
 
         Create a series of graphs to use for visualization of the results in
         the book from the diffuser area.
+
+        Args:
+            fig_path (Path): Path to optional output file, saves files to be viewed later
         """
-        self._diffuser_graphs(
+        fig, axs = self._diffuser_graphs(
             self.prs_ray,
             self.vel_ray,
             self.rho_ray,
@@ -134,6 +151,13 @@ class JetBook:
             self.ede_ray,
             self.tde_ray,
         )
+        plt.tight_layout()  # Apply tight layout
+
+        if fig_path is not None:
+            plt.savefig(fig_path, bbox_inches="tight", dpi=300)
+            plt.close(fig)  # Close the figure to free memory
+        else:
+            plt.show()
         return None
 
     def dete_zero(self) -> tuple[float, float, float, float]:
@@ -207,7 +231,14 @@ class JetBook:
         ede_ray: np.ndarray,
         tde_ray: np.ndarray,
         grad_ray: np.ndarray,
-    ) -> None:
+    ) -> tuple[Figure, np.ndarray]:
+        """
+        Creates a 4-panel visualization of fluid dynamics parameters at throat entry.
+
+        Returns:
+            fig: (plt.Figure) Matplotlib figure
+            axs: (plt.Axes) Matplotlib axis
+        """
 
         mach_ray = vel_ray / snd_ray
         colors = mpl.colormaps["tab10"].colors  # type: ignore
@@ -219,7 +250,9 @@ class JetBook:
         pgo = float(np.interp(0, np.flip(grad_ray), np.flip(prs_ray)))  # find point where gradient is zero
         pte, vte, rho_te, mach_te = JetBook._dete_zero(prs_ray, vel_ray, rho_ray, tde_ray, mach_ray)
 
-        fig, axs = plt.subplots(4, sharex=True, figsize=(4.75, 7))
+        fig, axs = plt.subplots(4, sharex=True, figsize=(5.5, 7.5))
+        axs = cast(np.ndarray, axs)
+
         plt.rcParams["mathtext.default"] = "regular"
         # fig.suptitle(f"Suction at {round(psu,0)} psi, Mach 1 at {round(pmo,0)} psi")
 
@@ -268,10 +301,7 @@ class JetBook:
         axs[3].set_ylabel("$dE_{te}$, $ft^{2}/s^{2}$")
         axs[3].set_xlabel("Throat Entry Pressure, psig")
         plt.subplots_adjust(left=0.13, bottom=0.075, right=0.975, top=0.99, wspace=0.2, hspace=0.1)
-        plt.tight_layout()
-        # plt.savefig(fname=r"C:\Users\ka9612\OneDrive - Hilcorp\Grad_School\thesis_figs\entry_four.png")
-        plt.show()
-        return None
+        return fig, axs
 
     @staticmethod
     def _diffuser_graphs(
@@ -282,14 +312,22 @@ class JetBook:
         kde_ray: np.ndarray,
         ede_ray: np.ndarray,
         tde_ray: np.ndarray,
-    ) -> None:
+    ) -> tuple[Figure, np.ndarray]:
+        """
+        Creates a 4-panel visualization of fluid dynamics parameters at diffuser.
+
+        Returns:
+            fig: (plt.Figure) Matplotlib figure
+            axs: (plt.Axes) Matplotlib axis
+        """
 
         colors = mpl.colormaps["tab10"].colors  # type: ignore
         # ptm = prs_ray[0]
 
         marker_style = "."
         line_style = "-"
-        fig, axs = plt.subplots(4, sharex=True, figsize=(4.75, 7))
+        fig, axs = plt.subplots(4, sharex=True, figsize=(5.5, 7.5))
+        axs = cast(np.ndarray, axs)
         plt.rcParams["mathtext.default"] = "regular"
 
         axs[0].plot(prs_ray, 1 / rho_ray, marker=marker_style, linestyle=line_style, color=colors[0])
@@ -334,10 +372,7 @@ class JetBook:
             fig.suptitle(f"Diffuser Inlet at {round(ptm,0)} psi")
         """
         plt.subplots_adjust(left=0.13, bottom=0.075, right=0.975, top=0.99, wspace=0.2, hspace=0.1)
-        plt.tight_layout()
-        # plt.savefig(fname=r"C:\Users\ka9612\OneDrive - Hilcorp\Grad_School\thesis_figs\diffuser_four.png")
-        plt.show()
-        return None
+        return fig, axs
 
 
 # this goes all the way down to 200 psig
@@ -486,7 +521,8 @@ def te_tde_subsonic_plot(qoil_std: float, te_book: JetBook, color: str) -> tuple
     # pmo = np.interp(1, te_book.mach_ray, te_book.prs_ray)
 
     # idx_sort = np.argsort(te_book.prs_ray)
-    # pmo_idx = np.searchsorted(te_book.prs_ray, pmo, side="left", sorter=idx_sort)  # find index location where mach is 1
+    # find index location where mach is 1
+    # pmo_idx = np.searchsorted(te_book.prs_ray, pmo, side="left", sorter=idx_sort)
     tde_pgo = np.interp(pgo, np.flip(te_book.prs_ray), np.flip(te_book.tde_ray))
 
     pte_ray = te_book.prs_ray[te_book.prs_ray >= pgo]
@@ -585,14 +621,16 @@ def inflow_annotate(x_ipr: list, y_ipr: list) -> None:
     )
 
 
-def multi_suction_graphs(qoil_list: list, book_list: list) -> None:
+def multi_suction_graphs(qoil_list: list, book_list: list, fig_path: str | os.PathLike | None = None) -> None:
     """Throat Entry Graphs for Multiple Suction Pressures
 
-    Create a graph that shows throat entry equation solutions for multiple suction pressures
+    Create a graph that shows throat entry equation solutions for multiple suction pressures. The optional
+    arguement fig_path allows a path to be passed to locally save the graph for later use.
 
     Args:
         qoil_list (list): List of Oil Rates at different suction pressures
         book_list (list): List of throat entry books at various suction pressures
+        fig_path (Path): Path to output file, saves files to be viewed later
 
     Returns:
         Graphs
@@ -600,7 +638,7 @@ def multi_suction_graphs(qoil_list: list, book_list: list) -> None:
 
     plt.rcParams["mathtext.default"] = "regular"
     prop_cycle = plt.rcParams["axes.prop_cycle"]()  # convert to iterator
-    fig, ax = plt.subplots(figsize=(4.75, 3.5))
+    fig, ax = plt.subplots(figsize=(5.5, 4))
     ipr_x = []
     ipr_y = []
     mach_x = []
@@ -624,6 +662,9 @@ def multi_suction_graphs(qoil_list: list, book_list: list) -> None:
     ax.legend()
     plt.subplots_adjust(left=0.2, bottom=0.135, right=0.975, top=0.975, wspace=0.2, hspace=0.15)
     plt.tight_layout()
-    # plt.savefig(fname=r"C:\Users\ka9612\OneDrive - Hilcorp\Grad_School\thesis_figs\entry_multi.png")
-    plt.show()
+
+    if fig_path is not None:
+        plt.savefig(fig_path)
+    else:
+        plt.show()
     return None

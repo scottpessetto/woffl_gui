@@ -2,6 +2,8 @@
 ultimately call methods from jetplot to create multiple plots that are all related to each other.
 """
 
+import os
+
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -27,6 +29,7 @@ def choked_figures(
     wellprof: WellProfile,
     ipr_well: InFlow,
     prop_well: ResMix,
+    fig_path: str | os.PathLike | None = None,
 ) -> None:
     """Choked Jet Pump Figures
 
@@ -42,6 +45,7 @@ def choked_figures(
         wellprof (WellProfile): WellProfile Class, for jet pump TVD
         ipr_well (InFlow): IPR Class
         prop_well (ResMix): Reservoir conditions of the well
+        fig_path (Path): Path to optional output file, saves files to be viewed later
 
     Returns:
         None
@@ -69,11 +73,11 @@ def choked_figures(
     )
 
     qoil_std, te_book = jplt.throat_entry_book(psu_min, tsu, jpump_well.ken, jpump_well.ate, ipr_well, prop_well)
-    te_book.plot_te(pte_min=int(pte) - 100)  # don't need to see default 200
-    print("choked figures method in jetgraphs cutting before 200 psig, is this intentional?")
+    te_book.plot_te(pte_min=int(pte) - 100, fig_path=fig_path)  # don't need to see default 200
+    print("Choked figures method in jetgraphs cutting before 200 psig, is this intentional?")
 
     vtm, di_book = jplt.diffuser_book(ptm, tsu, jpump_well.ath, jpump_well.kdi, wellbore.inn_area, qoil_std, prop_tm)
-    di_book.plot_di()
+    di_book.plot_di(fig_path=fig_path)
 
 
 def pump_pressure_relation(
@@ -85,6 +89,7 @@ def pump_pressure_relation(
     wellprof: WellProfile,
     ipr_well: InFlow,
     prop_well: ResMix,
+    fig_path: str | os.PathLike | None = None,
 ) -> None:
     """Jet Pump Pressure Relationship
 
@@ -101,6 +106,7 @@ def pump_pressure_relation(
         wellprof (WellProfile): WellProfile Class, for jet pump TVD
         ipr_well (InFlow): IPR Class
         prop_well (ResMix): Reservoir conditions of the well
+        fig_path (Path): Path to optional output file, saves files to be viewed later
 
     Returns:
         None
@@ -141,7 +147,7 @@ def pump_pressure_relation(
 
     marker_style = "."
     line_style = "-"
-    fig, ax = plt.subplots(figsize=(4.75, 3.5))
+    fig, ax = plt.subplots(figsize=(5.5, 4))
     ax.plot(psu_list, pdi_list, label="Discharge", marker=marker_style, linestyle=line_style)
     ax.plot(psu_list, ptm_list, label="Throat Exit", marker=marker_style, linestyle=line_style)
     ax.plot(psu_list, pte_list, label="Throat Entry", marker=marker_style, linestyle=line_style)
@@ -150,8 +156,10 @@ def pump_pressure_relation(
     # plt.title("Comparison of Jet Pump Pressures Against Suction")
     ax.legend()
     plt.subplots_adjust(left=0.2, bottom=0.135, right=0.975, top=0.975, wspace=0.2, hspace=0.15)
-    plt.savefig(fname=r"C:\Users\ka9612\OneDrive - Hilcorp\Grad_School\thesis_figs\prs_relation.png")
-    # plt.show()
+    if fig_path is not None:
+        plt.savefig(fig_path, bbox_inches="tight", dpi=300)
+    else:
+        plt.show()
     return None
 
 
