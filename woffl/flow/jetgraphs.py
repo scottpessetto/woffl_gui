@@ -88,7 +88,6 @@ def choked_figures(
 
     te_book.plot_te(pte_min=int(pte) - 100, fig_path=entry_path)  # don't need to see default 200
     print("Choked figures method in jetgraphs cutting before 200 psig, is this intentional?")
-
     di_book.plot_di(fig_path=diff_path)
 
 
