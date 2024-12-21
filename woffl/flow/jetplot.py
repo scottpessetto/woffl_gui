@@ -272,7 +272,7 @@ class JetBook:
         )
         vel_span = vel_ray[pidx] - min(vel_ray)
         axs[1].annotate(
-            text="Mach 1", xy=(pmo, vel_ray[pidx] - (1 / 8) * vel_span), rotation=90, ha="center", va="top", fontsize=8
+            text="Mach 1", xy=(pmo, vel_ray[pidx] - (1 / 8) * vel_span), rotation=90, ha="center", va="top", fontsize=10
         )
         axs[1].set_ylabel("Velocity, ft/s")
         axs[1].legend()
@@ -294,7 +294,7 @@ class JetBook:
             rotation=90,
             ha="right",
             va="bottom",
-            fontsize=8,
+            fontsize=10,
         )
         axs[3].ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
         axs[3].axhline(y=0, linestyle="--", linewidth=1, color=colors[7])

@@ -29,7 +29,8 @@ def choked_figures(
     wellprof: WellProfile,
     ipr_well: InFlow,
     prop_well: ResMix,
-    fig_path: str | os.PathLike | None = None,
+    folder_path: str | os.PathLike | None = None,
+    rev_id: str = "rev0",
 ) -> None:
     """Choked Jet Pump Figures
 
@@ -45,7 +46,8 @@ def choked_figures(
         wellprof (WellProfile): WellProfile Class, for jet pump TVD
         ipr_well (InFlow): IPR Class
         prop_well (ResMix): Reservoir conditions of the well
-        fig_path (Path): Path to optional output file, saves files to be viewed later
+        folder_path (Path): Path to optional output folder, saves both graphs there
+        rev_id (str): A string that can be passed to keep track of revision history
 
     Returns:
         None
@@ -73,11 +75,21 @@ def choked_figures(
     )
 
     qoil_std, te_book = jplt.throat_entry_book(psu_min, tsu, jpump_well.ken, jpump_well.ate, ipr_well, prop_well)
-    te_book.plot_te(pte_min=int(pte) - 100, fig_path=fig_path)  # don't need to see default 200
+    vtm, di_book = jplt.diffuser_book(ptm, tsu, jpump_well.ath, jpump_well.kdi, wellbore.inn_area, qoil_std, prop_tm)
+
+    if folder_path is not None:
+        entry_name = "entry_four_" + rev_id + ".png"
+        diff_name = "diffuser_four_" + rev_id + ".png"
+        entry_path = os.path.join(folder_path, entry_name)
+        diff_path = os.path.join(folder_path, diff_name)
+    else:
+        entry_path = None
+        diff_path = None
+
+    te_book.plot_te(pte_min=int(pte) - 100, fig_path=entry_path)  # don't need to see default 200
     print("Choked figures method in jetgraphs cutting before 200 psig, is this intentional?")
 
-    vtm, di_book = jplt.diffuser_book(ptm, tsu, jpump_well.ath, jpump_well.kdi, wellbore.inn_area, qoil_std, prop_tm)
-    di_book.plot_di(fig_path=fig_path)
+    di_book.plot_di(fig_path=diff_path)
 
 
 def pump_pressure_relation(
