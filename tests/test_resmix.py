@@ -1,64 +1,19 @@
 import json
-import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import pytest
 
 from woffl.pvt import BlackOil, FormGas, FormWater, ResMix
 
-# test python reservoir mixture equations vs hysys
-# only works if the command python -m tests.rmix_test is used
-# q_oil_std = 100  # bopd
-
-temp = 80
-oil_api = 22
-pbub = 1750  # psig
-gas_sg = 0.55  # methane
-wc = 0.3  # watercut
-fgor = 800  # scf/stb
-
-# mass fraction, volm fraction, mixture density, speed of sound (no hysys...)
-
-filepath = Path(__file__).parents[1] / "data" / "resmix_hysys_peng_rob.xlsx"
-hy_df = pd.read_excel(filepath, header=1)
-
-hysys_data = {
-    "temp_degf": 80,
-    "pres_psig": list(hy_df["press"]),
-    "oil_api": 22,
-    "pbub": 1750,
-    "gas_sg": 0.55,
-    "watercut": 0.3,
-    "fgor": 800,
-    "mass_fracs": {
-        "oil": list(hy_df["oil_mfac"]),
-        "wat": list(hy_df["wat_mfac"]),
-        "gas": list(hy_df["gas_mfac"]),
-    },
-    "volm_fracs": {
-        "oil": list(hy_df["oil_vfac"]),
-        "wat": list(hy_df["wat_vfac"]),
-        "gas": list(hy_df["gas_vfac"]),
-    },
-    "rho_mix": list(hy_df["rho_mix"]),
-}
-
-big_sosa = Path(__file__).parents[1] / "data" / "resmix_hysys_peng_rob.json"
-
-with open(big_sosa, "w") as outfile:
-    json.dump(hysys_data, outfile, indent=4)
-
-prs_ray = hy_df["press"]
-hy_mfac = [hy_df["oil_mfac"], hy_df["wat_mfac"], hy_df["gas_mfac"]]
-hy_vfac = [hy_df["oil_vfac"], hy_df["wat_vfac"], hy_df["gas_vfac"]]
-hy_rho_mix = hy_df["rho_mix"]
+# run command python -m tests.rmix_test is used
 
 
-def compute_resmix_python(
+def compute_resmix_data(
     prs_ray: np.ndarray | pd.Series, temp: float, wc: float, fgor: float, oil_api: float, pbub: float, gas_sg: float
-) -> tuple[list, list, list]:
+) -> dict:
     """Compute Reservoir Mixture
 
     Create a list of mass and volume fractions for Oil, Water and Gas
@@ -70,49 +25,97 @@ def compute_resmix_python(
     py_gas = FormGas(gas_sg=gas_sg)
     py_mix = ResMix(wc=wc, fgor=fgor, oil=py_oil, wat=py_wat, gas=py_gas)
 
-    py_mfac = []
-    py_vfac = []
-    py_rho_mix = []
+    mfac_oil, mfac_wat, mfac_gas = [], [], []
+    vfac_oil, vfac_wat, vfac_gas = [], [], []
+    rho_mix = []
 
     for prs in prs_ray:
         py_mix = py_mix.condition(prs, temp)
-        py_mfac.append(py_mix.mass_fract())
-        py_vfac.append(py_mix.volm_fract())
-        py_rho_mix.append(py_mix.rho_mix())
 
-    return list(zip(*py_mfac)), list(zip(*py_vfac)), py_rho_mix
+        mfac = py_mix.mass_fract()
+        vfac = py_mix.volm_fract()
+
+        mfac_oil.append(mfac[0])
+        mfac_wat.append(mfac[1])
+        mfac_gas.append(mfac[2])
+
+        vfac_oil.append(vfac[0])
+        vfac_wat.append(vfac[1])
+        vfac_gas.append(vfac[2])
+
+        rho_mix.append(py_mix.rho_mix())
+
+    pymix = {
+        "mass_fracs": {"oil": mfac_oil, "wat": mfac_wat, "gas": mfac_gas},
+        "volm_fracs": {"oil": vfac_oil, "wat": vfac_wat, "gas": vfac_gas},
+        "rho_mix": rho_mix,
+    }
+    return pymix
 
 
-def plot_resmix_compare(prs_ray: np.ndarray | pd.Series):
+def plot_resmix_compare(hydict: dict, pydict: dict):
+    """Plot Reservoir Mixture
+
+    Compare the hysys generated with the python created mass and volm fractions
+    Used for if the tests failed and you are trying to understand why they failed
+    """
+    cats = ["oil", "wat", "gas"]
+    fig, axs = plt.subplots(3, sharex=True)
+    axs = np.array(axs).flatten()
+    for cat in cats:
+        axs[0].scatter(hydict["pres_psig"], hydict["mass_fracs"][cat], label=f"Hy {cat.capitalize()}")
+        axs[0].scatter(hydict["pres_psig"], pydict["mass_fracs"][cat], marker="*", label=f"Py {cat.capitalize()}")
+
+        axs[1].scatter(hydict["pres_psig"], hydict["volm_fracs"][cat], label=f"Hy {cat.capitalize()}")
+        axs[1].scatter(hydict["pres_psig"], pydict["volm_fracs"][cat], marker="*", label=f"Py {cat.capitalize()}")
+
+    axs[0].set_ylabel("Mass Fraction")
+    axs[0].legend()
+
+    axs[1].set_ylabel("Volume Fraction")
+    axs[1].legend()
+
+    axs[2].scatter(hydict["pres_psig"], hydict["rho_mix"], label="hysys")
+    axs[2].scatter(hydict["pres_psig"], pydict["rho_mix"], label="python")
+    axs[2].set_ylabel("Mixture Density, lbm/ft3")
+    axs[2].legend()
+    plt.show()
+
     return None
 
 
-plot_names = ["Oil", "Wat", "Gas"]
+hysys_path = Path(__file__).parents[1] / "data" / "resmix_hysys_peng_rob.json"
+with open(hysys_path) as json_file:
+    hymix = json.load(json_file)
 
-fig, axs = plt.subplots(4, sharex=True)
+pymix = compute_resmix_data(
+    hymix["pres_psig"],
+    hymix["temp_degf"],
+    hymix["watercut"],
+    hymix["fgor"],
+    hymix["oil_api"],
+    hymix["pbub"],
+    hymix["gas_sg"],
+)
 
-for i, hy in enumerate(hy_mfac):
-    axs[0].scatter(prs_ray, hy, label=f"Hysys {plot_names[i]}")
-    axs[0].scatter(prs_ray, py_mfac[i], marker="*", label=f"Python {plot_names[i]}")
-axs[0].set_ylabel("Mass Fraction")
-axs[0].legend()
 
-for i, hy in enumerate(hy_vfac):
-    axs[1].scatter(prs_ray, hy, label=f"Hysys {plot_names[i]}")
-    axs[1].scatter(prs_ray, py_vfac[i], marker="*", label=f"Python {plot_names[i]}")
-axs[1].set_ylabel("Volume Fraction")
-axs[1].legend()
+def test_mass_fractions() -> None:
+    name_frac = "mass_fracs"
+    np.testing.assert_allclose(hymix[name_frac]["oil"], pymix[name_frac]["oil"], rtol=0.01)
+    np.testing.assert_allclose(hymix[name_frac]["wat"], pymix[name_frac]["wat"], rtol=0.01)
+    np.testing.assert_allclose(hymix[name_frac]["gas"], pymix[name_frac]["gas"], rtol=0.06)
 
-axs[2].scatter(prs_ray, hy_rho_mix, label="hysys")
-axs[2].scatter(prs_ray, py_rho_mix, label="python")
-axs[2].set_ylabel("Mixture Density, lbm/ft3")
-axs[2].legend()
 
-axs[3].scatter(prs_ray, py_cmix, label="python")
-axs[3].set_ylabel("Speed of Sound, ft/s")
-axs[3].set_xlabel("Pressure, psig")
-axs[3].legend()
+def test_volm_fractions() -> None:
+    name_frac = "volm_fracs"
+    np.testing.assert_allclose(hymix[name_frac]["oil"], pymix[name_frac]["oil"], rtol=0.03)
+    np.testing.assert_allclose(hymix[name_frac]["wat"], pymix[name_frac]["wat"], rtol=0.04)
+    np.testing.assert_allclose(hymix[name_frac]["gas"], pymix[name_frac]["gas"], rtol=0.06)
 
-fig.suptitle(f"{py_mix}")
 
-plt.show()
+def test_mixture_density() -> None:
+    np.testing.assert_allclose(hymix["rho_mix"], pymix["rho_mix"], rtol=0.04)
+
+
+if __name__ == "__main__":
+    plot_resmix_compare(hymix, pymix)
