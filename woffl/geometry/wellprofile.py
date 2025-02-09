@@ -30,6 +30,9 @@ class WellProfile:
         if max(md_list) < max(vd_list):
             raise ValueError("Measured Depth needs to extend farther than Vertical Depth")
 
+        if jetpump_md > max(md_list):
+            raise ValueError("Jet pump not inside well profile measured depth")
+
         md_ray, vd_ray = sort_profile(np.array(md_list), np.array(vd_list))
 
         self.md_ray = md_ray
