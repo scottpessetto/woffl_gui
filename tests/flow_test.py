@@ -1,19 +1,27 @@
+import pytest
+
 import woffl.flow.singlephase as sp
 import woffl.flow.twophase as tp
 
 # only works if the command python -m tests.flow_test is used
-# example problem in Two Phase Flow in Pipes by Beggs / Brill (1988) pg. 3-31
+
+book_Nd = 41.34
 book_Ngv = 9.29
 book_Nlv = 6.02
-book_Nd = 41.34
 book_l1, book_l2 = 1.53, 0.88
-book_vpat = "slug"
 
-calc_l1, calc_l2 = tp.ros_lp(book_Nd)
-calc_vpat = tp.ros_flow_pattern(9.29, 6.02, 41.34)
 
-print(f"Ros L1 & L2 - Book: {book_l1}, {book_l2}, Calc: {round(calc_l1, 2)}, {round(calc_l2, 2)}")
-print(f"Ros Regime - Book: {book_vpat}, Calc: {calc_vpat}")
+# example problem in Two Phase Flow in Pipes by Beggs / Brill (1988) pg. 3-31
+def test_ros_l1_l2() -> None:
+    calc_l1, calc_l2 = tp.ros_lp(book_Nd)
+    assert calc_l1 == pytest.approx(book_l1, rel=0.05)
+    assert calc_l2 == pytest.approx(book_l2, rel=0.05)
+
+
+def test_ros_regime() -> None:
+    calc_vpat = tp.ros_flow_pattern(book_Ngv, book_Nlv, book_Nd)
+    assert calc_vpat == "slug"
+
 
 # example problem in Two Phase Flow in Pipes by Beggs / Brill (1988) pg. 3-62
 book_nslh = 0.393
@@ -43,25 +51,53 @@ book_rho_mix = tp.density_slip(book_rho_liq, book_rho_gas, book_nslh)
 book_rho_slip = tp.density_slip(book_rho_liq, book_rho_gas, book_ilh)
 book_umix = tp.density_slip(book_uliq, book_ugas, book_nslh)
 
-calc_NFr = tp.froude(book_vmix, book_dhyd)
-calc_hpat, calc_tparm = tp.beggs_flow_pattern(book_nslh, book_NFr)
-calc_ilh = tp.beggs_holdup_inc(book_nslh, book_NFr, book_Nlv, 90, calc_hpat, calc_tparm)
-calc_NRe = sp.reynolds(book_rho_mix, book_vmix, book_dhyd, book_umix)
-calc_rr = sp.relative_roughness(book_dhyd, 0.004)  # book doesn't say what abs ruff they use...
-calc_ff = sp.ffactor_darcy(calc_NRe, calc_rr)
-calc_yf = tp.beggs_yf(book_nslh, book_ilh)
-calc_sf = tp.beggs_sf(book_yf)
-calc_ftp = tp.beggs_ff(book_ff, book_sf)
-calc_fric = tp.beggs_press_friction(book_ftp, book_rho_mix, book_vmix, book_dhyd, pipe_len)
-calc_stat = tp.beggs_press_static(book_rho_slip, pipe_len)
 
-print(f"Froude Number - Book: {book_NFr}, Calc: {round(calc_NFr, 2)}")
-print(f"Beggs Regime - Book: {book_hpat}, Calc: {calc_hpat}")
-print(f"Beggs Incline Liquid Holdup - Book: {book_ilh}, Calc: {round(calc_ilh, 3)}")
-print(f"Reynolds Number - Book: {book_NRe}, Calc: {round(calc_NRe, 1)}")
-print(f"Friction Factor - Book: {book_ff}, Calc: {round(calc_ff, 3)}")
-print(f"Beggs Y Factor - Book: {book_yf}, Calc: {round(calc_yf, 3)}")
-print(f"Beggs S Factor - Book: {book_sf}, Calc: {round(calc_sf, 4)}")
-print(f"Beggs Friction Factor - Book: {book_ftp}, Calc: {round(calc_ftp, 3)}")
-print(f"Beggs Friction Drop - Book: {round(book_fric, 3)} psi, Calc: {round(calc_fric, 3)} psi")
-print(f"Beggs Static Drop - Book: {round(book_stat, 3)} psi, Calc: {round(calc_stat, 3)} psi")
+def test_froude_number() -> None:
+    calc_NFr = tp.froude(book_vmix, book_dhyd)
+    assert calc_NFr == pytest.approx(book_NFr, rel=0.01)
+
+
+def test_beggs_regime() -> None:
+    calc_hpat, calc_tparm = tp.beggs_flow_pattern(book_nslh, book_NFr)
+    assert calc_hpat == "intermittent"
+
+
+def test_beggs_holdup() -> None:
+    calc_ilh = tp.beggs_holdup_inc(book_nslh, book_NFr, book_Nlv, 90, book_hpat, book_tparm)
+    assert calc_ilh == pytest.approx(book_ilh, rel=0.01)
+
+
+def test_reynolds_number() -> None:
+    calc_NRe = sp.reynolds(book_rho_mix, book_vmix, book_dhyd, book_umix)
+    assert calc_NRe == pytest.approx(book_NRe, rel=0.01)
+
+
+def test_friction_factor() -> None:
+    calc_rr = sp.relative_roughness(book_dhyd, 0.004)  # book doesn't say what abs ruff they use...
+    calc_ff = sp.ffactor_darcy(book_NRe, calc_rr)
+    assert calc_ff == pytest.approx(book_ff, abs=0.03)
+
+
+def test_beggs_yf() -> None:
+    calc_yf = tp.beggs_yf(book_nslh, book_ilh)
+    assert calc_yf == pytest.approx(book_yf, rel=0.01)
+
+
+def test_beggs_sf() -> None:
+    calc_sf = tp.beggs_sf(book_yf)
+    assert calc_sf == pytest.approx(book_sf, rel=0.01)
+
+
+def test_beggs_friction_factor() -> None:
+    calc_ftp = tp.beggs_ff(book_ff, book_sf)
+    assert calc_ftp == pytest.approx(book_ftp, rel=0.01)
+
+
+def test_beggs_press_friction() -> None:
+    calc_fric = tp.beggs_press_friction(book_ftp, book_rho_mix, book_vmix, book_dhyd, pipe_len)
+    assert calc_fric == pytest.approx(book_fric, rel=0.01)
+
+
+def test_beggs_press_static() -> None:
+    calc_stat = tp.beggs_press_static(book_rho_slip, pipe_len)
+    assert calc_stat == pytest.approx(book_stat, rel=0.01)
