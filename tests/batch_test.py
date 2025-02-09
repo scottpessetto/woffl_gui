@@ -49,4 +49,4 @@ df = e41_batch.process_results()
 print(df)
 
 e41_batch.plot_data(water="lift", curve=True)
-e41_batch.plot_derv(water="lift", curve=True)
+e41_batch.plot_derv(water="lift")
