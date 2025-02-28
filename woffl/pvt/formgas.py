@@ -66,7 +66,7 @@ class FormGas:
         """Pure Methane Formation Gas
 
         Args:
-            gas_sg (float): 0.65"""
+            gas_sg (float): 0.55"""
         return cls(gas_sg=0.55)
 
     # almost need seperate function to change pressure / temperature

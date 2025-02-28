@@ -66,3 +66,34 @@ fig.suptitle(f"Oil {py_boil.oil_api} API Properties at {temp} deg F")
 plt.show()
 
 print(f"Oil Surface Tension: {round(py_boil.tension() / 0.0000685, 2)} dyne/cm")
+
+
+# CODE FROM FORMGAS, USE TO MAKE JSON FILE
+
+filename = Path(__file__).parents[1] / "data" / "methane_hysys_peng_rob.xlsx"
+
+hys_df = pd.read_excel(filename, header=1)
+
+prs_ray = hys_df["pressure"]
+temp = 80
+hy_rho = hys_df["density"]
+hy_z_fact = hys_df["z_factor"]
+hy_visc = hys_df["viscosity"]
+
+hy_props = {"temp_degf": 80, "gas_sg": 0.55}
+
+rename = {"pressure": "pres_psig", "density": "rho_gas", "z_factor": "zfactor", "viscosity": "visc_gas"}
+
+hys_df = hys_df.rename(columns=rename)
+hy_dict = hys_df[["pres_psig", "rho_gas", "visc_gas", "zfactor"]].to_dict(orient="list")
+
+print(hy_dict)
+
+fin_dict = hy_props | hy_dict
+
+
+print(fin_dict)
+
+hysys_path = Path(__file__).parents[1] / "data" / "hysys_formgas_peng_rob.json"
+with open(hysys_path, "w") as json_file:
+    json.dump(fin_dict, json_file, indent=4)

@@ -1,11 +1,6 @@
-# import sys
-
 import numpy as np
 
 from woffl.pvt import BlackOil, FormGas, FormWater, ResMix
-
-# print(sys.path)
-# sys.path.append("c:\\Users\\ka9612\\OneDrive - Hilcorp\\vs_code\\hilcorpak")
 
 mpu_oil = BlackOil.schrader()  # class method
 mpu_wat = FormWater.schrader()  # class method
