@@ -1,99 +1,80 @@
+import json
 import os
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import pytest
 
 from woffl.pvt.blackoil import BlackOil
 
 # only works if the command python -m tests.boil_test is used
-dirname = os.getcwd()
-filename = os.path.join(dirname, r"data\oil_22_api_hysys_peng_rob.xlsx")  # , r"data\methane_hysys_peng_rob.xlsx")
 
-hys_df = pd.read_excel(filename, header=1)
 
-prs_ray = hys_df["pressure"]
-temp = 80
-hy_rho = hys_df["density"]
-# hy_z_fact = hys_df["z_factor"]
-hy_visc = hys_df["viscosity"]
+def compute_blackoil_data(
+    prs_ray: np.ndarray | list, temp: float, oil_api: float, bubblepoint: float, gas_sg: float
+) -> dict:
+    """Compute BlackOil Data
 
-py_rho = []
-py_solub = []
-py_visc = []
-py_fvf = []
-py_comp = []
+    Create a list of properties of a formgas. Can be used to compare to results obtained with hysys.
+    Density and oil viscosity.
+    """
+    py_oil = BlackOil(oil_api=oil_api, bubblepoint=bubblepoint, gas_sg=gas_sg)
+    rho_oil, visc_oil = [], []
+
+    for prs in prs_ray:
+        py_gas = py_oil.condition(prs, temp)
+
+        rho_oil.append(py_gas.density)
+        visc_oil.append(py_gas.viscosity())
+
+    pyoil = {"rho_oil": rho_oil, "visc_oil": visc_oil}
+    return pyoil
+
+
+def plot_blackoil_compare(hydict: dict, pydict: dict):
+    """Plot Black Oil
+
+    Compare hysys generated properties with the python created properties.
+    Used for if the tests failed and you are trying to understand why they failed
+    """
+
+    fig, axs = plt.subplots(2, sharex=True)
+    axs = np.array(axs).flatten()
+
+    axs[0].scatter(hydict["pres_psig"], hydict["rho_oil"], label="hysys")
+    axs[0].scatter(hydict["pres_psig"], pydict["rho_oil"], label="python")
+    axs[0].set_ylabel("Density, lbm/ft3")
+    axs[0].legend()
+
+    axs[1].scatter(hydict["pres_psig"], hydict["visc_oil"], label="hysys")
+    axs[1].scatter(hydict["pres_psig"], pydict["visc_oil"], label="python")
+    axs[1].set_ylabel("Viscosity, cP")
+    axs[1].legend()
+
+    fig.suptitle(f"{hydict['oil_api']}\u00b0 API Oil Properties at {hydict['temp_degf']}\u00b0 F")
+    plt.show()
+    return None
+
+
+# read in hysys data from json
+hysys_path = Path(__file__).parents[1] / "data" / "hysys_blackoil_peng_rob.json"
+with open(hysys_path) as json_file:
+    hyprop = json.load(json_file)
+
+# generate python comparison data
+pyprop = compute_blackoil_data(
+    hyprop["pres_psig"], hyprop["temp_degf"], hyprop["oil_api"], hyprop["bubblepoint"], hyprop["gas_sg"]
+)
+
 
 py_boil = BlackOil.test_oil()
-
-for prs in prs_ray:
-    py_boil = py_boil.condition(prs, temp)
-    py_rho.append(py_boil.density)
-    py_solub.append(py_boil.gas_solubility())
-    py_visc.append(py_boil.viscosity())
-    py_fvf.append(py_boil.oil_fvf())
-    py_comp.append(py_boil.compress())
-
-fig, axs = plt.subplots(5, sharex=True)
-
-axs[0].scatter(prs_ray, hy_rho, label="hysys")
-axs[0].scatter(prs_ray, py_rho, label="python")
-axs[0].set_ylabel("Density, lbm/ft3")
-axs[0].legend()
-
-axs[1].scatter(prs_ray, hy_visc, label="hysys")
-axs[1].scatter(prs_ray, py_visc, label="python")
-axs[1].set_ylabel("Viscosity, cP")
-axs[1].legend()
-
-# axs[2].scatter(prs_ray, hy_z_fact, label="hysys")
-axs[2].scatter(prs_ray, py_solub, label="python")
-axs[2].set_ylabel("Gas Solubility, SCF/STB")
-axs[2].legend()
-# axs[2].set_xlabel("Pressure, psig")
-
-axs[3].scatter(prs_ray, py_fvf, label="python")
-axs[3].set_ylabel("Oil Formation Vol. Factor, RB/STB")
-
-ycoord = (max(py_comp) - min(py_comp)) / 10
-axs[4].scatter(prs_ray, py_comp, label="python")
-axs[4].set_ylabel("Oil Compressibility, psi^-1")
-axs[4].axvline(x=py_boil.pbp, color="black", linestyle="--", linewidth=1)
-axs[4].annotate(text="Bubble Point", xy=(py_boil.pbp, ycoord), rotation=90)
-axs[4].set_xlabel("Pressure, psig")
-
-fig.suptitle(f"Oil {py_boil.oil_api} API Properties at {temp} deg F")
-plt.show()
-
+temp_degf = 80
+pres_psig = 2500
+py_boil.condition(pres_psig, temp_degf)
 print(f"Oil Surface Tension: {round(py_boil.tension() / 0.0000685, 2)} dyne/cm")
 
 
-# CODE FROM FORMGAS, USE TO MAKE JSON FILE
-
-filename = Path(__file__).parents[1] / "data" / "methane_hysys_peng_rob.xlsx"
-
-hys_df = pd.read_excel(filename, header=1)
-
-prs_ray = hys_df["pressure"]
-temp = 80
-hy_rho = hys_df["density"]
-hy_z_fact = hys_df["z_factor"]
-hy_visc = hys_df["viscosity"]
-
-hy_props = {"temp_degf": 80, "gas_sg": 0.55}
-
-rename = {"pressure": "pres_psig", "density": "rho_gas", "z_factor": "zfactor", "viscosity": "visc_gas"}
-
-hys_df = hys_df.rename(columns=rename)
-hy_dict = hys_df[["pres_psig", "rho_gas", "visc_gas", "zfactor"]].to_dict(orient="list")
-
-print(hy_dict)
-
-fin_dict = hy_props | hy_dict
-
-
-print(fin_dict)
-
-hysys_path = Path(__file__).parents[1] / "data" / "hysys_formgas_peng_rob.json"
-with open(hysys_path, "w") as json_file:
-    json.dump(fin_dict, json_file, indent=4)
+if __name__ == "__main__":
+    plot_blackoil_compare(hyprop, pyprop)

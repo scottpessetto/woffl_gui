@@ -84,7 +84,7 @@ def plot_resmix_compare(hydict: dict, pydict: dict):
     return None
 
 
-hysys_path = Path(__file__).parents[1] / "data" / "resmix_hysys_peng_rob.json"
+hysys_path = Path(__file__).parents[1] / "data" / "hysys_resmix_peng_rob.json"
 with open(hysys_path) as json_file:
     hymix = json.load(json_file)
 
