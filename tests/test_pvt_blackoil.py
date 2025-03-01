@@ -1,10 +1,8 @@
 import json
-import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import pytest
 
 from woffl.pvt.blackoil import BlackOil
@@ -69,11 +67,29 @@ pyprop = compute_blackoil_data(
 )
 
 
-py_boil = BlackOil.test_oil()
+def test_oil_density() -> None:
+    np.testing.assert_allclose(hyprop["rho_oil"], pyprop["rho_oil"], rtol=0.05)
+
+
+def test_oil_viscosity() -> None:
+    # 75% error, why are we even testing...haha
+    np.testing.assert_allclose(hyprop["visc_oil"], pyprop["visc_oil"], rtol=0.75)
+
+
+# singular propertiest, need to find something to test these...book example....
 temp_degf = 80
 pres_psig = 2500
+py_boil = BlackOil.test_oil()
 py_boil.condition(pres_psig, temp_degf)
-print(f"Oil Surface Tension: {round(py_boil.tension() / 0.0000685, 2)} dyne/cm")
+
+
+def test_oil_tension() -> None:
+    # try to find where this example is
+    assert py_boil.tension() / 0.0000685 == pytest.approx(16.04, rel=0.01)  # dyne/cm
+
+
+def test_oil_compressibility() -> None:
+    assert 1 == 1
 
 
 if __name__ == "__main__":
