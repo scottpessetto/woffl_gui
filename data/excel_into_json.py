@@ -22,6 +22,24 @@ sheet_names = excel_file.sheet_names
 
 print(sheet_names)
 
+df_dict = pd.read_excel(excel_file, sheet_name=["national", "kobe", "guiberson", "petrolift"])
+
+jp_dict = {}
+
+# just store inner diameter in inches, the area can be calculated very
+
+for key, value in df_dict.items():
+    print(f"\n{key}")
+    for piece in ["nozzle", "throat", "ratio"]:
+        print(list(map(str, value[value["type"] == piece]["number"].to_list())))
+
+        if piece == "ratio" and key != "guiberson":
+            print(list(map(int, value[value["type"] == piece]["dia_in"].to_list())))
+        else:
+            print(value[value["type"] == piece]["dia_in"].to_list())
+            print(value[value["type"] == piece]["area_in2"].to_list())
+
+# print({key: {"nozzle": {value[value["type"] == "nozzle"]["number"]: value["type" == "nozzle"]["dia_in"]}}})
 
 # jetpump_path = Path(__file__).parents[1] / "data" / "jetpump_dimensions.json"
 # with open(jetpump_path, "w") as json_file:
