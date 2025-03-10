@@ -353,7 +353,7 @@ class JetBook:
         axs[3].plot(prs_ray, tde_ray, marker=marker_style, linestyle=line_style, color=colors[4])
         axs[3].axhline(y=0, linestyle="--", linewidth=1, color=colors[7])
         axs[3].ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
-        axs[3].set_ylabel("$dE_{di}$, $ft^{2}/s^{2}$")
+        axs[3].set_ylabel("$E_{di}$, $ft^{2}/s^{2}$")
         axs[3].set_xlabel("Diffuser Outlet Pressure, psig")
 
         """
