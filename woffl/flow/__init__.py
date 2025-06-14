@@ -4,4 +4,5 @@ Collection of classes, functions and methods to describe flow inside pipes and j
 Flow equations for single phase, two phase, reservoir inflow and jet pumps are present.
 """
 
+from . import jetflow, jetgraphs, jetplot
 from .inflow import InFlow
