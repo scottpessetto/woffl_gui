@@ -106,7 +106,7 @@ def main():
         water_type = st.radio(
             "Water Type for Analysis",
             options=["lift", "total"],
-            index=0,
+            index=1,
             help="'Lift' shows power fluid water, 'Total' shows power fluid + formation water",
         )
 
@@ -115,7 +115,7 @@ def main():
             "Marginal Watercut (bbl water / (bbl water + bbl oil))",
             min_value=0.0,
             max_value=1.0,
-            value=0.5,
+            value=0.94,
             step=0.01,
             format="%.2f",
             help="Economic threshold for water handling in the field",
@@ -237,7 +237,8 @@ def main():
 
                                         if recommendation["recommendation_type"] == "best_available":
                                             st.warning(
-                                                "Note: No jet pump meets the specified marginal watercut threshold. This is the best available option."
+                                                "Note: No jet pump meets the specified marginal watercut threshold. "
+                                                "This is the best available option."
                                             )
                                 except Exception as e:
                                     st.warning(f"Could not determine recommended jet pump: {str(e)}")
@@ -362,6 +363,103 @@ def main():
                                 file_name="jetpump_batch_results.csv",
                                 mime="text/csv",
                             )
+
+                            # Add a separator
+                            st.markdown("---")
+
+                            # Add the Jet Pump Recommender Results table
+                            st.subheader("Jet Pump Recommender Results")
+
+                            # Get semi-finalist pumps
+                            semi_df = batch_pump.df[batch_pump.df["semi"]].copy()
+
+                            if not semi_df.empty:
+                                # Sort by oil rate
+                                semi_df = semi_df.sort_values(by="qoil_std", ascending=True)
+
+                                # Get the appropriate water column based on water type
+                                water_col = "lift_wat" if water == "lift" else "totl_wat"
+                                marg_col = "molwr" if water == "lift" else "motwr"
+
+                                # Convert marginal oil-water ratios to marginal watercuts
+                                # Original ratios are (bbl oil / bbl water)
+                                # We need (bbl water / (bbl water + bbl oil))
+                                semi_df["marginal_watercut"] = 1 / (1 + semi_df[marg_col])
+
+                                # Create a new dataframe for display
+                                recommender_df = semi_df[
+                                    ["nozzle", "throat", "qoil_std", water_col, marg_col, "marginal_watercut"]
+                                ].copy()
+
+                                # Rename columns for display
+                                water_label = "Lift Water (BWPD)" if water == "lift" else "Total Water (BWPD)"
+                                ratio_label = (
+                                    "Marginal Oil/Lift Water Ratio"
+                                    if water == "lift"
+                                    else "Marginal Oil/Total Water Ratio"
+                                )
+
+                                recommender_df = recommender_df.rename(
+                                    columns={
+                                        "nozzle": "Nozzle",
+                                        "throat": "Throat",
+                                        "qoil_std": "Oil Rate (BOPD)",
+                                        water_col: water_label,
+                                        marg_col: ratio_label,
+                                        "marginal_watercut": "Marginal Watercut",
+                                    }
+                                )
+
+                                # Round numeric columns
+                                numeric_cols = [
+                                    "Oil Rate (BOPD)",
+                                    water_label,
+                                    ratio_label,
+                                    "Marginal Watercut",
+                                ]
+                                recommender_df[numeric_cols] = recommender_df[numeric_cols].round(3)
+
+                                # Try to get the recommended pump
+                                try:
+                                    recommendation = recommend_jetpump(batch_pump, marginal_watercut, water)
+
+                                    # Add a column to highlight the recommended pump
+                                    recommender_df["Recommended"] = False
+                                    recommended_mask = (recommender_df["Nozzle"] == recommendation["nozzle"]) & (
+                                        recommender_df["Throat"] == recommendation["throat"]
+                                    )
+                                    recommender_df.loc[recommended_mask, "Recommended"] = True
+
+                                    # Display the dataframe with the recommended pump highlighted
+                                    st.dataframe(recommender_df, use_container_width=True)
+
+                                    # Add a note about the recommended pump
+                                    st.info(
+                                        f"The recommended pump is highlighted: Nozzle {recommendation['nozzle']}, "
+                                        f"Throat {recommendation['throat']} with a marginal watercut of "
+                                        f"{recommendation['marginal_ratio']:.3f}"
+                                    )
+
+                                    if recommendation["recommendation_type"] == "best_available":
+                                        st.warning(
+                                            "Note: No jet pump meets the specified marginal watercut threshold. "
+                                            "This is the best available option."
+                                        )
+                                except Exception as e:
+                                    # Just display the dataframe without highlighting
+                                    st.dataframe(recommender_df, use_container_width=True)
+                                    st.warning(f"Could not determine recommended jet pump: {str(e)}")
+
+                                # Add a download button for the recommender results
+                                csv_recommender = recommender_df.to_csv(index=False)
+                                st.download_button(
+                                    label="Download Recommender Results CSV",
+                                    data=csv_recommender,
+                                    file_name="jetpump_recommender_results.csv",
+                                    mime="text/csv",
+                                )
+                            else:
+                                st.warning("No semi-finalist jet pumps found. Cannot display recommender results.")
 
     else:
         st.info("Adjust the parameters in the sidebar and click 'Run Simulation' to generate results.")
