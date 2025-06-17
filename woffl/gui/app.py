@@ -18,6 +18,8 @@ from woffl.gui.utils import (
     generate_discharge_check,
     generate_multi_suction_graphs,
     generate_multi_throat_entry_books,
+    highlight_recommended_pump,
+    recommend_jetpump,
     run_batch_pump,
     run_jetpump_solver,
 )
@@ -106,6 +108,17 @@ def main():
             options=["lift", "total"],
             index=0,
             help="'Lift' shows power fluid water, 'Total' shows power fluid + formation water",
+        )
+
+        st.subheader("Jet Pump Recommendation")
+        marginal_watercut = st.number_input(
+            "Marginal Watercut (bbl water / (bbl water + bbl oil))",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.5,
+            step=0.01,
+            format="%.2f",
+            help="Economic threshold for water handling in the field",
         )
 
         run_button = st.button("Run Simulation")
@@ -202,6 +215,33 @@ def main():
 
                             try:
                                 batch_pump.plot_data(water=water, curve=curve, ax=ax)
+
+                                # Get recommended jet pump based on marginal watercut
+                                try:
+                                    recommendation = recommend_jetpump(batch_pump, marginal_watercut, water)
+                                    highlight_recommended_pump(ax, recommendation, water)
+
+                                    # Add a section for the recommendation details
+                                    st.subheader("Recommended Jet Pump")
+                                    rec_col1, rec_col2 = st.columns(2)
+
+                                    with rec_col1:
+                                        st.metric("Nozzle Size", recommendation["nozzle"])
+                                        st.metric("Throat Ratio", recommendation["throat"])
+                                        st.metric("Oil Rate", f"{recommendation['qoil_std']:.1f} BOPD")
+
+                                    with rec_col2:
+                                        water_label = "Lift Water" if water == "lift" else "Total Water"
+                                        st.metric(water_label, f"{recommendation['water_rate']:.1f} BWPD")
+                                        st.metric("Marginal Watercut", f"{recommendation['marginal_ratio']:.3f}")
+
+                                        if recommendation["recommendation_type"] == "best_available":
+                                            st.warning(
+                                                "Note: No jet pump meets the specified marginal watercut threshold. This is the best available option."
+                                            )
+                                except Exception as e:
+                                    st.warning(f"Could not determine recommended jet pump: {str(e)}")
+
                                 st.pyplot(fig)
                             except Exception as e:
                                 st.error(f"Error generating performance plot: {str(e)}")
@@ -216,6 +256,7 @@ def main():
                             - **Red points**: Semi-finalist jet pumps (no other pump produces more oil with less water)
                             - **Blue points**: Eliminated jet pumps (another pump produces more oil with less water)
                             - **Red dashed line**: Exponential curve fit of the semi-finalist pumps
+                            - **Gold star**: Recommended jet pump based on marginal watercut threshold
                             - **Labels**: Show nozzle size + throat ratio (e.g., "12B" = nozzle 12, throat B)
                             """
                             )
