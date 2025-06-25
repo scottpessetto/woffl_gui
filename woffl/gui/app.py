@@ -4,9 +4,15 @@ This is the main entry point for the WOFFL Streamlit GUI application.
 It provides a web interface for interacting with the WOFFL package's jetpump functionality.
 """
 
+import os
+import sys
+
 import matplotlib.pyplot as plt
 import numpy as np
 import streamlit as st
+
+# Add the parent directory to the Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from woffl.gui.utils import (
     create_inflow,
