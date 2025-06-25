@@ -41,11 +41,22 @@ def main():
     )
 
     st.title("WOFFL Jetpump Simulator")
-    st.sidebar.header("Parameters")
 
     # Sidebar - Input Parameters
     with st.sidebar:
 
+        run_button = st.button("Run Simulation")
+
+        st.sidebar.header("Parameters")
+        marginal_watercut = st.number_input(
+            "Field Marginal Watercut",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.94,
+            step=0.01,
+            format="%.2f",
+            help="Economic threshold for water handling in the field",
+        )
         st.subheader("Field Model")
         field_model = st.radio("Select Field Model:", options=["Schrader", "Kuparuk"], index=0)  # default selection
 
@@ -115,19 +126,6 @@ def main():
             index=1,
             help="'Lift' shows power fluid water, 'Total' shows power fluid + formation water",
         )
-
-        st.subheader("Jet Pump Recommendation")
-        marginal_watercut = st.number_input(
-            "Marginal Watercut (bbl water / (bbl water + bbl oil))",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.94,
-            step=0.01,
-            format="%.2f",
-            help="Economic threshold for water handling in the field",
-        )
-
-        run_button = st.button("Run Simulation")
 
     # Main content area
     if run_button:
