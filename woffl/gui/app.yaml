@@ -1,3 +1,0 @@
-# app.yaml
-runtime: streamlit
-entrypoint: app.py
