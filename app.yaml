@@ -1,0 +1,20 @@
+# Databricks Streamlit app configuration
+cookie_secret: ${COOKIE_SECRET}
+title: "WOFFL Jetpump Simulator"
+description: "A numerical simulator for subsurface jet pump oil wells"
+
+# Package requirements
+packages:
+  - matplotlib>=3.8.2
+  - numpy>=1.26.3
+  - pandas>=2.1.4
+  - scipy>=1.11.4
+  - streamlit>=1.32.0
+
+# Entry point - the path to your Streamlit app
+entrypoint: woffl.gui.app:main
+
+# Resource configuration
+resources:
+  num_workers: 1
+  memory: "4g"
