@@ -1,3 +1,3 @@
 # app.yaml
-runtime: streamlit
-entrypoint: woffl.gui.app
+runtime:  streamlit
+entrypoint:  woffl.gui.app
