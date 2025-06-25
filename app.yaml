@@ -1,3 +1,2 @@
 # app.yaml
-runtime: streamlit
-entrypoint: woffl/gui/app.py
+command: ["streamlit","run","woffl/gui/app.py"]
