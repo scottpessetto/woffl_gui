@@ -5,7 +5,6 @@ This module contains helper functions for the Streamlit GUI.
 
 import numpy as np
 import streamlit as st
-
 from woffl.assembly.batchrun import BatchPump
 from woffl.assembly.curvefit import exp_model, rev_exp_deriv
 from woffl.assembly.sysops import jetpump_solver
@@ -399,3 +398,89 @@ def run_batch_pump(
         else:
             st.error(f"Error processing batch results: {error_msg}")
             return None
+
+
+def run_power_fluid_range_batch(
+    surf_pres,
+    form_temp,
+    rho_pf,
+    power_fluid_min,
+    power_fluid_max,
+    power_fluid_step,
+    tube,
+    well_profile,
+    inflow,
+    res_mix,
+    nozzle_options,
+    throat_options,
+    wellname="Test Well",
+):
+    """Run a comprehensive batch pump simulation across a range of power fluid pressures.
+
+    Args:
+        surf_pres: Surface pressure (psi)
+        form_temp: Formation temperature (°F)
+        rho_pf: Power fluid density (lbm/ft³)
+        power_fluid_min: Minimum power fluid pressure (psi)
+        power_fluid_max: Maximum power fluid pressure (psi)
+        power_fluid_step: Step size for power fluid pressure (psi)
+        tube: Tubing pipe object
+        well_profile: Well profile object
+        inflow: Inflow performance object
+        res_mix: Reservoir mixture object
+        nozzle_options: List of nozzle sizes to test
+        throat_options: List of throat ratios to test
+        wellname: Name of the well for display purposes
+
+    Returns:
+        pandas.DataFrame: Comprehensive results across all power fluid pressures
+    """
+    import pandas as pd
+
+    # Create pressure range
+    pressure_range = np.arange(power_fluid_min, power_fluid_max + power_fluid_step, power_fluid_step)
+
+    # Create a list of jet pumps with all combinations of nozzles and throats
+    jp_list = BatchPump.jetpump_list(nozzle_options, throat_options)
+
+    all_results = []
+    total_combinations = len(pressure_range) * len(jp_list)
+
+    # Create a progress bar
+    progress_bar = st.progress(0)
+    current_combination = 0
+
+    for pressure in pressure_range:
+        # Create a BatchPump object for this pressure
+        batch_pump = BatchPump(
+            pwh=surf_pres,
+            tsu=form_temp,
+            rho_pf=rho_pf,
+            ppf_surf=pressure,
+            wellbore=tube,
+            wellprof=well_profile,
+            ipr_su=inflow,
+            prop_su=res_mix,
+            wellname=wellname,
+        )
+
+        # Run the batch simulation for this pressure
+        batch_pump.batch_run(jp_list, debug=False)
+
+        # Add power fluid pressure to the results
+        batch_pump.df["power_fluid_pressure"] = pressure
+
+        # Add the results to our comprehensive dataset
+        all_results.append(batch_pump.df)
+
+        # Update progress bar
+        current_combination += len(jp_list)
+        progress_bar.progress(current_combination / total_combinations)
+
+    # Combine all results into a single dataframe
+    comprehensive_df = pd.concat(all_results, ignore_index=True)
+
+    # Clear progress bar
+    progress_bar.empty()
+
+    return comprehensive_df

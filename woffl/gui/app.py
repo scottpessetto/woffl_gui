@@ -7,8 +7,10 @@ It provides a web interface for interacting with the WOFFL package's jetpump fun
 import os
 import sys
 
+import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import streamlit as st
 
 # Add the parent directory to the Python path
@@ -28,6 +30,7 @@ from woffl.gui.utils import (
     recommend_jetpump,
     run_batch_pump,
     run_jetpump_solver,
+    run_power_fluid_range_batch,
 )
 
 
@@ -127,6 +130,32 @@ def main():
             help="'Lift' shows power fluid water, 'Total' shows power fluid + formation water",
         )
 
+        st.subheader("Power Fluid Range Analysis")
+        power_fluid_min = st.number_input(
+            "Min Power Fluid Pressure (psi)",
+            min_value=1000,
+            max_value=5000,
+            value=1800,
+            step=100,
+            help="Minimum power fluid pressure for range analysis",
+        )
+        power_fluid_max = st.number_input(
+            "Max Power Fluid Pressure (psi)",
+            min_value=1000,
+            max_value=5000,
+            value=3600,
+            step=100,
+            help="Maximum power fluid pressure for range analysis",
+        )
+        power_fluid_step = st.number_input(
+            "Power Fluid Pressure Step (psi)",
+            min_value=50,
+            max_value=500,
+            value=200,
+            step=50,
+            help="Step size for power fluid pressure range",
+        )
+
     # Main content area
     if run_button:
         with st.spinner("Running simulation..."):
@@ -141,7 +170,8 @@ def main():
             (
                 tab1,
                 tab2,
-            ) = st.tabs(["Jetpump Solution", "Batch Run"])
+                tab3,
+            ) = st.tabs(["Jetpump Solution", "Batch Run", "Power Fluid Range Analysis"])
 
             with tab1:
                 st.subheader("Jetpump Solver Results")
@@ -464,6 +494,301 @@ def main():
                                 )
                             else:
                                 st.warning("No semi-finalist jet pumps found. Cannot display recommender results.")
+
+            with tab3:
+                st.subheader("Power Fluid Range Analysis")
+
+                if not nozzle_batch_options or not throat_batch_options:
+                    st.warning(
+                        "Please select at least one nozzle size and one throat ratio for power fluid range analysis."
+                    )
+                elif power_fluid_min >= power_fluid_max:
+                    st.error("Minimum power fluid pressure must be less than maximum power fluid pressure.")
+                else:
+                    # Validate power fluid step
+                    if power_fluid_step <= 0 or power_fluid_step >= (power_fluid_max - power_fluid_min):
+                        st.error("Power fluid step must be positive and less than the pressure range.")
+                    else:
+                        # Calculate number of pressure points
+                        pressure_points = int((power_fluid_max - power_fluid_min) / power_fluid_step) + 1
+                        total_combinations = pressure_points * len(nozzle_batch_options) * len(throat_batch_options)
+
+                        st.info(
+                            f"This analysis will test {pressure_points} pressure points with "
+                            f"{len(nozzle_batch_options)} nozzles and {len(throat_batch_options)} throat ratios "
+                            f"for a total of {total_combinations} combinations."
+                        )
+
+                        # Run the comprehensive power fluid range analysis
+                        with st.spinner("Running comprehensive power fluid range analysis..."):
+                            comprehensive_df = run_power_fluid_range_batch(
+                                surf_pres,
+                                form_temp,
+                                rho_pf,
+                                power_fluid_min,
+                                power_fluid_max,
+                                power_fluid_step,
+                                tube,
+                                well_profile,
+                                inflow,
+                                res_mix,
+                                nozzle_batch_options,
+                                throat_batch_options,
+                                wellname=f"{field_model} Well",
+                            )
+
+                        if comprehensive_df is not None and not comprehensive_df.empty:
+                            # Filter to show only successful runs
+                            successful_df = comprehensive_df[~comprehensive_df["qoil_std"].isna()].copy()
+
+                            if not successful_df.empty:
+                                # Create summary statistics
+                                st.subheader("Analysis Summary")
+
+                                col1, col2, col3, col4 = st.columns(4)
+
+                                with col1:
+                                    st.metric("Total Combinations", len(comprehensive_df))
+                                    st.metric("Successful Runs", len(successful_df))
+
+                                with col2:
+                                    st.metric("Max Oil Rate", f"{successful_df['qoil_std'].max():.1f} BOPD")
+                                    st.metric("Min Oil Rate", f"{successful_df['qoil_std'].min():.1f} BOPD")
+
+                                with col3:
+                                    st.metric("Max Total Water", f"{successful_df['totl_wat'].max():.1f} BWPD")
+                                    st.metric("Min Total Water", f"{successful_df['totl_wat'].min():.1f} BWPD")
+
+                                with col4:
+                                    st.metric("Pressure Range", f"{power_fluid_min}-{power_fluid_max} psi")
+                                    st.metric("Success Rate", f"{len(successful_df)/len(comprehensive_df)*100:.1f}%")
+
+                                # Create visualization tabs
+                                viz_tab1, viz_tab2, viz_tab3 = st.tabs(
+                                    ["Performance vs Pressure", "Comprehensive Data", "Best Performers"]
+                                )
+
+                                with viz_tab1:
+                                    st.subheader("Oil Rate vs Power Fluid Pressure")
+
+                                    # Create a scatter plot showing oil rate vs power fluid pressure
+                                    fig, ax = plt.subplots(figsize=(12, 8))
+
+                                    # Plot each nozzle-throat combination with different colors
+                                    # Get unique nozzle-throat combinations
+                                    successful_df["pump_combo"] = successful_df["nozzle"] + successful_df["throat"]
+                                    unique_combos = successful_df["pump_combo"].unique()
+
+                                    colors = cm.get_cmap("tab20")(np.linspace(0, 1, len(unique_combos)))
+
+                                    for i, combo in enumerate(unique_combos):
+                                        combo_data = successful_df[successful_df["pump_combo"] == combo]
+                                        ax.scatter(
+                                            combo_data["power_fluid_pressure"],
+                                            combo_data["qoil_std"],
+                                            c=[colors[i]],
+                                            label=combo,
+                                            alpha=0.7,
+                                            s=50,
+                                        )
+
+                                    ax.set_xlabel("Power Fluid Pressure (psi)")
+                                    ax.set_ylabel("Oil Rate (BOPD)")
+                                    ax.set_title(f"{field_model} Well - Oil Rate vs Power Fluid Pressure")
+                                    ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
+                                    ax.grid(True, alpha=0.3)
+
+                                    st.pyplot(fig)
+
+                                    # Add a second plot for total water vs pressure
+                                    st.subheader("Total Water vs Power Fluid Pressure")
+
+                                    fig2, ax2 = plt.subplots(figsize=(12, 8))
+
+                                    for i, combo in enumerate(unique_combos):
+                                        combo_data = successful_df[successful_df["pump_combo"] == combo]
+                                        ax2.scatter(
+                                            combo_data["power_fluid_pressure"],
+                                            combo_data["totl_wat"],
+                                            c=[colors[i]],
+                                            label=combo,
+                                            alpha=0.7,
+                                            s=50,
+                                        )
+
+                                    ax2.set_xlabel("Power Fluid Pressure (psi)")
+                                    ax2.set_ylabel("Total Water (BWPD)")
+                                    ax2.set_title(f"{field_model} Well - Total Water vs Power Fluid Pressure")
+                                    ax2.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
+                                    ax2.grid(True, alpha=0.3)
+
+                                    st.pyplot(fig2)
+
+                                with viz_tab2:
+                                    st.subheader("Comprehensive Analysis Results")
+
+                                    # Format the dataframe for display
+                                    display_df = successful_df[
+                                        [
+                                            "power_fluid_pressure",
+                                            "nozzle",
+                                            "throat",
+                                            "qoil_std",
+                                            "form_wat",
+                                            "lift_wat",
+                                            "totl_wat",
+                                            "psu_solv",
+                                            "mach_te",
+                                            "sonic_status",
+                                        ]
+                                    ].copy()
+
+                                    display_df = display_df.rename(
+                                        columns={
+                                            "power_fluid_pressure": "Power Fluid Pressure (psi)",
+                                            "nozzle": "Nozzle",
+                                            "throat": "Throat",
+                                            "qoil_std": "Oil Rate (BOPD)",
+                                            "form_wat": "Formation Water (BWPD)",
+                                            "lift_wat": "Lift Water (BWPD)",
+                                            "totl_wat": "Total Water (BWPD)",
+                                            "psu_solv": "Suction Pressure (psig)",
+                                            "mach_te": "Throat Entry Mach",
+                                            "sonic_status": "Sonic Flow",
+                                        }
+                                    )
+
+                                    # Round numeric columns
+                                    numeric_cols = [
+                                        "Power Fluid Pressure (psi)",
+                                        "Oil Rate (BOPD)",
+                                        "Formation Water (BWPD)",
+                                        "Lift Water (BWPD)",
+                                        "Total Water (BWPD)",
+                                        "Suction Pressure (psig)",
+                                        "Throat Entry Mach",
+                                    ]
+                                    display_df[numeric_cols] = display_df[numeric_cols].round(1)
+
+                                    # Sort by power fluid pressure, then by oil rate
+                                    display_df = display_df.sort_values(
+                                        by=["Power Fluid Pressure (psi)", "Oil Rate (BOPD)"], ascending=[True, False]
+                                    )
+
+                                    # Display the dataframe
+                                    st.dataframe(display_df, use_container_width=True)
+
+                                    # Add a download button for the comprehensive results
+                                    csv_comprehensive = display_df.to_csv(index=False)
+                                    st.download_button(
+                                        label="Download Comprehensive Results CSV",
+                                        data=csv_comprehensive,
+                                        file_name="jetpump_power_fluid_range_analysis.csv",
+                                        mime="text/csv",
+                                    )
+
+                                with viz_tab3:
+                                    st.subheader("Best Performers at Each Pressure")
+
+                                    # Find the best performer at each pressure point
+                                    best_performers = []
+                                    for pressure in successful_df["power_fluid_pressure"].unique():
+                                        pressure_data = successful_df[successful_df["power_fluid_pressure"] == pressure]
+                                        if not pressure_data.empty:
+                                            best_performer = pressure_data.loc[pressure_data["qoil_std"].idxmax()]
+                                            best_performers.append(best_performer)
+
+                                    if best_performers:
+                                        best_df = pd.DataFrame(best_performers)
+
+                                        # Format for display
+                                        best_display_df = best_df[
+                                            [
+                                                "power_fluid_pressure",
+                                                "nozzle",
+                                                "throat",
+                                                "qoil_std",
+                                                "totl_wat",
+                                                "psu_solv",
+                                                "sonic_status",
+                                            ]
+                                        ].copy()
+
+                                        best_display_df = best_display_df.rename(
+                                            columns={
+                                                "power_fluid_pressure": "Power Fluid Pressure (psi)",
+                                                "nozzle": "Nozzle",
+                                                "throat": "Throat",
+                                                "qoil_std": "Oil Rate (BOPD)",
+                                                "totl_wat": "Total Water (BWPD)",
+                                                "psu_solv": "Suction Pressure (psig)",
+                                                "sonic_status": "Sonic Flow",
+                                            }
+                                        )
+
+                                        # Round numeric columns
+                                        numeric_cols = [
+                                            "Power Fluid Pressure (psi)",
+                                            "Oil Rate (BOPD)",
+                                            "Total Water (BWPD)",
+                                            "Suction Pressure (psig)",
+                                        ]
+                                        best_display_df[numeric_cols] = best_display_df[numeric_cols].round(1)
+
+                                        # Sort by power fluid pressure
+                                        best_display_df = best_display_df.sort_values(by="Power Fluid Pressure (psi)")
+
+                                        st.dataframe(best_display_df, use_container_width=True)
+
+                                        # Add a download button for the best performers
+                                        csv_best = best_display_df.to_csv(index=False)
+                                        st.download_button(
+                                            label="Download Best Performers CSV",
+                                            data=csv_best,
+                                            file_name="jetpump_best_performers_by_pressure.csv",
+                                            mime="text/csv",
+                                        )
+
+                                        # Show overall best performer
+                                        overall_best = best_df.loc[best_df["qoil_std"].idxmax()]
+                                        st.subheader("Overall Best Performer")
+
+                                        best_col1, best_col2, best_col3 = st.columns(3)
+
+                                        with best_col1:
+                                            st.metric(
+                                                "Best Configuration",
+                                                f"Nozzle {overall_best['nozzle']}, Throat {overall_best['throat']}",
+                                            )
+                                            st.metric(
+                                                "Power Fluid Pressure",
+                                                f"{overall_best['power_fluid_pressure']:.0f} psi",
+                                            )
+
+                                        with best_col2:
+                                            st.metric("Oil Rate", f"{overall_best['qoil_std']:.1f} BOPD")
+                                            st.metric("Total Water", f"{overall_best['totl_wat']:.1f} BWPD")
+
+                                        with best_col3:
+                                            st.metric("Suction Pressure", f"{overall_best['psu_solv']:.1f} psig")
+                                            st.metric("Sonic Flow", "Yes" if overall_best["sonic_status"] else "No")
+
+                                    else:
+                                        st.warning("No best performers found in the analysis.")
+
+                                st.markdown(
+                                    """
+                                    **Analysis Explanation:**
+                                    - This comprehensive analysis tests all selected nozzle and throat combinations across the specified power fluid pressure range
+                                    - **Performance vs Pressure**: Shows how oil and water rates change with power fluid pressure for each pump configuration
+                                    - **Comprehensive Data**: Complete results table with all successful combinations
+                                    - **Best Performers**: Shows the highest oil-producing pump at each pressure point and identifies the overall best performer
+                                    """
+                                )
+                            else:
+                                st.error("No successful simulation runs found. Check your parameter settings.")
+                        else:
+                            st.error("Failed to run power fluid range analysis. Check your parameters and try again.")
 
     else:
         st.info("Adjust the parameters in the sidebar and click 'Run Simulation' to generate results.")
