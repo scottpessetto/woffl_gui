@@ -3,7 +3,10 @@
 This module contains helper functions for the Streamlit GUI.
 """
 
+import os
+
 import numpy as np
+import pandas as pd
 import streamlit as st
 from woffl.assembly.batchrun import BatchPump
 from woffl.assembly.curvefit import exp_model, rev_exp_deriv
@@ -435,8 +438,6 @@ def run_power_fluid_range_batch(
     Returns:
         pandas.DataFrame: Comprehensive results across all power fluid pressures
     """
-    import pandas as pd
-
     # Create pressure range
     pressure_range = np.arange(power_fluid_min, power_fluid_max + power_fluid_step, power_fluid_step)
 
@@ -484,3 +485,130 @@ def run_power_fluid_range_batch(
     progress_bar.empty()
 
     return comprehensive_df
+
+
+# Well Data Management Functions
+@st.cache_data
+def load_well_characteristics():
+    """Load and cache jp_chars.csv data.
+
+    Returns:
+        pandas.DataFrame: Well characteristics data
+    """
+    try:
+        # Get the path to the jp_chars.csv file
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        jp_data_dir = os.path.join(current_dir, "..", "jp_data")
+        csv_path = os.path.join(jp_data_dir, "jp_chars.csv")
+
+        # Load the CSV file
+        well_chars = pd.read_csv(csv_path)
+        return well_chars
+    except FileNotFoundError:
+        st.error("Could not find jp_chars.csv file. Please ensure the file exists in the jp_data directory.")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error loading well characteristics: {str(e)}")
+        return pd.DataFrame()
+
+
+def get_available_wells():
+    """Return list of available well names.
+
+    Returns:
+        list: List of well names from jp_chars.csv
+    """
+    well_chars = load_well_characteristics()
+    if not well_chars.empty:
+        return ["Custom"] + sorted(well_chars["Well"].tolist())
+    return ["Custom"]
+
+
+def get_well_data(well_name):
+    """Get well data for a specific well.
+
+    Args:
+        well_name (str): Name of the well
+
+    Returns:
+        dict or None: Well data dictionary or None if not found
+    """
+    well_chars = load_well_characteristics()
+    if well_chars.empty:
+        return None
+
+    well_data = well_chars[well_chars["Well"] == well_name]
+    if well_data.empty:
+        return None
+
+    return well_data.iloc[0].to_dict()
+
+
+def get_well_survey_data(well_name):
+    """Load deviation survey CSV for specific well.
+
+    Args:
+        well_name (str): Name of the well
+
+    Returns:
+        pandas.DataFrame or None: Survey data or None if not found
+    """
+    try:
+        # Get the path to the well survey file
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        jp_data_dir = os.path.join(current_dir, "..", "jp_data")
+        survey_dir = os.path.join(jp_data_dir, "well_surveys")
+        survey_path = os.path.join(survey_dir, f"{well_name} Deviation Survey.csv")
+
+        if os.path.exists(survey_path):
+            survey_data = pd.read_csv(survey_path)
+            return survey_data
+        else:
+            return None
+    except Exception as e:
+        st.warning(f"Could not load survey data for {well_name}: {str(e)}")
+        return None
+
+
+def create_well_profile_from_survey(well_name, jpump_tvd=None, field_model=None):
+    """Create WellProfile using actual survey data instead of defaults.
+
+    Args:
+        well_name (str): Name of the well
+        jpump_tvd (float, optional): Jetpump TVD override
+        field_model (str, optional): Field model for fallback
+
+    Returns:
+        WellProfile: A WellProfile object using survey data or default model
+    """
+    # Try to load survey data
+    survey_data = get_well_survey_data(well_name)
+
+    if survey_data is not None and not survey_data.empty:
+        try:
+            # Extract MD and TVD arrays from survey data
+            md_list = survey_data["meas_depth"].tolist()
+            tvd_list = survey_data["tvd_depth"].tolist()
+
+            # Get well data for jetpump MD if not provided
+            if jpump_tvd is None:
+                well_data = get_well_data(well_name)
+                if well_data:
+                    jpump_tvd = well_data.get("JP_TVD")
+
+            # Calculate jetpump MD from TVD if available
+            if jpump_tvd is not None:
+                jpump_md = float(np.interp(jpump_tvd, tvd_list, md_list))
+            else:
+                # Use the last point as default
+                jpump_md = float(md_list[-1]) if md_list else 5000.0
+
+            # Create WellProfile with survey data
+            well_profile = WellProfile(md_list=md_list, vd_list=tvd_list, jetpump_md=jpump_md)
+            return well_profile
+
+        except Exception as e:
+            st.warning(f"Error creating well profile from survey data: {str(e)}. Using default model.")
+
+    # Fallback to default model
+    return create_well_profile(field_model=field_model, jpump_tvd=jpump_tvd)

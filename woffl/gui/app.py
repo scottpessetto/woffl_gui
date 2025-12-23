@@ -22,10 +22,13 @@ from woffl.gui.utils import (
     create_pipes,
     create_reservoir_mix,
     create_well_profile,
+    create_well_profile_from_survey,
     generate_choked_figures,
     generate_discharge_check,
     generate_multi_suction_graphs,
     generate_multi_throat_entry_books,
+    get_available_wells,
+    get_well_data,
     highlight_recommended_pump,
     recommend_jetpump,
     run_batch_pump,
@@ -51,6 +54,88 @@ def main():
         run_button = st.button("Run Simulation")
 
         st.sidebar.header("Parameters")
+
+        # Well Selection Section
+        st.subheader("Well Selection")
+        available_wells = get_available_wells()
+
+        # Initialize session state for well selection if not exists
+        if "selected_well" not in st.session_state:
+            st.session_state.selected_well = "Custom"
+
+        def on_well_change():
+            """Callback function when well selection changes"""
+            st.session_state.selected_well = st.session_state.well_selector
+            # Clear any cached well data to force reload
+            if hasattr(st.session_state, "well_data"):
+                del st.session_state.well_data
+
+        def update_well_parameters_from_data(well_data, selected_well):
+            """Update all session state parameters when well selection changes
+
+            Args:
+                well_data (dict): Dictionary containing well characteristics from CSV
+                selected_well (str): Name of the selected well
+            """
+            if selected_well == "Custom" or not well_data:
+                return
+
+            # Track if this is a new well selection
+            is_new_well = selected_well != st.session_state.get("last_selected_well_all", "Custom")
+
+            if is_new_well:
+                # Update all parameters from well data
+                st.session_state.tubing_od = float(well_data.get("out_dia", 4.5))
+                st.session_state.tubing_thickness = float(well_data.get("thick", 0.5))
+                st.session_state.form_temp = int(well_data.get("form_temp", 70))
+                st.session_state.jpump_tvd = int(well_data.get("JP_TVD", 4065))
+                st.session_state.res_pres = int(well_data.get("res_pres", 1700))
+                st.session_state.field_model_index = 0 if well_data.get("is_sch", True) else 1
+                st.session_state.last_selected_well_all = selected_well
+
+        selected_well = st.selectbox(
+            "Select Well:",
+            options=available_wells,
+            index=(
+                available_wells.index(st.session_state.selected_well)
+                if st.session_state.selected_well in available_wells
+                else 0
+            ),
+            help="Choose a well to auto-populate parameters, or select 'Custom' for manual entry",
+            key="well_selector",
+            on_change=on_well_change,
+        )
+
+        # Get well data if a specific well is selected
+        well_data = None
+        if selected_well != "Custom":
+            # Cache well data in session state to avoid repeated loading
+            if "well_data" not in st.session_state or st.session_state.get("current_well") != selected_well:
+                st.session_state.well_data = get_well_data(selected_well)
+                st.session_state.current_well = selected_well
+
+            well_data = st.session_state.well_data
+
+            # Update all parameters from well data
+            update_well_parameters_from_data(well_data, selected_well)
+
+            if well_data:
+                st.info(f"✅ Loaded data for {selected_well}")
+                # Display well summary
+                with st.expander("Well Information"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write(f"**Field Model:** {'Schrader' if well_data.get('is_sch', True) else 'Kuparuk'}")
+                        st.write(f"**Tubing OD:** {well_data.get('out_dia', 'N/A')} inches")
+                        st.write(f"**Tubing Thickness:** {well_data.get('thick', 'N/A')} inches")
+                        st.write(f"**Reservoir Pressure:** {well_data.get('res_pres', 'N/A')} psi")
+                    with col2:
+                        st.write(f"**Formation Temp:** {well_data.get('form_temp', 'N/A')} °F")
+                        st.write(f"**Jetpump TVD:** {well_data.get('JP_TVD', 'N/A')} ft")
+                        st.write(f"**Jetpump MD:** {well_data.get('JP_MD', 'N/A')} ft")
+            else:
+                st.warning(f"Could not load data for {selected_well}")
+
         marginal_watercut = st.number_input(
             "Field Marginal Watercut",
             min_value=0.0,
@@ -60,8 +145,22 @@ def main():
             format="%.2f",
             help="Economic threshold for water handling in the field",
         )
+
         st.subheader("Field Model")
-        field_model = st.radio("Select Field Model:", options=["Schrader", "Kuparuk"], index=0)  # default selection
+
+        # Initialize session state for field model if not exists
+        if "field_model_index" not in st.session_state:
+            st.session_state.field_model_index = 0  # Default to Schrader
+
+        field_model = st.radio(
+            "Select Field Model:",
+            options=["Schrader", "Kuparuk"],
+            index=st.session_state.field_model_index,
+            key="field_model_radio",
+        )
+
+        # Update session state with current selection
+        st.session_state.field_model_index = ["Schrader", "Kuparuk"].index(field_model)
 
         st.subheader("Jetpump Parameters")
         nozzle_options = ["8", "9", "10", "11", "12", "13", "14", "15"]
@@ -75,12 +174,37 @@ def main():
         kdi = st.slider("Diffuser Loss Coefficient (kdi)", 0.1, 0.5, 0.4, 0.1)
 
         st.subheader("Pipe Parameters")
+
+        # Initialize session state for parameters if not exists
+        if "tubing_od" not in st.session_state:
+            st.session_state.tubing_od = 4.5
+        if "tubing_thickness" not in st.session_state:
+            st.session_state.tubing_thickness = 0.5
+
         tubing_od = st.number_input(
-            "Tubing Outer Diameter (inches)", value=4.5, min_value=2.0, max_value=9.0, step=0.1, format="%.3f"
+            "Tubing Outer Diameter (inches)",
+            value=st.session_state.tubing_od,
+            min_value=2.0,
+            max_value=9.0,
+            step=0.1,
+            format="%.3f",
+            help="Auto-populated from well data" if well_data else None,
+            key="tubing_od_input",
         )
         tubing_thickness = st.number_input(
-            "Tubing Wall Thickness (inches)", value=0.5, min_value=0.1, max_value=2.0, step=0.1, format="%.3f"
+            "Tubing Wall Thickness (inches)",
+            value=st.session_state.tubing_thickness,
+            min_value=0.1,
+            max_value=2.0,
+            step=0.1,
+            format="%.3f",
+            help="Auto-populated from well data" if well_data else None,
+            key="tubing_thickness_input",
         )
+
+        # Update session state with current values
+        st.session_state.tubing_od = tubing_od
+        st.session_state.tubing_thickness = tubing_thickness
         casing_od = st.number_input(
             "Casing Outer Diameter (inches)", value=6.875, min_value=4.0, max_value=17.0, step=0.125, format="%.3f"
         )
@@ -93,13 +217,44 @@ def main():
             "Water Cut (form_wc)", value=0.50, min_value=0.0, max_value=1.0, step=0.01, format="%.2f"
         )
         form_gor = st.number_input("Gas-Oil Ratio (form_gor)", value=250, min_value=20, max_value=10000, step=25)
+
+        # Initialize session state for formation temperature
+        if "form_temp" not in st.session_state:
+            st.session_state.form_temp = 70
+
         form_temp = st.number_input(
-            "Formation Temperature (form_temp, °F)", value=70, min_value=32, max_value=350, step=1
+            "Formation Temperature (form_temp, °F)",
+            value=st.session_state.form_temp,
+            min_value=32,
+            max_value=350,
+            step=1,
+            help="Auto-populated from well data" if well_data else None,
+            key="form_temp_input",
         )
+
+        # Update session state
+        st.session_state.form_temp = form_temp
 
         st.subheader("Well Parameters")
         surf_pres = st.number_input("Surface Pressure (psi)", min_value=10, max_value=600, value=210, step=10)
-        jpump_tvd = st.number_input("Jetpump TVD (feet)", min_value=2500, max_value=8000, value=4065, step=10)
+
+        # Initialize session state for jetpump TVD
+        if "jpump_tvd" not in st.session_state:
+            st.session_state.jpump_tvd = 4065
+
+        jpump_tvd = st.number_input(
+            "Jetpump TVD (feet)",
+            value=st.session_state.jpump_tvd,
+            min_value=2500,
+            max_value=8000,
+            step=10,
+            help="Auto-populated from well data" if well_data else None,
+            key="jpump_tvd_input",
+        )
+
+        # Update session state
+        st.session_state.jpump_tvd = jpump_tvd
+
         rho_pf = st.number_input("Power Fluid Density (lbm/ft³)", min_value=50.0, max_value=70.0, value=62.4, step=0.1)
         ppf_surf = st.number_input(
             "Power Fluid Surface Pressure (psi)", min_value=2000, max_value=4000, value=3168, step=10
@@ -110,7 +265,23 @@ def main():
         pwf = st.number_input(
             "Flowing Bottom Hole Pressure (pwf, psi)", min_value=100, max_value=2500, value=500, step=10
         )
-        pres = st.number_input("Reservoir Pressure (pres, psi)", min_value=400, max_value=5000, value=1700, step=10)
+
+        # Initialize session state for reservoir pressure
+        if "res_pres" not in st.session_state:
+            st.session_state.res_pres = 1700
+
+        pres = st.number_input(
+            "Reservoir Pressure (pres, psi)",
+            value=st.session_state.res_pres,
+            min_value=400,
+            max_value=5000,
+            step=10,
+            help="Auto-populated from well data" if well_data else None,
+            key="res_pres_input",
+        )
+
+        # Update session state
+        st.session_state.res_pres = pres
 
         st.subheader("Batch Run Parameters")
         nozzle_batch_options = st.multiselect(
@@ -164,14 +335,28 @@ def main():
             tube, case, ann = create_pipes(tubing_od, tubing_thickness, casing_od, casing_thickness)
             inflow = create_inflow(qwf, pwf, pres)
             res_mix = create_reservoir_mix(form_wc, form_gor, form_temp, field_model)
-            well_profile = create_well_profile(field_model, jpump_tvd)
+
+            # Use survey data for well profile if a specific well is selected
+            if selected_well != "Custom":
+                well_profile = create_well_profile_from_survey(selected_well, jpump_tvd, field_model)
+                # Check if survey data was successfully loaded by looking for survey data
+                from woffl.gui.utils import get_well_survey_data
+
+                survey_data = get_well_survey_data(selected_well)
+                if survey_data is not None and not survey_data.empty:
+                    st.info(f"✅ Using actual survey data for {selected_well}")
+                else:
+                    st.info(f"⚠️ Using default model for {selected_well} (survey data not available)")
+            else:
+                well_profile = create_well_profile(field_model, jpump_tvd)
 
             # Create tabs for different visualizations
             (
                 tab1,
                 tab2,
                 tab3,
-            ) = st.tabs(["Jetpump Solution", "Batch Run", "Power Fluid Range Analysis"])
+                tab4,
+            ) = st.tabs(["Jetpump Solution", "Batch Run", "Power Fluid Range Analysis", "Well Profile"])
 
             with tab1:
                 st.subheader("Jetpump Solver Results")
@@ -789,6 +974,134 @@ def main():
                                 st.error("No successful simulation runs found. Check your parameter settings.")
                         else:
                             st.error("Failed to run power fluid range analysis. Check your parameters and try again.")
+
+            with tab4:
+                st.subheader("Well Profile Visualization")
+
+                # Display well profile information
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.write("**Well Profile Information:**")
+                    st.write(f"- Well Name: {selected_well if selected_well != 'Custom' else 'Generic ' + field_model}")
+                    st.write(f"- Number of Survey Points: {len(well_profile.md_ray)}")
+                    st.write(f"- MD Range: {well_profile.md_ray[0]:.1f} to {well_profile.md_ray[-1]:.1f} ft")
+                    st.write(f"- TVD Range: {well_profile.vd_ray[0]:.1f} to {well_profile.vd_ray[-1]:.1f} ft")
+                    st.write(f"- Jetpump MD: {well_profile.jetpump_md:.1f} ft")
+                    st.write(f"- Jetpump TVD: {jpump_tvd:.1f} ft")
+
+                    # Calculate deviation
+                    max_deviation = max(
+                        abs(well_profile.md_ray[i] - well_profile.vd_ray[i]) for i in range(len(well_profile.md_ray))
+                    )
+                    st.write(f"- Max Deviation: {max_deviation:.1f} ft")
+
+                with col2:
+                    # Check if using survey data
+                    from woffl.gui.utils import get_well_survey_data
+
+                    survey_data = get_well_survey_data(selected_well) if selected_well != "Custom" else None
+
+                    if survey_data is not None and not survey_data.empty:
+                        st.success("✅ Using Actual Survey Data")
+                        st.write(f"- Survey Points: {len(survey_data)}")
+                        if "inclination" in survey_data.columns:
+                            max_inc = survey_data["inclination"].max()
+                            st.write(f"- Max Inclination: {max_inc:.2f}°")
+                        if "azimuth" in survey_data.columns:
+                            st.write(
+                                f"- Azimuth Range: {survey_data['azimuth'].min():.1f}° to {survey_data['azimuth'].max():.1f}°"
+                            )
+                    else:
+                        st.info(f"ℹ️ Using Default {field_model} Model")
+                        st.write("- Generic well profile")
+                        st.write("- Simplified trajectory")
+
+                # Create well profile plot
+                st.subheader("Well Trajectory")
+
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+                # Plot 1: TVD vs MD
+                ax1.plot(well_profile.md_ray, well_profile.vd_ray, "b-", linewidth=2, label="Well Path")
+                ax1.axhline(
+                    y=jpump_tvd, color="r", linestyle="--", linewidth=2, label=f"Jetpump TVD ({jpump_tvd:.0f} ft)"
+                )
+                ax1.axvline(
+                    x=well_profile.jetpump_md,
+                    color="g",
+                    linestyle="--",
+                    linewidth=2,
+                    label=f"Jetpump MD ({well_profile.jetpump_md:.0f} ft)",
+                )
+                ax1.scatter(
+                    [well_profile.jetpump_md],
+                    [jpump_tvd],
+                    color="red",
+                    s=100,
+                    zorder=5,
+                    marker="*",
+                    label="Jetpump Location",
+                )
+                ax1.set_xlabel("Measured Depth (ft)", fontsize=12)
+                ax1.set_ylabel("True Vertical Depth (ft)", fontsize=12)
+                ax1.set_title("Well Profile: TVD vs MD", fontsize=14, fontweight="bold")
+                ax1.legend()
+                ax1.grid(True, alpha=0.3)
+                ax1.invert_yaxis()  # Invert Y-axis so depth increases downward
+
+                # Plot 2: Deviation (MD - TVD) vs Depth
+                deviation = [well_profile.md_ray[i] - well_profile.vd_ray[i] for i in range(len(well_profile.md_ray))]
+                ax2.plot(deviation, well_profile.vd_ray, "g-", linewidth=2)
+                ax2.axhline(
+                    y=jpump_tvd, color="r", linestyle="--", linewidth=2, label=f"Jetpump TVD ({jpump_tvd:.0f} ft)"
+                )
+                ax2.set_xlabel("Horizontal Deviation (ft)", fontsize=12)
+                ax2.set_ylabel("True Vertical Depth (ft)", fontsize=12)
+                ax2.set_title("Well Deviation Profile", fontsize=14, fontweight="bold")
+                ax2.legend()
+                ax2.grid(True, alpha=0.3)
+                ax2.invert_yaxis()  # Invert Y-axis so depth increases downward
+
+                plt.tight_layout()
+                st.pyplot(fig)
+
+                # Add inclination plot if survey data is available
+                if survey_data is not None and not survey_data.empty and "inclination" in survey_data.columns:
+                    st.subheader("Well Inclination Profile")
+
+                    fig3, ax3 = plt.subplots(figsize=(12, 6))
+                    ax3.plot(survey_data["meas_depth"], survey_data["inclination"], "b-", linewidth=2)
+                    ax3.axvline(
+                        x=well_profile.jetpump_md,
+                        color="r",
+                        linestyle="--",
+                        linewidth=2,
+                        label=f"Jetpump MD ({well_profile.jetpump_md:.0f} ft)",
+                    )
+                    ax3.set_xlabel("Measured Depth (ft)", fontsize=12)
+                    ax3.set_ylabel("Inclination (degrees)", fontsize=12)
+                    ax3.set_title("Well Inclination vs Measured Depth", fontsize=14, fontweight="bold")
+                    ax3.legend()
+                    ax3.grid(True, alpha=0.3)
+
+                    plt.tight_layout()
+                    st.pyplot(fig3)
+
+                # Add explanation
+                st.markdown(
+                    """
+                **Well Profile Explanation:**
+                - **TVD vs MD Plot**: Shows the well's path from surface to total depth
+                - **Deviation Plot**: Shows horizontal offset from vertical at each depth
+                - **Inclination Plot**: Shows well angle from vertical (0° = vertical, 90° = horizontal)
+                - **Red star**: Jetpump location
+                - **Dashed lines**: Jetpump MD and TVD reference lines
+                
+                A vertical well would show MD = TVD (45° line on first plot).
+                Deviation indicates how far the well has moved horizontally from the surface location.
+                """
+                )
 
     else:
         st.info("Adjust the parameters in the sidebar and click 'Run Simulation' to generate results.")
