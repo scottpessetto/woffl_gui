@@ -16,6 +16,22 @@ import streamlit as st
 # Add the parent directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+# Multi-well optimization imports
+from woffl.assembly.network_optimizer import (
+    NetworkOptimizer,
+    PowerFluidConstraint,
+    load_wells_from_csv,
+)
+from woffl.assembly.optimization_algorithms import optimize
+from woffl.gui.optimization_utils import get_template_csv_content
+from woffl.gui.optimization_viz import (
+    create_efficiency_scatter,
+    create_marginal_rate_chart,
+    create_oil_rate_bar_chart,
+    create_power_fluid_pie_chart,
+    create_pump_config_chart,
+    create_watercut_comparison,
+)
 from woffl.gui.utils import (
     create_inflow,
     create_jetpump,
@@ -48,7 +64,22 @@ def main():
 
     st.title("WOFFL Jetpump Simulator")
 
-    # Sidebar - Input Parameters
+    # Mode selection
+    app_mode = st.radio(
+        "Select Analysis Mode:",
+        ["Single Well Analysis", "Multi-Well Optimization"],
+        horizontal=True,
+        help="Single Well: Analyze one well in detail. Multi-Well: Optimize pump sizing across multiple wells.",
+    )
+
+    if app_mode == "Multi-Well Optimization":
+        # Run multi-well optimization interface
+        from woffl.gui.multi_well_page import run_multi_well_optimization_page
+
+        run_multi_well_optimization_page()
+        return  # Exit to avoid running single-well interface
+
+    # Sidebar - Input Parameters (Single Well Mode)
     with st.sidebar:
 
         run_button = st.button("Run Simulation")
@@ -356,7 +387,16 @@ def main():
                 tab2,
                 tab3,
                 tab4,
-            ) = st.tabs(["Jetpump Solution", "Batch Run", "Power Fluid Range Analysis", "Well Profile"])
+                tab5,
+            ) = st.tabs(
+                [
+                    "Jetpump Solution",
+                    "Batch Run",
+                    "Power Fluid Range Analysis",
+                    "Well Profile",
+                    "Multi-Well Optimization",
+                ]
+            )
 
             with tab1:
                 st.subheader("Jetpump Solver Results")
@@ -1102,6 +1142,210 @@ def main():
                 Deviation indicates how far the well has moved horizontally from the surface location.
                 """
                 )
+
+            with tab5:
+                st.subheader("Multi-Well Jet Pump Optimization")
+                st.markdown(
+                    """
+                Optimize jet pump sizing across multiple wells to maximize field oil production
+                given a constrained power fluid supply.
+                """
+                )
+
+                # Power Fluid Constraint Input
+                st.write("### Power Fluid Constraint")
+                col1, col2 = st.columns(2)
+                with col1:
+                    total_pf = st.number_input(
+                        "Total Available Power Fluid (bbl/day)",
+                        min_value=0,
+                        max_value=50000,
+                        value=10000,
+                        step=500,
+                        help="Total power fluid capacity available for all wells",
+                    )
+                with col2:
+                    pf_pressure = st.number_input(
+                        "Power Fluid Pressure (psi)",
+                        min_value=1000,
+                        max_value=5000,
+                        value=ppf_surf,
+                        step=100,
+                        help="Surface power fluid pressure",
+                    )
+
+                # CSV Upload
+                st.write("### Well Configuration")
+                uploaded_file = st.file_uploader(
+                    "Upload Well Configuration CSV",
+                    type=["csv"],
+                    help="Upload a CSV file with well configurations. Wells in jp_chars.csv will auto-populate.",
+                )
+
+                # Download template
+                template_csv = get_template_csv_content()
+                st.download_button(
+                    label="Download CSV Template",
+                    data=template_csv,
+                    file_name="well_optimization_template.csv",
+                    mime="text/csv",
+                    help="Download a template CSV with example wells",
+                )
+
+                #  Optimization Settings
+                st.write("### Optimization Settings")
+                col1, col2 = st.columns(2)
+                with col1:
+                    opt_method = st.selectbox(
+                        "Optimization Method",
+                        ["greedy", "proportional"],
+                        index=0,
+                        help="Greedy: Iteratively allocate to highest marginal producer. Proportional: Allocate based on productivity.",
+                    )
+                with col2:
+                    opt_marginal_wc = st.number_input(
+                        "Marginal Watercut Threshold",
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=marginal_watercut,
+                        step=0.01,
+                        format="%.2f",
+                    )
+
+                # Run Optimization Button
+                if st.button("Run Multi-Well Optimization", type="primary") and uploaded_file:
+                    try:
+                        # Save uploaded file temporarily
+                        import tempfile
+
+                        with tempfile.NamedTemporaryFile(mode="wb", suffix=".csv", delete=False) as f:
+                            f.write(uploaded_file.getvalue())
+                            temp_csv_path = f.name
+
+                        # Load wells and create optimizer
+                        with st.spinner("Loading well configurations..."):
+                            wells = load_wells_from_csv(temp_csv_path)
+                            st.success(f"✅ Loaded {len(wells)} wells from CSV")
+
+                        pf_constraint = PowerFluidConstraint(total_rate=total_pf, pressure=pf_pressure, rho_pf=rho_pf)
+
+                        optimizer = NetworkOptimizer(
+                            wells=wells,
+                            power_fluid=pf_constraint,
+                            nozzle_options=nozzle_batch_options if nozzle_batch_options else ["10", "11", "12"],
+                            throat_options=throat_batch_options if throat_batch_options else ["B", "C", "D"],
+                            marginal_watercut=opt_marginal_wc,
+                        )
+
+                        # Run batch simulations
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+
+                        def progress_callback(current, total, well_name):
+                            progress_bar.progress(current / total if total > 0 else 0)
+                            status_text.text(f"Processing {well_name}... ({current}/{total})")
+
+                        batch_results = optimizer.run_all_batch_simulations(progress_callback)
+                        progress_bar.empty()
+                        status_text.empty()
+
+                        st.success(f"✅ Completed batch simulations for {len(wells)} wells")
+
+                        # Run optimization
+                        with st.spinner(f"Running {opt_method} optimization..."):
+                            results = optimize(optimizer, method=opt_method)
+
+                        if results:
+                            st.success(f"✅ Optimization complete! Allocated pumps to {len(results)} wells")
+
+                            # Display results in tabs
+                            opt_tab1, opt_tab2, opt_tab3, opt_tab4 = st.tabs(
+                                ["Summary", "Well Details", "Visualizations", "Export"]
+                            )
+
+                            with opt_tab1:
+                                st.write("### Field-Level Metrics")
+                                metrics = optimizer.calculate_field_metrics()
+
+                                col1, col2, col3, col4 = st.columns(4)
+                                with col1:
+                                    st.metric("Total Oil Rate", f"{metrics['total_oil_rate']:.1f} BOPD")
+                                    st.metric("Wells Optimized", metrics["num_wells"])
+                                with col2:
+                                    st.metric("Total Water Rate", f"{metrics['total_water_rate']:.1f} BWPD")
+                                    st.metric("Field Watercut", f"{metrics['field_watercut']:.1%}")
+                                with col3:
+                                    st.metric("Power Fluid Used", f"{metrics['total_power_fluid']:.1f} BWPD")
+                                    st.metric("PF Utilization", f"{metrics['power_fluid_utilization']:.1%}")
+                                with col4:
+                                    st.metric("Avg Marginal Oil", f"{metrics['average_marginal_oil']:.3f}")
+                                    st.metric("Sonic Wells", f"{metrics['num_sonic']}/{metrics['num_wells']}")
+
+                            with opt_tab2:
+                                st.write("### Well-Level Results")
+                                results_df = optimizer.to_dataframe()
+                                st.dataframe(results_df, use_container_width=True)
+
+                            with opt_tab3:
+                                st.write("### Optimization Visualizations")
+
+                                viz_col1, viz_col2 = st.columns(2)
+
+                                with viz_col1:
+                                    st.write("#### Power Fluid Allocation")
+                                    fig_pie = create_power_fluid_pie_chart(results)
+                                    st.pyplot(fig_pie)
+
+                                    st.write("#### Oil Rate by Well")
+                                    fig_oil = create_oil_rate_bar_chart(results)
+                                    st.pyplot(fig_oil)
+
+                                with viz_col2:
+                                    st.write("#### Pump Configurations")
+                                    fig_config = create_pump_config_chart(results)
+                                    st.pyplot(fig_config)
+
+                                    st.write("#### Watercut Comparison")
+                                    fig_wc = create_watercut_comparison(results)
+                                    st.pyplot(fig_wc)
+
+                                st.write("#### Efficiency Analysis")
+                                col_a, col_b = st.columns(2)
+
+                                with col_a:
+                                    st.write("##### Oil vs Power Fluid")
+                                    fig_eff = create_efficiency_scatter(results)
+                                    st.pyplot(fig_eff)
+
+                                with col_b:
+                                    st.write("##### Marginal Oil Rates")
+                                    fig_marg = create_marginal_rate_chart(results)
+                                    st.pyplot(fig_marg)
+
+                            with opt_tab4:
+                                st.write("### Export Results")
+                                results_df = optimizer.to_dataframe()
+                                csv_data = results_df.to_csv(index=False)
+                                st.download_button(
+                                    label="Download Optimization Results CSV",
+                                    data=csv_data,
+                                    file_name="multi_well_optimization_results.csv",
+                                    mime="text/csv",
+                                )
+                        else:
+                            st.warning("Optimization did not produce viable results. Try adjusting constraints.")
+
+                        # Clean up temp file
+                        import os
+
+                        os.unlink(temp_csv_path)
+
+                    except Exception as e:
+                        st.error(f"Error during optimization: {str(e)}")
+                        st.exception(e)
+
+                elif not uploaded_file:
+                    st.info("👆 Upload a CSV file to begin multi-well optimization")
 
     else:
         st.info("Adjust the parameters in the sidebar and click 'Run Simulation' to generate results.")
