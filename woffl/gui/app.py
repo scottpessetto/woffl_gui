@@ -387,14 +387,12 @@ def main():
                 tab2,
                 tab3,
                 tab4,
-                tab5,
             ) = st.tabs(
                 [
                     "Jetpump Solution",
                     "Batch Run",
                     "Power Fluid Range Analysis",
                     "Well Profile",
-                    "Multi-Well Optimization",
                 ]
             )
 
@@ -1143,14 +1141,10 @@ def main():
                 """
                 )
 
-            with tab5:
-                st.subheader("Multi-Well Jet Pump Optimization")
-                st.markdown(
-                    """
+                """
                 Optimize jet pump sizing across multiple wells to maximize field oil production
                 given a constrained power fluid supply.
                 """
-                )
 
                 # Power Fluid Constraint Input
                 st.write("### Power Fluid Constraint")
