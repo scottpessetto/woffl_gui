@@ -8,7 +8,11 @@ import tempfile
 
 import matplotlib.pyplot as plt
 import streamlit as st
-from woffl.assembly.network_optimizer import PowerFluidConstraint, load_wells_from_csv
+from woffl.assembly.network_optimizer import (
+    NetworkOptimizer,
+    PowerFluidConstraint,
+    load_wells_from_csv,
+)
 from woffl.assembly.optimization_algorithms import optimize
 from woffl.gui.optimization_utils import get_template_csv_content
 from woffl.gui.optimization_viz import (
@@ -77,14 +81,14 @@ def run_multi_well_optimization_page():
         nozzle_opts = st.multiselect(
             "Nozzle Sizes",
             ["8", "9", "10", "11", "12", "13", "14", "15"],
-            default=["10", "11", "12", "13"],
+            default=["8", "9", "10", "11", "12", "13", "14"],
             help="Select nozzle sizes to test during optimization",
         )
 
         throat_opts = st.multiselect(
             "Throat Ratios",
             ["X", "A", "B", "C", "D", "E"],
-            default=["B", "C", "D"],
+            default=["X", "A", "B", "C", "D"],
             help="Select throat ratios to test during optimization",
         )
 
@@ -164,8 +168,6 @@ def run_multi_well_optimization_page():
 
             # Load wells
             with st.spinner("Loading well configurations..."):
-                from woffl.assembly.network_optimizer import NetworkOptimizer
-
                 wells = load_wells_from_csv(temp_csv_path)
                 st.success(f"✅ Loaded {len(wells)} wells from CSV")
 
@@ -300,6 +302,10 @@ def run_multi_well_optimization_page():
 
             # Clean up temp file
             os.unlink(temp_csv_path)
+
+        except Exception as e:
+            st.error(f"❌ Error during optimization: {str(e)}")
+            st.exception(e)
 
         except Exception as e:
             st.error(f"❌ Error during optimization: {str(e)}")

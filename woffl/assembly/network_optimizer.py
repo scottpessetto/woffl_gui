@@ -196,48 +196,21 @@ class NetworkOptimizer:
         Returns:
             tuple: (tube, wellprofile, inflow, res_mix)
         """
-        from woffl.flow.inflow import InFlow
-        from woffl.geometry.pipe import Pipe
-        from woffl.geometry.wellprofile import WellProfile
-        from woffl.pvt.blackoil import BlackOil
-        from woffl.pvt.formgas import FormGas
-        from woffl.pvt.formwat import FormWater
-        from woffl.pvt.resmix import ResMix
+        from woffl.gui.utils import create_pvt_components
 
         # Create tubing
         tube = Pipe(out_dia=well.tubing_od, thick=well.tubing_thickness)
 
-        # Create well profile
-        field_model_lower = well.field_model.lower()
-        if field_model_lower == "schrader":
-            well_profile = WellProfile.schrader()
-        else:
-            well_profile = WellProfile.kuparuk()
-
-        # Adjust well profile for jetpump depth
-        # Use the well's jpump_md directly (it was set from jpump_tvd in __post_init__ if not provided)
-        try:
-            #  Recreate well profile with correct jetpump MD
-            well_profile = WellProfile(
-                md_list=well_profile.md_ray, vd_list=well_profile.vd_ray, jetpump_md=well.jpump_md
-            )
-        except Exception:
-            # If this fails, use the default well profile as-is
-            pass
+        # Create well profile — use actual survey if available, else generic template
+        # jpump_md is always set by __post_init__ (defaults to jpump_tvd when None)
+        jpump_md = well.jpump_md if well.jpump_md is not None else well.jpump_tvd
+        well_profile = _load_well_profile(well.well_name, jpump_md, well.field_model)
 
         # Create inflow
         inflow = InFlow(qwf=well.qwf, pwf=well.pwf, pres=well.res_pres)
 
-        # Create reservoir mix
-        if field_model_lower == "schrader":
-            oil = BlackOil.schrader()
-            water = FormWater.schrader()
-            gas = FormGas.schrader()
-        else:
-            oil = BlackOil.kuparuk()
-            water = FormWater.kuparuk()
-            gas = FormGas.kuparuk()
-
+        # Create reservoir mix using shared PVT factory
+        oil, water, gas = create_pvt_components(well.field_model)
         res_mix = ResMix(wc=well.form_wc, fgor=well.form_gor, oil=oil, wat=water, gas=gas)
 
         return tube, well_profile, inflow, res_mix
@@ -482,6 +455,48 @@ class NetworkOptimizer:
         return pd.DataFrame(data)
 
 
+def _load_well_profile(well_name: str, jpump_md: float, field_model: str) -> WellProfile:
+    """Load WellProfile using actual deviation survey CSV if available, else generic template.
+
+    Looks for a file named '<well_name> Deviation Survey.csv' in the jp_data/well_surveys/
+    directory relative to this module. If found, the actual MD and TVD arrays are used.
+    If not found (or on any read error), falls back to the generic Schrader or Kuparuk
+    template profile.
+
+    Args:
+        well_name (str): Well identifier (e.g. "MPB-28")
+        jpump_md (float): Jet pump measured depth, ft
+        field_model (str): "Schrader" or "Kuparuk" — used for the fallback template
+
+    Returns:
+        WellProfile: Well profile with the well-specific jetpump_md set
+    """
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    survey_path = os.path.join(current_dir, "..", "jp_data", "well_surveys", f"{well_name} Deviation Survey.csv")
+
+    if os.path.exists(survey_path):
+        try:
+            df = pd.read_csv(survey_path)
+            md_list = df["meas_depth"].tolist()
+            tvd_list = df["tvd_depth"].tolist()
+            return WellProfile(md_list=md_list, vd_list=tvd_list, jetpump_md=jpump_md)
+        except Exception as exc:
+            print(f"Warning: Could not load survey for {well_name}: {exc}. Using generic template.")
+
+    # Fallback: generic template profile
+    if field_model.lower() == "schrader":
+        well_profile = WellProfile.schrader()
+    else:
+        well_profile = WellProfile.kuparuk()
+
+    try:
+        well_profile = WellProfile(md_list=well_profile.md_ray, vd_list=well_profile.vd_ray, jetpump_md=jpump_md)
+    except Exception:
+        pass  # keep the template's default jetpump_md if the well-specific one is out of range
+
+    return well_profile
+
+
 def load_jp_chars(jp_chars_path: Optional[str] = None) -> dict:
     """Load jet pump characteristics database
 
@@ -578,7 +593,7 @@ def load_wells_from_csv(csv_path: str, jp_chars_path: Optional[str] = None) -> l
                     else "Kuparuk"
                 ),
                 "surf_pres": float(base_config.get("surf_pres", 210)),
-                "qwf": float(base_config.get("qwf", 750)),
+                "qwf": float(base_config.get("qwf_bopd") or base_config.get("qwf", 750)),
                 "pwf": float(base_config.get("pwf", 500)),
             }
 
@@ -608,12 +623,15 @@ def create_well_template_csv() -> str:
     Returns:
         CSV template as string
     """
-    template = """Well,res_pres,form_temp,JP_TVD,JP_MD,out_dia,thick,casing_od,casing_thick,form_wc,form_gor,field_model,surf_pres,qwf,pwf,comments
-MPB-28,,,,,,,,,,,,,,,Auto-populated from jp_chars.csv
-MPB-30,,,,,,,,,,,,,,,Auto-populated from jp_chars.csv
-MPE-35,,,,,,,,,,,,,,,Auto-populated from jp_chars.csv
-CustomWell-1,1500,75,4000,4500,4.5,0.271,6.875,0.5,0.45,250,Schrader,210,800,500,Example custom well
-CustomWell-2,1600,80,4200,4700,4.5,0.271,6.875,0.5,0.50,300,Kuparuk,220,750,550,Example custom well"""
+    template = (
+        "Well,res_pres,form_temp,JP_TVD,JP_MD,out_dia,thick,"
+        "casing_od,casing_thick,form_wc,form_gor,field_model,surf_pres,qwf_bopd,pwf,comments\n"
+        "MPB-28,,,,,,,,,,,,,,,Auto-populated from jp_chars.csv\n"
+        "MPB-30,,,,,,,,,,,,,,,Auto-populated from jp_chars.csv\n"
+        "MPE-35,,,,,,,,,,,,,,,Auto-populated from jp_chars.csv\n"
+        "CustomWell-1,1500,75,4000,4500,4.5,0.271,6.875,0.5,0.45,250,Schrader,210,800,500,Example custom well\n"
+        "CustomWell-2,1600,80,4200,4700,4.5,0.271,6.875,0.5,0.50,300,Kuparuk,220,750,550,Example custom well"
+    )
     return template
 
 

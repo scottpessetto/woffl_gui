@@ -1,4 +1,4 @@
-Well,res_pres,form_temp,JP_TVD,JP_MD,out_dia,thick,casing_od,casing_thick,form_wc,form_gor,field_model,surf_pres,qwf,pwf,comments
+Well,res_pres,form_temp,JP_TVD,JP_MD,out_dia,thick,casing_od,casing_thick,form_wc,form_gor,field_model,surf_pres,qwf_bopd,pwf,comments
 MPB-28,,,,,,,,,,,,,,,Auto-populated from jp_chars.csv
 MPB-30,,,,,,,,,,,,,,,Auto-populated from jp_chars.csv
 MPE-35,,,,,,,,,,,,,,,Auto-populated from jp_chars.csv

@@ -73,6 +73,13 @@ def batch_curve_fit(qoil_filt: np.ndarray, qwat_filt: np.ndarray, origin: bool =
         qoil_filt = np.append(qoil_filt, 0.0)
         qwat_filt = np.append(qwat_filt, 0.0)
 
+    n_params = 3  # exp_model has 3 parameters: a, b, c
+    if len(qoil_filt) < n_params:
+        raise ValueError(
+            f"Not enough data points for curve fit: need at least {n_params}, got {len(qoil_filt)}. "
+            f"Try running more nozzle/throat combinations or set origin=True to add an origin point."
+        )
+
     initial_guesses = [max(qoil_filt), max(qoil_filt), 0.001]
     coeff, _ = opt.curve_fit(exp_model, qwat_filt, qoil_filt, p0=initial_guesses)
     return coeff

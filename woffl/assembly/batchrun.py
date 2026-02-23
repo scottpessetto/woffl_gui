@@ -13,10 +13,9 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.axes import Axes
-
 import woffl.assembly.curvefit as cf
 import woffl.assembly.sysops as so
+from matplotlib.axes import Axes
 from woffl.flow.inflow import InFlow
 from woffl.geometry.jetpump import JetPump
 from woffl.geometry.pipe import Annulus, Pipe
@@ -229,8 +228,12 @@ class BatchPump:
 
         self.df = self.df.merge(semi_df[["motwr", "molwr"]], left_index=True, right_index=True, how="left")
 
-        self.coeff_totl = cf.batch_curve_fit(qoil_semi, twat_semi, origin=False)
-        self.coeff_lift = cf.batch_curve_fit(qoil_semi, lwat_semi, origin=False)
+        n_semi = len(qoil_semi)
+        n_params = 3  # exp_model has 3 parameters: a, b, c
+        # fall back to origin=True (adds a (0,0) anchor point) when there are too few semi-finalists
+        use_origin = n_semi < n_params
+        self.coeff_totl = cf.batch_curve_fit(qoil_semi, twat_semi, origin=use_origin)
+        self.coeff_lift = cf.batch_curve_fit(qoil_semi, lwat_semi, origin=use_origin)
 
         return self.df
 

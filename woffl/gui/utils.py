@@ -8,7 +8,7 @@ import os
 import numpy as np
 import pandas as pd
 import streamlit as st
-from woffl.assembly.batchrun import BatchPump
+from woffl.assembly.batchrun import BatchPump, validate_water
 from woffl.assembly.curvefit import exp_model, rev_exp_deriv
 from woffl.assembly.sysops import jetpump_solver
 from woffl.flow import jetgraphs as jg
@@ -28,28 +28,35 @@ def create_jetpump(nozzle_no, area_ratio, ken, kth, kdi):
     return JetPump(nozzle_no=nozzle_no, area_ratio=area_ratio, ken=ken, kth=kth, kdi=kdi)
 
 
-def create_reservoir_mix(wc, gor, temp, field_model=None):
-    """Create a ResMix object with the given parameters."""
-    # Default to schrader if field_model is None or an unknown model
+def create_pvt_components(field_model=None):
+    """Create PVT components (oil, water, gas) for the given field model.
+
+    This is the single source of truth for Schrader/Kuparuk PVT model selection.
+    Used by both create_reservoir_mix() and network_optimizer._create_well_objects().
+
+    Args:
+        field_model (str, optional): "Schrader" or "Kuparuk" (case-insensitive).
+            Defaults to "schrader" if None or unrecognized.
+
+    Returns:
+        tuple: (BlackOil, FormWater, FormGas) instances
+    """
     if field_model is None:
         field_model = "schrader"
 
-    field_model = field_model.lower()  # Convert to lowercase for case-insensitive comparison
+    field_model = field_model.lower()
 
     if field_model == "schrader":
-        oil = BlackOil.schrader()
-        water = FormWater.schrader()
-        gas = FormGas.schrader()
+        return BlackOil.schrader(), FormWater.schrader(), FormGas.schrader()
     elif field_model == "kuparuk":
-        oil = BlackOil.kuparuk()
-        water = FormWater.kuparuk()
-        gas = FormGas.kuparuk()
+        return BlackOil.kuparuk(), FormWater.kuparuk(), FormGas.kuparuk()
     else:
-        # Default to schrader if an unknown model is specified
-        oil = BlackOil.schrader()
-        water = FormWater.schrader()
-        gas = FormGas.schrader()
+        return BlackOil.schrader(), FormWater.schrader(), FormGas.schrader()
 
+
+def create_reservoir_mix(wc, gor, temp, field_model=None):
+    """Create a ResMix object with the given parameters."""
+    oil, water, gas = create_pvt_components(field_model)
     return ResMix(wc=wc, fgor=gor, oil=oil, wat=water, gas=gas)
 
 
@@ -276,8 +283,8 @@ def recommend_jetpump(batch_pump, marginal_watercut, water_type="lift"):
 def _validate_water_type(water_type):
     """Validate Type of Water String
 
-    Checks that the string passed into a method or argument fits the required description.
-    This is used when the water type wants to be defined as lift or total.
+    Thin wrapper around the canonical validate_water() from batchrun.py.
+    Kept for backward compatibility with existing GUI code.
 
     Args:
         water_type (str): "lift" or "total" depending on the desired analysis
@@ -285,14 +292,7 @@ def _validate_water_type(water_type):
     Returns:
         str: Properly formatted as either "lift" or "total"
     """
-    # Validate the 'water' argument
-    if water_type not in {"lift", "total", "totl"}:
-        raise ValueError(f"Invalid value for 'water_type': {water_type}. Expected 'lift', 'total', or 'totl'.")
-
-    # Standardize "totl" to "total"
-    if water_type == "totl":
-        water_type = "total"
-    return water_type
+    return validate_water(water_type)
 
 
 def highlight_recommended_pump(ax, recommendation, water_type="lift"):
