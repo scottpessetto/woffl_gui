@@ -3,4 +3,8 @@ numpy>=1.26.3
 pandas>=2.1.4
 scipy>=1.11.4
 streamlit>=1.32.0
+plotly>=5.18.0
 woffl
+databricks-sql-connector>=3.0.0
+databricks-sdk>=0.20.0
+python-dotenv>=1.0.0

@@ -3,9 +3,10 @@
 This is the main entry point for the WOFFL Streamlit GUI application.
 It provides a web interface for interacting with the WOFFL package's jetpump functionality.
 
-The application supports two modes:
+The application supports three modes:
 - Single Well Analysis: Detailed analysis of one well with multiple visualization tabs
 - Multi-Well Optimization: Optimize pump sizing across multiple wells
+- Well Test Analysis: Generate Vogel IPR from well tests + Databricks BHP data
 """
 
 import os
@@ -34,10 +35,20 @@ def main():
     # Mode selection
     app_mode = st.radio(
         "Select Analysis Mode:",
-        ["Single Well Analysis", "Multi-Well Optimization"],
+        ["Single Well Analysis", "Multi-Well Optimization", "Well Test Analysis"],
         horizontal=True,
-        help="Single Well: Analyze one well in detail. Multi-Well: Optimize pump sizing across multiple wells.",
+        help=(
+            "Single Well: Analyze one well in detail. "
+            "Multi-Well: Optimize pump sizing across multiple wells. "
+            "Well Test: Generate Vogel IPR from well tests + Databricks BHP data."
+        ),
     )
+
+    if app_mode == "Well Test Analysis":
+        from woffl.gui.well_test_page import run_well_test_analysis_page
+
+        run_well_test_analysis_page()
+        return
 
     if app_mode == "Multi-Well Optimization":
         from woffl.gui.multi_well_page import run_multi_well_optimization_page
