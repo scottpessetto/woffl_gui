@@ -1,8 +1,10 @@
 """Databricks SQL Client
 
 Centralized Databricks connectivity module that works in two environments:
-- Inside a Databricks App: Uses the Databricks SDK with automatic service principal auth
+- Inside a Databricks App: Uses auto-injected DATABRICKS_HOST and DATABRICKS_TOKEN
+  with the HTTP path derived from DEFAULT_WAREHOUSE_ID
 - Local development: Uses databricks-sql-connector with .env credentials
+  (bricks_host, bricks_http, bricks_token)
 
 Adapted from header_pressure_impact/pull_data/pull_tags.py query patterns.
 """
@@ -17,43 +19,13 @@ import pandas as pd
 DEFAULT_WAREHOUSE_ID = "ce196438d74e4329"
 
 
-def is_databricks_app() -> bool:
-    """Detect if running inside a Databricks App environment."""
-    return os.getenv("DATABRICKS_APP_NAME") is not None or os.path.exists("/databricks")
-
-
-def _query_via_sdk(query: str, warehouse_id: str = DEFAULT_WAREHOUSE_ID) -> pd.DataFrame:
-    """Execute SQL via Databricks SDK Statement Execution API (inside Databricks App).
-
-    Args:
-        query: SQL query string
-        warehouse_id: SQL warehouse ID
-
-    Returns:
-        pd.DataFrame with query results
-    """
-    from databricks.sdk import WorkspaceClient
-
-    w = WorkspaceClient()
-    response = w.statement_execution.execute_statement(
-        warehouse_id=warehouse_id,
-        statement=query,
-        wait_timeout="120s",
-    )
-
-    if response.status and response.status.state and response.status.state.value == "FAILED":
-        error_msg = response.status.error.message if response.status.error else "Unknown error"
-        raise RuntimeError(f"Databricks query failed: {error_msg}")
-
-    columns = [col.name for col in response.manifest.schema.columns]
-    rows = response.result.data_array if response.result and response.result.data_array else []
-    return pd.DataFrame(rows, columns=columns)
-
-
 def _query_via_connector(query: str) -> pd.DataFrame:
-    """Execute SQL via databricks-sql-connector (local development).
+    """Execute SQL via databricks-sql-connector.
 
-    Uses credentials from .env file: bricks_host, bricks_http, bricks_token.
+    Credential resolution order:
+      1. bricks_host / bricks_token / bricks_http  (.env — local development)
+      2. DATABRICKS_HOST / DATABRICKS_TOKEN         (auto-injected by Databricks App runtime)
+         HTTP path is derived from DEFAULT_WAREHOUSE_ID when bricks_http is not set.
 
     Args:
         query: SQL query string
@@ -66,13 +38,17 @@ def _query_via_connector(query: str) -> pd.DataFrame:
 
     load_dotenv()
 
-    host = os.getenv("bricks_host")
-    http_path = os.getenv("bricks_http")
-    token = os.getenv("bricks_token")
+    # Try local .env-style vars first, then fall back to Databricks App injected vars
+    host = os.getenv("bricks_host") or os.getenv("DATABRICKS_HOST")
+    token = os.getenv("bricks_token") or os.getenv("DATABRICKS_TOKEN")
+    http_path = os.getenv("bricks_http") or f"/sql/1.0/warehouses/{DEFAULT_WAREHOUSE_ID}"
 
-    if not all([host, http_path, token]):
+    if not all([host, token]):
         raise RuntimeError(
-            "Missing Databricks credentials in .env file. " "Required: bricks_host, bricks_http, bricks_token"
+            "Missing Databricks credentials. "
+            "For local development set bricks_host, bricks_token, bricks_http in .env. "
+            "For Databricks App deployment, DATABRICKS_HOST and DATABRICKS_TOKEN are "
+            "injected automatically."
         )
 
     connection = sql.connect(
@@ -85,7 +61,7 @@ def _query_via_connector(query: str) -> pd.DataFrame:
         cursor = connection.cursor()
         cursor.execute(query)
         result = cursor.fetchall()
-        columns = [desc[0] for desc in cursor.description]
+        columns = [desc[0] for desc in (cursor.description or [])]
         cursor.close()
     finally:
         connection.close()
@@ -94,7 +70,10 @@ def _query_via_connector(query: str) -> pd.DataFrame:
 
 
 def execute_query(query: str) -> pd.DataFrame:
-    """Execute a SQL query against Databricks, auto-detecting the environment.
+    """Execute a SQL query against Databricks.
+
+    Works in both local development (using .env credentials) and
+    inside a Databricks App (using auto-injected environment variables).
 
     Args:
         query: SQL query string
@@ -102,10 +81,7 @@ def execute_query(query: str) -> pd.DataFrame:
     Returns:
         pd.DataFrame with query results
     """
-    if is_databricks_app():
-        return _query_via_sdk(query)
-    else:
-        return _query_via_connector(query)
+    return _query_via_connector(query)
 
 
 def load_tag_dict(custom_source=None) -> Dict[str, Tuple[str, str, str]]:
