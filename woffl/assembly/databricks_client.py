@@ -1,61 +1,70 @@
 """Databricks SQL Client
 
 Centralized Databricks connectivity module that works in two environments:
-- Inside a Databricks App: Uses auto-injected DATABRICKS_HOST and DATABRICKS_TOKEN
-  with the HTTP path derived from DEFAULT_WAREHOUSE_ID
+- Inside a Databricks App: Uses DATABRICKS_HOST + DATABRICKS_CLIENT_ID/SECRET (OAuth M2M)
 - Local development: Uses databricks-sql-connector with .env credentials
   (bricks_host, bricks_http, bricks_token)
-
-Adapted from header_pressure_impact/pull_data/pull_tags.py query patterns.
 """
 
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import pandas as pd
 
-# SQL warehouse ID (matches app.yaml resource)
 DEFAULT_WAREHOUSE_ID = "698745db7da46ba3"
 
 
+def _is_deployed() -> bool:
+    return bool(os.getenv("DATABRICKS_CLIENT_ID") and os.getenv("DATABRICKS_CLIENT_SECRET"))
+
+
 def _query_via_connector(query: str) -> pd.DataFrame:
-    """Execute SQL via databricks-sql-connector.
-
-    Credential resolution order:
-      1. bricks_host / bricks_token / bricks_http  (.env — local development)
-      2. DATABRICKS_HOST / DATABRICKS_TOKEN         (auto-injected by Databricks App runtime)
-         HTTP path is derived from DEFAULT_WAREHOUSE_ID when bricks_http is not set.
-
-    Args:
-        query: SQL query string
-
-    Returns:
-        pd.DataFrame with query results
-    """
     from databricks import sql
-    from dotenv import load_dotenv
 
-    load_dotenv()
+    if _is_deployed():
+        from databricks.sdk.oauth import ClientCredentials, OAuthClient
 
-    # Try local .env-style vars first, then fall back to Databricks App injected vars
-    host = os.getenv("bricks_host") or os.getenv("DATABRICKS_HOST")
-    token = os.getenv("bricks_token") or os.getenv("DATABRICKS_TOKEN")
-    http_path = os.getenv("bricks_http") or f"/sql/1.0/warehouses/{DEFAULT_WAREHOUSE_ID}"
+        host = os.getenv("DATABRICKS_HOST")
+        client_id = os.getenv("DATABRICKS_CLIENT_ID")
+        client_secret = os.getenv("DATABRICKS_CLIENT_SECRET")
+        http_path = f"/sql/1.0/warehouses/{DEFAULT_WAREHOUSE_ID}"
 
-    if not all([host, token]):
-        raise RuntimeError(
-            "Missing Databricks credentials. "
-            "For local development set bricks_host, bricks_token, bricks_http in .env. "
-            "For Databricks App deployment, DATABRICKS_HOST and DATABRICKS_TOKEN are "
-            "injected automatically."
+        if not all([host, client_id, client_secret]):
+            raise RuntimeError("Missing deployed Databricks OAuth credentials.")
+
+        oauth_client = OAuthClient(
+            host=f"https://{host}",
+            client_id=client_id,
+            client_secret=client_secret,
         )
+        credentials_provider = ClientCredentials(oauth_client)
 
-    connection = sql.connect(
-        server_hostname=host,
-        http_path=http_path,
-        access_token=token,
-    )
+        connection = sql.connect(
+            server_hostname=host,
+            http_path=http_path,
+            credentials_provider=credentials_provider,
+        )
+    else:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+
+        host = os.getenv("bricks_host")
+        token = os.getenv("bricks_token")
+        http_path = os.getenv("bricks_http") or f"/sql/1.0/warehouses/{DEFAULT_WAREHOUSE_ID}"
+
+        if not all([host, token]):
+            raise RuntimeError(
+                "Missing local Databricks credentials. "
+                "Set bricks_host, bricks_token, and optionally bricks_http in your .env file."
+            )
+
+        connection = sql.connect(
+            server_hostname=host,
+            http_path=http_path,
+            access_token=token,
+        )
 
     try:
         cursor = connection.cursor()
@@ -70,42 +79,21 @@ def _query_via_connector(query: str) -> pd.DataFrame:
 
 
 def execute_query(query: str) -> pd.DataFrame:
-    """Execute a SQL query against Databricks.
-
-    Works in both local development (using .env credentials) and
-    inside a Databricks App (using auto-injected environment variables).
-
-    Args:
-        query: SQL query string
-
-    Returns:
-        pd.DataFrame with query results
-    """
     return _query_via_connector(query)
 
 
 def load_tag_dict(custom_source=None) -> Dict[str, Tuple[str, str, str]]:
-    """Load SCADA tag mapping from bhp_dict.csv.
-
-    Maps well names to (bhp_tag, headerP_tag, whp_tag) tuples.
-
-    Args:
-        custom_source: Optional path (str/Path) or file-like object (e.g. Streamlit UploadedFile)
-            for a custom tag mapping CSV. If None, uses the bundled bhp_dict.csv in jp_data/.
-
-    Returns:
-        Dictionary mapping well name to (bhp_tag, headerP_tag, whp_tag)
-    """
+    """Load SCADA tag mapping from bhp_dict.csv."""
     if custom_source is not None:
         if isinstance(custom_source, (str, Path)):
             df = pd.read_csv(Path(custom_source))
         else:
-            # File-like object (e.g. Streamlit UploadedFile)
             df = pd.read_csv(custom_source)
     else:
         current_dir = Path(__file__).parent
         dict_path = current_dir / ".." / "jp_data" / "bhp_dict.csv"
         df = pd.read_csv(dict_path)
+
     tag_dict = {}
     for _, row in df.iterrows():
         tag_dict[row["wellname"]] = (
@@ -119,15 +107,6 @@ def load_tag_dict(custom_source=None) -> Dict[str, Tuple[str, str, str]]:
 def get_tags_for_wells(
     wells: List[str], tag_dict: Dict[str, Tuple[str, str, str]]
 ) -> Tuple[Dict[str, Tuple[str, str, str]], List[str]]:
-    """Get SCADA tags for specified wells.
-
-    Args:
-        wells: List of well names to look up
-        tag_dict: Full tag dictionary from load_tag_dict()
-
-    Returns:
-        Tuple of (found_tags_dict, missing_wells_list)
-    """
     found = {}
     missing = []
     for well in wells:
@@ -142,27 +121,12 @@ def query_bhp_for_well_tests(
     tag_dict: Dict[str, Tuple[str, str, str]],
     well_list: List[str],
 ) -> Dict[str, pd.DataFrame]:
-    """Query Databricks for 6-hour time-weighted average BHP data aligned to test dates.
-
-    Returns the max 6-hour average per day per tag — best captures test conditions.
-
-    Adapted from header_pressure_impact/pull_data/pull_tags.py query_tag_WT_average().
-
-    Args:
-        tag_dict: Dictionary mapping well names to (bhp_tag, headerP_tag, whp_tag)
-        well_list: List of well names to query
-
-    Returns:
-        Dictionary mapping well name to DataFrame with BHP, HeaderP, WHP columns
-        indexed by datetime
-    """
-    # Get tags only for requested wells
+    """Query Databricks for 6-hour time-weighted average BHP data aligned to test dates."""
     well_tags, _ = get_tags_for_wells(well_list, tag_dict)
 
     if not well_tags:
         return {}
 
-    # Build flat tag list for SQL IN clause
     flat_tag_list = []
     for bhp_tag, headerP_tag, whp_tag in well_tags.values():
         for tag in [bhp_tag, headerP_tag, whp_tag]:
@@ -201,7 +165,6 @@ def query_bhp_for_well_tests(
     raw = execute_query(query)
     raw["date"] = pd.to_datetime(raw["date"])
 
-    # Pivot into per-well DataFrames
     well_dfs = {}
     for well, (bhp_tag, headerP_tag, whp_tag) in well_tags.items():
         well_df = raw[raw["tag"].isin([bhp_tag, headerP_tag, whp_tag])]
@@ -209,7 +172,6 @@ def query_bhp_for_well_tests(
             well_df_pivoted = well_df.pivot(index="date", columns="tag", values="max_average_value")
             column_mapping = {bhp_tag: "BHP", headerP_tag: "HeaderP", whp_tag: "WHP"}
             well_df_pivoted = well_df_pivoted.rename(columns=column_mapping)
-            # Ensure numeric types
             for col in ["BHP", "HeaderP", "WHP"]:
                 if col in well_df_pivoted.columns:
                     well_df_pivoted[col] = pd.to_numeric(well_df_pivoted[col], errors="coerce")
