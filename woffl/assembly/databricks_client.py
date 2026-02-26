@@ -23,22 +23,34 @@ def _query_via_connector(query: str) -> pd.DataFrame:
     from databricks import sql
 
     if _is_deployed():
-        from databricks.sdk.config import Config
-        from databricks.sdk.oauth import oauth_service_principal
+        import json
+        import urllib.parse
+        import urllib.request
 
         host = os.getenv("DATABRICKS_HOST")
+        client_id = os.getenv("DATABRICKS_CLIENT_ID")
+        client_secret = os.getenv("DATABRICKS_CLIENT_SECRET")
         http_path = f"/sql/1.0/warehouses/{DEFAULT_WAREHOUSE_ID}"
 
-        config = Config(
-            host=f"https://{host}",
-            client_id=os.getenv("DATABRICKS_CLIENT_ID"),
-            client_secret=os.getenv("DATABRICKS_CLIENT_SECRET"),
-        )
+        # Fetch OAuth M2M token directly
+        token_url = f"https://{host}/oidc/v1/token"
+        data = urllib.parse.urlencode(
+            {
+                "grant_type": "client_credentials",
+                "scope": "all-apis",
+            }
+        ).encode()
+        password_mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+        password_mgr.add_password(None, token_url, client_id, client_secret)
+        handler = urllib.request.HTTPBasicAuthHandler(password_mgr)
+        opener = urllib.request.build_opener(handler)
+        with opener.open(urllib.request.Request(token_url, data=data, method="POST")) as resp:
+            token = json.loads(resp.read())["access_token"]
 
         connection = sql.connect(
             server_hostname=host,
             http_path=http_path,
-            credentials_provider=oauth_service_principal(config),
+            access_token=token,
         )
     else:
         from dotenv import load_dotenv
