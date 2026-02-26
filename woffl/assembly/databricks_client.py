@@ -23,27 +23,22 @@ def _query_via_connector(query: str) -> pd.DataFrame:
     from databricks import sql
 
     if _is_deployed():
-        from databricks.sdk.oauth import ClientCredentials, OAuthClient
+        from databricks.sdk.config import Config
+        from databricks.sdk.oauth import oauth_service_principal
 
         host = os.getenv("DATABRICKS_HOST")
-        client_id = os.getenv("DATABRICKS_CLIENT_ID")
-        client_secret = os.getenv("DATABRICKS_CLIENT_SECRET")
         http_path = f"/sql/1.0/warehouses/{DEFAULT_WAREHOUSE_ID}"
 
-        if not all([host, client_id, client_secret]):
-            raise RuntimeError("Missing deployed Databricks OAuth credentials.")
-
-        oauth_client = OAuthClient(
+        config = Config(
             host=f"https://{host}",
-            client_id=client_id,
-            client_secret=client_secret,
+            client_id=os.getenv("DATABRICKS_CLIENT_ID"),
+            client_secret=os.getenv("DATABRICKS_CLIENT_SECRET"),
         )
-        credentials_provider = ClientCredentials(oauth_client)
 
         connection = sql.connect(
             server_hostname=host,
             http_path=http_path,
-            credentials_provider=credentials_provider,
+            credentials_provider=oauth_service_principal(config),
         )
     else:
         from dotenv import load_dotenv
