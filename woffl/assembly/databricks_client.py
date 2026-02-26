@@ -16,7 +16,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 # SQL warehouse ID (matches app.yaml resource)
-DEFAULT_WAREHOUSE_ID = "ce196438d74e4329"
+DEFAULT_WAREHOUSE_ID = "698745db7da46ba3"
 
 
 def _query_via_connector(query: str) -> pd.DataFrame:
