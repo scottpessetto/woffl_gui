@@ -28,6 +28,7 @@ class ResMix:
         self.oil = oil
         self.wat = wat
         self.gas = gas
+        self._cache = {}
 
         # store standard densities so you don't have to call continually
         pstd = 0  # psig standard pressure
@@ -62,7 +63,14 @@ class ResMix:
         # input temp in deg F
         self._pressa = self.press + 14.7  # convert psig to psia
         self._tempr = self.temp + 459.67  # convert fahr to rankine
+        self._cache = {}
         return self
+
+    def _cached(self, key, fn):
+        """Return cached value or compute and cache it."""
+        if key not in self._cache:
+            self._cache[key] = fn()
+        return self._cache[key]
 
     def rho_comp(self) -> tuple[float, float, float]:
         """Density Components
@@ -78,6 +86,9 @@ class ResMix:
             rho_wat (float): density of water, lbm/ft3
             rho_gas (float): density of gas, lbm/ft3
         """
+        return self._cached("rho_comp", self._compute_rho_comp)
+
+    def _compute_rho_comp(self) -> tuple[float, float, float]:
         rho_oil = self.oil.density
         rho_wat = self.wat.density
         rho_gas = self.gas.density
@@ -112,6 +123,9 @@ class ResMix:
         Returns:
             pmix (float): density of mixture, lbm/ft3
         """
+        return self._cached("rho_mix", self._compute_rho_mix)
+
+    def _compute_rho_mix(self) -> float:
         xoil, xwat, xgas = self.mass_fract()
         rho_oil, rho_wat, rho_gas = self.rho_comp()
         rho_mix = self._homogenous_density(xoil, xwat, xgas, rho_oil, rho_wat, rho_gas)
@@ -131,6 +145,9 @@ class ResMix:
             uwat (float): viscosity of water, cP
             ugas (float): viscosity of gas, cP
         """
+        return self._cached("visc_comp", self._compute_visc_comp)
+
+    def _compute_visc_comp(self) -> tuple[float, float, float]:
         uoil = self.oil.viscosity()
         uwat = self.wat.viscosity()
         ugas = self.gas.viscosity()
@@ -196,6 +213,9 @@ class ResMix:
             cw (float): compressibility of oil, psi**-1
             cg (float): compressibility of oil, psi**-1
         """
+        return self._cached("comp_comp", self._compute_comp_comp)
+
+    def _compute_comp_comp(self) -> tuple[float, float, float]:
         co = self.oil.compress()
         cw = self.wat.compress()
         cg = self.gas.compress()
@@ -219,6 +239,9 @@ class ResMix:
         References:
             Derivations from Kaelin available on request
         """
+        return self._cached("mass_fract", self._compute_mass_fract)
+
+    def _compute_mass_fract(self) -> tuple[float, float, float]:
         # use static method from below to run the calcs
         xoil, xwat, xgas = self._owg_mass_fraction(
             self.wc, self.fgor, self.oil.gas_solubility(), self.rho_oil_std, self.rho_wat_std, self.rho_gas_std
@@ -239,6 +262,9 @@ class ResMix:
             ywat (float): volume fraction of water in the mixture
             ygas (float): volume fraction of gas in the mixture
         """
+        return self._cached("volm_fract", self._compute_volm_fract)
+
+    def _compute_volm_fract(self) -> tuple[float, float, float]:
         xoil, xwat, xgas = self.mass_fract()
         rho_oil, rho_wat, rho_gas = self.rho_comp()
         rho_mix = self._homogenous_density(xoil, xwat, xgas, rho_oil, rho_wat, rho_gas)

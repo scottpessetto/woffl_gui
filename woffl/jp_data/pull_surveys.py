@@ -9,21 +9,6 @@ from sqlalchemy import URL, create_engine, text
 
 # Don't initialize Oracle Client - use thin mode instead
 # oracledb.init_oracle_client()  # Commented out to use thin mode
-load_dotenv()
-
-well_chars = pd.read_csv("jp_chars.csv")
-
-
-engine = create_engine(
-    "oracle+oracledb://:@",
-    connect_args={"user": os.getenv("pdb_user"), "password": os.getenv("pdb_pw"), "dsn": "pdbfprd.world"},
-)
-
-pdb_conn = engine.connect()
-
-query = "deviation_survey_pdb.sql"
-with open(query, "r") as f:
-    sql_text = f.read()
 
 
 def tvd_interp(md: List[float], tvd: List[float], md_depth: float) -> float:
@@ -43,39 +28,54 @@ def tvd_interp(md: List[float], tvd: List[float], md_depth: float) -> float:
     return float(tvd_interp)
 
 
-# Check which wells are missing survey files
-wells_to_pull = []
-for index, row in well_chars.iterrows():
-    well_name = row["Well"]
-    survey_file = f"well_surveys/{well_name} Deviation Survey.csv"
+if __name__ == "__main__":
+    load_dotenv()
 
-    if not os.path.exists(survey_file):
-        wells_to_pull.append((index, well_name, row["JP_MD"]))
-        print(f"Missing survey for: {well_name}")
+    well_chars = pd.read_csv("jp_chars.csv")
+
+    engine = create_engine(
+        "oracle+oracledb://:@",
+        connect_args={"user": os.getenv("pdb_user"), "password": os.getenv("pdb_pw"), "dsn": "pdbfprd.world"},
+    )
+    pdb_conn = engine.connect()
+
+    query = "deviation_survey_pdb.sql"
+    with open(query, "r") as f:
+        sql_text = f.read()
+
+    # Check which wells are missing survey files
+    wells_to_pull = []
+    for index, row in well_chars.iterrows():
+        well_name = row["Well"]
+        survey_file = f"well_surveys/{well_name} Deviation Survey.csv"
+
+        if not os.path.exists(survey_file):
+            wells_to_pull.append((index, well_name, row["JP_MD"]))
+            print(f"Missing survey for: {well_name}")
+        else:
+            print(f"Survey exists for: {well_name} - skipping")
+
+    # Only pull surveys for wells that don't have files
+    if wells_to_pull:
+        print(f"\nPulling surveys for {len(wells_to_pull)} wells...")
+
+        for index, well_name, jp_md in wells_to_pull:
+            print(f"Querying database for {well_name}...")
+            survey = pd.read_sql_query(sql=text(sql_text), con=pdb_conn, params={"param": well_name})
+
+            survey = survey.dropna()
+            survey = survey.drop_duplicates()
+            survey = survey.sort_values(by=["meas_depth"], ascending=True)
+
+            survey.to_csv(f"well_surveys/{well_name} Deviation Survey.csv")
+            print(f"  Saved survey for {well_name}")
+
+            jp_tvd = tvd_interp(survey["meas_depth"].tolist(), survey["tvd_depth"].tolist(), jp_md)
+            well_chars.at[index, "JP_TVD"] = jp_tvd
+            print(f"  Calculated JP_TVD: {jp_tvd:.2f} ft")
+
+        # Only save jp_chars.csv if we updated any TVD values
+        well_chars.to_csv("jp_chars.csv")
+        print(f"\nUpdated jp_chars.csv with {len(wells_to_pull)} new JP_TVD values")
     else:
-        print(f"Survey exists for: {well_name} - skipping")
-
-# Only pull surveys for wells that don't have files
-if wells_to_pull:
-    print(f"\nPulling surveys for {len(wells_to_pull)} wells...")
-
-    for index, well_name, jp_md in wells_to_pull:
-        print(f"Querying database for {well_name}...")
-        survey = pd.read_sql_query(sql=text(sql_text), con=pdb_conn, params={"param": well_name})
-
-        survey = survey.dropna()
-        survey = survey.drop_duplicates()
-        survey = survey.sort_values(by=["meas_depth"], ascending=True)
-
-        survey.to_csv(f"well_surveys/{well_name} Deviation Survey.csv")
-        print(f"  Saved survey for {well_name}")
-
-        jp_tvd = tvd_interp(survey["meas_depth"].tolist(), survey["tvd_depth"].tolist(), jp_md)
-        well_chars.at[index, "JP_TVD"] = jp_tvd
-        print(f"  Calculated JP_TVD: {jp_tvd:.2f} ft")
-
-    # Only save jp_chars.csv if we updated any TVD values
-    well_chars.to_csv("jp_chars.csv")
-    print(f"\nUpdated jp_chars.csv with {len(wells_to_pull)} new JP_TVD values")
-else:
-    print("\nAll wells already have survey files - nothing to pull")
+        print("\nAll wells already have survey files - nothing to pull")

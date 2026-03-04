@@ -306,7 +306,3 @@ def run_multi_well_optimization_page():
         except Exception as e:
             st.error(f"❌ Error during optimization: {str(e)}")
             st.exception(e)
-
-        except Exception as e:
-            st.error(f"❌ Error during optimization: {str(e)}")
-            st.exception(e)

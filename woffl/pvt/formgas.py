@@ -23,6 +23,7 @@ class FormGas:
         self.gas_sg = gas_sg
         self.ppc, self.tpc = self._sutton_pseudo_crit(gas_sg)
         self.mw = 28.96443 * gas_sg  # molecular weight
+        self._cache = {}
 
     def __repr__(self):
         return f"Gas: {self.gas_sg} SG and {self.mw} Mol Weight"
@@ -89,7 +90,14 @@ class FormGas:
         # not adjusted for non-hydrocarbon gas such as H2S or CO2
         self.ppr = self.pabs / self.ppc  # unitless, pressure pseudo reduced
         self.tpr = self.tabs / self.tpc  # unitless, temperature pseudo reduced
+        self._cache = {}
         return self
+
+    def _cached(self, key, fn):
+        """Return cached value or compute and cache it."""
+        if key not in self._cache:
+            self._cache[key] = fn()
+        return self._cache[key]
 
     def zfactor(self) -> float:
         """Gas Z-Factor Compressibility
@@ -100,6 +108,9 @@ class FormGas:
         Returns:
             zfactor(float): gas zfactor, no units
         """
+        return self._cached("zfactor", self._compute_zfactor)
+
+    def _compute_zfactor(self) -> float:
         zfactor = self._zfactor_grad_school(self.ppr, self.tpr)
         # zfactor = self._zfactor_dak(self.ppr, self.tpr)
         return zfactor
@@ -120,7 +131,10 @@ class FormGas:
             Fundamental Principles of Reservoir Engineering, B.Towler (2002) Page 16
             Applied Multiphase Flow in Pipes..., Al-Safran and Brill (2017) Page 305
         """
-        zval = self.zfactor()  # call method if it hasn't been already?
+        return self._cached("density", self._compute_density)
+
+    def _compute_density(self) -> float:
+        zval = self.zfactor()
         dgas = self.pabs * self.mw / (zval * FormGas._R * self.tabs)
         return dgas
 
@@ -135,6 +149,9 @@ class FormGas:
         Returns:
             ugas (float): gas viscosity, cP
         """
+        return self._cached("viscosity", self._compute_viscosity)
+
+    def _compute_viscosity(self) -> float:
         ug = self._viscosity_lee(self.tabs, self.mw, self.density)
         return ug
 
@@ -153,12 +170,17 @@ class FormGas:
             Fundamental Principles of Reservoir Engineering, B.Towler (2002) Page 16
             Applied Multiphase Flow in Pipes..., Al-Safran and Brill (2017) Page 305
         """
-        temp = self.temp
+        return self._cached("compress", self._compute_compress)
+
+    def _compute_compress(self) -> float:
         p1 = self.press
-        p2 = p1 + 10  # add 100 psi to evaluate a different condition for compressibility
+        p2 = p1 + 10  # add 10 psi to evaluate a different condition for compressibility
 
         z1 = self.zfactor()
-        z2 = self.condition(p2, temp).zfactor()
+        # compute z2 at perturbed pressure without mutating self
+        pabs2 = p2 + 14.7
+        ppr2 = pabs2 / self.ppc
+        z2 = self._zfactor_grad_school(ppr2, self.tpr)
 
         cg = 1 / p1 - (1 / z1) * ((z2 - z1) / (p2 - p1))
         return cg

@@ -38,6 +38,7 @@ class BlackOil:
         self.oil_api = oil_api
         self.pbp = bubblepoint
         self.gas_sg = gas_sg
+        self._cache = {}
 
     def __repr__(self):
         return f"Oil: {self.oil_api} API and a {round(self.gas_sg, 2)} SG Gas"
@@ -115,7 +116,14 @@ class BlackOil:
         """
         self.press = press
         self.temp = temp
+        self._cache = {}
         return self
+
+    def _cached(self, key, fn):
+        """Return cached value or compute and cache it."""
+        if key not in self._cache:
+            self._cache[key] = fn()
+        return self._cache[key]
 
     def gas_solubility(self) -> float:
         """Gas Solubility in Oil (Solution GOR)
@@ -128,6 +136,9 @@ class BlackOil:
         Returns:
             rs (float): Gas solubility in the oil, scf/stb
         """
+        return self._cached("gas_solubility", self._compute_gas_solubility)
+
+    def _compute_gas_solubility(self) -> float:
         if self.press > self.pbp:  # above bubblepoint pressure
             press = self.pbp  # calculate gas solubility using bubblepoint pressure
         else:
@@ -146,6 +157,9 @@ class BlackOil:
         Returns:
             co (float): oil compressibility, psi**-1
         """
+        return self._cached("compress", self._compute_compress)
+
+    def _compute_compress(self) -> float:
         rs = self.gas_solubility()  # solubility of gas in the oil
         if self.press > self.pbp:  # above bubblepoint
             co = self.compressibility_vasquez_above(self.press, self.temp, self.oil_api, self.gas_sg, rs)
@@ -165,6 +179,9 @@ class BlackOil:
         Returns:
             bo (float): oil formation volume, rb/stb
         """
+        return self._cached("oil_fvf", self._compute_oil_fvf)
+
+    def _compute_oil_fvf(self) -> float:
         rs = self.gas_solubility()
         bo = self.fvf_kartoatmodjo_below(self.temp, self.oil_api, self.gas_sg, rs)
         if self.press > self.pbp:  # above bubblepoint pressure
@@ -185,6 +202,9 @@ class BlackOil:
         Returns:
             rho_oil (float): density of the oil, lbm/ft3
         """
+        return self._cached("density", self._compute_density)
+
+    def _compute_density(self) -> float:
         rs = self.gas_solubility()
         bo = self.oil_fvf()
         rho_oil = self.live_oil_density(self.oil_api, self.gas_sg, rs, bo)
@@ -202,6 +222,9 @@ class BlackOil:
         Returns:
             uoil (float): live oil viscosity, cP
         """
+        return self._cached("viscosity", self._compute_viscosity)
+
+    def _compute_viscosity(self) -> float:
         uod = self.viscosity_dead_kartoatmodjo(self.temp, self.oil_api)
         uol = self.viscosity_live_kartoatmodjo_below(uod, self.gas_solubility())
         if self.press > self.pbp:  # above bubblepoint
@@ -219,6 +242,9 @@ class BlackOil:
 
         Returns:
             sigo (float): Live Oil Surface Tension, lbf/ft"""
+        return self._cached("tension", self._compute_tension)
+
+    def _compute_tension(self) -> float:
         sigod = self.tension_dead_abdul(self.temp, self.oil_api)
         sigol = self.tension_live_abdul(sigod, self.gas_solubility())  # dyne/cm
         sigo = sigol * 0.0000685  # lbf/ft

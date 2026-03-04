@@ -78,10 +78,10 @@ class InFlow:
             qnew (float): Oil rate at pnew, stb/d
         """
         if pnew < 0:
-            ValueError("Flowing pressure must be greater than zero")
+            raise ValueError("Flowing pressure must be greater than zero")
 
         if pnew > self.pres:
-            ValueError("Flowing pressure must be less than reservoir pressure")
+            raise ValueError("Flowing pressure must be less than reservoir pressure")
 
         if method == "vogel":
             qmax = self.vogel_qmax(self.qwf, self.pwf, self.pres)

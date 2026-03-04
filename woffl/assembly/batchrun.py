@@ -5,7 +5,9 @@ current conditions. Code outputs a formatted list of python dictionaries that
 can be converted to a Pandas Dataframe or equivalent for analysis.
 """
 
+import copy
 import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from itertools import product
 
@@ -129,7 +131,9 @@ class BatchPump:
             jp_list.append(JetPump(nozzle, throat, knz, ken, kth, kdi))
         return jp_list
 
-    def batch_run(self, jetpumps: list[JetPump], debug: bool = False) -> pd.DataFrame:
+    def batch_run(
+        self, jetpumps: list[JetPump], debug: bool = False, parallel: bool = True, max_workers: int = 2
+    ) -> pd.DataFrame:
         """Batch Run of Jet Pumps
 
         Run through multiple different types of jet pumps. Results will be stored in
@@ -139,61 +143,67 @@ class BatchPump:
         Args:
             jetpumps (list): List of JetPumps
             debug (bool): True - Errors are Raised, False - Errors are Stored
+            parallel (bool): Run jet pumps in parallel using threads
+            max_workers (int): Number of threads for parallel execution
 
         Returns:
             df (DataFrame): DataFrame of Jet Pump Results
         """
-        results = []
-        for jetpump in jetpumps:
-            try:
-                psu_solv, sonic_status, qoil_std, fwat_bpd, lwat_bpd, mach_te = so.jetpump_solver(
-                    self.pwh,
-                    self.tsu,
-                    self.rho_pf,
-                    self.ppf_surf,
-                    jetpump,
-                    self.wellbore,
-                    self.wellprof,
-                    self.ipr_su,
-                    self.prop_su,
-                )
-                result = {
-                    "nozzle": jetpump.noz_no,
-                    "throat": jetpump.rat_ar,
-                    "sonic_status": sonic_status,
-                    "mach_te": mach_te,
-                    "psu_solv": psu_solv,
-                    "qoil_std": qoil_std,
-                    "form_wat": fwat_bpd,
-                    "lift_wat": lwat_bpd,
-                    "totl_wat": fwat_bpd + lwat_bpd,
-                    "form_wor": fwat_bpd / qoil_std,
-                    "totl_wor": (fwat_bpd + lwat_bpd) / qoil_std,
-                    "error": "na",
-                }
-
-            except Exception as exc:
-                if debug:
-                    print(f"Failed on nozzle {jetpump.noz_no} and throat: {jetpump.rat_ar}")
-                    raise exc
-                else:
-                    result = {
-                        "nozzle": jetpump.noz_no,
-                        "throat": jetpump.rat_ar,
-                        "sonic_status": False,
-                        "mach_te": np.nan,
-                        "psu_solv": np.nan,
-                        "qoil_std": np.nan,
-                        "form_wat": np.nan,
-                        "lift_wat": np.nan,
-                        "totl_wat": np.nan,
-                        "form_wor": np.nan,
-                        "totl_wor": np.nan,
-                        "error": exc,
-                    }
-            results.append(result)  # add some progress bar code here?
+        if parallel and not debug:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                results = list(executor.map(self._run_single_pump, jetpumps))
+        else:
+            results = [self._run_single_pump(jetpump, debug=debug) for jetpump in jetpumps]
         self.df = pd.DataFrame(results)
-        return self.df  # should this be returned as none?
+        return self.df
+
+    def _run_single_pump(self, jetpump: JetPump, debug: bool = False) -> dict:
+        """Run a single jet pump and return result dict."""
+        prop_su = copy.deepcopy(self.prop_su)
+        try:
+            psu_solv, sonic_status, qoil_std, fwat_bpd, lwat_bpd, mach_te = so.jetpump_solver(
+                self.pwh,
+                self.tsu,
+                self.rho_pf,
+                self.ppf_surf,
+                jetpump,
+                self.wellbore,
+                self.wellprof,
+                self.ipr_su,
+                prop_su,
+            )
+            return {
+                "nozzle": jetpump.noz_no,
+                "throat": jetpump.rat_ar,
+                "sonic_status": sonic_status,
+                "mach_te": mach_te,
+                "psu_solv": psu_solv,
+                "qoil_std": qoil_std,
+                "form_wat": fwat_bpd,
+                "lift_wat": lwat_bpd,
+                "totl_wat": fwat_bpd + lwat_bpd,
+                "form_wor": fwat_bpd / qoil_std,
+                "totl_wor": (fwat_bpd + lwat_bpd) / qoil_std,
+                "error": "na",
+            }
+        except Exception as exc:
+            if debug:
+                print(f"Failed on nozzle {jetpump.noz_no} and throat: {jetpump.rat_ar}")
+                raise exc
+            return {
+                "nozzle": jetpump.noz_no,
+                "throat": jetpump.rat_ar,
+                "sonic_status": False,
+                "mach_te": np.nan,
+                "psu_solv": np.nan,
+                "qoil_std": np.nan,
+                "form_wat": np.nan,
+                "lift_wat": np.nan,
+                "totl_wat": np.nan,
+                "form_wor": np.nan,
+                "totl_wor": np.nan,
+                "error": exc,
+            }
 
     def process_results(self) -> pd.DataFrame:
         """Process Results

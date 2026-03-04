@@ -366,7 +366,7 @@ def segments_fit(X: np.ndarray, Y: np.ndarray, maxcount: int = 18) -> tuple[np.n
         AIC = n * np.log(err(res.x)) + 4 * count
         BIC = n * np.log(err(res.x)) + 2 * count * np.log(n)
 
-        if (BIC < best_BIC) & (AIC < best_AIC):  # Continue adding complexity.
+        if (BIC < best_BIC) and (AIC < best_AIC):  # Continue adding complexity.
             best_fit = res
             best_AIC, best_BIC = AIC, BIC
         else:  # Stop.

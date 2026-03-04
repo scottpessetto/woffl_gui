@@ -134,23 +134,21 @@ def top_down_press(
         slh_ray (list): Liquid Holdup along wellbore, unitless
     """
     # mp_models = {'homo': homo_diff_press(), 'beggs': beggs_diff_press()}
-    prs_ray = np.array([ptop])
-    slh_ray = np.array([])
+    prs_list = [ptop]
+    slh_list = []
     md_seg, vd_seg = wellprof.outflow_spacing(100)  # space every 100'
     md_diff = np.diff(md_seg, n=1) * -1  # against flow
     vd_diff = np.diff(vd_seg, n=1) * -1  # going down piping
-    n = 0
     for length, height in zip(md_diff, vd_diff):
         dp_stat, dp_fric, slh = beggs_diff_press(
-            prs_ray[-1], ttop, tubing.inn_dia, tubing.abs_ruff, length, height, qoil_std, prop
+            prs_list[-1], ttop, tubing.inn_dia, tubing.abs_ruff, length, height, qoil_std, prop
         )
-        pdwn = prs_ray[-1] - dp_stat - dp_fric  # dp is subtracted
-        prs_ray = np.append(prs_ray, pdwn)
-        slh_ray = np.append(slh_ray, slh)
-        n = n + 1
+        pdwn = prs_list[-1] - dp_stat - dp_fric  # dp is subtracted
+        prs_list.append(pdwn)
+        slh_list.append(slh)
     # the no slip array is going to be one shorter than the md_seg and prs_ray...
     # i'm not sure if this is problem that I should "fix" later?
-    return md_seg, prs_ray, slh_ray
+    return md_seg, np.array(prs_list), np.array(slh_list)
 
 
 def bottom_up_press(
@@ -177,20 +175,18 @@ def bottom_up_press(
         slh_ray (list): Liquid Holdup along wellbore, unitless
     """
     # mp_models = {'homo': homo_diff_press(), 'beggs': beggs_diff_press()}
-    prs_ray = np.array([pbot])
-    slh_ray = np.array([])
+    prs_list = [pbot]
+    slh_list = []
     md_seg, vd_seg = wellprof.outflow_spacing(100)  # space every 100'
     md_diff = np.diff(md_seg, n=1)  # with the flow
     vd_diff = np.diff(vd_seg, n=1)  # going up piping
-    n = 0
     for length, height in zip(np.flip(md_diff), np.flip(vd_diff)):  # start at bottom
         dp_stat, dp_fric, slh = beggs_diff_press(
-            prs_ray[-1], tbot, tubing.inn_dia, tubing.abs_ruff, length, height, qoil_std, prop
+            prs_list[-1], tbot, tubing.inn_dia, tubing.abs_ruff, length, height, qoil_std, prop
         )
-        pdwn = prs_ray[-1] - dp_stat - dp_fric  # dp is subtracted
-        prs_ray = np.append(prs_ray, pdwn)
-        slh_ray = np.append(slh_ray, slh)
-        n = n + 1
+        pdwn = prs_list[-1] - dp_stat - dp_fric  # dp is subtracted
+        prs_list.append(pdwn)
+        slh_list.append(slh)
     # the no slip array is going to be one shorter than the md_seg and prs_ray...
     # i'm not sure if this is problem that I should "fix" later?
-    return md_seg, prs_ray, slh_ray
+    return md_seg, np.array(prs_list), np.array(slh_list)
