@@ -17,6 +17,7 @@ import streamlit as st
 # Add the parent directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+from woffl.assembly.jp_history import parse_jp_history
 from woffl.gui.sidebar import render_sidebar
 from woffl.gui.single_well_page import run_single_well_page, show_welcome_message
 
@@ -31,6 +32,13 @@ def main():
     )
 
     st.title("WOFFL Jetpump Simulator")
+
+    # Global JP history uploader (available across all modes)
+    with st.sidebar:
+        jp_file = st.file_uploader("JP History (xlsx)", type=["xlsx"], key="jp_history_upload")
+        if jp_file:
+            st.session_state["jp_history_df"] = parse_jp_history(jp_file)
+            st.caption(f"Loaded {len(st.session_state['jp_history_df'])} JP records")
 
     # Mode selection
     app_mode = st.radio(

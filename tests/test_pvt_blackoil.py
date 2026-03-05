@@ -88,8 +88,16 @@ def test_oil_tension() -> None:
     assert py_boil.tension() / 0.0000685 == pytest.approx(16.04, rel=0.01)  # dyne/cm
 
 
-def test_oil_compressibility() -> None:
-    assert 1 == 1
+def test_oil_compressibility_above() -> None:
+    oil = BlackOil.test_oil()
+    oil.condition(2500, 80)
+    assert oil.compress() == pytest.approx(2.7953e-06, rel=0.01)
+
+
+def test_oil_compressibility_below() -> None:
+    oil = BlackOil.test_oil()
+    oil.condition(1000, 80)
+    assert oil.compress() == pytest.approx(2.5762e-05, rel=0.01)
 
 
 if __name__ == "__main__":

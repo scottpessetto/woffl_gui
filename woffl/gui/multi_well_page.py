@@ -3,10 +3,12 @@
 Standalone page for multi-well jet pump optimization.
 """
 
+import math
 import os
 import tempfile
 
 import matplotlib.pyplot as plt
+import pandas as pd
 import streamlit as st
 from woffl.assembly.network_optimizer import (
     NetworkOptimizer,
@@ -95,6 +97,25 @@ def run_multi_well_optimization_page():
     # Main content
     st.write("## Well Configuration")
 
+    # Check for data sent from Well Test Analysis page
+    if "wt_export_for_multiwell" in st.session_state:
+        wt_df = st.session_state["wt_export_for_multiwell"]
+        n_wells = len(wt_df)
+        st.info(f"Well Test Analysis results available ({n_wells} wells). Load them or upload a CSV below.")
+        if st.button("Load Well Test Results", type="primary", use_container_width=True):
+            tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w", newline="")
+            wt_df.to_csv(tmp, index=False)
+            tmp.close()
+            try:
+                wells = load_wells_from_csv(tmp.name)
+                st.session_state["mw_wells_from_wt"] = wells
+                st.success(f"Loaded {len(wells)} wells from Well Test Analysis")
+            except Exception as e:
+                st.error(f"Error loading well test results: {e}")
+            finally:
+                os.unlink(tmp.name)
+                del st.session_state["wt_export_for_multiwell"]
+
     col1, col2 = st.columns([2, 1])
 
     with col1:
@@ -117,7 +138,9 @@ def run_multi_well_optimization_page():
             use_container_width=True,
         )
 
-    if not uploaded_file:
+    has_wt_wells = "mw_wells_from_wt" in st.session_state
+
+    if not uploaded_file and not has_wt_wells:
         st.info("👆 Upload a CSV file to begin. Click 'Download CSV Template' to get started.")
 
         # Show example and instructions
@@ -125,14 +148,14 @@ def run_multi_well_optimization_page():
             st.markdown(
                 """
             ### Quick Start Guide
-            
+
             1. **Download the CSV template** using the button above
             2. **Edit the CSV** to include your wells:
                - For wells in the database (jp_chars.csv): Just list the well name
                - For custom wells: Provide all required parameters
             3. **Upload the CSV** and configure power fluid constraints
             4. **Run optimization** to get pump recommendations
-            
+
             ### Example CSV
             ```csv
             Well,res_pres,form_temp,JP_TVD
@@ -140,10 +163,10 @@ def run_multi_well_optimization_page():
             MPE-35,,,
             CustomWell-1,1500,75,4000
             ```
-            
+
             - MPB-28 and MPE-35 auto-load from database
             - CustomWell-1 uses specified custom parameters
-            
+
             ### What You Get
             - Recommended jet pump size for each well
             - Total field oil production prediction
@@ -161,20 +184,24 @@ def run_multi_well_optimization_page():
     # Run Optimization
     if st.button("🚀 Run Multi-Well Optimization", type="primary", use_container_width=True):
         try:
-            # Save uploaded file temporarily
-            with tempfile.NamedTemporaryFile(mode="wb", suffix=".csv", delete=False) as f:
-                f.write(uploaded_file.getvalue())
-                temp_csv_path = f.name
+            # Load wells from session state (Well Test Analysis) or uploaded CSV
+            if has_wt_wells:
+                wells = st.session_state["mw_wells_from_wt"]
+                st.success(f"✅ Using {len(wells)} wells from Well Test Analysis")
+            else:
+                with tempfile.NamedTemporaryFile(mode="wb", suffix=".csv", delete=False) as f:
+                    f.write(uploaded_file.getvalue())
+                    temp_csv_path = f.name
 
-            # Load wells
-            with st.spinner("Loading well configurations..."):
-                wells = load_wells_from_csv(temp_csv_path)
-                st.success(f"✅ Loaded {len(wells)} wells from CSV")
+                with st.spinner("Loading well configurations..."):
+                    wells = load_wells_from_csv(temp_csv_path)
+                    st.success(f"✅ Loaded {len(wells)} wells from CSV")
+                os.unlink(temp_csv_path)
 
-                # Show wells loaded
-                with st.expander("Wells Loaded"):
-                    for well in wells:
-                        st.write(f"- {well.well_name} ({well.field_model})")
+            # Show wells loaded
+            with st.expander("Wells Loaded"):
+                for well in wells:
+                    st.write(f"- {well.well_name} ({well.field_model})")
 
             # Create optimizer
             pf_constraint = PowerFluidConstraint(total_rate=total_pf, pressure=pf_pressure, rho_pf=rho_pf)
@@ -217,9 +244,14 @@ def run_multi_well_optimization_page():
             # Display results
             st.write("## Optimization Results")
 
-            res_tab1, res_tab2, res_tab3, res_tab4 = st.tabs(
-                ["📊 Summary", "📋 Well Details", "📈 Visualizations", "💾 Export"]
-            )
+            # Build comparison tab list dynamically
+            has_jp_history = "jp_history_df" in st.session_state
+            tab_labels = ["📊 Summary", "📋 Well Details", "📈 Visualizations", "💾 Export"]
+            if has_jp_history:
+                tab_labels.append("🔄 Current vs Optimized")
+
+            result_tabs = st.tabs(tab_labels)
+            res_tab1, res_tab2, res_tab3, res_tab4 = result_tabs[:4]
 
             with res_tab1:
                 st.write("### Field-Level Metrics")
@@ -300,9 +332,106 @@ def run_multi_well_optimization_page():
                 st.write(f"- Total Power Fluid: {metrics['total_power_fluid']:.1f} BWPD")
                 st.write(f"- Power Fluid Utilization: {metrics['power_fluid_utilization']:.1%}")
 
-            # Clean up temp file
-            os.unlink(temp_csv_path)
+            # Current vs Optimized comparison tab
+            if has_jp_history:
+                with result_tabs[4]:
+                    _render_current_vs_optimized(results)
+
+            # Clean up temp file (only exists for CSV upload path)
+            if not has_wt_wells and os.path.exists(temp_csv_path):
+                os.unlink(temp_csv_path)
 
         except Exception as e:
             st.error(f"❌ Error during optimization: {str(e)}")
             st.exception(e)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _cached_multi_well_tests(well_names: tuple, months_back: int = 3):
+    """Cache wrapper for fetching recent tests for multiple wells."""
+    from datetime import datetime
+
+    from dateutil.relativedelta import relativedelta
+
+    from woffl.assembly.restls_client import _denormalize_well_name, fetch_milne_well_tests
+
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - relativedelta(months=months_back)).strftime("%Y-%m-%d")
+    db_names = [_denormalize_well_name(w) for w in well_names]
+    df, _ = fetch_milne_well_tests(start_date, end_date, well_names=db_names)
+    return df
+
+
+def _render_current_vs_optimized(results) -> None:
+    """Render the Current vs Optimized comparison table."""
+    from woffl.assembly.jp_history import get_current_pump
+
+    jp_hist = st.session_state.get("jp_history_df")
+    if jp_hist is None:
+        return
+
+    st.write("### Current JP vs Optimized Solution")
+
+    # Get optimized well names
+    opt_wells = [r["well_name"] for r in results]
+
+    # Fetch recent test data for actual oil rates
+    with st.spinner("Fetching recent well tests for comparison..."):
+        try:
+            test_df = _cached_multi_well_tests(tuple(opt_wells), months_back=3)
+        except Exception as e:
+            st.warning(f"Could not fetch well tests for comparison: {e}")
+            test_df = pd.DataFrame()
+
+    # Build most recent actual oil per well
+    actual_oil_map = {}
+    if not test_df.empty and "WtOilVol" in test_df.columns:
+        for well in opt_wells:
+            well_tests = test_df[test_df["well"] == well].sort_values("WtDate", ascending=False)
+            if not well_tests.empty:
+                val = well_tests.iloc[0]["WtOilVol"]
+                if not (isinstance(val, float) and math.isnan(val)):
+                    actual_oil_map[well] = val
+
+    # Build comparison rows
+    rows = []
+    for r in results:
+        well = r["well_name"]
+        current = get_current_pump(jp_hist, well)
+
+        current_jp_str = "N/A"
+        if current and current["nozzle_no"] and current["throat_ratio"]:
+            current_jp_str = f"{current['nozzle_no']}{current['throat_ratio']}"
+
+        opt_jp_str = f"{r['nozzle']}{r['throat']}"
+        opt_oil = r.get("oil_rate", 0)
+        actual = actual_oil_map.get(well)
+
+        row = {
+            "Well": well,
+            "Current JP": current_jp_str,
+            "Actual Oil (BOPD)": f"{actual:.0f}" if actual is not None else "N/A",
+            "Optimized JP": opt_jp_str,
+            "Optimized Oil (BOPD)": f"{opt_oil:.0f}",
+            "Delta Oil (BOPD)": f"{opt_oil - actual:+.0f}" if actual is not None else "N/A",
+        }
+        rows.append(row)
+
+    comp_df = pd.DataFrame(rows)
+    st.dataframe(comp_df, use_container_width=True, hide_index=True)
+
+    # Field totals
+    total_actual = sum(v for v in actual_oil_map.values())
+    total_optimized = sum(r.get("oil_rate", 0) for r in results)
+    uplift = total_optimized - total_actual
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Current Oil", f"{total_actual:.0f} BOPD" if total_actual > 0 else "N/A")
+    with col2:
+        st.metric("Total Optimized Oil", f"{total_optimized:.0f} BOPD")
+    with col3:
+        if total_actual > 0:
+            st.metric("Total Uplift", f"{uplift:+.0f} BOPD")
+        else:
+            st.metric("Total Uplift", "N/A")

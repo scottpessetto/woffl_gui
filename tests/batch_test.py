@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from woffl.assembly.batchrun import BatchPump
 from woffl.flow.inflow import InFlow
@@ -43,10 +44,72 @@ thrs = ["X", "A", "B", "C", "D", "E"]
 jp_list = BatchPump.jetpump_list(nozs, thrs)
 e41_batch = BatchPump(surf_pres, tsu, rho_pf, ppf_surf, tube, e41_profile, e41_ipr, e41_res, wellname="MPE-41")
 
-df = e41_batch.batch_run(jp_list)
-print(df)
-df = e41_batch.process_results()
-print(df)
+df = e41_batch.batch_run(jp_list, parallel=False)
 
-e41_batch.plot_data(water="lift", curve=True)
-e41_batch.plot_derv(water="lift")
+
+def test_batch_row_count() -> None:
+    assert len(df) == 48
+
+
+def test_no_errors() -> None:
+    assert (df["error"] == "na").all(), "All pumps should solve without error"
+
+
+def test_sonic_count() -> None:
+    assert df["sonic_status"].sum() == 13
+
+
+def test_9X_reference() -> None:
+    """Nozzle 9, Throat X — known sonic case."""
+    row = df[(df["nozzle"] == "9") & (df["throat"] == "X")].iloc[0]
+    assert row["qoil_std"] == pytest.approx(58.83, rel=0.01)
+    assert row["totl_wat"] == pytest.approx(1947.73, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.935, rel=0.01)
+    assert row["psu_solv"] == pytest.approx(1316.07, rel=0.01)
+
+
+def test_9D_reference() -> None:
+    """Nozzle 9, Throat D — subsonic case."""
+    row = df[(df["nozzle"] == "9") & (df["throat"] == "D")].iloc[0]
+    assert row["qoil_std"] == pytest.approx(141.72, rel=0.01)
+    assert row["totl_wat"] == pytest.approx(2557.22, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.227, rel=0.01)
+    assert row["psu_solv"] == pytest.approx(1197.78, rel=0.01)
+
+
+def test_12B_reference() -> None:
+    """Nozzle 12, Throat B — mid-range pump."""
+    row = df[(df["nozzle"] == "12") & (df["throat"] == "B")].iloc[0]
+    assert row["qoil_std"] == pytest.approx(202.04, rel=0.01)
+    assert row["totl_wat"] == pytest.approx(4622.79, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.428, rel=0.01)
+    assert row["psu_solv"] == pytest.approx(1111.72, rel=0.01)
+
+
+def test_16E_reference() -> None:
+    """Nozzle 16, Throat E — largest pump."""
+    row = df[(df["nozzle"] == "16") & (df["throat"] == "E")].iloc[0]
+    assert row["qoil_std"] == pytest.approx(101.02, rel=0.01)
+    assert row["totl_wat"] == pytest.approx(8014.69, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.0167, rel=0.02)
+    assert row["psu_solv"] == pytest.approx(1255.86, rel=0.01)
+
+
+def test_oil_always_positive() -> None:
+    assert (df["qoil_std"] > 0).all()
+
+
+def test_process_results() -> None:
+    df_proc = e41_batch.process_results()
+    assert "semi" in df_proc.columns
+    assert "motwr" in df_proc.columns
+    assert "molwr" in df_proc.columns
+    assert df_proc["semi"].sum() > 0, "Should have at least one semi-finalist"
+
+
+if __name__ == "__main__":
+    print(df)
+    df = e41_batch.process_results()
+    print(df)
+    e41_batch.plot_data(water="lift", curve=True)
+    e41_batch.plot_derv(water="lift")

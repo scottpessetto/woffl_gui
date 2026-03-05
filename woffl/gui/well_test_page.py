@@ -19,6 +19,12 @@ from woffl.assembly.databricks_client import (
     load_tag_dict,
     query_bhp_for_well_tests,
 )
+from woffl.assembly.restls_client import (
+    fetch_milne_well_tests,
+    filter_wells_by_pad,
+    get_mpu_well_names,
+    get_pad_names,
+)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)  # Cache for 24 hours
@@ -41,6 +47,30 @@ def _cached_bhp_query(
     # Reconstruct the tag_dict from the frozen tuple
     tag_dict = {well: (bhp, hp, whp) for well, bhp, hp, whp in tag_dict_frozen}
     return query_bhp_for_well_tests(tag_dict, list(wells_tuple))
+
+
+@st.cache_data(ttl=86400, show_spinner=False)  # Cache for 24 hours
+def _cached_mpu_well_names() -> list[str]:
+    """Cached list of all MPU well names from Databricks."""
+    return get_mpu_well_names()
+
+
+@st.cache_data(ttl=86400, show_spinner=False)  # Cache for 24 hours
+def _cached_well_test_query(
+    start_date: str, end_date: str, well_names_tuple: tuple
+) -> tuple[pd.DataFrame, list[str]]:
+    """Cached wrapper around fetch_milne_well_tests.
+
+    Args:
+        start_date: Start date string 'YYYY-MM-DD' (used as cache key).
+        end_date: End date string 'YYYY-MM-DD' (used as cache key).
+        well_names_tuple: Tuple of well names to query (hashable for cache key).
+
+    Returns tuple of (DataFrame, dropped_wells). DataFrame has columns matching
+    ipr_analyzer expectations: well, WtDate, BHP, WtTotalFluid, WtOilVol, etc.
+    dropped_wells lists wells removed due to missing BHP or fluid rate data.
+    """
+    return fetch_milne_well_tests(start_date, end_date, list(well_names_tuple))
 
 
 from woffl.assembly.ipr_analyzer import (
@@ -124,7 +154,190 @@ def run_well_test_analysis_page():
         )
         if force_refresh:
             _cached_bhp_query.clear()
+            _cached_well_test_query.clear()
+            _cached_mpu_well_names.clear()
             st.success("Cache cleared — next run will re-query Databricks")
+
+    # --- Data Source Selection ---
+    data_source = st.radio(
+        "Data Source",
+        options=["Databricks", "FDC CSV Upload"],
+        horizontal=True,
+        help="Choose how to load well test data",
+    )
+
+    if data_source == "Databricks":
+        _run_restls_path(max_rp_schrader, max_rp_kuparuk, resp_modifier)
+    else:
+        _run_fdc_csv_path(max_rp_schrader, max_rp_kuparuk, resp_modifier)
+
+    # --- Display Results (shared by both paths) ---
+    if st.session_state.get("wt_analysis_complete", False):
+        vogel_coeffs = st.session_state["wt_vogel_coeffs"]
+        ipr_curves = st.session_state["wt_ipr_curves"]
+        merged_with_rp = st.session_state["wt_merged_data"]
+
+        st.write("## Results")
+
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Summary", "📈 IPR Curves", "📋 Well Details", "💾 Export"])
+
+        with tab1:
+            _render_summary_tab(vogel_coeffs, merged_with_rp)
+
+        with tab2:
+            _render_ipr_curves_tab(ipr_curves, merged_with_rp, vogel_coeffs)
+
+        with tab3:
+            _render_well_details_tab(vogel_coeffs, merged_with_rp)
+
+        with tab4:
+            _render_export_tab(vogel_coeffs)
+
+
+def _run_restls_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
+    """Databricks data source path — loads well tests directly."""
+    from datetime import date, timedelta
+
+    # --- Pad & well selection (before query) ---
+    # Fetch well names (cached) to build pad list
+    try:
+        with st.spinner("Fetching well list from Databricks..."):
+            all_well_names = _cached_mpu_well_names()
+    except Exception as e:
+        st.error(f"Could not fetch well names from Databricks: {e}")
+        return
+
+    if not all_well_names:
+        st.warning("No well names returned from Databricks. Check connectivity and try 'Force fresh Databricks query' in the sidebar.")
+        return
+
+    all_pads = get_pad_names(all_well_names)
+
+    with st.sidebar:
+        st.divider()
+        st.subheader("Pad Selection")
+        selected_pads = []
+        for pad in all_pads:
+            pad_wells = filter_wells_by_pad(all_well_names, [pad])
+            if st.checkbox(f"Pad {pad} ({len(pad_wells)})", value=False, key=f"pad_{pad}"):
+                selected_pads.append(pad)
+
+    if not selected_pads:
+        st.warning("Select at least one pad in the sidebar.")
+        return
+
+    filtered_well_names = filter_wells_by_pad(all_well_names, selected_pads)
+
+    # Date range pickers
+    col_start, col_end = st.columns(2)
+    with col_start:
+        default_start = date.today() - timedelta(days=730)
+        start_date = st.date_input("Start Date", value=default_start, key="db_start_date")
+    with col_end:
+        end_date = st.date_input("End Date", value=date.today(), key="db_end_date")
+
+    if start_date > end_date:
+        st.error("Start date must be before end date.")
+        return
+
+    st.caption(f"{len(filtered_well_names)} wells across {len(selected_pads)} pads")
+
+    if st.button("🔄 Load Well Tests from Databricks", type="primary", use_container_width=True):
+        try:
+            with st.spinner("Querying Databricks for well tests (cached 24h)..."):
+                df, dropped_wells = _cached_well_test_query(
+                    start_date.strftime("%Y-%m-%d"),
+                    end_date.strftime("%Y-%m-%d"),
+                    tuple(filtered_well_names),
+                )
+
+            if df.empty:
+                st.error("No well test data returned for selected pads/dates.")
+                return
+
+            st.session_state["restls_well_tests"] = df
+            st.success(f"Loaded {len(df)} well tests for {df['well'].nunique()} wells")
+
+            if dropped_wells:
+                st.warning(
+                    f"{len(dropped_wells)} wells dropped (no BHP or fluid rate data): "
+                    f"{', '.join(dropped_wells)}"
+                )
+
+        except Exception as e:
+            st.error(f"Error querying Databricks: {str(e)}")
+            st.exception(e)
+            return
+
+    if "restls_well_tests" not in st.session_state:
+        st.info("Select pads in the sidebar, then click the button above to load well tests.")
+        return
+
+    df = st.session_state["restls_well_tests"]
+    all_wells = sorted(df["well"].unique().tolist())
+
+    # Show test count summary
+    test_counts = df.groupby("well").size().sort_values(ascending=False)
+    with st.expander(f"📊 Test Counts ({len(all_wells)} wells)"):
+        st.dataframe(
+            test_counts.reset_index().rename(columns={"well": "Well", 0: "Tests"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    # --- Run Analysis ---
+    if st.button("🚀 Run Well Test Analysis", type="primary", use_container_width=True, key="restls_run"):
+        try:
+            merged_data = df.copy()
+
+            if merged_data.empty:
+                st.error("❌ No test data for selected wells.")
+                return
+
+            wells_in_data = merged_data["well"].nunique()
+            st.success(f"✅ {len(merged_data)} test points across {wells_in_data} wells (BHP included)")
+
+            # Estimate reservoir pressure
+            st.write("### Step 1: Estimating Reservoir Pressure")
+            with st.spinner("Estimating optimal reservoir pressure per well..."):
+                jp_chars = _load_jp_chars()
+                merged_with_rp = estimate_reservoir_pressure(
+                    merged_data,
+                    max_pres_schrader=max_rp_schrader,
+                    max_pres_kuparuk=max_rp_kuparuk,
+                    jp_chars=jp_chars,
+                )
+
+            st.success("✅ Reservoir pressure estimation complete")
+
+            # Compute Vogel coefficients
+            st.write("### Step 2: Computing Vogel IPR Coefficients")
+            with st.spinner("Computing Vogel IPR parameters..."):
+                vogel_coeffs = compute_vogel_coefficients(merged_with_rp, resp_modifier=resp_modifier)
+
+            if vogel_coeffs.empty:
+                st.error("❌ Could not compute Vogel coefficients for any wells.")
+                return
+
+            st.success(f"✅ Computed IPR parameters for {len(vogel_coeffs)} wells")
+
+            # Generate IPR curves
+            ipr_curves = generate_ipr_curves(vogel_coeffs)
+
+            # Store results in session state
+            st.session_state["wt_vogel_coeffs"] = vogel_coeffs
+            st.session_state["wt_ipr_curves"] = ipr_curves
+            st.session_state["wt_merged_data"] = merged_with_rp
+            st.session_state["wt_analysis_complete"] = True
+
+        except Exception as e:
+            st.error(f"❌ Error during analysis: {str(e)}")
+            st.exception(e)
+            return
+
+
+def _run_fdc_csv_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
+    """FDC CSV upload data source path — original workflow."""
 
     # --- File uploads ---
     col1, col2 = st.columns([2, 1])
@@ -150,20 +363,20 @@ def run_well_test_analysis_page():
             st.markdown(
                 """
             ### Quick Start Guide
-            
+
             1. **Export well tests** from FDC as a CSV file
             2. **Upload the CSV** using the file uploader above
             3. **Select wells** to analyze (or use all)
             4. **Configure parameters** in the sidebar (max RP, modifier)
             5. **Run analysis** to compute Vogel IPR parameters
             6. **Download results** as a CSV template for Multi-Well Optimization
-            
+
             ### What You Get
             - Vogel IPR curves for each well
             - Estimated reservoir pressure per well
             - Qmax estimates (recent, lowest BHP, median)
             - Downloadable CSV matching the multi-well optimization template
-            
+
             ### Requirements
             - Wells must have BHP gauge tags in bhp_dict.csv
             - Databricks connectivity for BHP data queries
@@ -318,29 +531,6 @@ def run_well_test_analysis_page():
             st.exception(e)
             return
 
-    # --- Display Results ---
-    if st.session_state.get("wt_analysis_complete", False):
-        vogel_coeffs = st.session_state["wt_vogel_coeffs"]
-        ipr_curves = st.session_state["wt_ipr_curves"]
-        merged_with_rp = st.session_state["wt_merged_data"]
-
-        st.write("## Results")
-
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Summary", "📈 IPR Curves", "📋 Well Details", "💾 Export"])
-
-        with tab1:
-            _render_summary_tab(vogel_coeffs, merged_with_rp)
-
-        with tab2:
-            _render_ipr_curves_tab(ipr_curves, merged_with_rp, vogel_coeffs)
-
-        with tab3:
-            _render_well_details_tab(vogel_coeffs, merged_with_rp)
-
-        with tab4:
-            _render_export_tab(vogel_coeffs)
-
-
 def _render_summary_tab(vogel_coeffs: pd.DataFrame, merged_data: pd.DataFrame):
     """Render the Summary tab."""
     st.write("### Field-Level Metrics")
@@ -487,41 +677,52 @@ def _render_well_details_tab(vogel_coeffs, merged_data):
 
 
 def _render_export_tab(vogel_coeffs):
-    """Render the Export tab."""
+    """Render the Export tab with editable table, CSV download, and send-to-multi-well."""
     st.write("### Export for Multi-Well Optimization")
 
     st.markdown(
-        """
-    Download the results as a CSV file that can be directly uploaded to the 
-    **Multi-Well Optimization** page. The CSV includes Vogel-derived `qwf`, `pwf`, 
-    and `res_pres` values along with well characteristics from `jp_chars.csv`.
-    """
+        "Edit values below, then download CSV or send directly to the "
+        "**Multi-Well Optimization** page."
     )
 
     # Generate template
     template_df = export_optimization_template(vogel_coeffs)
 
-    # Preview
-    st.write("#### Preview")
-    st.dataframe(template_df, use_container_width=True, hide_index=True)
-
-    # Download button
-    csv_data = template_df.to_csv(index=False)
-    st.download_button(
-        label="📥 Download Optimization Template CSV",
-        data=csv_data,
-        file_name="well_test_optimization_template.csv",
-        mime="text/csv",
+    # Editable table
+    edited_df = st.data_editor(
+        template_df,
         use_container_width=True,
+        hide_index=True,
+        disabled=["Well"],
+        key="export_editor",
     )
 
-    # Also offer raw Vogel coefficients
-    st.write("#### Raw Vogel Coefficients")
-    vogel_csv = vogel_coeffs.to_csv(index=False)
-    st.download_button(
-        label="📥 Download Vogel Coefficients CSV",
-        data=vogel_csv,
-        file_name="vogel_coefficients.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
+    # Action buttons
+    col_send, col_download = st.columns(2)
+
+    with col_send:
+        if st.button("Send to Multi-Well Optimization", type="primary", use_container_width=True):
+            st.session_state["wt_export_for_multiwell"] = edited_df
+            st.success(f"Sent {len(edited_df)} wells. Switch to the Multi-Well Optimization page to load them.")
+
+    with col_download:
+        csv_data = edited_df.to_csv(index=False)
+        st.download_button(
+            label="Download CSV",
+            data=csv_data,
+            file_name="well_test_optimization_template.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    # Raw Vogel coefficients
+    with st.expander("Raw Vogel Coefficients"):
+        st.dataframe(vogel_coeffs, use_container_width=True, hide_index=True)
+        vogel_csv = vogel_coeffs.to_csv(index=False)
+        st.download_button(
+            label="Download Vogel Coefficients CSV",
+            data=vogel_csv,
+            file_name="vogel_coefficients.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
