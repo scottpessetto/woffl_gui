@@ -19,7 +19,7 @@ from woffl.assembly.databricks_client import (
     load_tag_dict,
     query_bhp_for_well_tests,
 )
-from woffl.assembly.restls_client import (
+from woffl.assembly.well_test_client import (
     fetch_milne_well_tests,
     filter_wells_by_pad,
     get_mpu_well_names,

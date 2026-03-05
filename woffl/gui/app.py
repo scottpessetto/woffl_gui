@@ -29,7 +29,7 @@ def _cached_all_well_tests(months_back: int = 3):
 
     from dateutil.relativedelta import relativedelta
 
-    from woffl.assembly.restls_client import fetch_milne_well_tests
+    from woffl.assembly.well_test_client import fetch_milne_well_tests
 
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - relativedelta(months=months_back)).strftime("%Y-%m-%d")
