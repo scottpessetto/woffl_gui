@@ -69,12 +69,13 @@ def render_tab(params: SimulationParams, jetpump, tube, well_profile, inflow, re
     _render_model_vs_actual(params, tube, well_profile)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def _cached_single_well_tests(well_name: str, months_back: int = 3):
-    """Cache wrapper for Databricks single-well test query."""
-    from woffl.assembly.restls_client import fetch_single_well_tests
-
-    return fetch_single_well_tests(well_name, months_back)
+def _get_well_tests(well_name: str):
+    """Get tests for a single well from the pre-fetched session state cache."""
+    all_tests = st.session_state.get("all_well_tests_df")
+    if all_tests is None or all_tests.empty:
+        return None
+    well_df = all_tests[all_tests["well"] == well_name].copy()
+    return well_df if not well_df.empty else None
 
 
 def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> None:
@@ -119,15 +120,9 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
         f"(set {current_pump['date_set'].strftime('%Y-%m-%d') if current_pump['date_set'] is not None else 'N/A'})"
     )
 
-    # 2. Query recent well tests from Databricks
-    with st.spinner("Fetching recent well tests..."):
-        try:
-            test_df = _cached_single_well_tests(params.selected_well, months_back=3)
-        except Exception as e:
-            st.warning(f"Could not fetch well tests: {e}")
-            return
-
-    if test_df.empty or len(test_df) < 2:
+    # 2. Get well tests from pre-fetched cache
+    test_df = _get_well_tests(params.selected_well)
+    if test_df is None or len(test_df) < 2:
         st.info(f"Not enough recent test data for {params.selected_well} (need 2+ tests with BHP).")
         return
 

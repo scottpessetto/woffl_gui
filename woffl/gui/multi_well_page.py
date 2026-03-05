@@ -346,22 +346,6 @@ def run_multi_well_optimization_page():
             st.exception(e)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def _cached_multi_well_tests(well_names: tuple, months_back: int = 3):
-    """Cache wrapper for fetching recent tests for multiple wells."""
-    from datetime import datetime
-
-    from dateutil.relativedelta import relativedelta
-
-    from woffl.assembly.restls_client import _denormalize_well_name, fetch_milne_well_tests
-
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - relativedelta(months=months_back)).strftime("%Y-%m-%d")
-    db_names = [_denormalize_well_name(w) for w in well_names]
-    df, _ = fetch_milne_well_tests(start_date, end_date, well_names=db_names)
-    return df
-
-
 def _render_current_vs_optimized(results) -> None:
     """Render the Current vs Optimized comparison table."""
     from woffl.assembly.jp_history import get_current_pump
@@ -375,13 +359,12 @@ def _render_current_vs_optimized(results) -> None:
     # Get optimized well names
     opt_wells = [r.well_name for r in results]
 
-    # Fetch recent test data for actual oil rates
-    with st.spinner("Fetching recent well tests for comparison..."):
-        try:
-            test_df = _cached_multi_well_tests(tuple(opt_wells), months_back=3)
-        except Exception as e:
-            st.warning(f"Could not fetch well tests for comparison: {e}")
-            test_df = pd.DataFrame()
+    # Use pre-fetched well test data from session state
+    all_tests = st.session_state.get("all_well_tests_df")
+    if all_tests is not None and not all_tests.empty:
+        test_df = all_tests[all_tests["well"].isin(opt_wells)].copy()
+    else:
+        test_df = pd.DataFrame()
 
     # Build most recent actual oil and PF per well
     actual_oil_map = {}

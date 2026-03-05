@@ -22,6 +22,21 @@ from woffl.gui.sidebar import render_sidebar
 from woffl.gui.single_well_page import run_single_well_page, show_welcome_message
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def _cached_all_well_tests(months_back: int = 3):
+    """Fetch recent well tests for all MPU wells in one query. Cached 24h."""
+    from datetime import datetime
+
+    from dateutil.relativedelta import relativedelta
+
+    from woffl.assembly.restls_client import fetch_milne_well_tests
+
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - relativedelta(months=months_back)).strftime("%Y-%m-%d")
+    df, _ = fetch_milne_well_tests(start_date, end_date)
+    return df
+
+
 def main():
     """Main function for the Streamlit application."""
     st.set_page_config(
@@ -39,6 +54,17 @@ def main():
         if jp_file:
             st.session_state["jp_history_df"] = parse_jp_history(jp_file)
             st.caption(f"Loaded {len(st.session_state['jp_history_df'])} JP records")
+
+            # Pre-fetch all well tests once (cached 24h for all users)
+            if "all_well_tests_df" not in st.session_state:
+                with st.spinner("Fetching recent well tests from Databricks..."):
+                    try:
+                        st.session_state["all_well_tests_df"] = _cached_all_well_tests()
+                        n = len(st.session_state["all_well_tests_df"])
+                        st.caption(f"Loaded {n} well test records")
+                    except Exception as e:
+                        st.warning(f"Could not fetch well tests: {e}")
+                        st.session_state["all_well_tests_df"] = None
 
     # Mode selection
     app_mode = st.radio(
