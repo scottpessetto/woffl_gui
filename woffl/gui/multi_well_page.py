@@ -373,7 +373,7 @@ def _render_current_vs_optimized(results) -> None:
     st.write("### Current JP vs Optimized Solution")
 
     # Get optimized well names
-    opt_wells = [r["well_name"] for r in results]
+    opt_wells = [r.well_name for r in results]
 
     # Fetch recent test data for actual oil rates
     with st.spinner("Fetching recent well tests for comparison..."):
@@ -383,36 +383,46 @@ def _render_current_vs_optimized(results) -> None:
             st.warning(f"Could not fetch well tests for comparison: {e}")
             test_df = pd.DataFrame()
 
-    # Build most recent actual oil per well
+    # Build most recent actual oil and PF per well
     actual_oil_map = {}
-    if not test_df.empty and "WtOilVol" in test_df.columns:
+    actual_pf_map = {}
+    if not test_df.empty:
         for well in opt_wells:
             well_tests = test_df[test_df["well"] == well].sort_values("WtDate", ascending=False)
             if not well_tests.empty:
-                val = well_tests.iloc[0]["WtOilVol"]
-                if not (isinstance(val, float) and math.isnan(val)):
-                    actual_oil_map[well] = val
+                row_data = well_tests.iloc[0]
+                if "WtOilVol" in well_tests.columns:
+                    val = row_data["WtOilVol"]
+                    if not (isinstance(val, float) and math.isnan(val)):
+                        actual_oil_map[well] = val
+                if "lift_wat" in well_tests.columns:
+                    pf_val = row_data["lift_wat"]
+                    if not (isinstance(pf_val, float) and math.isnan(pf_val)):
+                        actual_pf_map[well] = pf_val
 
     # Build comparison rows
     rows = []
     for r in results:
-        well = r["well_name"]
+        well = r.well_name
         current = get_current_pump(jp_hist, well)
 
         current_jp_str = "N/A"
         if current and current["nozzle_no"] and current["throat_ratio"]:
             current_jp_str = f"{current['nozzle_no']}{current['throat_ratio']}"
 
-        opt_jp_str = f"{r['nozzle']}{r['throat']}"
-        opt_oil = r.get("oil_rate", 0)
+        opt_jp_str = f"{r.recommended_nozzle}{r.recommended_throat}"
+        opt_oil = r.predicted_oil_rate
         actual = actual_oil_map.get(well)
+        actual_pf = actual_pf_map.get(well)
 
         row = {
             "Well": well,
             "Current JP": current_jp_str,
             "Actual Oil (BOPD)": f"{actual:.0f}" if actual is not None else "N/A",
+            "Actual PF (BWPD)": f"{actual_pf:.0f}" if actual_pf is not None else "N/A",
             "Optimized JP": opt_jp_str,
             "Optimized Oil (BOPD)": f"{opt_oil:.0f}",
+            "Opt PF (BWPD)": f"{r.allocated_power_fluid:.0f}",
             "Delta Oil (BOPD)": f"{opt_oil - actual:+.0f}" if actual is not None else "N/A",
         }
         rows.append(row)
@@ -421,17 +431,30 @@ def _render_current_vs_optimized(results) -> None:
     st.dataframe(comp_df, use_container_width=True, hide_index=True)
 
     # Field totals
-    total_actual = sum(v for v in actual_oil_map.values())
-    total_optimized = sum(r.get("oil_rate", 0) for r in results)
-    uplift = total_optimized - total_actual
+    total_actual_oil = sum(v for v in actual_oil_map.values())
+    total_actual_pf = sum(v for v in actual_pf_map.values())
+    total_optimized = sum(r.predicted_oil_rate for r in results)
+    total_opt_pf = sum(r.allocated_power_fluid for r in results)
+    uplift = total_optimized - total_actual_oil
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Total Current Oil", f"{total_actual:.0f} BOPD" if total_actual > 0 else "N/A")
+        st.metric("Total Current Oil", f"{total_actual_oil:.0f} BOPD" if total_actual_oil > 0 else "N/A")
     with col2:
         st.metric("Total Optimized Oil", f"{total_optimized:.0f} BOPD")
     with col3:
-        if total_actual > 0:
+        if total_actual_oil > 0:
             st.metric("Total Uplift", f"{uplift:+.0f} BOPD")
         else:
             st.metric("Total Uplift", "N/A")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Actual PF", f"{total_actual_pf:.0f} BWPD" if total_actual_pf > 0 else "N/A")
+    with col2:
+        st.metric("Total Optimized PF", f"{total_opt_pf:.0f} BWPD")
+    with col3:
+        if total_actual_pf > 0:
+            st.metric("Delta PF", f"{total_opt_pf - total_actual_pf:+.0f} BWPD")
+        else:
+            st.metric("Delta PF", "N/A")

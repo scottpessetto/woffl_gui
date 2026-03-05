@@ -191,27 +191,27 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
     # 6. Display comparison metrics
     actual_oil = recent_test.get("WtOilVol", None)
     actual_bhp = recent_test.get("BHP", None)
+    actual_pf = recent_test.get("lift_wat", None)
+
+    def _valid(val):
+        return val is not None and not (isinstance(val, float) and math.isnan(val))
 
     st.markdown("#### Modeled vs Actual (Most Recent Test)")
 
     if model_results:
-        _psu, _sonic, modeled_oil, _fwat, _qnz, _mach = model_results
+        _psu, _sonic, modeled_oil, _fwat, modeled_pf, _mach = model_results
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Modeled Oil Rate", f"{modeled_oil:.0f} BOPD")
         with col2:
-            if actual_oil is not None and not math.isnan(actual_oil):
-                st.metric("Actual Oil Rate", f"{actual_oil:.0f} BOPD")
-            else:
-                st.metric("Actual Oil Rate", "N/A")
+            st.metric("Actual Oil Rate", f"{actual_oil:.0f} BOPD" if _valid(actual_oil) else "N/A")
         with col3:
-            if actual_oil is not None and not math.isnan(actual_oil):
-                delta = modeled_oil - actual_oil
-                st.metric("Delta", f"{delta:+.0f} BOPD")
+            if _valid(actual_oil):
+                st.metric("Delta", f"{modeled_oil - actual_oil:+.0f} BOPD")
             else:
                 st.metric("Delta", "N/A")
 
-        if actual_bhp is not None and not math.isnan(actual_bhp):
+        if _valid(actual_bhp):
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Modeled BHP (suction)", f"{_psu:.0f} psi")
@@ -219,6 +219,17 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
                 st.metric("Actual BHP", f"{actual_bhp:.0f} psi")
             with col3:
                 st.metric("Delta", f"{_psu - actual_bhp:+.0f} psi")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Modeled PF Rate", f"{modeled_pf:.0f} BWPD")
+        with col2:
+            st.metric("Actual PF Rate", f"{actual_pf:.0f} BWPD" if _valid(actual_pf) else "N/A")
+        with col3:
+            if _valid(actual_pf):
+                st.metric("Delta", f"{modeled_pf - actual_pf:+.0f} BWPD")
+            else:
+                st.metric("Delta", "N/A")
     else:
         st.warning("Model could not solve with the current JP and IPR-derived inflow.")
 
@@ -232,6 +243,7 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
         "WtTotalFluid": "Total Fluid (BPD)",
         "BHP": "BHP (psi)",
         "fgor": "GOR (scf/bbl)",
+        "lift_wat": "PF Rate (BWPD)",
     }
     available = [c for c in display_cols if c in test_df.columns]
     table_df = test_df[available].copy()

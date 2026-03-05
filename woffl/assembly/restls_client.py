@@ -29,6 +29,7 @@ SELECT
     vwt.form_gas AS fgas_rate,
     vwt.form_wc,
     vwt.form_gor AS fgor,
+    vwt.lift_wat,
     round(vbdc.bhp_cln_value, 2) AS bhp
 FROM mpu.wells.vw_well_test vwt
 LEFT JOIN mpu.wells.vw_bhp_daily_clean vbdc
@@ -165,7 +166,7 @@ def fetch_milne_well_tests(
         df["WtDate"] = pd.to_datetime(df["WtDate"], utc=True).dt.tz_localize(None)
 
     # Ensure numeric columns
-    for col in ["BHP", "WtOilVol", "WtWaterVol", "WtTotalFluid", "WtGasVol"]:
+    for col in ["BHP", "WtOilVol", "WtWaterVol", "WtTotalFluid", "WtGasVol", "lift_wat"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
