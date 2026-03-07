@@ -6,7 +6,7 @@ Creates simulation objects from parameters and delegates to tab renderers.
 
 import streamlit as st
 from woffl.gui.params import SimulationParams
-from woffl.gui.tabs import batch_run, jetpump_solver, power_fluid_range, well_profile
+from woffl.gui.tabs import batch_run, jp_history_tab, jetpump_solver, power_fluid_range, well_profile
 from woffl.gui.utils import (
     create_inflow,
     create_jetpump,
@@ -47,22 +47,35 @@ def run_single_well_page(params: SimulationParams) -> None:
         else:
             wp = create_well_profile(params.field_model, params.jpump_tvd)
 
-        # Create tabs
-        tab1, tab2, tab3, tab4 = st.tabs(
-            ["Jetpump Solution", "Batch Run", "Power Fluid Range Analysis", "Well Profile"]
-        )
+        # Build tab list — JP History tab only when data is available
+        tab_labels = ["Jetpump Solution", "Batch Run", "Power Fluid Range Analysis", "Well Profile"]
 
-        with tab1:
+        show_jp_tab = False
+        jp_hist = st.session_state.get("jp_history_df")
+        if jp_hist is not None and params.selected_well != "Custom":
+            well_jp = jp_hist[jp_hist["Well Name"] == params.selected_well].dropna(subset=["Date Set"])
+            show_jp_tab = not well_jp.empty
+
+        if show_jp_tab:
+            tab_labels.append("JP History")
+
+        tabs = st.tabs(tab_labels)
+
+        with tabs[0]:
             jetpump_solver.render_tab(params, jetpump, tube, wp, inflow, res_mix)
 
-        with tab2:
+        with tabs[1]:
             batch_run.render_tab(params, tube, wp, inflow, res_mix)
 
-        with tab3:
+        with tabs[2]:
             power_fluid_range.render_tab(params, tube, wp, inflow, res_mix)
 
-        with tab4:
+        with tabs[3]:
             well_profile.render_tab(params, wp)
+
+        if show_jp_tab:
+            with tabs[4]:
+                jp_history_tab.render_tab(params)
 
 
 def show_welcome_message() -> None:

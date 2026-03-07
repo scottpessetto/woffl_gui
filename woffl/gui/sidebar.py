@@ -99,14 +99,41 @@ def _render_jetpump_params() -> tuple[str, str, float, float, float]:
     """
     st.subheader("Jetpump Parameters")
     nozzle_options = ["8", "9", "10", "11", "12", "13", "14", "15"]
-    nozzle_no = st.selectbox("Nozzle Size", nozzle_options, index=nozzle_options.index("12"))
+    if "nozzle_no" not in st.session_state:
+        st.session_state.nozzle_no = "12"
+    nozzle_no = st.selectbox(
+        "Nozzle Size",
+        nozzle_options,
+        index=nozzle_options.index(st.session_state.nozzle_no),
+        key="nozzle_no_input",
+    )
+    st.session_state.nozzle_no = nozzle_no
 
     area_ratio_options = ["X", "A", "B", "C", "D", "E"]
-    area_ratio = st.selectbox("Area Ratio (Throat Size)", area_ratio_options, index=2)
+    if "area_ratio" not in st.session_state:
+        st.session_state.area_ratio = "B"
+    area_ratio = st.selectbox(
+        "Area Ratio (Throat Size)",
+        area_ratio_options,
+        index=area_ratio_options.index(st.session_state.area_ratio),
+        key="area_ratio_input",
+    )
+    st.session_state.area_ratio = area_ratio
 
-    ken = st.slider("Nozzle Loss Coefficient (ken)", 0.01, 0.10, 0.03, 0.01)
-    kth = st.slider("Throat Loss Coefficient (kth)", 0.1, 0.5, 0.3, 0.1)
-    kdi = st.slider("Diffuser Loss Coefficient (kdi)", 0.1, 0.5, 0.4, 0.1)
+    if "ken" not in st.session_state:
+        st.session_state.ken = 0.03
+    ken = st.slider("Nozzle Loss Coefficient (ken)", 0.01, 0.10, st.session_state.ken, 0.01, key="ken_input")
+    st.session_state.ken = ken
+
+    if "kth" not in st.session_state:
+        st.session_state.kth = 0.3
+    kth = st.slider("Throat Loss Coefficient (kth)", 0.1, 0.5, st.session_state.kth, 0.1, key="kth_input")
+    st.session_state.kth = kth
+
+    if "kdi" not in st.session_state:
+        st.session_state.kdi = 0.4
+    kdi = st.slider("Diffuser Loss Coefficient (kdi)", 0.1, 0.5, st.session_state.kdi, 0.1, key="kdi_input")
+    st.session_state.kdi = kdi
 
     return nozzle_no, area_ratio, ken, kth, kdi
 
@@ -148,12 +175,31 @@ def _render_pipe_params(well_data: dict | None) -> tuple[float, float, float, fl
     st.session_state.tubing_od = tubing_od
     st.session_state.tubing_thickness = tubing_thickness
 
+    if "casing_od" not in st.session_state:
+        st.session_state.casing_od = 6.875
     casing_od = st.number_input(
-        "Casing Outer Diameter (inches)", value=6.875, min_value=4.0, max_value=17.0, step=0.125, format="%.3f"
+        "Casing Outer Diameter (inches)",
+        value=st.session_state.casing_od,
+        min_value=4.0,
+        max_value=17.0,
+        step=0.125,
+        format="%.3f",
+        key="casing_od_input",
     )
+    st.session_state.casing_od = casing_od
+
+    if "casing_thickness" not in st.session_state:
+        st.session_state.casing_thickness = 0.5
     casing_thickness = st.number_input(
-        "Casing Wall Thickness (inches)", value=0.5, min_value=0.1, max_value=2.0, step=0.1, format="%.3f"
+        "Casing Wall Thickness (inches)",
+        value=st.session_state.casing_thickness,
+        min_value=0.1,
+        max_value=2.0,
+        step=0.1,
+        format="%.3f",
+        key="casing_thickness_input",
     )
+    st.session_state.casing_thickness = casing_thickness
 
     return tubing_od, tubing_thickness, casing_od, casing_thickness
 
@@ -165,8 +211,31 @@ def _render_formation_params(well_data: dict | None) -> tuple[float, int, int]:
         Tuple of (form_wc, form_gor, form_temp)
     """
     st.subheader("Formation Parameters")
-    form_wc = st.number_input("Water Cut (form_wc)", value=0.50, min_value=0.0, max_value=1.0, step=0.01, format="%.2f")
-    form_gor = st.number_input("Gas-Oil Ratio (form_gor)", value=250, min_value=20, max_value=10000, step=25)
+
+    if "form_wc" not in st.session_state:
+        st.session_state.form_wc = 0.50
+    form_wc = st.number_input(
+        "Water Cut (form_wc)",
+        value=st.session_state.form_wc,
+        min_value=0.0,
+        max_value=1.0,
+        step=0.01,
+        format="%.2f",
+        key="form_wc_input",
+    )
+    st.session_state.form_wc = form_wc
+
+    if "form_gor" not in st.session_state:
+        st.session_state.form_gor = 250
+    form_gor = st.number_input(
+        "Gas-Oil Ratio (form_gor)",
+        value=st.session_state.form_gor,
+        min_value=20,
+        max_value=10000,
+        step=25,
+        key="form_gor_input",
+    )
+    st.session_state.form_gor = form_gor
 
     if "form_temp" not in st.session_state:
         st.session_state.form_temp = 70
@@ -192,7 +261,18 @@ def _render_well_params(well_data: dict | None) -> tuple[int, int, float, int]:
         Tuple of (surf_pres, jpump_tvd, rho_pf, ppf_surf)
     """
     st.subheader("Well Parameters")
-    surf_pres = st.number_input("Surface Pressure (psi)", min_value=10, max_value=600, value=210, step=10)
+
+    if "surf_pres" not in st.session_state:
+        st.session_state.surf_pres = 210
+    surf_pres = st.number_input(
+        "Surface Pressure (psi)",
+        value=st.session_state.surf_pres,
+        min_value=10,
+        max_value=600,
+        step=10,
+        key="surf_pres_input",
+    )
+    st.session_state.surf_pres = surf_pres
 
     if "jpump_tvd" not in st.session_state:
         st.session_state.jpump_tvd = 4065
@@ -208,10 +288,29 @@ def _render_well_params(well_data: dict | None) -> tuple[int, int, float, int]:
     )
     st.session_state.jpump_tvd = jpump_tvd
 
-    rho_pf = st.number_input("Power Fluid Density (lbm/ft³)", min_value=50.0, max_value=70.0, value=62.4, step=0.1)
-    ppf_surf = st.number_input(
-        "Power Fluid Surface Pressure (psi)", min_value=2000, max_value=4000, value=3168, step=10
+    if "rho_pf" not in st.session_state:
+        st.session_state.rho_pf = 62.4
+    rho_pf = st.number_input(
+        "Power Fluid Density (lbm/ft³)",
+        value=st.session_state.rho_pf,
+        min_value=50.0,
+        max_value=70.0,
+        step=0.1,
+        key="rho_pf_input",
     )
+    st.session_state.rho_pf = rho_pf
+
+    if "ppf_surf" not in st.session_state:
+        st.session_state.ppf_surf = 3168
+    ppf_surf = st.number_input(
+        "Power Fluid Surface Pressure (psi)",
+        value=st.session_state.ppf_surf,
+        min_value=2000,
+        max_value=4000,
+        step=10,
+        key="ppf_surf_input",
+    )
+    st.session_state.ppf_surf = ppf_surf
 
     return surf_pres, jpump_tvd, rho_pf, ppf_surf
 
@@ -223,10 +322,30 @@ def _render_inflow_params(well_data: dict | None) -> tuple[int, int, int]:
         Tuple of (qwf, pwf, pres)
     """
     st.subheader("Inflow Parameters")
-    qwf = st.number_input("Oil Rate at FBHP (qwf, BOPD)", min_value=100, max_value=6000, value=750, step=10)
-    pwf = st.number_input(
-        "Flowing Bottom Hole Pressure @ qwf (pwf, psi)", min_value=100, max_value=2500, value=500, step=10
+
+    if "qwf" not in st.session_state:
+        st.session_state.qwf = 750
+    qwf = st.number_input(
+        "Oil Rate at FBHP (qwf, BOPD)",
+        value=st.session_state.qwf,
+        min_value=100,
+        max_value=6000,
+        step=10,
+        key="qwf_input",
     )
+    st.session_state.qwf = qwf
+
+    if "pwf" not in st.session_state:
+        st.session_state.pwf = 500
+    pwf = st.number_input(
+        "Flowing Bottom Hole Pressure @ qwf (pwf, psi)",
+        value=st.session_state.pwf,
+        min_value=100,
+        max_value=2500,
+        step=10,
+        key="pwf_input",
+    )
+    st.session_state.pwf = pwf
 
     if "res_pres" not in st.session_state:
         st.session_state.res_pres = 1700
@@ -321,15 +440,19 @@ def render_sidebar() -> tuple[bool, SimulationParams]:
         selected_well, well_data = _render_well_selection()
 
         # Marginal watercut
+        if "marginal_watercut" not in st.session_state:
+            st.session_state.marginal_watercut = 0.94
         marginal_watercut = st.number_input(
             "Field Marginal Watercut",
             min_value=0.0,
             max_value=1.0,
-            value=0.94,
+            value=st.session_state.marginal_watercut,
             step=0.01,
             format="%.2f",
             help="Economic threshold for water handling in the field",
+            key="marginal_watercut_input",
         )
+        st.session_state.marginal_watercut = marginal_watercut
 
         # Field model
         st.subheader("Field Model")

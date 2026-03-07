@@ -11,6 +11,7 @@ The application supports three modes:
 
 import os
 import sys
+from pathlib import Path
 
 import streamlit as st
 
@@ -20,6 +21,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 from woffl.assembly.jp_history import parse_jp_history
 from woffl.gui.sidebar import render_sidebar
 from woffl.gui.single_well_page import run_single_well_page, show_welcome_message
+
+# --- UPDATE THESE EACH MONTH when replacing jetpump_history.xlsx ---
+JP_HISTORY_DATE = "3/1/2026"
+# -------------------------------------------------------------------
+
+_JP_HISTORY_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "jetpump_history.xlsx"
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -47,14 +54,32 @@ def main():
     )
 
     st.title("WOFFL Jetpump Simulator")
+    st.caption("*Built on Kaelin Ellis's WOFFL Jet Pump Model*")
 
-    # Global JP history uploader (available across all modes)
+    # Global JP history — auto-load bundled file, allow user to upload a replacement
     with st.sidebar:
-        jp_file = st.file_uploader("JP History (xlsx)", type=["xlsx"], key="jp_history_upload")
-        if jp_file:
-            st.session_state["jp_history_df"] = parse_jp_history(jp_file)
-            st.caption(f"Loaded {len(st.session_state['jp_history_df'])} JP records")
+        # Auto-load bundled file on first run
+        if "jp_history_df" not in st.session_state and _JP_HISTORY_PATH.exists():
+            st.session_state["jp_history_df"] = parse_jp_history(str(_JP_HISTORY_PATH))
 
+        if "jp_history_df" in st.session_state:
+            st.caption(f"JP History loaded ({len(st.session_state['jp_history_df'])} records, dated {JP_HISTORY_DATE})")
+
+        jp_file = st.file_uploader(
+            "Upload updated JP History (xlsx)",
+            type=["xlsx"],
+            key="jp_history_upload",
+            help=f"Bundled file dated {JP_HISTORY_DATE}. Drop a newer file here to replace it.",
+        )
+        if jp_file:
+            # Overwrite the bundled file so it persists across restarts
+            _JP_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(_JP_HISTORY_PATH, "wb") as f:
+                f.write(jp_file.getvalue())
+            st.session_state["jp_history_df"] = parse_jp_history(str(_JP_HISTORY_PATH))
+            st.success(f"Updated JP History ({len(st.session_state['jp_history_df'])} records)")
+
+        if "jp_history_df" in st.session_state:
             # Pre-fetch all well tests once (cached 24h for all users)
             if "all_well_tests_df" not in st.session_state:
                 with st.spinner("Fetching recent well tests from Databricks..."):
@@ -94,6 +119,9 @@ def main():
     run_button, params = render_sidebar()
 
     if run_button:
+        st.session_state.sw_sim_active = True
+
+    if st.session_state.get("sw_sim_active", False):
         run_single_well_page(params)
     else:
         show_welcome_message()
