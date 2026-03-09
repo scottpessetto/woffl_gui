@@ -168,19 +168,28 @@ def run_well_test_analysis_page():
 
         st.write("## Results")
 
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Summary", "📈 IPR Curves", "📋 Well Details", "💾 Export"])
+        tab_labels = ["📊 Summary", "📈 IPR Curves", "📋 Well Details", "💾 Export"]
+        has_jp_history = "jp_history_df" in st.session_state
+        if has_jp_history:
+            tab_labels.append("🔍 Model Check")
 
-        with tab1:
+        tabs = st.tabs(tab_labels)
+
+        with tabs[0]:
             _render_summary_tab(vogel_coeffs, merged_with_rp)
 
-        with tab2:
+        with tabs[1]:
             _render_ipr_curves_tab(ipr_curves, merged_with_rp, vogel_coeffs)
 
-        with tab3:
+        with tabs[2]:
             _render_well_details_tab(vogel_coeffs, merged_with_rp)
 
-        with tab4:
+        with tabs[3]:
             _render_export_tab(vogel_coeffs)
+
+        if has_jp_history:
+            with tabs[4]:
+                _render_model_check_tab(vogel_coeffs, merged_with_rp)
 
 
 def _run_restls_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
@@ -498,6 +507,236 @@ def _run_ipr_analysis(merged_data, max_rp_schrader, max_rp_kuparuk, resp_modifie
     st.session_state["wt_merged_data"] = merged_with_rp
     st.session_state["wt_analysis_complete"] = True
     return True
+
+
+def _render_model_check_tab(vogel_coeffs: pd.DataFrame, merged_with_rp: pd.DataFrame):
+    """Render the Model Check tab.
+
+    Runs the jetpump solver for each well using its current JP from history
+    and IPR-derived inflow, then compares modeled vs actual production.
+    """
+    from woffl.assembly.jp_history import get_current_pump
+    from woffl.assembly.sysops import jetpump_solver
+    from woffl.gui.utils import (
+        create_inflow,
+        create_jetpump,
+        create_pipes,
+        create_reservoir_mix,
+        create_well_profile,
+        is_valid_number,
+        load_well_characteristics,
+    )
+
+    st.write("### Model Check")
+    st.caption(
+        "Runs the WOFFL solver for each well using its current JP (from JP History) "
+        "and IPR-derived inflow parameters, then compares modeled vs actual production."
+    )
+
+    jp_hist = st.session_state.get("jp_history_df")
+    if jp_hist is None:
+        st.warning("JP History not loaded. Upload a JP History file on the main page to use Model Check.")
+        return
+
+    jp_chars = load_well_characteristics()
+
+    # --- Configuration ---
+    with st.expander("Model Parameters", expanded=False):
+        st.caption("These apply to all wells during the model check.")
+        cfg_col1, cfg_col2, cfg_col3 = st.columns(3)
+        with cfg_col1:
+            mc_surf_pres = st.number_input("Surface Pressure (psi)", value=210, min_value=10, max_value=600, step=10, key="mc_surf_pres")
+            mc_rho_pf = st.number_input("PF Density (lbm/ft³)", value=62.4, min_value=50.0, max_value=70.0, step=0.1, key="mc_rho_pf")
+        with cfg_col2:
+            mc_ppf_surf = st.number_input("PF Pressure (psi)", value=3168, min_value=2000, max_value=4000, step=10, key="mc_ppf_surf")
+            mc_default_gor = st.number_input("Default GOR (scf/bbl)", value=250, min_value=20, max_value=10000, step=25, key="mc_default_gor", help="Used when GOR is not available from well test data")
+        with cfg_col3:
+            mc_ken = st.number_input("ken", value=0.03, min_value=0.01, max_value=0.10, step=0.01, format="%.2f", key="mc_ken")
+            mc_kth = st.number_input("kth", value=0.30, min_value=0.10, max_value=0.50, step=0.10, format="%.1f", key="mc_kth")
+            mc_kdi = st.number_input("kdi", value=0.40, min_value=0.10, max_value=0.50, step=0.10, format="%.1f", key="mc_kdi")
+
+    if not st.button("Run Model Check", type="primary", use_container_width=True, key="mc_run"):
+        st.info("Click the button above to run the solver for all wells and compare modeled vs actual.")
+        return
+
+    wells = sorted(vogel_coeffs["Well"].tolist())
+    rows = []
+    skipped = []
+    progress_bar = st.progress(0)
+    status = st.empty()
+
+    for i, well_name in enumerate(wells):
+        status.text(f"Solving {well_name}... ({i + 1}/{len(wells)})")
+        progress_bar.progress((i + 1) / len(wells))
+
+        # 1. Look up current JP from history
+        current_pump = get_current_pump(jp_hist, well_name)
+        if current_pump is None or not current_pump["nozzle_no"] or not current_pump["throat_ratio"]:
+            skipped.append((well_name, "No JP in history"))
+            continue
+
+        nozzle = current_pump["nozzle_no"]
+        throat = current_pump["throat_ratio"]
+
+        # 2. Look up well characteristics from jp_chars
+        well_row = jp_chars[jp_chars["Well"] == well_name] if not jp_chars.empty else pd.DataFrame()
+        if not well_row.empty:
+            wr = well_row.iloc[0]
+            form_temp = int(wr.get("form_temp", 70))
+            field_model = "Schrader" if wr.get("is_sch", True) else "Kuparuk"
+            jp_tvd = int(wr.get("JP_TVD", 4065))
+            tubing_od = float(wr.get("out_dia", 4.5))
+            tubing_thick = float(wr.get("thick", 0.5))
+        else:
+            form_temp = 70
+            field_model = "Schrader"
+            jp_tvd = 4065
+            tubing_od = 4.5
+            tubing_thick = 0.5
+
+        # 3. Get IPR parameters from vogel_coeffs
+        coeff_row = vogel_coeffs[vogel_coeffs["Well"] == well_name].iloc[0]
+        qwf = coeff_row["qwf"]
+        pwf = coeff_row["pwf"]
+        res_pres = coeff_row["ResP"]
+        form_wc = coeff_row["form_wc"]
+
+        # 4. Get GOR from most recent well test (if available)
+        well_tests = merged_with_rp[merged_with_rp["well"] == well_name].sort_values("WtDate", ascending=False)
+        recent_test = well_tests.iloc[0] if not well_tests.empty else None
+
+        gor = mc_default_gor
+        if recent_test is not None and "fgor" in well_tests.columns:
+            test_gor = recent_test.get("fgor", None)
+            if is_valid_number(test_gor) and test_gor > 0:
+                gor = int(test_gor)
+
+        # 5. Create simulation objects
+        try:
+            jp = create_jetpump(nozzle, throat, mc_ken, mc_kth, mc_kdi)
+            tube, _, _ = create_pipes(tubing_od, tubing_thick)
+            wp = create_well_profile(field_model, jp_tvd)
+            ipr = create_inflow(qwf, pwf, res_pres)
+            rm = create_reservoir_mix(form_wc, gor, form_temp, field_model)
+        except Exception as e:
+            skipped.append((well_name, f"Object creation: {e}"))
+            continue
+
+        # 6. Run solver
+        try:
+            result = jetpump_solver(
+                pwh=mc_surf_pres, tsu=form_temp, rho_pf=mc_rho_pf, ppf_surf=mc_ppf_surf,
+                jpump=jp, wellbore=tube, wellprof=wp, ipr_su=ipr, prop_su=rm,
+            )
+            psu, sonic, modeled_oil, fwat, modeled_pf, mach = result
+        except Exception:
+            skipped.append((well_name, "Solver failed"))
+            continue
+
+        # 7. Get actual values from most recent test
+        actual_oil = recent_test.get("WtOilVol", None) if recent_test is not None else None
+        actual_bhp = recent_test.get("BHP", None) if recent_test is not None else None
+        actual_pf = recent_test.get("lift_wat", None) if recent_test is not None else None
+
+        row = {
+            "Well": well_name,
+            "JP": f"{nozzle}{throat}",
+            "Field": field_model[:3],
+            "GOR": gor,
+            "Modeled Oil": round(modeled_oil),
+            "Actual Oil": round(actual_oil) if is_valid_number(actual_oil) else None,
+            "Modeled BHP": round(psu),
+            "Actual BHP": round(actual_bhp) if is_valid_number(actual_bhp) else None,
+            "Modeled PF": round(modeled_pf),
+            "Actual PF": round(actual_pf) if is_valid_number(actual_pf) else None,
+            "Sonic": sonic,
+        }
+        rows.append(row)
+
+    progress_bar.empty()
+    status.empty()
+
+    if not rows:
+        st.warning("No wells could be modeled. Check that JP History has matching wells.")
+        if skipped:
+            st.caption(f"Skipped: {', '.join(f'{w} ({r})' for w, r in skipped)}")
+        return
+
+    # --- Build results DataFrame ---
+    df = pd.DataFrame(rows)
+
+    # Compute deltas
+    df["Delta Oil"] = df.apply(
+        lambda r: r["Modeled Oil"] - r["Actual Oil"] if r["Actual Oil"] is not None else None, axis=1
+    )
+    df["Delta BHP"] = df.apply(
+        lambda r: r["Modeled BHP"] - r["Actual BHP"] if r["Actual BHP"] is not None else None, axis=1
+    )
+    df["Delta PF"] = df.apply(
+        lambda r: r["Modeled PF"] - r["Actual PF"] if r["Actual PF"] is not None else None, axis=1
+    )
+
+    # --- Field totals ---
+    st.write("### Field Totals")
+    valid_oil = df.dropna(subset=["Actual Oil"])
+    total_modeled_oil = df["Modeled Oil"].sum()
+    total_actual_oil = valid_oil["Actual Oil"].sum() if not valid_oil.empty else 0
+    total_modeled_pf = df["Modeled PF"].sum()
+    valid_pf = df.dropna(subset=["Actual PF"])
+    total_actual_pf = valid_pf["Actual PF"].sum() if not valid_pf.empty else 0
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Wells Modeled", len(df))
+    with col2:
+        st.metric("Total Modeled Oil", f"{total_modeled_oil:,.0f} BOPD")
+    with col3:
+        st.metric("Total Actual Oil", f"{total_actual_oil:,.0f} BOPD" if total_actual_oil > 0 else "N/A")
+    with col4:
+        if total_actual_oil > 0:
+            st.metric("Total Delta Oil", f"{total_modeled_oil - total_actual_oil:+,.0f} BOPD")
+        else:
+            st.metric("Total Delta Oil", "N/A")
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Sonic Wells", f"{df['Sonic'].sum()}/{len(df)}")
+    with col2:
+        st.metric("Total Modeled PF", f"{total_modeled_pf:,.0f} BWPD")
+    with col3:
+        st.metric("Total Actual PF", f"{total_actual_pf:,.0f} BWPD" if total_actual_pf > 0 else "N/A")
+    with col4:
+        if total_actual_pf > 0:
+            st.metric("Total Delta PF", f"{total_modeled_pf - total_actual_pf:+,.0f} BWPD")
+        else:
+            st.metric("Total Delta PF", "N/A")
+
+    # --- Results table ---
+    st.write("### Per-Well Results")
+
+    # Format for display
+    display_df = df.copy()
+    display_cols = ["Well", "JP", "Field", "GOR", "Modeled Oil", "Actual Oil", "Delta Oil",
+                    "Modeled BHP", "Actual BHP", "Delta BHP", "Modeled PF", "Actual PF", "Delta PF", "Sonic"]
+    display_df = display_df[display_cols]
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    # --- Skipped wells ---
+    if skipped:
+        with st.expander(f"Skipped Wells ({len(skipped)})"):
+            for well_name, reason in skipped:
+                st.write(f"- **{well_name}**: {reason}")
+
+    # --- Download ---
+    csv_data = df.to_csv(index=False)
+    st.download_button(
+        label="Download Model Check CSV",
+        data=csv_data,
+        file_name="model_check_results.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key="mc_download",
+    )
 
 
 def _render_summary_tab(vogel_coeffs: pd.DataFrame, merged_data: pd.DataFrame):
