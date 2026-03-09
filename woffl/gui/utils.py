@@ -3,6 +3,7 @@
 This module contains helper functions for the Streamlit GUI.
 """
 
+import math
 import os
 
 import numpy as np
@@ -21,6 +22,13 @@ from woffl.pvt.blackoil import BlackOil
 from woffl.pvt.formgas import FormGas
 from woffl.pvt.formwat import FormWater
 from woffl.pvt.resmix import ResMix
+
+
+def is_valid_number(val) -> bool:
+    """Check if a value is a valid (non-None, non-NaN) number."""
+    if val is None:
+        return False
+    return not (isinstance(val, float) and math.isnan(val))
 
 
 def create_jetpump(nozzle_no, area_ratio, ken, kth, kdi):

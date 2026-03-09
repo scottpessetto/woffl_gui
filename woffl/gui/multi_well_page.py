@@ -3,7 +3,6 @@
 Standalone page for multi-well jet pump optimization.
 """
 
-import math
 import os
 import tempfile
 
@@ -35,10 +34,11 @@ from woffl.gui.optimization_viz import (
     create_pump_config_chart,
     create_watercut_comparison,
 )
+from woffl.gui.params import NOZZLE_OPTIONS, THROAT_OPTIONS
+from woffl.gui.utils import is_valid_number, load_well_characteristics
 from woffl.gui.well_test_page import (
     _cached_mpu_well_names,
     _cached_well_test_query,
-    _load_jp_chars,
 )
 
 
@@ -105,14 +105,14 @@ def run_multi_well_optimization_page():
         st.subheader("Pump Options to Test")
         nozzle_opts = st.multiselect(
             "Nozzle Sizes",
-            ["8", "9", "10", "11", "12", "13", "14", "15"],
+            NOZZLE_OPTIONS,
             default=["8", "9", "10", "11", "12", "13", "14"],
             help="Select nozzle sizes to test during optimization",
         )
 
         throat_opts = st.multiselect(
             "Throat Ratios",
-            ["X", "A", "B", "C", "D", "E"],
+            THROAT_OPTIONS,
             default=["X", "A", "B", "C", "D"],
             help="Select throat ratios to test during optimization",
         )
@@ -360,101 +360,7 @@ def run_multi_well_optimization_page():
 
             st.success(f"✅ Optimization complete! Allocated pumps to {len(results)} wells")
 
-            # Display results
-            st.write("## Optimization Results")
-
-            # Build comparison tab list dynamically
-            has_jp_history = "jp_history_df" in st.session_state
-            tab_labels = ["📊 Summary", "📋 Well Details", "📈 Visualizations", "💾 Export"]
-            if has_jp_history:
-                tab_labels.append("🔄 Current vs Optimized")
-
-            result_tabs = st.tabs(tab_labels)
-            res_tab1, res_tab2, res_tab3, res_tab4 = result_tabs[:4]
-
-            with res_tab1:
-                st.write("### Field-Level Metrics")
-                metrics = optimizer.calculate_field_metrics()
-
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Total Oil Rate", f"{metrics['total_oil_rate']:.1f} BOPD")
-                    st.metric("Wells Optimized", metrics["num_wells"])
-                with col2:
-                    st.metric("Total Water Rate", f"{metrics['total_water_rate']:.1f} BWPD")
-                    st.metric("Field Watercut", f"{metrics['field_watercut']:.1%}")
-                with col3:
-                    st.metric("Power Fluid Used", f"{metrics['total_power_fluid']:.1f} BWPD")
-                    st.metric("PF Utilization", f"{metrics['power_fluid_utilization']:.1%}")
-                with col4:
-                    st.metric("Avg Marginal Oil", f"{metrics['average_marginal_oil']:.3f}")
-                    st.metric("Sonic Wells", f"{metrics['num_sonic']}/{metrics['num_wells']}")
-
-            with res_tab2:
-                st.write("### Well-Level Results")
-                results_df = optimizer.to_dataframe()
-                st.dataframe(results_df, use_container_width=True, height=400)
-
-            with res_tab3:
-                st.write("### Optimization Visualizations")
-
-                viz_col1, viz_col2 = st.columns(2)
-
-                with viz_col1:
-                    st.write("#### Power Fluid Allocation")
-                    fig_pie = create_power_fluid_pie_chart(results)
-                    st.pyplot(fig_pie)
-                    plt.close()
-
-                    st.write("#### Oil Rate by Well")
-                    fig_oil = create_oil_rate_bar_chart(results)
-                    st.pyplot(fig_oil)
-                    plt.close()
-
-                    st.write("#### Oil vs Power Fluid Efficiency")
-                    fig_eff = create_efficiency_scatter(results)
-                    st.pyplot(fig_eff)
-                    plt.close()
-
-                with viz_col2:
-                    st.write("#### Pump Configurations")
-                    fig_config = create_pump_config_chart(results)
-                    st.pyplot(fig_config)
-                    plt.close()
-
-                    st.write("#### Watercut Comparison")
-                    fig_wc = create_watercut_comparison(results)
-                    st.pyplot(fig_wc)
-                    plt.close()
-
-                    st.write("#### Marginal Oil Rates")
-                    fig_marg = create_marginal_rate_chart(results)
-                    st.pyplot(fig_marg)
-                    plt.close()
-
-            with res_tab4:
-                st.write("### Export Results")
-                results_df = optimizer.to_dataframe()
-                csv_data = results_df.to_csv(index=False)
-
-                st.download_button(
-                    label="📥 Download Optimization Results CSV",
-                    data=csv_data,
-                    file_name="multi_well_optimization_results.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
-
-                st.write("### Summary Statistics")
-                st.write(f"- Total Wells: {len(results)}")
-                st.write(f"- Total Oil: {metrics['total_oil_rate']:.1f} BOPD")
-                st.write(f"- Total Power Fluid: {metrics['total_power_fluid']:.1f} BWPD")
-                st.write(f"- Power Fluid Utilization: {metrics['power_fluid_utilization']:.1%}")
-
-            # Current vs Optimized comparison tab
-            if has_jp_history:
-                with result_tabs[4]:
-                    _render_current_vs_optimized(results)
+            _render_result_tabs(results, optimizer)
 
             # Power Fluid Sensitivity
             if run_pf_sensitivity:
@@ -476,6 +382,101 @@ def run_multi_well_optimization_page():
         except Exception as e:
             st.error(f"❌ Error during optimization: {str(e)}")
             st.exception(e)
+
+
+def _render_result_tabs(results, optimizer) -> None:
+    """Render optimization result tabs: summary, details, visualizations, export."""
+    st.write("## Optimization Results")
+
+    has_jp_history = "jp_history_df" in st.session_state
+    tab_labels = ["📊 Summary", "📋 Well Details", "📈 Visualizations", "💾 Export"]
+    if has_jp_history:
+        tab_labels.append("🔄 Current vs Optimized")
+
+    result_tabs = st.tabs(tab_labels)
+    res_tab1, res_tab2, res_tab3, res_tab4 = result_tabs[:4]
+
+    metrics = optimizer.calculate_field_metrics()
+
+    with res_tab1:
+        st.write("### Field-Level Metrics")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Oil Rate", f"{metrics['total_oil_rate']:.1f} BOPD")
+            st.metric("Wells Optimized", metrics["num_wells"])
+        with col2:
+            st.metric("Total Water Rate", f"{metrics['total_water_rate']:.1f} BWPD")
+            st.metric("Field Watercut", f"{metrics['field_watercut']:.1%}")
+        with col3:
+            st.metric("Power Fluid Used", f"{metrics['total_power_fluid']:.1f} BWPD")
+            st.metric("PF Utilization", f"{metrics['power_fluid_utilization']:.1%}")
+        with col4:
+            st.metric("Avg Marginal Oil", f"{metrics['average_marginal_oil']:.3f}")
+            st.metric("Sonic Wells", f"{metrics['num_sonic']}/{metrics['num_wells']}")
+
+    with res_tab2:
+        st.write("### Well-Level Results")
+        results_df = optimizer.to_dataframe()
+        st.dataframe(results_df, use_container_width=True, height=400)
+
+    with res_tab3:
+        st.write("### Optimization Visualizations")
+        viz_col1, viz_col2 = st.columns(2)
+
+        with viz_col1:
+            st.write("#### Power Fluid Allocation")
+            fig_pie = create_power_fluid_pie_chart(results)
+            st.pyplot(fig_pie)
+            plt.close()
+
+            st.write("#### Oil Rate by Well")
+            fig_oil = create_oil_rate_bar_chart(results)
+            st.pyplot(fig_oil)
+            plt.close()
+
+            st.write("#### Oil vs Power Fluid Efficiency")
+            fig_eff = create_efficiency_scatter(results)
+            st.pyplot(fig_eff)
+            plt.close()
+
+        with viz_col2:
+            st.write("#### Pump Configurations")
+            fig_config = create_pump_config_chart(results)
+            st.pyplot(fig_config)
+            plt.close()
+
+            st.write("#### Watercut Comparison")
+            fig_wc = create_watercut_comparison(results)
+            st.pyplot(fig_wc)
+            plt.close()
+
+            st.write("#### Marginal Oil Rates")
+            fig_marg = create_marginal_rate_chart(results)
+            st.pyplot(fig_marg)
+            plt.close()
+
+    with res_tab4:
+        st.write("### Export Results")
+        results_df = optimizer.to_dataframe()
+        csv_data = results_df.to_csv(index=False)
+
+        st.download_button(
+            label="📥 Download Optimization Results CSV",
+            data=csv_data,
+            file_name="multi_well_optimization_results.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+        st.write("### Summary Statistics")
+        st.write(f"- Total Wells: {len(results)}")
+        st.write(f"- Total Oil: {metrics['total_oil_rate']:.1f} BOPD")
+        st.write(f"- Total Power Fluid: {metrics['total_power_fluid']:.1f} BWPD")
+        st.write(f"- Power Fluid Utilization: {metrics['power_fluid_utilization']:.1%}")
+
+    if has_jp_history:
+        with result_tabs[4]:
+            _render_current_vs_optimized(results)
 
 
 def _render_current_vs_optimized(results) -> None:
@@ -506,14 +507,10 @@ def _render_current_vs_optimized(results) -> None:
             well_tests = test_df[test_df["well"] == well].sort_values("WtDate", ascending=False)
             if not well_tests.empty:
                 row_data = well_tests.iloc[0]
-                if "WtOilVol" in well_tests.columns:
-                    val = row_data["WtOilVol"]
-                    if not (isinstance(val, float) and math.isnan(val)):
-                        actual_oil_map[well] = val
-                if "lift_wat" in well_tests.columns:
-                    pf_val = row_data["lift_wat"]
-                    if not (isinstance(pf_val, float) and math.isnan(pf_val)):
-                        actual_pf_map[well] = pf_val
+                if "WtOilVol" in well_tests.columns and is_valid_number(row_data["WtOilVol"]):
+                    actual_oil_map[well] = row_data["WtOilVol"]
+                if "lift_wat" in well_tests.columns and is_valid_number(row_data["lift_wat"]):
+                    actual_pf_map[well] = row_data["lift_wat"]
 
     # Build comparison rows
     rows = []
@@ -645,7 +642,7 @@ def _render_databricks_loader(max_rp_schrader, max_rp_kuparuk, resp_modifier):
             # Step 2: Estimate reservoir pressure
             st.write("### Step 2: Estimating Reservoir Pressure")
             with st.spinner("Estimating optimal reservoir pressure per well..."):
-                jp_chars = _load_jp_chars()
+                jp_chars = load_well_characteristics()
                 merged_with_rp = estimate_reservoir_pressure(
                     df,
                     max_pres_schrader=max_rp_schrader,

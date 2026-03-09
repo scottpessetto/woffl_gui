@@ -5,7 +5,7 @@ into a dedicated module. Returns a SimulationParams dataclass and run button sta
 """
 
 import streamlit as st
-from woffl.gui.params import SimulationParams
+from woffl.gui.params import NOZZLE_OPTIONS, THROAT_OPTIONS, SimulationParams
 from woffl.gui.utils import get_available_wells, get_well_data
 
 
@@ -98,24 +98,22 @@ def _render_jetpump_params() -> tuple[str, str, float, float, float]:
         Tuple of (nozzle_no, area_ratio, ken, kth, kdi)
     """
     st.subheader("Jetpump Parameters")
-    nozzle_options = ["8", "9", "10", "11", "12", "13", "14", "15"]
     if "nozzle_no" not in st.session_state:
         st.session_state.nozzle_no = "12"
     nozzle_no = st.selectbox(
         "Nozzle Size",
-        nozzle_options,
-        index=nozzle_options.index(st.session_state.nozzle_no),
+        NOZZLE_OPTIONS,
+        index=NOZZLE_OPTIONS.index(st.session_state.nozzle_no),
         key="nozzle_no_input",
     )
     st.session_state.nozzle_no = nozzle_no
 
-    area_ratio_options = ["X", "A", "B", "C", "D", "E"]
     if "area_ratio" not in st.session_state:
         st.session_state.area_ratio = "B"
     area_ratio = st.selectbox(
         "Area Ratio (Throat Size)",
-        area_ratio_options,
-        index=area_ratio_options.index(st.session_state.area_ratio),
+        THROAT_OPTIONS,
+        index=THROAT_OPTIONS.index(st.session_state.area_ratio),
         key="area_ratio_input",
     )
     st.session_state.area_ratio = area_ratio
@@ -373,12 +371,12 @@ def _render_batch_params() -> tuple[list[str], list[str], str]:
     st.subheader("Batch Run Parameters")
     nozzle_batch_options = st.multiselect(
         "Nozzle Sizes to Test",
-        options=["8", "9", "10", "11", "12", "13", "14", "15"],
+        options=NOZZLE_OPTIONS,
         default=["9", "10", "11", "12", "13", "14", "15"],
     )
 
     throat_batch_options = st.multiselect(
-        "Throat Ratios to Test", options=["X", "A", "B", "C", "D", "E"], default=["A", "B", "C", "D"]
+        "Throat Ratios to Test", options=THROAT_OPTIONS, default=["A", "B", "C", "D"]
     )
 
     water_type = st.radio(

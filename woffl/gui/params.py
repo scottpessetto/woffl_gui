@@ -8,6 +8,9 @@ were previously threaded through every function call.
 from dataclasses import dataclass, field
 from typing import Optional
 
+NOZZLE_OPTIONS = ["8", "9", "10", "11", "12", "13", "14", "15"]
+THROAT_OPTIONS = ["X", "A", "B", "C", "D", "E"]
+
 
 @dataclass
 class SimulationParams:

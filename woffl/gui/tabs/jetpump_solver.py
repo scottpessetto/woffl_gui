@@ -8,11 +8,9 @@ also shows a "Model vs Actual" comparison section with IPR chart
 and modeled vs actual metrics.
 """
 
-import math
-
 import streamlit as st
 from woffl.gui.params import SimulationParams
-from woffl.gui.utils import run_jetpump_solver
+from woffl.gui.utils import is_valid_number, run_jetpump_solver
 
 
 def render_tab(params: SimulationParams, jetpump, tube, well_profile, inflow, res_mix) -> None:
@@ -151,10 +149,7 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
     # Use most recent test GOR by default, with sidebar override option
     recent_test = test_df.sort_values("WtDate", ascending=False).iloc[0]
     test_gor = recent_test.get("fgor", None)
-    if test_gor is not None and not math.isnan(test_gor):
-        test_gor = int(test_gor)
-    else:
-        test_gor = None
+    test_gor = int(test_gor) if is_valid_number(test_gor) else None
 
     override_gor = st.checkbox(
         "Override GOR from well test",
@@ -188,9 +183,6 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
     actual_bhp = recent_test.get("BHP", None)
     actual_pf = recent_test.get("lift_wat", None)
 
-    def _valid(val):
-        return val is not None and not (isinstance(val, float) and math.isnan(val))
-
     st.markdown("#### Modeled vs Actual (Most Recent Test)")
 
     if model_results:
@@ -199,14 +191,14 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
         with col1:
             st.metric("Modeled Oil Rate", f"{modeled_oil:.0f} BOPD")
         with col2:
-            st.metric("Actual Oil Rate", f"{actual_oil:.0f} BOPD" if _valid(actual_oil) else "N/A")
+            st.metric("Actual Oil Rate", f"{actual_oil:.0f} BOPD" if is_valid_number(actual_oil) else "N/A")
         with col3:
-            if _valid(actual_oil):
+            if is_valid_number(actual_oil):
                 st.metric("Delta", f"{modeled_oil - actual_oil:+.0f} BOPD")
             else:
                 st.metric("Delta", "N/A")
 
-        if _valid(actual_bhp):
+        if is_valid_number(actual_bhp):
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Modeled BHP (suction)", f"{_psu:.0f} psi")
@@ -219,9 +211,9 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
         with col1:
             st.metric("Modeled PF Rate", f"{modeled_pf:.0f} BWPD")
         with col2:
-            st.metric("Actual PF Rate", f"{actual_pf:.0f} BWPD" if _valid(actual_pf) else "N/A")
+            st.metric("Actual PF Rate", f"{actual_pf:.0f} BWPD" if is_valid_number(actual_pf) else "N/A")
         with col3:
-            if _valid(actual_pf):
+            if is_valid_number(actual_pf):
                 st.metric("Delta", f"{modeled_pf - actual_pf:+.0f} BWPD")
             else:
                 st.metric("Delta", "N/A")

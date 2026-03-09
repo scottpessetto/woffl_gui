@@ -9,8 +9,6 @@ Third mode in the WOFFL GUI. Allows users to:
 6. Download optimization template CSV
 """
 
-import os
-
 import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
@@ -80,6 +78,7 @@ from woffl.assembly.ipr_analyzer import (
     generate_ipr_curves,
 )
 from woffl.assembly.well_test_processor import WellTestProcessor, merge_tests_with_bhp
+from woffl.gui.utils import load_well_characteristics
 from woffl.gui.ipr_viz import (
     create_ipr_grid_png,
     create_ipr_pdf,
@@ -87,16 +86,6 @@ from woffl.gui.ipr_viz import (
     create_qmax_comparison_chart,
     create_rp_comparison_chart,
 )
-
-
-def _load_jp_chars() -> pd.DataFrame:
-    """Load jp_chars.csv for well characteristics lookup."""
-    try:
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        jp_chars_path = os.path.join(current_dir, "..", "jp_data", "jp_chars.csv")
-        return pd.read_csv(jp_chars_path)
-    except FileNotFoundError:
-        return pd.DataFrame()
 
 
 def run_well_test_analysis_page():
@@ -297,38 +286,8 @@ def _run_restls_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
             wells_in_data = merged_data["well"].nunique()
             st.success(f"✅ {len(merged_data)} test points across {wells_in_data} wells (BHP included)")
 
-            # Estimate reservoir pressure
-            st.write("### Step 1: Estimating Reservoir Pressure")
-            with st.spinner("Estimating optimal reservoir pressure per well..."):
-                jp_chars = _load_jp_chars()
-                merged_with_rp = estimate_reservoir_pressure(
-                    merged_data,
-                    max_pres_schrader=max_rp_schrader,
-                    max_pres_kuparuk=max_rp_kuparuk,
-                    jp_chars=jp_chars,
-                )
-
-            st.success("✅ Reservoir pressure estimation complete")
-
-            # Compute Vogel coefficients
-            st.write("### Step 2: Computing Vogel IPR Coefficients")
-            with st.spinner("Computing Vogel IPR parameters..."):
-                vogel_coeffs = compute_vogel_coefficients(merged_with_rp, resp_modifier=resp_modifier)
-
-            if vogel_coeffs.empty:
-                st.error("❌ Could not compute Vogel coefficients for any wells.")
+            if not _run_ipr_analysis(merged_data, max_rp_schrader, max_rp_kuparuk, resp_modifier):
                 return
-
-            st.success(f"✅ Computed IPR parameters for {len(vogel_coeffs)} wells")
-
-            # Generate IPR curves
-            ipr_curves = generate_ipr_curves(vogel_coeffs)
-
-            # Store results in session state
-            st.session_state["wt_vogel_coeffs"] = vogel_coeffs
-            st.session_state["wt_ipr_curves"] = ipr_curves
-            st.session_state["wt_merged_data"] = merged_with_rp
-            st.session_state["wt_analysis_complete"] = True
 
         except Exception as e:
             st.error(f"❌ Error during analysis: {str(e)}")
@@ -493,43 +452,53 @@ def _run_fdc_csv_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
             wells_in_merged = merged_data["well"].nunique()
             st.success(f"✅ Merged data: {len(merged_data)} test points across {wells_in_merged} wells")
 
-            # Step 3: Estimate reservoir pressure
-            st.write("### Step 3: Estimating Reservoir Pressure")
-            with st.spinner("Estimating optimal reservoir pressure per well..."):
-                jp_chars = _load_jp_chars()
-                merged_with_rp = estimate_reservoir_pressure(
-                    merged_data,
-                    max_pres_schrader=max_rp_schrader,
-                    max_pres_kuparuk=max_rp_kuparuk,
-                    jp_chars=jp_chars,
-                )
-
-            st.success("✅ Reservoir pressure estimation complete")
-
-            # Step 4: Compute Vogel coefficients
-            st.write("### Step 4: Computing Vogel IPR Coefficients")
-            with st.spinner("Computing Vogel IPR parameters..."):
-                vogel_coeffs = compute_vogel_coefficients(merged_with_rp, resp_modifier=resp_modifier)
-
-            if vogel_coeffs.empty:
-                st.error("❌ Could not compute Vogel coefficients for any wells.")
+            # Step 3-5: Run IPR analysis pipeline
+            if not _run_ipr_analysis(merged_data, max_rp_schrader, max_rp_kuparuk, resp_modifier):
                 return
-
-            st.success(f"✅ Computed IPR parameters for {len(vogel_coeffs)} wells")
-
-            # Step 5: Generate IPR curves
-            ipr_curves = generate_ipr_curves(vogel_coeffs)
-
-            # Store results in session state
-            st.session_state["wt_vogel_coeffs"] = vogel_coeffs
-            st.session_state["wt_ipr_curves"] = ipr_curves
-            st.session_state["wt_merged_data"] = merged_with_rp
-            st.session_state["wt_analysis_complete"] = True
 
         except Exception as e:
             st.error(f"❌ Error during analysis: {str(e)}")
             st.exception(e)
             return
+
+def _run_ipr_analysis(merged_data, max_rp_schrader, max_rp_kuparuk, resp_modifier) -> bool:
+    """Run the shared IPR analysis pipeline: estimate RP, compute Vogel, generate curves.
+
+    Stores results in session state on success.
+
+    Returns:
+        True on success, False on failure.
+    """
+    st.write("### Estimating Reservoir Pressure")
+    with st.spinner("Estimating optimal reservoir pressure per well..."):
+        jp_chars = load_well_characteristics()
+        merged_with_rp = estimate_reservoir_pressure(
+            merged_data,
+            max_pres_schrader=max_rp_schrader,
+            max_pres_kuparuk=max_rp_kuparuk,
+            jp_chars=jp_chars,
+        )
+
+    st.success("✅ Reservoir pressure estimation complete")
+
+    st.write("### Computing Vogel IPR Coefficients")
+    with st.spinner("Computing Vogel IPR parameters..."):
+        vogel_coeffs = compute_vogel_coefficients(merged_with_rp, resp_modifier=resp_modifier)
+
+    if vogel_coeffs.empty:
+        st.error("❌ Could not compute Vogel coefficients for any wells.")
+        return False
+
+    st.success(f"✅ Computed IPR parameters for {len(vogel_coeffs)} wells")
+
+    ipr_curves = generate_ipr_curves(vogel_coeffs)
+
+    st.session_state["wt_vogel_coeffs"] = vogel_coeffs
+    st.session_state["wt_ipr_curves"] = ipr_curves
+    st.session_state["wt_merged_data"] = merged_with_rp
+    st.session_state["wt_analysis_complete"] = True
+    return True
+
 
 def _render_summary_tab(vogel_coeffs: pd.DataFrame, merged_data: pd.DataFrame):
     """Render the Summary tab."""
