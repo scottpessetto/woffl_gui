@@ -102,10 +102,22 @@ def main():
                         st.warning(f"Could not fetch well tests: {e}")
                         st.session_state["all_well_tests_df"] = None
 
+        # Easter egg — type the password to unlock Scott's Tools
+        st.divider()
+        code = st.text_input("", placeholder="", label_visibility="collapsed", key="_egg_input")
+        if code.strip().lower() == "scott" and not st.session_state.get("_scotts_tools", False):
+            st.session_state["_scotts_tools"] = True
+            st.session_state["_egg_input"] = ""
+            st.rerun()
+
+    modes = ["Single Well Analysis", "Multi-Well Optimization", "Well Test Analysis"]
+    if st.session_state.get("_scotts_tools", False):
+        modes.append("Scott's Tools")
+
     # Mode selection
     app_mode = st.radio(
         "Select Analysis Mode:",
-        ["Single Well Analysis", "Multi-Well Optimization", "Well Test Analysis"],
+        modes,
         horizontal=True,
         help=(
             "Single Well: Analyze one well in detail. "
@@ -124,6 +136,12 @@ def main():
         from woffl.gui.multi_well_page import run_multi_well_optimization_page
 
         run_multi_well_optimization_page()
+        return
+
+    if app_mode == "Scott's Tools":
+        from woffl.gui.scotts_tools_page import run_scotts_tools_page
+
+        run_scotts_tools_page()
         return
 
     # Single Well Analysis mode
