@@ -98,6 +98,34 @@ def execute_query(query: str) -> pd.DataFrame:
     return _query_via_connector(query)
 
 
+JP_HISTORY_QUERY = """\
+SELECT
+    w.wellname AS `Well Name`,
+    jp.DateSet AS `Date Set`,
+    jp.DatePulled AS `Date Pulled`,
+    jp.NozzleNumber AS `Nozzle Number`,
+    jp.ThroatRatio AS `Throat Ratio`,
+    jp.TubingDiameter AS `Tubing Diameter`
+FROM apps.mpu_tracker.tbl_jetpump_data jp
+JOIN apps.mpu_tracker.tbl_wells w ON jp.loc_id = w.loc_id
+ORDER BY w.wellname, jp.DateSet DESC
+"""
+
+
+def fetch_jp_history() -> pd.DataFrame:
+    """Fetch jet pump installation history from Databricks mpu_tracker."""
+    df = execute_query(JP_HISTORY_QUERY)
+
+    if "Date Set" in df.columns:
+        df["Date Set"] = pd.to_datetime(df["Date Set"], errors="coerce")
+    if "Date Pulled" in df.columns:
+        df["Date Pulled"] = pd.to_datetime(df["Date Pulled"], errors="coerce")
+    if "Well Name" in df.columns:
+        df["Well Name"] = df["Well Name"].astype(str).str.strip()
+
+    return df
+
+
 def load_tag_dict(custom_source=None) -> Dict[str, Tuple[str, str, str]]:
     """Load SCADA tag mapping from bhp_dict.csv."""
     if custom_source is not None:
