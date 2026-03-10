@@ -71,8 +71,7 @@ def run_multi_well_optimization_page():
         total_pf = st.number_input(
             "Total Available Power Fluid (bbl/day)",
             min_value=0,
-            max_value=50000,
-            value=10000,
+            value=30000,
             step=500,
             help="Total power fluid capacity available for all wells",
         )
@@ -92,9 +91,9 @@ def run_multi_well_optimization_page():
         st.subheader("Optimization Settings")
         opt_method = st.selectbox(
             "Algorithm",
-            ["greedy", "proportional"],
+            ["milp", "greedy", "proportional"],
             index=0,
-            help="Greedy: Iterative marginal allocation. Proportional: Productivity-based allocation.",
+            help="MILP: Optimal (exact solver). Greedy: Iterative marginal allocation. Proportional: Productivity-based.",
         )
 
         marginal_wc = st.number_input(

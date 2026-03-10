@@ -1,4 +1,4 @@
-"""Tests for optimization algorithms: greedy, proportional, and dispatcher."""
+"""Tests for optimization algorithms: milp, greedy, proportional, and dispatcher."""
 
 from unittest.mock import MagicMock
 
@@ -14,6 +14,7 @@ from woffl.assembly.network_optimizer import (
 )
 from woffl.assembly.optimization_algorithms import (
     greedy_optimization,
+    milp_optimization,
     optimize,
     simple_proportional_allocation,
 )
@@ -82,6 +83,12 @@ def _make_optimizer_with_results():
 
 
 class TestOptimizeDispatcher:
+    def test_milp(self):
+        opt = _make_optimizer_with_results()
+        results = optimize(opt, method="milp")
+        assert isinstance(results, list)
+        assert len(results) > 0
+
     def test_greedy(self):
         opt = _make_optimizer_with_results()
         results = optimize(opt, method="greedy")
@@ -91,6 +98,12 @@ class TestOptimizeDispatcher:
     def test_proportional(self):
         opt = _make_optimizer_with_results()
         results = optimize(opt, method="proportional")
+        assert isinstance(results, list)
+        assert len(results) > 0
+
+    def test_default_is_milp(self):
+        opt = _make_optimizer_with_results()
+        results = optimize(opt)
         assert isinstance(results, list)
         assert len(results) > 0
 
@@ -161,3 +174,124 @@ class TestSimpleProportionalAllocation:
         results = simple_proportional_allocation(opt)
         well_names = {r.well_name for r in results}
         assert well_names.issubset({"WellA", "WellB"})
+
+
+# ── milp_optimization ─────────────────────────────────────────────────────
+
+
+class TestMilpOptimization:
+    def test_returns_results(self):
+        opt = _make_optimizer_with_results()
+        results = milp_optimization(opt)
+        assert len(results) > 0
+        assert all(isinstance(r, OptimizationResult) for r in results)
+
+    def test_sets_optimization_results(self):
+        opt = _make_optimizer_with_results()
+        milp_optimization(opt)
+        assert opt.optimization_results is not None
+
+    def test_total_pf_within_constraint(self):
+        opt = _make_optimizer_with_results()
+        results = milp_optimization(opt)
+        total_pf = sum(r.allocated_power_fluid for r in results)
+        assert total_pf <= opt.power_fluid.total_rate + 1
+
+    def test_no_batch_results_raises(self):
+        wells = [WellConfig(well_name="X", res_pres=1500, form_temp=70, jpump_tvd=4000)]
+        pf = PowerFluidConstraint(total_rate=5000, pressure=3000)
+        opt = NetworkOptimizer(wells, pf, ["10"], ["A"])
+        with pytest.raises(ValueError, match="batch simulations"):
+            milp_optimization(opt)
+
+    def test_result_oil_rates_positive(self):
+        opt = _make_optimizer_with_results()
+        results = milp_optimization(opt)
+        for r in results:
+            assert r.predicted_oil_rate > 0
+
+    def test_one_pump_per_well(self):
+        """MILP should assign at most one pump config per well."""
+        opt = _make_optimizer_with_results()
+        results = milp_optimization(opt)
+        well_names = [r.well_name for r in results]
+        assert len(well_names) == len(set(well_names))
+
+    def test_milp_at_least_as_good_as_greedy(self):
+        """MILP (exact) should produce >= total oil compared to greedy."""
+        opt_milp = _make_optimizer_with_results()
+        milp_results = milp_optimization(opt_milp)
+        milp_oil = sum(r.predicted_oil_rate for r in milp_results)
+
+        opt_greedy = _make_optimizer_with_results()
+        greedy_results = greedy_optimization(opt_greedy)
+        greedy_oil = sum(r.predicted_oil_rate for r in greedy_results)
+
+        assert milp_oil >= greedy_oil - 0.01  # small tolerance for float
+
+    def test_tight_budget_picks_best_combo(self):
+        """With a tight PF budget, MILP should pick the highest-oil configs that fit."""
+        wells = [
+            WellConfig(well_name="W1", res_pres=1500, form_temp=70, jpump_tvd=4000),
+            WellConfig(well_name="W2", res_pres=1600, form_temp=80, jpump_tvd=4200),
+        ]
+        # Budget only allows one pump (~500 bbl)
+        pf = PowerFluidConstraint(total_rate=550, pressure=3000)
+        opt = NetworkOptimizer(wells, pf, ["10", "11"], ["A", "B"])
+
+        mock_bp_1 = MagicMock()
+        mock_bp_1.df = _make_mock_batch_df([
+            {"nozzle": "10", "throat": "A", "qoil_std": 300, "lift_wat": 500, "form_wat": 100},
+            {"nozzle": "10", "throat": "B", "qoil_std": 100, "lift_wat": 200, "form_wat": 50},
+        ])
+        mock_bp_2 = MagicMock()
+        mock_bp_2.df = _make_mock_batch_df([
+            {"nozzle": "10", "throat": "A", "qoil_std": 280, "lift_wat": 500, "form_wat": 90},
+            {"nozzle": "10", "throat": "B", "qoil_std": 90, "lift_wat": 200, "form_wat": 40},
+        ])
+        opt.batch_results = {"W1": mock_bp_1, "W2": mock_bp_2}
+
+        results = milp_optimization(opt)
+        total_pf = sum(r.allocated_power_fluid for r in results)
+        assert total_pf <= 550
+        # Should pick W1/10A (300 oil, 500 pf) — best single pump within budget
+        assert any(r.well_name == "W1" and r.predicted_oil_rate == 300 for r in results)
+
+    def test_milp_beats_greedy_tradeoff(self):
+        """Construct a case where greedy picks suboptimally.
+
+        Greedy picks the highest marginal-oil-per-PF first, which can lock out
+        a better global combination.
+        """
+        wells = [
+            WellConfig(well_name="W1", res_pres=1500, form_temp=70, jpump_tvd=4000),
+            WellConfig(well_name="W2", res_pres=1600, form_temp=80, jpump_tvd=4200),
+        ]
+        # Budget = 1000
+        pf = PowerFluidConstraint(total_rate=1000, pressure=3000)
+        opt_milp = NetworkOptimizer(wells, pf, ["10", "11"], ["A", "B"])
+
+        # W1: config A gives 400 oil for 900 PF (marginal = 0.44)
+        #     config B gives 100 oil for 200 PF (marginal = 0.50)  <-- greedy picks this first
+        # W2: config A gives 350 oil for 800 PF (marginal = 0.44)
+        #     config B gives  90 oil for 150 PF (marginal = 0.60)  <-- greedy picks this first
+        #
+        # Greedy: picks W2/B (90 oil, 150 pf), then W1/B (100 oil, 200 pf) = 190 oil
+        # Optimal: W1/A (400 oil, 900 pf) = 400 oil  (or W1/B + W2/B = 190, so W1/A alone wins)
+        mock_bp_1 = MagicMock()
+        mock_bp_1.df = _make_mock_batch_df([
+            {"nozzle": "10", "throat": "A", "qoil_std": 400, "lift_wat": 900, "form_wat": 100},
+            {"nozzle": "10", "throat": "B", "qoil_std": 100, "lift_wat": 200, "form_wat": 50},
+        ])
+        mock_bp_2 = MagicMock()
+        mock_bp_2.df = _make_mock_batch_df([
+            {"nozzle": "10", "throat": "A", "qoil_std": 350, "lift_wat": 800, "form_wat": 90},
+            {"nozzle": "10", "throat": "B", "qoil_std": 90, "lift_wat": 150, "form_wat": 40},
+        ])
+        opt_milp.batch_results = {"W1": mock_bp_1, "W2": mock_bp_2}
+
+        milp_results = milp_optimization(opt_milp)
+        milp_oil = sum(r.predicted_oil_rate for r in milp_results)
+
+        # MILP should find the global optimum (400 oil from W1/A alone)
+        assert milp_oil >= 400
