@@ -25,6 +25,7 @@ def create_ipr_plotly(
     well_name: str,
     ipr_data: Dict,
     merged_data: pd.DataFrame,
+    form_wc: Optional[float] = None,
 ) -> "go.Figure":
     """Create an interactive Plotly IPR plot for a single well.
 
@@ -32,6 +33,7 @@ def create_ipr_plotly(
         well_name: Well identifier
         ipr_data: IPR data dict for this well
         merged_data: Merged test+BHP DataFrame for scatter points
+        form_wc: Formation water cut (0-1) for calculating oil rate from total fluid
 
     Returns:
         plotly Figure (zoomable, hoverable)
@@ -39,16 +41,31 @@ def create_ipr_plotly(
     fig = go.Figure()
 
     # Vogel IPR curve
-    fig.add_trace(
-        go.Scatter(
-            x=ipr_data["fluid_recent"],
-            y=list(ipr_data["bhp_array"]),
-            mode="lines",
-            name="Vogel IPR",
-            line=dict(color="blue", width=3),
-            hovertemplate="Fluid: %{x:.0f} BPD<br>BHP: %{y:.0f} psi<extra></extra>",
+    fluid_recent = ipr_data["fluid_recent"]
+    if form_wc is not None:
+        oil_rates = [f * (1 - form_wc) for f in fluid_recent]
+        fig.add_trace(
+            go.Scatter(
+                x=fluid_recent,
+                y=list(ipr_data["bhp_array"]),
+                mode="lines",
+                name="Vogel IPR",
+                line=dict(color="blue", width=3),
+                customdata=oil_rates,
+                hovertemplate="Fluid: %{x:.0f} BPD<br>Oil: %{customdata:.0f} BOPD<br>BHP: %{y:.0f} psi<extra></extra>",
+            )
         )
-    )
+    else:
+        fig.add_trace(
+            go.Scatter(
+                x=fluid_recent,
+                y=list(ipr_data["bhp_array"]),
+                mode="lines",
+                name="Vogel IPR",
+                line=dict(color="blue", width=3),
+                hovertemplate="Fluid: %{x:.0f} BPD<br>BHP: %{y:.0f} psi<extra></extra>",
+            )
+        )
 
     # Test data scatter points
     well_test_data = merged_data[merged_data["well"] == well_name].copy()
@@ -60,13 +77,18 @@ def create_ipr_plotly(
                 well_test_data["date"] = pd.to_datetime(well_test_data["WtDate"])
                 current_date = pd.to_datetime("today")
                 well_test_data["days_since"] = (current_date - well_test_data["date"]).dt.days
-                hover_text = [
-                    f"Fluid: {row['WtTotalFluid']:.0f} BPD<br>"
-                    f"BHP: {row['BHP']:.0f} psi<br>"
-                    f"Date: {row['date'].strftime('%Y-%m-%d')}<br>"
-                    f"Days ago: {row['days_since']}"
-                    for _, row in well_test_data.iterrows()
-                ]
+                hover_text = []
+                for _, row in well_test_data.iterrows():
+                    oil_str = ""
+                    if "WtOilVol" in well_test_data.columns and pd.notna(row.get("WtOilVol")):
+                        oil_str = f"Oil: {row['WtOilVol']:.0f} BOPD<br>"
+                    hover_text.append(
+                        f"Fluid: {row['WtTotalFluid']:.0f} BPD<br>"
+                        f"{oil_str}"
+                        f"BHP: {row['BHP']:.0f} psi<br>"
+                        f"Date: {row['date'].strftime('%Y-%m-%d')}<br>"
+                        f"Days ago: {row['days_since']}"
+                    )
                 fig.add_trace(
                     go.Scatter(
                         x=well_test_data["WtTotalFluid"],

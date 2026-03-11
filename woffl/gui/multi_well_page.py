@@ -26,8 +26,15 @@ from woffl.assembly.well_test_client import (
     get_pad_names,
 )
 from woffl.gui.optimization_utils import get_template_csv_content
+from woffl.assembly.calibration import (
+    apply_calibration,
+    compute_field_calibration_summary,
+    run_calibration,
+)
 from woffl.gui.optimization_viz import (
+    create_calibration_chart,
     create_efficiency_scatter,
+    create_ipr_comparison_pdf,
     create_marginal_rate_chart,
     create_oil_rate_bar_chart,
     create_power_fluid_pie_chart,
@@ -98,6 +105,14 @@ def run_multi_well_optimization_page():
 
         marginal_wc = st.number_input(
             "Marginal Watercut Threshold", min_value=0.0, max_value=1.0, value=0.94, step=0.01, format="%.2f"
+        )
+
+        has_jp_history_sidebar = "jp_history_df" in st.session_state
+        use_calibration = st.checkbox(
+            "Apply Model Calibration",
+            value=True,
+            help="Scale predictions using model-vs-actual on current pump configs",
+            disabled=not has_jp_history_sidebar,
         )
 
         # Pump Options
@@ -324,11 +339,26 @@ def run_multi_well_optimization_page():
             # Create optimizer
             pf_constraint = PowerFluidConstraint(total_rate=total_pf, pressure=pf_pressure, rho_pf=rho_pf)
 
+            # Inject current JP configs into nozzle/throat options so batch sims include them
+            effective_nozzles = list(nozzle_opts)
+            effective_throats = list(throat_opts)
+            jp_hist = st.session_state.get("jp_history_df")
+            opt_well_names = [w.well_name for w in wells]
+            current_jp_map = {}
+
+            if jp_hist is not None and use_calibration:
+                current_jp_map = _build_current_jp_map(opt_well_names, jp_hist)
+                for nozzle, throat in current_jp_map.values():
+                    if nozzle not in effective_nozzles:
+                        effective_nozzles.append(nozzle)
+                    if throat not in effective_throats:
+                        effective_throats.append(throat)
+
             optimizer = NetworkOptimizer(
                 wells=wells,
                 power_fluid=pf_constraint,
-                nozzle_options=nozzle_opts,
-                throat_options=throat_opts,
+                nozzle_options=effective_nozzles,
+                throat_options=effective_throats,
                 marginal_watercut=marginal_wc,
             )
 
@@ -348,6 +378,56 @@ def run_multi_well_optimization_page():
 
             st.success(f"✅ Completed batch simulations for {len(wells)} wells")
 
+            # Calibration step (Databricks path only)
+            calibration_results = None
+            if use_calibration and current_jp_map and has_jp_history_sidebar:
+                all_tests = st.session_state.get("all_well_tests_df")
+                actual_oil_map, actual_pf_map, actual_bhp_map = _build_actual_maps(opt_well_names, all_tests)
+
+                if actual_oil_map:
+                    calibration_results = run_calibration(
+                        optimizer, actual_oil_map, actual_pf_map, actual_bhp_map, current_jp_map
+                    )
+                    optimizer.set_calibration(calibration_results)
+
+                    # Render calibration summary
+                    if calibration_results:
+                        st.write("### Model Calibration")
+                        summary = compute_field_calibration_summary(calibration_results)
+                        summary["num_skipped"] = len(wells) - summary["num_calibrated"]
+
+                        cal_col1, cal_col2, cal_col3, cal_col4 = st.columns(4)
+                        with cal_col1:
+                            st.metric("Calibrated Wells", f"{summary['num_calibrated']}/{len(wells)}")
+                        with cal_col2:
+                            st.metric("Median Factor", f"{summary['median_factor']:.2f}")
+                        with cal_col3:
+                            st.metric("Mean Factor", f"{summary['mean_factor']:.2f}")
+                        with cal_col4:
+                            if summary["worst_well"]:
+                                worst_err = calibration_results[summary["worst_well"]].oil_error_pct
+                                st.metric("Worst Fit", f"{summary['worst_well']} ({worst_err:.0f}%)")
+
+                        # Calibration chart
+                        fig_cal = create_calibration_chart(calibration_results)
+                        st.pyplot(fig_cal)
+                        plt.close()
+
+                        # Calibration detail table
+                        with st.expander("Calibration Details"):
+                            cal_rows = []
+                            for name, c in calibration_results.items():
+                                cal_rows.append({
+                                    "Well": name,
+                                    "Current JP": f"{c.current_nozzle}{c.current_throat}",
+                                    "Model Oil": f"{c.model_oil:.0f}",
+                                    "Actual Oil": f"{c.actual_oil:.0f}",
+                                    "Factor": f"{c.calibration_factor:.2f}",
+                                    "Error %": f"{c.oil_error_pct:.1f}%",
+                                    "Grade": c.quality_grade,
+                                })
+                            st.dataframe(pd.DataFrame(cal_rows), use_container_width=True, hide_index=True)
+
             # Run optimization
             st.write("### Running Optimization")
             with st.spinner(f"Running {opt_method} optimization..."):
@@ -359,7 +439,7 @@ def run_multi_well_optimization_page():
 
             st.success(f"✅ Optimization complete! Allocated pumps to {len(results)} wells")
 
-            _render_result_tabs(results, optimizer)
+            _render_result_tabs(results, optimizer, calibration_results)
 
             # Power Fluid Sensitivity
             if run_pf_sensitivity:
@@ -383,9 +463,69 @@ def run_multi_well_optimization_page():
             st.exception(e)
 
 
-def _render_result_tabs(results, optimizer) -> None:
+def _build_actual_maps(opt_wells: list[str], test_df) -> tuple[dict, dict, dict]:
+    """Build actual oil/PF/BHP maps from well test data.
+
+    Args:
+        opt_wells: List of well names to include
+        test_df: DataFrame of well test data (must have 'well' column)
+
+    Returns:
+        Tuple of (actual_oil_map, actual_pf_map, actual_bhp_map)
+    """
+    actual_oil_map = {}
+    actual_pf_map = {}
+    actual_bhp_map = {}
+    if test_df is None or test_df.empty:
+        return actual_oil_map, actual_pf_map, actual_bhp_map
+
+    well_tests = test_df[test_df["well"].isin(opt_wells)].copy()
+    for well in opt_wells:
+        wt = well_tests[well_tests["well"] == well].sort_values("WtDate", ascending=False)
+        if wt.empty:
+            continue
+        row_data = wt.iloc[0]
+        if "WtOilVol" in wt.columns and is_valid_number(row_data["WtOilVol"]):
+            actual_oil_map[well] = row_data["WtOilVol"]
+        if "lift_wat" in wt.columns and is_valid_number(row_data["lift_wat"]):
+            actual_pf_map[well] = row_data["lift_wat"]
+        if "BHP" in wt.columns and is_valid_number(row_data["BHP"]):
+            actual_bhp_map[well] = row_data["BHP"]
+
+    return actual_oil_map, actual_pf_map, actual_bhp_map
+
+
+def _build_current_jp_map(opt_wells: list[str], jp_hist) -> dict[str, tuple[str, str]]:
+    """Build map of current JP configs from JP history.
+
+    Args:
+        opt_wells: List of well names
+        jp_hist: JP history DataFrame
+
+    Returns:
+        Dict mapping well_name to (nozzle, throat) tuple
+    """
+    from woffl.assembly.jp_history import get_current_pump
+
+    current_jp_map = {}
+    for well in opt_wells:
+        current = get_current_pump(jp_hist, well)
+        if current and current["nozzle_no"] and current["throat_ratio"]:
+            current_jp_map[well] = (current["nozzle_no"], current["throat_ratio"])
+    return current_jp_map
+
+
+def _render_result_tabs(results, optimizer, calibration_results=None) -> None:
     """Render optimization result tabs: summary, details, visualizations, export."""
     st.write("## Optimization Results")
+
+    # Determine which results to display for metrics/viz/export
+    if calibration_results:
+        display_results = apply_calibration(results, calibration_results)
+        cal_label = " (Calibrated)"
+    else:
+        display_results = results
+        cal_label = ""
 
     has_jp_history = "jp_history_df" in st.session_state
     tab_labels = ["📊 Summary", "📋 Well Details", "📈 Visualizations", "💾 Export"]
@@ -395,10 +535,10 @@ def _render_result_tabs(results, optimizer) -> None:
     result_tabs = st.tabs(tab_labels)
     res_tab1, res_tab2, res_tab3, res_tab4 = result_tabs[:4]
 
-    metrics = optimizer.calculate_field_metrics()
+    metrics = optimizer.calculate_field_metrics(display_results)
 
     with res_tab1:
-        st.write("### Field-Level Metrics")
+        st.write(f"### Field-Level Metrics{cal_label}")
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total Oil Rate", f"{metrics['total_oil_rate']:.1f} BOPD")
@@ -415,7 +555,12 @@ def _render_result_tabs(results, optimizer) -> None:
 
     with res_tab2:
         st.write("### Well-Level Results")
-        results_df = optimizer.to_dataframe()
+        results_df = optimizer.to_dataframe(display_results)
+        if calibration_results:
+            # Add Cal Factor column
+            results_df["Cal Factor"] = results_df["Well"].map(
+                lambda w: calibration_results[w].calibration_factor if w in calibration_results else 1.0
+            )
         st.dataframe(results_df, use_container_width=True, height=400)
 
     with res_tab3:
@@ -424,40 +569,44 @@ def _render_result_tabs(results, optimizer) -> None:
 
         with viz_col1:
             st.write("#### Power Fluid Allocation")
-            fig_pie = create_power_fluid_pie_chart(results)
+            fig_pie = create_power_fluid_pie_chart(display_results)
             st.pyplot(fig_pie)
             plt.close()
 
             st.write("#### Oil Rate by Well")
-            fig_oil = create_oil_rate_bar_chart(results)
+            fig_oil = create_oil_rate_bar_chart(display_results)
             st.pyplot(fig_oil)
             plt.close()
 
             st.write("#### Oil vs Power Fluid Efficiency")
-            fig_eff = create_efficiency_scatter(results)
+            fig_eff = create_efficiency_scatter(display_results)
             st.pyplot(fig_eff)
             plt.close()
 
         with viz_col2:
             st.write("#### Pump Configurations")
-            fig_config = create_pump_config_chart(results)
+            fig_config = create_pump_config_chart(display_results)
             st.pyplot(fig_config)
             plt.close()
 
             st.write("#### Watercut Comparison")
-            fig_wc = create_watercut_comparison(results)
+            fig_wc = create_watercut_comparison(display_results)
             st.pyplot(fig_wc)
             plt.close()
 
             st.write("#### Marginal Oil Rates")
-            fig_marg = create_marginal_rate_chart(results)
+            fig_marg = create_marginal_rate_chart(display_results)
             st.pyplot(fig_marg)
             plt.close()
 
     with res_tab4:
         st.write("### Export Results")
-        results_df = optimizer.to_dataframe()
-        csv_data = results_df.to_csv(index=False)
+        export_df = optimizer.to_dataframe(display_results)
+        if calibration_results:
+            export_df["Cal Factor"] = export_df["Well"].map(
+                lambda w: calibration_results[w].calibration_factor if w in calibration_results else 1.0
+            )
+        csv_data = export_df.to_csv(index=False)
 
         st.download_button(
             label="📥 Download Optimization Results CSV",
@@ -468,17 +617,17 @@ def _render_result_tabs(results, optimizer) -> None:
         )
 
         st.write("### Summary Statistics")
-        st.write(f"- Total Wells: {len(results)}")
-        st.write(f"- Total Oil: {metrics['total_oil_rate']:.1f} BOPD")
+        st.write(f"- Total Wells: {len(display_results)}")
+        st.write(f"- Total Oil: {metrics['total_oil_rate']:.1f} BOPD{cal_label}")
         st.write(f"- Total Power Fluid: {metrics['total_power_fluid']:.1f} BWPD")
         st.write(f"- Power Fluid Utilization: {metrics['power_fluid_utilization']:.1%}")
 
     if has_jp_history:
         with result_tabs[4]:
-            _render_current_vs_optimized(results)
+            _render_current_vs_optimized(results, optimizer, calibration_results)
 
 
-def _render_current_vs_optimized(results) -> None:
+def _render_current_vs_optimized(results, optimizer, calibration_results=None) -> None:
     """Render the Current vs Optimized comparison table."""
     from woffl.assembly.jp_history import get_current_pump
 
@@ -488,32 +637,22 @@ def _render_current_vs_optimized(results) -> None:
 
     st.write("### Current JP vs Optimized Solution")
 
-    # Get optimized well names
     opt_wells = [r.well_name for r in results]
 
-    # Use pre-fetched well test data from session state
+    # Build actual maps from session state
     all_tests = st.session_state.get("all_well_tests_df")
-    if all_tests is not None and not all_tests.empty:
-        test_df = all_tests[all_tests["well"].isin(opt_wells)].copy()
+    actual_oil_map, actual_pf_map, actual_bhp_map = _build_actual_maps(opt_wells, all_tests)
+
+    # Get calibrated results for display
+    if calibration_results:
+        cal_results = apply_calibration(results, calibration_results)
     else:
-        test_df = pd.DataFrame()
+        cal_results = results
 
-    # Build most recent actual oil and PF per well
-    actual_oil_map = {}
-    actual_pf_map = {}
-    if not test_df.empty:
-        for well in opt_wells:
-            well_tests = test_df[test_df["well"] == well].sort_values("WtDate", ascending=False)
-            if not well_tests.empty:
-                row_data = well_tests.iloc[0]
-                if "WtOilVol" in well_tests.columns and is_valid_number(row_data["WtOilVol"]):
-                    actual_oil_map[well] = row_data["WtOilVol"]
-                if "lift_wat" in well_tests.columns and is_valid_number(row_data["lift_wat"]):
-                    actual_pf_map[well] = row_data["lift_wat"]
-
-    # Build comparison rows
+    # Build comparison rows and current JP map
     rows = []
-    for r in results:
+    current_jp_map = {}
+    for r, cr in zip(results, cal_results):
         well = r.well_name
         current = get_current_pump(jp_hist, well)
 
@@ -521,8 +660,10 @@ def _render_current_vs_optimized(results) -> None:
         if current and current["nozzle_no"] and current["throat_ratio"]:
             current_jp_str = f"{current['nozzle_no']}{current['throat_ratio']}"
 
+        current_jp_map[well] = current_jp_str
+
         opt_jp_str = f"{r.recommended_nozzle}{r.recommended_throat}"
-        opt_oil = r.predicted_oil_rate
+        cal_oil = cr.predicted_oil_rate
         actual = actual_oil_map.get(well)
         actual_pf = actual_pf_map.get(well)
 
@@ -532,19 +673,22 @@ def _render_current_vs_optimized(results) -> None:
             "Actual Oil (BOPD)": f"{actual:.0f}" if actual is not None else "N/A",
             "Actual PF (BWPD)": f"{actual_pf:.0f}" if actual_pf is not None else "N/A",
             "Optimized JP": opt_jp_str,
-            "Optimized Oil (BOPD)": f"{opt_oil:.0f}",
-            "Opt PF (BWPD)": f"{r.allocated_power_fluid:.0f}",
-            "Delta Oil (BOPD)": f"{opt_oil - actual:+.0f}" if actual is not None else "N/A",
+            "Model Oil (BOPD)": f"{r.predicted_oil_rate:.0f}",
         }
+        if calibration_results:
+            row["Cal Oil (BOPD)"] = f"{cal_oil:.0f}"
+            row["Cal Factor"] = f"{calibration_results[well].calibration_factor:.2f}" if well in calibration_results else "1.00"
+        row["Opt PF (BWPD)"] = f"{r.allocated_power_fluid:.0f}"
+        row["Delta Oil (BOPD)"] = f"{cal_oil - actual:+.0f}" if actual is not None else "N/A"
         rows.append(row)
 
     comp_df = pd.DataFrame(rows)
     st.dataframe(comp_df, use_container_width=True, hide_index=True)
 
-    # Field totals
+    # Field totals — use calibrated oil for delta
     total_actual_oil = sum(v for v in actual_oil_map.values())
     total_actual_pf = sum(v for v in actual_pf_map.values())
-    total_optimized = sum(r.predicted_oil_rate for r in results)
+    total_optimized = sum(cr.predicted_oil_rate for cr in cal_results)
     total_opt_pf = sum(r.allocated_power_fluid for r in results)
     uplift = total_optimized - total_actual_oil
 
@@ -552,7 +696,8 @@ def _render_current_vs_optimized(results) -> None:
     with col1:
         st.metric("Total Current Oil", f"{total_actual_oil:.0f} BOPD" if total_actual_oil > 0 else "N/A")
     with col2:
-        st.metric("Total Optimized Oil", f"{total_optimized:.0f} BOPD")
+        label = "Total Optimized Oil (Cal)" if calibration_results else "Total Optimized Oil"
+        st.metric(label, f"{total_optimized:.0f} BOPD")
     with col3:
         if total_actual_oil > 0:
             st.metric("Total Uplift", f"{uplift:+.0f} BOPD")
@@ -569,6 +714,19 @@ def _render_current_vs_optimized(results) -> None:
             st.metric("Delta PF", f"{total_opt_pf - total_actual_pf:+.0f} BWPD")
         else:
             st.metric("Delta PF", "N/A")
+
+    # IPR Comparison PDF download
+    pdf_bytes = create_ipr_comparison_pdf(
+        results, optimizer, actual_oil_map, actual_pf_map, actual_bhp_map, current_jp_map,
+        calibration=calibration_results,
+    )
+    st.download_button(
+        label="📥 Download IPR Comparison PDF",
+        data=pdf_bytes,
+        file_name="ipr_comparison.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+    )
 
 
 def _render_databricks_loader(max_rp_schrader, max_rp_kuparuk, resp_modifier):

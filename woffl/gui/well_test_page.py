@@ -616,7 +616,8 @@ def _render_model_check_tab(vogel_coeffs: pd.DataFrame, merged_with_rp: pd.DataF
             jp = create_jetpump(nozzle, throat, mc_ken, mc_kth, mc_kdi)
             tube, _, _ = create_pipes(tubing_od, tubing_thick)
             wp = create_well_profile(field_model, jp_tvd)
-            ipr = create_inflow(qwf, pwf, res_pres)
+            oil_qwf = qwf * (1 - form_wc)
+            ipr = create_inflow(oil_qwf, pwf, res_pres)
             rm = create_reservoir_mix(form_wc, gor, form_temp, field_model)
         except Exception as e:
             skipped.append((well_name, f"Object creation: {e}"))
@@ -811,7 +812,7 @@ def _render_ipr_curves_tab(ipr_curves, merged_data, vogel_coeffs):
 
     # Render the selected well's IPR chart
     if selected_well and selected_well in ipr_curves:
-        fig_single = create_ipr_plotly(selected_well, ipr_curves[selected_well], merged_data)
+        fig_single = create_ipr_plotly(selected_well, ipr_curves[selected_well], merged_data, form_wc=st.session_state.get("form_wc"))
         st.plotly_chart(fig_single, use_container_width=True)
 
         # Show well-specific stats below the chart

@@ -179,6 +179,46 @@ class NetworkOptimizer:
         # Results storage
         self.batch_results: dict[str, BatchPump] = {}
         self.optimization_results: Optional[list[OptimizationResult]] = None
+        self.calibration_factors: dict[str, float] = {}
+
+    def set_calibration(self, calibration: dict) -> None:
+        """Store calibration factors from CalibrationResult objects.
+
+        Args:
+            calibration: Dict mapping well_name to CalibrationResult
+        """
+        self.calibration_factors = {name: c.calibration_factor for name, c in calibration.items()}
+
+    def get_calibrated_results(self) -> Optional[list[OptimizationResult]]:
+        """Apply stored calibration factors to optimization results.
+
+        Returns:
+            New list of OptimizationResult with calibrated rates, or None
+        """
+        if not self.optimization_results:
+            return None
+        if not self.calibration_factors:
+            return self.optimization_results
+
+        calibrated = []
+        for r in self.optimization_results:
+            factor = self.calibration_factors.get(r.well_name, 1.0)
+            calibrated.append(
+                OptimizationResult(
+                    well_name=r.well_name,
+                    recommended_nozzle=r.recommended_nozzle,
+                    recommended_throat=r.recommended_throat,
+                    allocated_power_fluid=r.allocated_power_fluid,
+                    predicted_oil_rate=r.predicted_oil_rate * factor,
+                    predicted_formation_water=r.predicted_formation_water * factor,
+                    predicted_lift_water=r.predicted_lift_water,
+                    suction_pressure=r.suction_pressure,
+                    marginal_oil_rate=r.marginal_oil_rate,
+                    sonic_status=r.sonic_status,
+                    mach_te=r.mach_te,
+                )
+            )
+        return calibrated
 
     def get_well_by_name(self, well_name: str) -> Optional[WellConfig]:
         """Get well configuration by name"""
@@ -206,8 +246,9 @@ class NetworkOptimizer:
         jpump_md = well.jpump_md if well.jpump_md is not None else well.jpump_tvd
         well_profile = _load_well_profile(well.well_name, jpump_md, well.field_model)
 
-        # Create inflow
-        inflow = InFlow(qwf=well.qwf, pwf=well.pwf, pres=well.res_pres)
+        # Create inflow — convert total fluid IPR rate to oil rate for the solver
+        oil_qwf = well.qwf * (1 - well.form_wc)
+        inflow = InFlow(qwf=oil_qwf, pwf=well.pwf, pres=well.res_pres)
 
         # Create reservoir mix using shared PVT factory
         oil, water, gas = create_pvt_components(well.field_model)

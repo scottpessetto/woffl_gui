@@ -166,7 +166,7 @@ def fetch_milne_well_tests(
         df["WtDate"] = pd.to_datetime(df["WtDate"], utc=True).dt.tz_localize(None)
 
     # Ensure numeric columns
-    for col in ["BHP", "WtOilVol", "WtWaterVol", "WtTotalFluid", "WtGasVol", "lift_wat"]:
+    for col in ["BHP", "WtOilVol", "WtWaterVol", "WtTotalFluid", "WtGasVol", "lift_wat", "whp"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 

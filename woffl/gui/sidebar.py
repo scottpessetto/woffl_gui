@@ -17,6 +17,8 @@ def _update_well_parameters_from_data(well_data: dict | None, selected_well: str
         selected_well: Name of the selected well
     """
     if selected_well == "Custom" or not well_data:
+        st.session_state.pop("sw_ipr_info", None)
+        st.session_state.pop("sw_vogel_coeffs", None)
         return
 
     is_new_well = selected_well != st.session_state.get("last_selected_well_all", "Custom")
@@ -28,7 +30,81 @@ def _update_well_parameters_from_data(well_data: dict | None, selected_well: str
         st.session_state.jpump_tvd = int(well_data.get("JP_TVD", 4065))
         st.session_state.res_pres = int(well_data.get("res_pres", 1700))
         st.session_state.field_model_index = 0 if well_data.get("is_sch", True) else 1
+
+        # Auto-populate inflow/formation params from IPR analysis
+        _auto_populate_from_ipr(selected_well)
+
         st.session_state.last_selected_well_all = selected_well
+
+
+def _auto_populate_from_ipr(selected_well: str) -> None:
+    """Auto-populate sidebar inflow/formation params from well test IPR data.
+
+    Runs IPR analysis (estimate_reservoir_pressure + compute_vogel_coefficients)
+    for the selected well and sets sidebar session state keys accordingly.
+    Only called once per well selection (inside the is_new_well guard).
+    """
+    all_tests = st.session_state.get("all_well_tests_df")
+    if all_tests is None or all_tests.empty:
+        st.session_state.pop("sw_ipr_info", None)
+        st.session_state.pop("sw_vogel_coeffs", None)
+        return
+
+    well_tests = all_tests[all_tests["well"] == selected_well].copy()
+    if well_tests.empty or len(well_tests) < 2:
+        st.session_state.pop("sw_ipr_info", None)
+        st.session_state.pop("sw_vogel_coeffs", None)
+        return
+
+    try:
+        from woffl.assembly.ipr_analyzer import (
+            compute_vogel_coefficients,
+            estimate_reservoir_pressure,
+        )
+
+        merged_with_rp = estimate_reservoir_pressure(well_tests)
+        vogel_coeffs = compute_vogel_coefficients(merged_with_rp)
+
+        well_coeffs = vogel_coeffs[vogel_coeffs["Well"] == selected_well]
+        if well_coeffs.empty:
+            st.session_state.pop("sw_ipr_info", None)
+            st.session_state.pop("sw_vogel_coeffs", None)
+            return
+
+        coeff_row = well_coeffs.iloc[0]
+
+        # Cache Vogel coefficients for use by jetpump solver tab
+        st.session_state["sw_vogel_coeffs"] = coeff_row.to_dict()
+
+        # Auto-populate sidebar values
+        st.session_state.form_wc = round(float(coeff_row["form_wc"]), 2)
+        st.session_state.form_gor = int(coeff_row["fgor"])
+        oil_qwf = coeff_row["qwf"] * (1 - coeff_row["form_wc"])
+        st.session_state.qwf = int(oil_qwf)
+        st.session_state.pwf = int(coeff_row["pwf"])
+        st.session_state.res_pres = int(coeff_row["ResP"])
+
+        # Auto-populate surface pressure from most recent test
+        import math
+
+        recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
+        whp = recent.get("whp")
+        if whp is not None and not (isinstance(whp, float) and math.isnan(whp)):
+            st.session_state.surf_pres = int(whp)
+
+        # Store info message for display in the Well Information expander
+        num_tests = int(coeff_row["num_tests"])
+        most_recent = coeff_row["most_recent_date"]
+        date_str = (
+            most_recent.strftime("%Y-%m-%d") if hasattr(most_recent, "strftime") else str(most_recent)
+        )
+        st.session_state["sw_ipr_info"] = (
+            f"IPR values loaded from {num_tests} well tests (most recent: {date_str})"
+        )
+
+    except Exception:
+        st.session_state.pop("sw_ipr_info", None)
+        st.session_state.pop("sw_vogel_coeffs", None)
 
 
 def _on_well_change() -> None:
@@ -85,6 +161,9 @@ def _render_well_selection() -> tuple[str, dict | None]:
                     st.write(f"**Formation Temp:** {well_data.get('form_temp', 'N/A')} °F")
                     st.write(f"**Jetpump TVD:** {well_data.get('JP_TVD', 'N/A')} ft")
                     st.write(f"**Jetpump MD:** {well_data.get('JP_MD', 'N/A')} ft")
+                ipr_info = st.session_state.get("sw_ipr_info")
+                if ipr_info:
+                    st.info(ipr_info)
         else:
             st.warning(f"Could not load data for {selected_well}")
 
