@@ -397,7 +397,7 @@ def throat_entry_book(
         qoil_std (float): Oil Rate, STBOPD
         te_book (JetBook): Book of values for inside the throat entry
     """
-    qoil_std = ipr_su.oil_flow(psu, method="pidx")  # oil standard flow, bopd
+    qoil_std = ipr_su.oil_flow(psu, method="vogel")  # oil standard flow, bopd
 
     prop_su = prop_su.condition(psu, tsu)
     qtot = sum(prop_su.insitu_volm_flow(qoil_std))

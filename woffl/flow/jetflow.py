@@ -74,7 +74,7 @@ def throat_entry_zero_tde(
         qoil_std (float): Oil Rate, STBOPD
         te_book (JetBook): Book of values for inside the throat entry
     """
-    qoil_std = ipr_su.oil_flow(psu, method="pidx")  # oil standard flow, bopd
+    qoil_std = ipr_su.oil_flow(psu, method="vogel")  # oil standard flow, bopd
 
     prop_su = prop_su.condition(psu, tsu)
     qtot = sum(prop_su.insitu_volm_flow(qoil_std))
@@ -128,7 +128,7 @@ def throat_entry_mach_one(
         qoil_std (float): Oil Produced at psu with set IPR, bopd
         te_book (JetBook): Book of values for inside the throat entry
     """
-    qoil_std = ipr_su.oil_flow(psu, method="pidx")  # oil standard flow, bopd
+    qoil_std = ipr_su.oil_flow(psu, method="vogel")  # oil standard flow, bopd
 
     prop_su = prop_su.condition(psu, tsu)
     qtot = sum(prop_su.insitu_volm_flow(qoil_std))

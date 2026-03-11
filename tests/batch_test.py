@@ -56,43 +56,43 @@ def test_no_errors() -> None:
 
 
 def test_sonic_count() -> None:
-    assert df["sonic_status"].sum() == 13
+    assert df["sonic_status"].sum() == 12
 
 
 def test_9X_reference() -> None:
     """Nozzle 9, Throat X — known sonic case."""
     row = df[(df["nozzle"] == "9") & (df["throat"] == "X")].iloc[0]
-    assert row["qoil_std"] == pytest.approx(58.83, rel=0.01)
-    assert row["totl_wat"] == pytest.approx(1947.73, rel=0.01)
-    assert row["mach_te"] == pytest.approx(0.935, rel=0.01)
-    assert row["psu_solv"] == pytest.approx(1316.07, rel=0.01)
+    assert row["qoil_std"] == pytest.approx(59.00, rel=0.01)
+    assert row["totl_wat"] == pytest.approx(1946.76, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.9064, rel=0.01)
+    assert row["psu_solv"] == pytest.approx(1323.34, rel=0.01)
 
 
 def test_9D_reference() -> None:
     """Nozzle 9, Throat D — subsonic case."""
     row = df[(df["nozzle"] == "9") & (df["throat"] == "D")].iloc[0]
-    assert row["qoil_std"] == pytest.approx(141.72, rel=0.01)
-    assert row["totl_wat"] == pytest.approx(2557.22, rel=0.01)
-    assert row["mach_te"] == pytest.approx(0.227, rel=0.01)
-    assert row["psu_solv"] == pytest.approx(1197.78, rel=0.01)
+    assert row["qoil_std"] == pytest.approx(147.20, rel=0.01)
+    assert row["totl_wat"] == pytest.approx(2605.97, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.2397, rel=0.01)
+    assert row["psu_solv"] == pytest.approx(1200.78, rel=0.01)
 
 
 def test_12B_reference() -> None:
     """Nozzle 12, Throat B — mid-range pump."""
     row = df[(df["nozzle"] == "12") & (df["throat"] == "B")].iloc[0]
-    assert row["qoil_std"] == pytest.approx(202.04, rel=0.01)
-    assert row["totl_wat"] == pytest.approx(4622.79, rel=0.01)
-    assert row["mach_te"] == pytest.approx(0.428, rel=0.01)
-    assert row["psu_solv"] == pytest.approx(1111.72, rel=0.01)
+    assert row["qoil_std"] == pytest.approx(205.12, rel=0.01)
+    assert row["totl_wat"] == pytest.approx(4653.21, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.4430, rel=0.01)
+    assert row["psu_solv"] == pytest.approx(1113.97, rel=0.01)
 
 
 def test_16E_reference() -> None:
     """Nozzle 16, Throat E — largest pump."""
     row = df[(df["nozzle"] == "16") & (df["throat"] == "E")].iloc[0]
-    assert row["qoil_std"] == pytest.approx(101.02, rel=0.01)
-    assert row["totl_wat"] == pytest.approx(8014.69, rel=0.01)
-    assert row["mach_te"] == pytest.approx(0.0167, rel=0.02)
-    assert row["psu_solv"] == pytest.approx(1255.86, rel=0.01)
+    assert row["qoil_std"] == pytest.approx(128.00, rel=0.01)
+    assert row["totl_wat"] == pytest.approx(8270.10, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.0218, rel=0.02)
+    assert row["psu_solv"] == pytest.approx(1228.36, rel=0.01)
 
 
 def test_oil_always_positive() -> None:

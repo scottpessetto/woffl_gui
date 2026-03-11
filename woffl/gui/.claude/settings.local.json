@@ -9,7 +9,8 @@
       "Bash(cd /c && python3 -c \"from openpyxl import load_workbook; wb = load_workbook\\('/c/Users/sc9864/OneDrive - Hilcorp/code/woffl_gui/woffl_gui/data/jetpump_history.xlsx'\\); ws = wb.active; print\\('Sheet name:', ws.title\\); print\\('Dimensions:', ws.dimensions\\); print\\('Headers:'\\); print\\([cell.value for cell in ws[1]]\\); print\\('First 3 data rows:'\\); [print\\([cell.value for cell in row]\\) for row in list\\(ws.iter_rows\\(min_row=2, max_row=4\\)\\)]\" 2>&1)",
       "Bash(grep -r \"jp_history\" /c/Users/sc9864/OneDrive\\\\ -\\\\ Hilcorp/code/woffl_gui/woffl_gui --include=\"*.md\" 2>/dev/null | head -20)",
       "Bash(ls -la \"C:\\\\Users\\\\sc9864\\\\OneDrive - Hilcorp\\\\code\\\\woffl_gui\\\\woffl_gui\\\\woffl\\\\\" | grep -E \"^d\")",
-      "Bash(pip show:*)"
+      "Bash(pip show:*)",
+      "Bash(find \"C:/Users/sc9864/OneDrive - Hilcorp/code/woffl_gui\" -name \"test*.py\" -o -name \"*_test.py\" 2>/dev/null | head -20)"
     ]
   }
 }
