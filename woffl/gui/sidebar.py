@@ -382,7 +382,7 @@ def _render_well_params(well_data: dict | None) -> tuple[int, int, float, int]:
     ppf_surf = st.number_input(
         "Power Fluid Surface Pressure (psi)",
         value=st.session_state.ppf_surf,
-        min_value=2000,
+        min_value=1500,
         max_value=4000,
         step=10,
         key="ppf_surf_input",

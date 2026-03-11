@@ -548,7 +548,7 @@ def _render_model_check_tab(vogel_coeffs: pd.DataFrame, merged_with_rp: pd.DataF
             mc_surf_pres = st.number_input("Surface Pressure (psi)", value=210, min_value=10, max_value=600, step=10, key="mc_surf_pres")
             mc_rho_pf = st.number_input("PF Density (lbm/ft³)", value=62.4, min_value=50.0, max_value=70.0, step=0.1, key="mc_rho_pf")
         with cfg_col2:
-            mc_ppf_surf = st.number_input("PF Pressure (psi)", value=3168, min_value=2000, max_value=4000, step=10, key="mc_ppf_surf")
+            mc_ppf_surf = st.number_input("PF Pressure (psi)", value=3168, min_value=1500, max_value=4000, step=10, key="mc_ppf_surf")
             mc_default_gor = st.number_input("Default GOR (scf/bbl)", value=250, min_value=20, max_value=10000, step=25, key="mc_default_gor", help="Used when GOR is not available from well test data")
         with cfg_col3:
             mc_ken = st.number_input("ken", value=0.03, min_value=0.01, max_value=0.10, step=0.01, format="%.2f", key="mc_ken")
