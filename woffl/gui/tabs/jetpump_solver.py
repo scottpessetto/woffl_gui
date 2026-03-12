@@ -321,6 +321,12 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
             else:
                 st.metric("Delta", "N/A")
 
+        if is_valid_number(actual_pf) and abs(modeled_pf - actual_pf) > 100:
+            st.warning(
+                f"Modeled PF rate differs from actual by {abs(modeled_pf - actual_pf):.0f} BWPD. "
+                "Check that the **Power Fluid Pressure** in the sidebar matches the actual PF pressure for this well."
+            )
+
         if is_valid_number(actual_whp):
             col1, col2 = st.columns(2)
             with col1:
