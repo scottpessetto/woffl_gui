@@ -29,12 +29,28 @@ def _update_well_parameters_from_data(
     )
 
     if is_new_well:
-        st.session_state.tubing_od = float(well_data.get("out_dia", 4.5))
-        st.session_state.tubing_thickness = float(well_data.get("thick", 0.5))
-        st.session_state.form_temp = int(well_data.get("form_temp", 70))
-        st.session_state.jpump_tvd = int(well_data.get("JP_TVD", 4065))
-        st.session_state.res_pres = int(well_data.get("res_pres", 1700))
+        # Update both the session state variables AND the widget keys.
+        # Streamlit keyed widgets ignore the `value` param after first render
+        # and read from st.session_state[key] instead.
+        tubing_od = float(well_data.get("out_dia", 4.5))
+        tubing_thickness = float(well_data.get("thick", 0.5))
+        form_temp = int(well_data.get("form_temp", 70))
+        jpump_tvd = int(well_data.get("JP_TVD", 4065))
+        res_pres = int(well_data.get("res_pres", 1700))
+
+        st.session_state.tubing_od = tubing_od
+        st.session_state.tubing_thickness = tubing_thickness
+        st.session_state.form_temp = form_temp
+        st.session_state.jpump_tvd = jpump_tvd
+        st.session_state.res_pres = res_pres
         st.session_state.field_model_index = 0 if well_data.get("is_sch", True) else 1
+
+        # Also update the widget keys directly so Streamlit renders the new values
+        st.session_state.tubing_od_input = tubing_od
+        st.session_state.tubing_thickness_input = tubing_thickness
+        st.session_state.form_temp_input = form_temp
+        st.session_state.jpump_tvd_input = jpump_tvd
+        st.session_state.res_pres_input = res_pres
 
         # Auto-populate inflow/formation params from IPR analysis
         _auto_populate_from_ipr(selected_well)
@@ -81,13 +97,25 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
         # Cache Vogel coefficients for use by jetpump solver tab
         st.session_state["sw_vogel_coeffs"] = coeff_row.to_dict()
 
-        # Auto-populate sidebar values
-        st.session_state.form_wc = round(float(coeff_row["form_wc"]), 2)
-        st.session_state.form_gor = int(coeff_row["fgor"])
+        # Auto-populate sidebar values (both state vars and widget keys)
+        form_wc = round(float(coeff_row["form_wc"]), 2)
+        form_gor = int(coeff_row["fgor"])
         oil_qwf = coeff_row["qwf"] * (1 - coeff_row["form_wc"])
-        st.session_state.qwf = int(oil_qwf)
-        st.session_state.pwf = int(coeff_row["pwf"])
-        st.session_state.res_pres = int(coeff_row["ResP"])
+        qwf = int(oil_qwf)
+        pwf = int(coeff_row["pwf"])
+        res_pres = int(coeff_row["ResP"])
+
+        st.session_state.form_wc = form_wc
+        st.session_state.form_gor = form_gor
+        st.session_state.qwf = qwf
+        st.session_state.pwf = pwf
+        st.session_state.res_pres = res_pres
+
+        st.session_state.form_wc_input = form_wc
+        st.session_state.form_gor_input = form_gor
+        st.session_state.qwf_input = qwf
+        st.session_state.pwf_input = pwf
+        st.session_state.res_pres_input = res_pres
 
         # Auto-populate surface pressure from most recent test
         import math
@@ -95,7 +123,9 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
         recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
         whp = recent.get("whp")
         if whp is not None and not (isinstance(whp, float) and math.isnan(whp)):
-            st.session_state.surf_pres = int(whp)
+            surf_pres = int(whp)
+            st.session_state.surf_pres = surf_pres
+            st.session_state.surf_pres_input = surf_pres
 
         # Store info message for display in the Well Information expander
         num_tests = int(coeff_row["num_tests"])
@@ -262,14 +292,14 @@ def _render_pipe_params(well_data: dict | None) -> tuple[float, float, float, fl
     """
     st.subheader("Pipe Parameters")
 
-    if "tubing_od" not in st.session_state:
-        st.session_state.tubing_od = 4.5
-    if "tubing_thickness" not in st.session_state:
-        st.session_state.tubing_thickness = 0.5
+    # Initialize widget keys with defaults if not already set
+    if "tubing_od_input" not in st.session_state:
+        st.session_state.tubing_od_input = 4.5
+    if "tubing_thickness_input" not in st.session_state:
+        st.session_state.tubing_thickness_input = 0.5
 
     tubing_od = st.number_input(
         "Tubing Outer Diameter (inches)",
-        value=st.session_state.tubing_od,
         min_value=2.0,
         max_value=9.0,
         step=0.1,
@@ -279,7 +309,6 @@ def _render_pipe_params(well_data: dict | None) -> tuple[float, float, float, fl
     )
     tubing_thickness = st.number_input(
         "Tubing Wall Thickness (inches)",
-        value=st.session_state.tubing_thickness,
         min_value=0.1,
         max_value=2.0,
         step=0.1,
@@ -291,11 +320,10 @@ def _render_pipe_params(well_data: dict | None) -> tuple[float, float, float, fl
     st.session_state.tubing_od = tubing_od
     st.session_state.tubing_thickness = tubing_thickness
 
-    if "casing_od" not in st.session_state:
-        st.session_state.casing_od = 6.875
+    if "casing_od_input" not in st.session_state:
+        st.session_state.casing_od_input = 6.875
     casing_od = st.number_input(
         "Casing Outer Diameter (inches)",
-        value=st.session_state.casing_od,
         min_value=4.0,
         max_value=17.0,
         step=0.125,
@@ -304,11 +332,10 @@ def _render_pipe_params(well_data: dict | None) -> tuple[float, float, float, fl
     )
     st.session_state.casing_od = casing_od
 
-    if "casing_thickness" not in st.session_state:
-        st.session_state.casing_thickness = 0.5
+    if "casing_thickness_input" not in st.session_state:
+        st.session_state.casing_thickness_input = 0.5
     casing_thickness = st.number_input(
         "Casing Wall Thickness (inches)",
-        value=st.session_state.casing_thickness,
         min_value=0.1,
         max_value=2.0,
         step=0.1,
@@ -328,11 +355,10 @@ def _render_formation_params(well_data: dict | None) -> tuple[float, int, int]:
     """
     st.subheader("Formation Parameters")
 
-    if "form_wc" not in st.session_state:
-        st.session_state.form_wc = 0.50
+    if "form_wc_input" not in st.session_state:
+        st.session_state.form_wc_input = 0.50
     form_wc = st.number_input(
         "Water Cut (form_wc)",
-        value=st.session_state.form_wc,
         min_value=0.0,
         max_value=1.0,
         step=0.01,
@@ -341,11 +367,10 @@ def _render_formation_params(well_data: dict | None) -> tuple[float, int, int]:
     )
     st.session_state.form_wc = form_wc
 
-    if "form_gor" not in st.session_state:
-        st.session_state.form_gor = 250
+    if "form_gor_input" not in st.session_state:
+        st.session_state.form_gor_input = 250
     form_gor = st.number_input(
         "Gas-Oil Ratio (form_gor)",
-        value=st.session_state.form_gor,
         min_value=20,
         max_value=10000,
         step=25,
@@ -353,12 +378,10 @@ def _render_formation_params(well_data: dict | None) -> tuple[float, int, int]:
     )
     st.session_state.form_gor = form_gor
 
-    if "form_temp" not in st.session_state:
-        st.session_state.form_temp = 70
-
+    if "form_temp_input" not in st.session_state:
+        st.session_state.form_temp_input = 70
     form_temp = st.number_input(
         "Formation Temperature (form_temp, °F)",
-        value=st.session_state.form_temp,
         min_value=32,
         max_value=350,
         step=1,
@@ -378,11 +401,21 @@ def _render_well_params(well_data: dict | None) -> tuple[int, int, float, int]:
     """
     st.subheader("Well Parameters")
 
-    if "surf_pres" not in st.session_state:
-        st.session_state.surf_pres = 210
+    if "ppf_surf_input" not in st.session_state:
+        st.session_state.ppf_surf_input = 3168
+    ppf_surf = st.number_input(
+        "Power Fluid Surface Pressure (psi)",
+        min_value=1500,
+        max_value=4000,
+        step=10,
+        key="ppf_surf_input",
+    )
+    st.session_state.ppf_surf = ppf_surf
+
+    if "surf_pres_input" not in st.session_state:
+        st.session_state.surf_pres_input = 210
     surf_pres = st.number_input(
         "Surface Pressure (psi)",
-        value=st.session_state.surf_pres,
         min_value=10,
         max_value=600,
         step=10,
@@ -390,12 +423,10 @@ def _render_well_params(well_data: dict | None) -> tuple[int, int, float, int]:
     )
     st.session_state.surf_pres = surf_pres
 
-    if "jpump_tvd" not in st.session_state:
-        st.session_state.jpump_tvd = 4065
-
+    if "jpump_tvd_input" not in st.session_state:
+        st.session_state.jpump_tvd_input = 4065
     jpump_tvd = st.number_input(
         "Jetpump TVD (feet)",
-        value=st.session_state.jpump_tvd,
         min_value=2500,
         max_value=8000,
         step=10,
@@ -404,29 +435,16 @@ def _render_well_params(well_data: dict | None) -> tuple[int, int, float, int]:
     )
     st.session_state.jpump_tvd = jpump_tvd
 
-    if "rho_pf" not in st.session_state:
-        st.session_state.rho_pf = 62.4
+    if "rho_pf_input" not in st.session_state:
+        st.session_state.rho_pf_input = 62.4
     rho_pf = st.number_input(
         "Power Fluid Density (lbm/ft³)",
-        value=st.session_state.rho_pf,
         min_value=50.0,
         max_value=70.0,
         step=0.1,
         key="rho_pf_input",
     )
     st.session_state.rho_pf = rho_pf
-
-    if "ppf_surf" not in st.session_state:
-        st.session_state.ppf_surf = 3168
-    ppf_surf = st.number_input(
-        "Power Fluid Surface Pressure (psi)",
-        value=st.session_state.ppf_surf,
-        min_value=1500,
-        max_value=4000,
-        step=10,
-        key="ppf_surf_input",
-    )
-    st.session_state.ppf_surf = ppf_surf
 
     return surf_pres, jpump_tvd, rho_pf, ppf_surf
 
@@ -439,11 +457,10 @@ def _render_inflow_params(well_data: dict | None) -> tuple[int, int, int]:
     """
     st.subheader("Inflow Parameters")
 
-    if "qwf" not in st.session_state:
-        st.session_state.qwf = 750
+    if "qwf_input" not in st.session_state:
+        st.session_state.qwf_input = 750
     qwf = st.number_input(
         "Oil Rate at FBHP (qwf, BOPD)",
-        value=st.session_state.qwf,
         min_value=100,
         max_value=6000,
         step=10,
@@ -451,11 +468,10 @@ def _render_inflow_params(well_data: dict | None) -> tuple[int, int, int]:
     )
     st.session_state.qwf = qwf
 
-    if "pwf" not in st.session_state:
-        st.session_state.pwf = 500
+    if "pwf_input" not in st.session_state:
+        st.session_state.pwf_input = 500
     pwf = st.number_input(
         "Flowing Bottom Hole Pressure @ qwf (pwf, psi)",
-        value=st.session_state.pwf,
         min_value=100,
         max_value=2500,
         step=10,
@@ -463,12 +479,10 @@ def _render_inflow_params(well_data: dict | None) -> tuple[int, int, int]:
     )
     st.session_state.pwf = pwf
 
-    if "res_pres" not in st.session_state:
-        st.session_state.res_pres = 1700
-
+    if "res_pres_input" not in st.session_state:
+        st.session_state.res_pres_input = 1700
     pres = st.number_input(
         "Reservoir Pressure (pres, psi)",
-        value=st.session_state.res_pres,
         min_value=400,
         max_value=5000,
         step=10,
@@ -583,12 +597,12 @@ def render_sidebar() -> tuple[bool, SimulationParams]:
         st.session_state.field_model_index = ["Schrader", "Kuparuk"].index(field_model)
 
         # Collect all parameter groups
+        surf_pres, jpump_tvd, rho_pf, ppf_surf = _render_well_params(well_data)
         nozzle_no, area_ratio, ken, kth, kdi = _render_jetpump_params()
         tubing_od, tubing_thickness, casing_od, casing_thickness = _render_pipe_params(
             well_data
         )
         form_wc, form_gor, form_temp = _render_formation_params(well_data)
-        surf_pres, jpump_tvd, rho_pf, ppf_surf = _render_well_params(well_data)
         qwf, pwf, pres = _render_inflow_params(well_data)
         nozzle_batch_options, throat_batch_options, water_type = _render_batch_params()
         power_fluid_min, power_fluid_max, power_fluid_step = (
