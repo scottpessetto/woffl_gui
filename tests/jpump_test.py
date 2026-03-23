@@ -6,7 +6,7 @@ from woffl.flow import jetgraphs as jg
 from woffl.flow import singlephase as sp
 from woffl.flow.inflow import InFlow
 from woffl.geometry.jetpump import JetPump
-from woffl.geometry.pipe import Annulus, Pipe
+from woffl.geometry.pipe import Pipe, PipeInPipe
 from woffl.geometry.wellprofile import WellProfile
 from woffl.pvt.blackoil import BlackOil
 from woffl.pvt.formgas import FormGas
@@ -23,7 +23,7 @@ ppf_surf = 3168  # psi, power fluid surf pressure
 # testing the jet pump code on E-41
 tube = Pipe(out_dia=4.5, thick=0.5)  # E-42 tubing
 case = Pipe(out_dia=6.875, thick=0.5)  # E-42 casing
-ann = Annulus(inn_pipe=tube, out_pipe=case)  # define the annulus
+wellbore = PipeInPipe(inn_pipe=tube, out_pipe=case)  # define the wellbore
 
 ipr_su = InFlow(qwf=246, pwf=1049, pres=1400)  # define an ipr
 
@@ -40,4 +40,6 @@ prop_su = ResMix(wc=form_wc, fgor=form_gor, oil=mpu_oil, wat=mpu_wat, gas=mpu_ga
 
 wellprof = WellProfile.schrader()
 
-jg.pump_pressure_relation(form_temp, rho_pf, ppf_surf, e41_jp, tube, wellprof, ipr_su, prop_su)
+jg.pump_pressure_relation(
+    form_temp, rho_pf, ppf_surf, e41_jp, tube, wellprof, ipr_su, prop_su
+)

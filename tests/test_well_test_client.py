@@ -14,7 +14,6 @@ from woffl.assembly.well_test_client import (
     get_pad_names,
 )
 
-
 # ── _normalize_well_name ───────────────────────────────────────────────────
 
 
@@ -106,7 +105,9 @@ class TestFilterWellsByPad:
 class TestGetMPUWellNames:
     @patch("woffl.assembly.well_test_client.execute_query")
     def test_returns_well_names(self, mock_query):
-        mock_query.return_value = pd.DataFrame({"well_name": ["B-028", "E-041", "L-001"]})
+        mock_query.return_value = pd.DataFrame(
+            {"well_name": ["B-028", "E-041", "L-001"]}
+        )
         result = get_mpu_well_names()
         assert result == ["B-028", "E-041", "L-001"]
 
@@ -123,18 +124,20 @@ class TestGetMPUWellNames:
 class TestFetchMilneWellTests:
     @patch("woffl.assembly.well_test_client.execute_query")
     def test_column_mapping(self, mock_query):
-        mock_query.return_value = pd.DataFrame({
-            "well_name": ["B-028", "B-028"],
-            "wt_date": pd.to_datetime(["2024-01-15", "2024-02-20"]),
-            "bhp": [800.0, 850.0],
-            "oil_rate": [100.0, 120.0],
-            "fwat_rate": [200.0, 250.0],
-            "fgas_rate": [50.0, 60.0],
-            "whp": [150.0, 160.0],
-            "form_wc": [0.67, 0.68],
-            "fgor": [500, 500],
-            "lift_wat": [300.0, 350.0],
-        })
+        mock_query.return_value = pd.DataFrame(
+            {
+                "well_name": ["B-028", "B-028"],
+                "wt_date": pd.to_datetime(["2024-01-15", "2024-02-20"]),
+                "bhp": [800.0, 850.0],
+                "oil_rate": [100.0, 120.0],
+                "fwat_rate": [200.0, 250.0],
+                "fgas_rate": [50.0, 60.0],
+                "whp": [150.0, 160.0],
+                "form_wc": [0.67, 0.68],
+                "fgor": [500, 500],
+                "lift_wat": [300.0, 350.0],
+            }
+        )
         df, dropped = fetch_milne_well_tests("2024-01-01", "2024-12-31", ["B-028"])
         assert "well" in df.columns  # renamed from well_name
         assert "WtDate" in df.columns  # renamed from wt_date
@@ -144,54 +147,62 @@ class TestFetchMilneWellTests:
 
     @patch("woffl.assembly.well_test_client.execute_query")
     def test_total_fluid_computed(self, mock_query):
-        mock_query.return_value = pd.DataFrame({
-            "well_name": ["B-028"],
-            "wt_date": pd.to_datetime(["2024-01-15"]),
-            "bhp": [800.0],
-            "oil_rate": [100.0],
-            "fwat_rate": [200.0],
-            "fgas_rate": [50.0],
-            "whp": [150.0],
-            "form_wc": [0.67],
-            "fgor": [500],
-            "lift_wat": [300.0],
-        })
+        mock_query.return_value = pd.DataFrame(
+            {
+                "well_name": ["B-028"],
+                "wt_date": pd.to_datetime(["2024-01-15"]),
+                "bhp": [800.0],
+                "oil_rate": [100.0],
+                "fwat_rate": [200.0],
+                "fgas_rate": [50.0],
+                "whp": [150.0],
+                "form_wc": [0.67],
+                "fgor": [500],
+                "lift_wat": [300.0],
+            }
+        )
         df, _ = fetch_milne_well_tests("2024-01-01", "2024-12-31", ["B-028"])
         assert "WtTotalFluid" in df.columns
         assert df["WtTotalFluid"].iloc[0] == pytest.approx(300.0)  # 100 + 200
 
     @patch("woffl.assembly.well_test_client.execute_query")
     def test_well_names_normalized(self, mock_query):
-        mock_query.return_value = pd.DataFrame({
-            "well_name": ["B-028"],
-            "wt_date": pd.to_datetime(["2024-01-15"]),
-            "bhp": [800.0],
-            "oil_rate": [100.0],
-            "fwat_rate": [200.0],
-            "fgas_rate": [50.0],
-            "whp": [150.0],
-            "form_wc": [0.67],
-            "fgor": [500],
-            "lift_wat": [300.0],
-        })
+        mock_query.return_value = pd.DataFrame(
+            {
+                "well_name": ["B-028"],
+                "wt_date": pd.to_datetime(["2024-01-15"]),
+                "bhp": [800.0],
+                "oil_rate": [100.0],
+                "fwat_rate": [200.0],
+                "fgas_rate": [50.0],
+                "whp": [150.0],
+                "form_wc": [0.67],
+                "fgor": [500],
+                "lift_wat": [300.0],
+            }
+        )
         df, _ = fetch_milne_well_tests("2024-01-01", "2024-12-31", ["B-028"])
         assert df["well"].iloc[0] == "MPB-28"
 
     @patch("woffl.assembly.well_test_client.execute_query")
     def test_dropped_wells_tracked(self, mock_query):
-        mock_query.return_value = pd.DataFrame({
-            "well_name": ["B-028", "E-041"],
-            "wt_date": pd.to_datetime(["2024-01-15", "2024-02-20"]),
-            "bhp": [800.0, None],  # E-041 has no BHP
-            "oil_rate": [100.0, 50.0],
-            "fwat_rate": [200.0, 100.0],
-            "fgas_rate": [50.0, 30.0],
-            "whp": [150.0, 140.0],
-            "form_wc": [0.67, 0.67],
-            "fgor": [500, 500],
-            "lift_wat": [300.0, 200.0],
-        })
-        df, dropped = fetch_milne_well_tests("2024-01-01", "2024-12-31", ["B-028", "E-041"])
+        mock_query.return_value = pd.DataFrame(
+            {
+                "well_name": ["B-028", "E-041"],
+                "wt_date": pd.to_datetime(["2024-01-15", "2024-02-20"]),
+                "bhp": [800.0, None],  # E-041 has no BHP
+                "oil_rate": [100.0, 50.0],
+                "fwat_rate": [200.0, 100.0],
+                "fgas_rate": [50.0, 30.0],
+                "whp": [150.0, 140.0],
+                "form_wc": [0.67, 0.67],
+                "fgor": [500, 500],
+                "lift_wat": [300.0, 200.0],
+            }
+        )
+        df, dropped = fetch_milne_well_tests(
+            "2024-01-01", "2024-12-31", ["B-028", "E-041"]
+        )
         assert "MPE-41" in dropped
 
     @patch("woffl.assembly.well_test_client.execute_query")

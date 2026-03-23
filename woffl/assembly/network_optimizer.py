@@ -10,10 +10,11 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-from woffl.assembly.batchrun import BatchPump
+
+from woffl.assembly.batchpump import BatchPump
 from woffl.flow.inflow import InFlow
 from woffl.geometry.jetpump import JetPump
-from woffl.geometry.pipe import Pipe
+from woffl.geometry.pipe import Pipe, PipeInPipe
 from woffl.geometry.wellprofile import WellProfile
 from woffl.pvt.resmix import ResMix
 
@@ -65,15 +66,23 @@ class WellConfig:
 
         # Validate field model
         if self.field_model not in ["Schrader", "Kuparuk"]:
-            raise ValueError(f"field_model must be 'Schrader' or 'Kuparuk', got '{self.field_model}'")
+            raise ValueError(
+                f"field_model must be 'Schrader' or 'Kuparuk', got '{self.field_model}'"
+            )
 
         # Validate ranges
         if not (400 <= self.res_pres <= 5000):
-            raise ValueError(f"res_pres must be between 400-5000 psi, got {self.res_pres}")
+            raise ValueError(
+                f"res_pres must be between 400-5000 psi, got {self.res_pres}"
+            )
         if not (32 <= self.form_temp <= 350):
-            raise ValueError(f"form_temp must be between 32-350 °F, got {self.form_temp}")
+            raise ValueError(
+                f"form_temp must be between 32-350 °F, got {self.form_temp}"
+            )
         if not (2500 <= self.jpump_tvd <= 8000):
-            raise ValueError(f"jpump_tvd must be between 2500-8000 ft, got {self.jpump_tvd}")
+            raise ValueError(
+                f"jpump_tvd must be between 2500-8000 ft, got {self.jpump_tvd}"
+            )
         if not (0.0 <= self.form_wc <= 1.0):
             raise ValueError(f"form_wc must be between 0.0-1.0, got {self.form_wc}")
 
@@ -97,7 +106,9 @@ class PowerFluidConstraint:
         if self.total_rate <= 0:
             raise ValueError(f"total_rate must be positive, got {self.total_rate}")
         if not (1000 <= self.pressure <= 5000):
-            raise ValueError(f"pressure must be between 1000-5000 psi, got {self.pressure}")
+            raise ValueError(
+                f"pressure must be between 1000-5000 psi, got {self.pressure}"
+            )
         if not (50.0 <= self.rho_pf <= 70.0):
             raise ValueError(f"rho_pf must be between 50-70 lbm/ft³, got {self.rho_pf}")
 
@@ -187,7 +198,9 @@ class NetworkOptimizer:
         Args:
             calibration: Dict mapping well_name to CalibrationResult
         """
-        self.calibration_factors = {name: c.calibration_factor for name, c in calibration.items()}
+        self.calibration_factors = {
+            name: c.calibration_factor for name, c in calibration.items()
+        }
 
     def get_calibrated_results(self) -> Optional[list[OptimizationResult]]:
         """Apply stored calibration factors to optimization results.
@@ -234,12 +247,14 @@ class NetworkOptimizer:
             well: Well configuration
 
         Returns:
-            tuple: (tube, wellprofile, inflow, res_mix)
+            tuple: (wellbore, wellprofile, inflow, res_mix, prop_pf)
         """
         from woffl.gui.utils import create_pvt_components
 
-        # Create tubing
+        # Create tubing and casing, then combine into PipeInPipe
         tube = Pipe(out_dia=well.tubing_od, thick=well.tubing_thickness)
+        case = Pipe(out_dia=well.casing_od, thick=well.casing_thickness)
+        wellbore = PipeInPipe(inn_pipe=tube, out_pipe=case)
 
         # Create well profile — use actual survey if available, else generic template
         # jpump_md is always set by __post_init__ (defaults to jpump_tvd when None)
@@ -250,11 +265,14 @@ class NetworkOptimizer:
         oil_qwf = well.qwf * (1 - well.form_wc)
         inflow = InFlow(qwf=oil_qwf, pwf=well.pwf, pres=well.res_pres)
 
-        # Create reservoir mix using shared PVT factory
+        # Create reservoir mix and power fluid using shared PVT factory
         oil, water, gas = create_pvt_components(well.field_model)
-        res_mix = ResMix(wc=well.form_wc, fgor=well.form_gor, oil=oil, wat=water, gas=gas)
+        res_mix = ResMix(
+            wc=well.form_wc, fgor=well.form_gor, oil=oil, wat=water, gas=gas
+        )
+        prop_pf = water.condition(0, 60)
 
-        return tube, well_profile, inflow, res_mix
+        return wellbore, well_profile, inflow, res_mix, prop_pf
 
     def run_all_batch_simulations(self, progress_callback=None) -> dict[str, BatchPump]:
         """Run batch simulations for all wells
@@ -274,7 +292,9 @@ class NetworkOptimizer:
                 progress_callback(idx, total_wells, well.well_name)
 
             # Create well-specific objects
-            tube, well_profile, inflow, res_mix = self._create_well_objects(well)
+            wellbore, well_profile, inflow, res_mix, prop_pf = (
+                self._create_well_objects(well)
+            )
 
             # Create jet pump list
             jp_list = BatchPump.jetpump_list(self.nozzle_options, self.throat_options)
@@ -283,12 +303,12 @@ class NetworkOptimizer:
             batch_pump = BatchPump(
                 pwh=well.surf_pres,
                 tsu=well.form_temp,
-                rho_pf=self.power_fluid.rho_pf,
                 ppf_surf=self.power_fluid.pressure,
-                wellbore=tube,
+                wellbore=wellbore,
                 wellprof=well_profile,
                 ipr_su=inflow,
                 prop_su=res_mix,
+                prop_pf=prop_pf,
                 wellname=well.well_name,
             )
 
@@ -309,7 +329,9 @@ class NetworkOptimizer:
 
         return self.batch_results
 
-    def get_power_fluid_requirement(self, well_name: str, nozzle: str, throat: str) -> Optional[float]:
+    def get_power_fluid_requirement(
+        self, well_name: str, nozzle: str, throat: str
+    ) -> Optional[float]:
         """Get power fluid requirement for specific pump configuration
 
         Args:
@@ -341,7 +363,9 @@ class NetworkOptimizer:
 
         return float(lift_wat)
 
-    def get_pump_performance(self, well_name: str, nozzle: str, throat: str) -> Optional[dict]:
+    def get_pump_performance(
+        self, well_name: str, nozzle: str, throat: str
+    ) -> Optional[dict]:
         """Get complete performance metrics for specific pump configuration
 
         Args:
@@ -378,11 +402,17 @@ class NetworkOptimizer:
             "suction_pressure": float(row["psu_solv"]),
             "sonic_status": bool(row["sonic_status"]),
             "mach_te": float(row["mach_te"]),
-            "marginal_oil_lift_water": float(row.get("molwr", 0.0)) if pd.notna(row.get("molwr")) else 0.0,
-            "marginal_oil_total_water": float(row.get("motwr", 0.0)) if pd.notna(row.get("motwr")) else 0.0,
+            "marginal_oil_lift_water": (
+                float(row.get("molwr", 0.0)) if pd.notna(row.get("molwr")) else 0.0
+            ),
+            "marginal_oil_total_water": (
+                float(row.get("motwr", 0.0)) if pd.notna(row.get("motwr")) else 0.0
+            ),
         }
 
-    def validate_allocation(self, allocation: dict[str, tuple[str, str]]) -> tuple[bool, float, dict]:
+    def validate_allocation(
+        self, allocation: dict[str, tuple[str, str]]
+    ) -> tuple[bool, float, dict]:
         """Validate if allocation is feasible given power fluid constraint
 
         Args:
@@ -416,14 +446,20 @@ class NetworkOptimizer:
         details = {
             "total_pf": total_pf,
             "available_pf": self.power_fluid.total_rate,
-            "utilization": total_pf / self.power_fluid.total_rate if self.power_fluid.total_rate > 0 else 0.0,
+            "utilization": (
+                total_pf / self.power_fluid.total_rate
+                if self.power_fluid.total_rate > 0
+                else 0.0
+            ),
             "well_allocations": well_allocations,
             "failed_wells": failed_wells,
         }
 
         return is_feasible, total_pf, details
 
-    def calculate_field_metrics(self, results: Optional[list[OptimizationResult]] = None) -> dict:
+    def calculate_field_metrics(
+        self, results: Optional[list[OptimizationResult]] = None
+    ) -> dict:
         """Calculate aggregate field-level metrics
 
         Args:
@@ -458,7 +494,9 @@ class NetworkOptimizer:
             "power_fluid_utilization": total_lift_water / self.power_fluid.total_rate,
         }
 
-    def to_dataframe(self, results: Optional[list[OptimizationResult]] = None) -> pd.DataFrame:
+    def to_dataframe(
+        self, results: Optional[list[OptimizationResult]] = None
+    ) -> pd.DataFrame:
         """Convert optimization results to DataFrame
 
         Args:
@@ -496,7 +534,9 @@ class NetworkOptimizer:
         return pd.DataFrame(data)
 
 
-def _load_well_profile(well_name: str, jpump_md: float, field_model: str) -> WellProfile:
+def _load_well_profile(
+    well_name: str, jpump_md: float, field_model: str
+) -> WellProfile:
     """Load WellProfile using actual deviation survey CSV if available, else generic template.
 
     Looks for a file named '<well_name> Deviation Survey.csv' in the jp_data/well_surveys/
@@ -513,7 +553,13 @@ def _load_well_profile(well_name: str, jpump_md: float, field_model: str) -> Wel
         WellProfile: Well profile with the well-specific jetpump_md set
     """
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    survey_path = os.path.join(current_dir, "..", "jp_data", "well_surveys", f"{well_name} Deviation Survey.csv")
+    survey_path = os.path.join(
+        current_dir,
+        "..",
+        "jp_data",
+        "well_surveys",
+        f"{well_name} Deviation Survey.csv",
+    )
 
     if os.path.exists(survey_path):
         try:
@@ -522,7 +568,9 @@ def _load_well_profile(well_name: str, jpump_md: float, field_model: str) -> Wel
             tvd_list = df["tvd_depth"].tolist()
             return WellProfile(md_list=md_list, vd_list=tvd_list, jetpump_md=jpump_md)
         except Exception as exc:
-            print(f"Warning: Could not load survey for {well_name}: {exc}. Using generic template.")
+            print(
+                f"Warning: Could not load survey for {well_name}: {exc}. Using generic template."
+            )
 
     # Fallback: generic template profile
     if field_model.lower() == "schrader":
@@ -531,7 +579,11 @@ def _load_well_profile(well_name: str, jpump_md: float, field_model: str) -> Wel
         well_profile = WellProfile.kuparuk()
 
     try:
-        well_profile = WellProfile(md_list=well_profile.md_ray, vd_list=well_profile.vd_ray, jetpump_md=jpump_md)
+        well_profile = WellProfile(
+            md_list=well_profile.md_ray,
+            vd_list=well_profile.vd_ray,
+            jetpump_md=jpump_md,
+        )
     except Exception:
         pass  # keep the template's default jetpump_md if the well-specific one is out of range
 
@@ -560,7 +612,9 @@ def load_jp_chars(jp_chars_path: Optional[str] = None) -> dict:
         return {}
 
 
-def load_wells_from_csv(csv_path: str, jp_chars_path: Optional[str] = None) -> list[WellConfig]:
+def load_wells_from_csv(
+    csv_path: str, jp_chars_path: Optional[str] = None
+) -> list[WellConfig]:
     """Load well configurations from CSV with fallback to jp_chars database
 
     Args:
@@ -609,7 +663,9 @@ def load_wells_from_csv(csv_path: str, jp_chars_path: Optional[str] = None) -> l
             # Map database fields to WellConfig parameters with proper defaults
             # Check for required fields first
             if "res_pres" not in base_config:
-                raise ValueError(f"res_pres is required but not found in database or CSV")
+                raise ValueError(
+                    f"res_pres is required but not found in database or CSV"
+                )
             if "JP_TVD" not in base_config and "jpump_tvd" not in base_config:
                 raise ValueError(f"JP_TVD is required but not found in database or CSV")
 
@@ -617,24 +673,40 @@ def load_wells_from_csv(csv_path: str, jp_chars_path: Optional[str] = None) -> l
                 "well_name": well_name,
                 "res_pres": float(base_config["res_pres"]),
                 "form_temp": float(base_config.get("form_temp", 70)),
-                "jpump_tvd": float(base_config.get("JP_TVD") or base_config.get("jpump_tvd", 4000)),
-                "jpump_md": float(
-                    base_config.get("JP_MD") or base_config.get("JP_TVD") or base_config.get("jpump_tvd", 4000)
+                "jpump_tvd": float(
+                    base_config.get("JP_TVD") or base_config.get("jpump_tvd", 4000)
                 ),
-                "tubing_od": float(base_config.get("out_dia") or base_config.get("tubing_od", 4.5)),
-                "tubing_thickness": float(base_config.get("thick") or base_config.get("tubing_thickness", 0.271)),
+                "jpump_md": float(
+                    base_config.get("JP_MD")
+                    or base_config.get("JP_TVD")
+                    or base_config.get("jpump_tvd", 4000)
+                ),
+                "tubing_od": float(
+                    base_config.get("out_dia") or base_config.get("tubing_od", 4.5)
+                ),
+                "tubing_thickness": float(
+                    base_config.get("thick")
+                    or base_config.get("tubing_thickness", 0.271)
+                ),
                 "casing_od": float(base_config.get("casing_od", 6.875)),
-                "casing_thickness": float(base_config.get("casing_thick") or base_config.get("casing_thickness", 0.5)),
+                "casing_thickness": float(
+                    base_config.get("casing_thick")
+                    or base_config.get("casing_thickness", 0.5)
+                ),
                 "form_wc": float(base_config.get("form_wc", 0.5)),
                 "form_gor": float(base_config.get("form_gor", 250)),
                 "field_model": (
                     "Schrader"
-                    if base_config.get("is_sch", base_config.get("field_model", "Schrader"))
+                    if base_config.get(
+                        "is_sch", base_config.get("field_model", "Schrader")
+                    )
                     in [True, "TRUE", "True", "Schrader"]
                     else "Kuparuk"
                 ),
                 "surf_pres": float(base_config.get("surf_pres", 210)),
-                "qwf": float(base_config.get("qwf_bopd") or base_config.get("qwf", 750)),
+                "qwf": float(
+                    base_config.get("qwf_bopd") or base_config.get("qwf", 750)
+                ),
                 "pwf": float(base_config.get("pwf", 500)),
             }
 
@@ -647,7 +719,9 @@ def load_wells_from_csv(csv_path: str, jp_chars_path: Optional[str] = None) -> l
         except ValueError as e:
             errors.append(f"Row {idx+2} (Well {well_name}): {str(e)}")
         except Exception as e:
-            errors.append(f"Row {idx+2} (Well {well_name}): Unexpected error - {str(e)}")
+            errors.append(
+                f"Row {idx+2} (Well {well_name}): Unexpected error - {str(e)}"
+            )
 
     if errors:
         raise ValueError("Errors loading well configurations:\n" + "\n".join(errors))
@@ -693,10 +767,14 @@ def validate_well_config(config: WellConfig) -> tuple[bool, list[str]]:
 
         # Example: Check for unrealistic combinations
         if config.jpump_tvd > 6000 and config.tubing_od < 3.0:
-            errors.append("Deep wells (>6000 ft) typically require larger tubing (>=3.5 inches)")
+            errors.append(
+                "Deep wells (>6000 ft) typically require larger tubing (>=3.5 inches)"
+            )
 
         if config.form_wc > 0.95 and config.form_gor < 100:
-            errors.append("High watercut wells (>95%) with low GOR (<100) may have poor performance")
+            errors.append(
+                "High watercut wells (>95%) with low GOR (<100) may have poor performance"
+            )
 
     except Exception as e:
         errors.append(str(e))

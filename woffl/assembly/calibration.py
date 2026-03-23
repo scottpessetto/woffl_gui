@@ -147,7 +147,11 @@ def apply_calibration(
 
     calibrated = []
     for r in results:
-        factor = calibration[r.well_name].calibration_factor if r.well_name in calibration else 1.0
+        factor = (
+            calibration[r.well_name].calibration_factor
+            if r.well_name in calibration
+            else 1.0
+        )
         calibrated.append(
             OptimizationResult(
                 well_name=r.well_name,
@@ -166,7 +170,9 @@ def apply_calibration(
     return calibrated
 
 
-def compute_field_calibration_summary(calibration: dict[str, CalibrationResult]) -> dict:
+def compute_field_calibration_summary(
+    calibration: dict[str, CalibrationResult],
+) -> dict:
     """Compute aggregate calibration statistics.
 
     Args:

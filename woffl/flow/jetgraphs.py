@@ -13,7 +13,7 @@ from woffl.flow import outflow as of
 from woffl.flow import singlephase as sp
 from woffl.flow.inflow import InFlow
 from woffl.geometry.jetpump import JetPump
-from woffl.geometry.pipe import Annulus, Pipe
+from woffl.geometry.pipe import Pipe, PipeInPipe
 from woffl.geometry.wellprofile import WellProfile
 from woffl.pvt.resmix import ResMix
 
@@ -25,7 +25,7 @@ def choked_figures(
     rho_pf: float,
     ppf_surf: float,
     jpump_well: JetPump,
-    wellbore: Pipe,
+    tubing: Pipe,
     wellprof: WellProfile,
     ipr_well: InFlow,
     prop_well: ResMix,
@@ -42,7 +42,7 @@ def choked_figures(
         rho_pf (float): Power Fluid Density, lbm/ft3
         ppf_surf (float): Pressure of Power Fluid at surface, psig
         jpump_well (JetPump): Jet Pump Class
-        wellbore (Pipe): Pipe Class, used for diffuser diameter
+        tubing (Pipe): Diffuser diameter is assumed to be same size as tubing inner diameter
         wellprof (WellProfile): WellProfile Class, for jet pump TVD
         ipr_well (InFlow): IPR Class
         prop_well (ResMix): Reservoir conditions of the well
@@ -53,29 +53,40 @@ def choked_figures(
         None
     """
     psu_min, qoil_std, te_book = jf.psu_minimize(
-        tsu=tsu, ken=jpump_well.ken, ate=jpump_well.ate, ipr_su=ipr_well, prop_su=prop_well
+        tsu=tsu,
+        ken=jpump_well.ken,
+        ate=jpump_well.ate,
+        ipr_su=ipr_well,
+        prop_su=prop_well,
     )
 
+    # assumes no pressure drop in annulus, which is fine for this function
     pni = ppf_surf + sp.diff_press_static(rho_pf, wellprof.jetpump_vd)
 
-    pte, ptm, pdi, qoil_std, fwat_bwpd, qnz_bwpd, mach_te, prop_tm = jf.jetpump_overall(
-        psu_min,
-        tsu,
-        pni,
-        rho_pf,
-        jpump_well.ken,
-        jpump_well.knz,
-        jpump_well.kth,
-        jpump_well.kdi,
-        jpump_well.ath,
-        jpump_well.anz,
-        wellbore.inn_area,
-        ipr_well,
-        prop_well,
+    pte, ptm, pdi, qoil_std, fwat_bwpd, qnz_bwpd, mach_te, prop_tm = (
+        jf.jetpump_base_calcs(
+            psu_min,
+            tsu,
+            pni,
+            rho_pf,
+            jpump_well.ken,
+            jpump_well.knz,
+            jpump_well.kth,
+            jpump_well.kdi,
+            jpump_well.ath,
+            jpump_well.anz,
+            tubing.inn_area,
+            ipr_well,
+            prop_well,
+        )
     )
 
-    qoil_std, te_book = jplt.throat_entry_book(psu_min, tsu, jpump_well.ken, jpump_well.ate, ipr_well, prop_well)
-    vtm, di_book = jplt.diffuser_book(ptm, tsu, jpump_well.ath, jpump_well.kdi, wellbore.inn_area, qoil_std, prop_tm)
+    qoil_std, te_book = jplt.throat_entry_book(
+        psu_min, tsu, jpump_well.ken, jpump_well.ate, ipr_well, prop_well
+    )
+    vtm, di_book = jplt.diffuser_book(
+        ptm, tsu, jpump_well.ath, jpump_well.kdi, tubing.inn_area, qoil_std, prop_tm
+    )
 
     if folder_path is not None:
         entry_name = "entry_four_" + rev_id + ".png"
@@ -86,8 +97,12 @@ def choked_figures(
         entry_path = None
         diff_path = None
 
-    te_book.plot_te(pte_min=int(pte) - 100, fig_path=entry_path)  # don't need to see default 200
-    print("Choked figures method in jetgraphs cutting before 200 psig, is this intentional?")
+    te_book.plot_te(
+        pte_min=int(pte) - 100, fig_path=entry_path
+    )  # don't need to see default 200
+    print(
+        "Choked figures method in jetgraphs cutting before 200 psig, is this intentional?"
+    )
     di_book.plot_di(fig_path=diff_path)
 
 
@@ -96,7 +111,7 @@ def pump_pressure_relation(
     rho_pf: float,
     ppf_surf: float,
     jpump_well: JetPump,
-    wellbore: Pipe,
+    tubing: Pipe,
     wellprof: WellProfile,
     ipr_well: InFlow,
     prop_well: ResMix,
@@ -113,7 +128,7 @@ def pump_pressure_relation(
         rho_pf (float): Power Fluid Density, lbm/ft3
         ppf_surf (float): Pressure of Power Fluid at surface, psig
         jpump_well (JetPump): Jet Pump Class
-        wellbore (Pipe): Pipe Class, used for diffuser diameter
+        tubing (Pipe): Pipe Class, used for diffuser diameter
         wellprof (WellProfile): WellProfile Class, for jet pump TVD
         ipr_well (InFlow): IPR Class
         prop_well (ResMix): Reservoir conditions of the well
@@ -122,7 +137,9 @@ def pump_pressure_relation(
     Returns:
         None
     """
-    psu_min, qoil_std, te_book = jf.psu_minimize(tsu, jpump_well.ken, jpump_well.ate, ipr_well, prop_well)
+    psu_min, qoil_std, te_book = jf.psu_minimize(
+        tsu, jpump_well.ken, jpump_well.ate, ipr_well, prop_well
+    )
     psu_max = ipr_well.pres - 10
 
     psu_list = np.linspace(psu_min, psu_max, 25)
@@ -132,23 +149,26 @@ def pump_pressure_relation(
     pdi_list = []
     qoil_list = []
 
+    # need to update this
     pni = ppf_surf + sp.diff_press_static(rho_pf, wellprof.jetpump_vd)  # static
 
     for psu in psu_list:
-        pte, ptm, pdi, qoil_std, fwat_bwpd, qnz_bwpd, mach_te, prop_tm = jf.jetpump_overall(
-            psu,
-            tsu,
-            pni,
-            rho_pf,
-            jpump_well.ken,
-            jpump_well.knz,
-            jpump_well.kth,
-            jpump_well.kdi,
-            jpump_well.ath,
-            jpump_well.anz,
-            wellbore.inn_area,
-            ipr_well,
-            prop_well,
+        pte, ptm, pdi, qoil_std, fwat_bwpd, qnz_bwpd, mach_te, prop_tm = (
+            jf.jetpump_base_calcs(
+                psu,
+                tsu,
+                pni,
+                rho_pf,
+                jpump_well.ken,
+                jpump_well.knz,
+                jpump_well.kth,
+                jpump_well.kdi,
+                jpump_well.ath,
+                jpump_well.anz,
+                tubing.inn_area,
+                ipr_well,
+                prop_well,
+            )
         )
 
         pte_list.append(pte)
@@ -159,14 +179,30 @@ def pump_pressure_relation(
     marker_style = "."
     line_style = "-"
     fig, ax = plt.subplots(figsize=(5.5, 4))
-    ax.plot(psu_list, pdi_list, label="Discharge", marker=marker_style, linestyle=line_style)
-    ax.plot(psu_list, ptm_list, label="Throat Exit", marker=marker_style, linestyle=line_style)
-    ax.plot(psu_list, pte_list, label="Throat Entry", marker=marker_style, linestyle=line_style)
+    ax.plot(
+        psu_list, pdi_list, label="Discharge", marker=marker_style, linestyle=line_style
+    )
+    ax.plot(
+        psu_list,
+        ptm_list,
+        label="Throat Exit",
+        marker=marker_style,
+        linestyle=line_style,
+    )
+    ax.plot(
+        psu_list,
+        pte_list,
+        label="Throat Entry",
+        marker=marker_style,
+        linestyle=line_style,
+    )
     ax.set_xlabel("Suction Pressure, psig")
     ax.set_ylabel("Pressure, psig")
     # plt.title("Comparison of Jet Pump Pressures Against Suction")
     ax.legend()
-    plt.subplots_adjust(left=0.2, bottom=0.135, right=0.975, top=0.975, wspace=0.2, hspace=0.15)
+    plt.subplots_adjust(
+        left=0.2, bottom=0.135, right=0.975, top=0.975, wspace=0.2, hspace=0.15
+    )
     if fig_path is not None:
         plt.savefig(fig_path, bbox_inches="tight", dpi=300)
     else:
@@ -180,7 +216,7 @@ def discharge_check(
     rho_pf: float,
     ppf_surf: float,
     jpump_well: JetPump,
-    tube: Pipe,
+    wellbore: PipeInPipe,
     wellprof: WellProfile,
     ipr_well: InFlow,
     prop_well: ResMix,
@@ -207,9 +243,15 @@ def discharge_check(
         None
     """
     psu_min, qoil_std, te_book = jf.psu_minimize(
-        tsu=form_temp, ken=jpump_well.ken, ate=jpump_well.ate, ipr_su=ipr_well, prop_su=prop_well
+        tsu=form_temp,
+        ken=jpump_well.ken,
+        ate=jpump_well.ate,
+        ipr_su=ipr_well,
+        prop_su=prop_well,
     )
     pte, vte, rho_te, mach_te = te_book.dete_zero()
+
+    # need to update this
     pni = ppf_surf + sp.diff_press_static(rho_pf, wellprof.jetpump_vd)
     vnz = jf.nozzle_velocity(pni, pte, jpump_well.knz, rho_pf)
 
@@ -218,11 +260,30 @@ def discharge_check(
 
     prop_tm = ResMix(wc_tm, prop_well.fgor, prop_well.oil, prop_well.wat, prop_well.gas)
     ptm = jf.throat_discharge(
-        pte, form_temp, jpump_well.kth, vnz, jpump_well.anz, rho_pf, vte, jpump_well.ate, rho_te, prop_tm
+        pte,
+        form_temp,
+        jpump_well.kth,
+        vnz,
+        jpump_well.anz,
+        rho_pf,
+        vte,
+        jpump_well.ate,
+        rho_te,
+        prop_tm,
     )
-    vtm, pdi = jf.diffuser_discharge(ptm, form_temp, jpump_well.kdi, jpump_well.ath, tube.inn_area, qoil_std, prop_tm)
+    vtm, pdi = jf.diffuser_discharge(
+        ptm,
+        form_temp,
+        jpump_well.kdi,
+        jpump_well.ath,
+        wellbore.inn_pipe.inn_area,
+        qoil_std,
+        prop_tm,
+    )
 
-    md_seg, prs_ray, slh_ray = of.top_down_press(surf_pres, form_temp, qoil_std, prop_tm, tube, wellprof)
+    md_seg, prs_ray, slh_ray = of.production_top_down_press(
+        surf_pres, form_temp, qoil_std, prop_tm, wellbore, wellprof
+    )
 
     outflow_pdi = prs_ray[-1]
     diff_pdi = pdi - outflow_pdi
@@ -247,10 +308,20 @@ def discharge_check(
     # add the outflow, with the liquid holdup and pressure
 
     # graphing some outputs for visualization
-    qsu_std, te_book = jplt.throat_entry_book(psu_min, form_temp, jpump_well.ken, jpump_well.ate, ipr_well, prop_well)
+    qsu_std, te_book = jplt.throat_entry_book(
+        psu_min, form_temp, jpump_well.ken, jpump_well.ate, ipr_well, prop_well
+    )
     te_book.plot_te()
     # print(te_book)
-    vtm, di_book = jplt.diffuser_book(ptm, form_temp, jpump_well.ath, jpump_well.kdi, tube.inn_area, qsu_std, prop_tm)
+    vtm, di_book = jplt.diffuser_book(
+        ptm,
+        form_temp,
+        jpump_well.ath,
+        jpump_well.kdi,
+        wellbore.inn_pipe.inn_area,
+        qsu_std,
+        prop_tm,
+    )
     di_book.plot_di()
     # print(di_book)
     # te_book.plot()

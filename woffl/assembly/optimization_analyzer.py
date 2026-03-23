@@ -13,7 +13,8 @@ if TYPE_CHECKING:
 
 
 def compare_scenarios(
-    baseline_results: list["OptimizationResult"], optimized_results: list["OptimizationResult"]
+    baseline_results: list["OptimizationResult"],
+    optimized_results: list["OptimizationResult"],
 ) -> dict:
     """Compare baseline vs optimized scenarios
 
@@ -36,10 +37,14 @@ def compare_scenarios(
 
     # Calculate improvements
     oil_improvement = optimized_oil - baseline_oil
-    oil_improvement_pct = (oil_improvement / baseline_oil * 100) if baseline_oil > 0 else 0
+    oil_improvement_pct = (
+        (oil_improvement / baseline_oil * 100) if baseline_oil > 0 else 0
+    )
 
     water_change = optimized_water - baseline_water
-    water_change_pct = (water_change / baseline_water * 100) if baseline_water > 0 else 0
+    water_change_pct = (
+        (water_change / baseline_water * 100) if baseline_water > 0 else 0
+    )
 
     pf_change = optimized_pf - baseline_pf
     pf_change_pct = (pf_change / baseline_pf * 100) if baseline_pf > 0 else 0
@@ -63,7 +68,10 @@ def compare_scenarios(
 
 
 def sensitivity_analysis(
-    optimizer: "NetworkOptimizer", power_fluid_range: tuple[float, float], num_points: int = 10, method: str = "greedy"
+    optimizer: "NetworkOptimizer",
+    power_fluid_range: tuple[float, float],
+    num_points: int = 10,
+    method: str = "greedy",
 ) -> pd.DataFrame:
     """Run sensitivity analysis on power fluid availability
 
@@ -95,7 +103,9 @@ def sensitivity_analysis(
     for pf_level in pf_levels:
         # Update power fluid constraint
         optimizer.power_fluid = PowerFluidConstraint(
-            total_rate=pf_level, pressure=original_constraint.pressure, rho_pf=original_constraint.rho_pf
+            total_rate=pf_level,
+            pressure=original_constraint.pressure,
+            rho_pf=original_constraint.rho_pf,
         )
 
         # Run optimization at this power fluid level
@@ -152,7 +162,11 @@ def analyze_well_contributions(results: list["OptimizationResult"]) -> pd.DataFr
                 "oil_share_pct": oil_share * 100,
                 "power_fluid": r.allocated_power_fluid,
                 "pf_share_pct": pf_share * 100,
-                "efficiency": r.predicted_oil_rate / r.allocated_power_fluid if r.allocated_power_fluid > 0 else 0,
+                "efficiency": (
+                    r.predicted_oil_rate / r.allocated_power_fluid
+                    if r.allocated_power_fluid > 0
+                    else 0
+                ),
                 "watercut": r.total_watercut,
                 "sonic": r.sonic_status,
             }
@@ -188,7 +202,9 @@ def identify_bottlenecks(optimizer: "NetworkOptimizer") -> dict:
     marginal_rates = [r.marginal_oil_rate for r in results]
     avg_marginal = np.mean(marginal_rates)
 
-    low_performers = [r.well_name for r in results if r.marginal_oil_rate < avg_marginal * 0.5]
+    low_performers = [
+        r.well_name for r in results if r.marginal_oil_rate < avg_marginal * 0.5
+    ]
 
     # Find wells operating at sonic conditions
     sonic_wells = [r.well_name for r in results if r.sonic_status]
@@ -269,7 +285,11 @@ def calculate_incremental_value(
                 "total_cost": total_cost,
                 "net_daily_value": net_daily_value,
                 "net_annual_value": net_annual_value,
-                "value_per_pf": net_daily_value / r.allocated_power_fluid if r.allocated_power_fluid > 0 else 0,
+                "value_per_pf": (
+                    net_daily_value / r.allocated_power_fluid
+                    if r.allocated_power_fluid > 0
+                    else 0
+                ),
             }
         )
 

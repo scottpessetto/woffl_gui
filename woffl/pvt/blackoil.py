@@ -23,12 +23,16 @@ class BlackOil:
         api_min = 10
         api_max = 40
         if (api_min < oil_api < api_max) is False:
-            raise ValueError(f"Oil API {oil_api} Outside Range of {api_min} to {api_max}")
+            raise ValueError(
+                f"Oil API {oil_api} Outside Range of {api_min} to {api_max}"
+            )
 
         bub_min = 1000
         bub_max = 3000
         if (bub_min < bubblepoint < bub_max) is False:
-            raise ValueError(f"Bubblepoint {bubblepoint} Outside Range of {bub_min} to {bub_max}")
+            raise ValueError(
+                f"Bubblepoint {bubblepoint} Outside Range of {bub_min} to {bub_max}"
+            )
 
         sg_min = 0.5
         sg_max = 1.2
@@ -38,7 +42,6 @@ class BlackOil:
         self.oil_api = oil_api
         self.pbp = bubblepoint
         self.gas_sg = gas_sg
-        self._cache = {}
 
     def __repr__(self):
         return f"Oil: {self.oil_api} API and a {round(self.gas_sg, 2)} SG Gas"
@@ -116,14 +119,7 @@ class BlackOil:
         """
         self.press = press
         self.temp = temp
-        self._cache = {}
         return self
-
-    def _cached(self, key, fn):
-        """Return cached value or compute and cache it."""
-        if key not in self._cache:
-            self._cache[key] = fn()
-        return self._cache[key]
 
     def gas_solubility(self) -> float:
         """Gas Solubility in Oil (Solution GOR)
@@ -136,9 +132,6 @@ class BlackOil:
         Returns:
             rs (float): Gas solubility in the oil, scf/stb
         """
-        return self._cached("gas_solubility", self._compute_gas_solubility)
-
-    def _compute_gas_solubility(self) -> float:
         if self.press > self.pbp:  # above bubblepoint pressure
             press = self.pbp  # calculate gas solubility using bubblepoint pressure
         else:
@@ -146,6 +139,7 @@ class BlackOil:
         rs = self.solubility_kartoatmodjo(press, self.temp, self.oil_api, self.gas_sg)
         return rs
 
+    @property
     def compress(self) -> float:
         """Oil Compressibility Isothermal
 
@@ -157,14 +151,15 @@ class BlackOil:
         Returns:
             co (float): oil compressibility, psi**-1
         """
-        return self._cached("compress", self._compute_compress)
-
-    def _compute_compress(self) -> float:
         rs = self.gas_solubility()  # solubility of gas in the oil
         if self.press > self.pbp:  # above bubblepoint
-            co = self.compressibility_vasquez_above(self.press, self.temp, self.oil_api, self.gas_sg, rs)
+            co = self.compressibility_vasquez_above(
+                self.press, self.temp, self.oil_api, self.gas_sg, rs
+            )
         else:  # below the bubblepoint
-            co = self.compressibility_mccain_below(self.press, self.temp, self.oil_api, self.gas_sg, rs)
+            co = self.compressibility_mccain_below(
+                self.press, self.temp, self.oil_api, self.gas_sg, rs
+            )
             # co = self.compressibility_kartoatmodjo_above(self.press, self.temp, self.oil_api, self.gas_sg, rs)
         return co
 
@@ -179,14 +174,11 @@ class BlackOil:
         Returns:
             bo (float): oil formation volume, rb/stb
         """
-        return self._cached("oil_fvf", self._compute_oil_fvf)
-
-    def _compute_oil_fvf(self) -> float:
         rs = self.gas_solubility()
         bo = self.fvf_kartoatmodjo_below(self.temp, self.oil_api, self.gas_sg, rs)
         if self.press > self.pbp:  # above bubblepoint pressure
             bob = bo
-            co = self.compress()
+            co = self.compress
             bo = self.fvf_vasquez_above(self.press, self.pbp, bob, co)
         return bo
 
@@ -202,14 +194,12 @@ class BlackOil:
         Returns:
             rho_oil (float): density of the oil, lbm/ft3
         """
-        return self._cached("density", self._compute_density)
-
-    def _compute_density(self) -> float:
         rs = self.gas_solubility()
         bo = self.oil_fvf()
         rho_oil = self.live_oil_density(self.oil_api, self.gas_sg, rs, bo)
         return rho_oil
 
+    @property
     def viscosity(self) -> float:
         """Live oil viscosity, cP
 
@@ -222,9 +212,6 @@ class BlackOil:
         Returns:
             uoil (float): live oil viscosity, cP
         """
-        return self._cached("viscosity", self._compute_viscosity)
-
-    def _compute_viscosity(self) -> float:
         uod = self.viscosity_dead_kartoatmodjo(self.temp, self.oil_api)
         uol = self.viscosity_live_kartoatmodjo_below(uod, self.gas_solubility())
         if self.press > self.pbp:  # above bubblepoint
@@ -232,6 +219,7 @@ class BlackOil:
             uol = self.viscosity_live_kartoatmodjo_above(uob, self.press, self.pbp)
         return uol
 
+    @property
     def tension(self) -> float:
         """Live Oil Surface Tension
 
@@ -242,16 +230,15 @@ class BlackOil:
 
         Returns:
             sigo (float): Live Oil Surface Tension, lbf/ft"""
-        return self._cached("tension", self._compute_tension)
-
-    def _compute_tension(self) -> float:
         sigod = self.tension_dead_abdul(self.temp, self.oil_api)
         sigol = self.tension_live_abdul(sigod, self.gas_solubility())  # dyne/cm
         sigo = sigol * 0.0000685  # lbf/ft
         return sigo
 
     @staticmethod
-    def fvf_standing_below(temp: float, oil_api: float, gas_sg: float, rs: float) -> float:
+    def fvf_standing_below(
+        temp: float, oil_api: float, gas_sg: float, rs: float
+    ) -> float:
         """Standing Oil Formation Volume Factor
 
         Calculate formation volume factor for the oil phase.
@@ -267,11 +254,16 @@ class BlackOil:
             bo (float): Oil FVF at / below bubblepoint, rb/stb
         """
         oil_sg = 141.5 / (oil_api + 131.5)  # oil specific gravity
-        bo = 0.972 + 1.47 * 10**-4 * (rs * (gas_sg / oil_sg) ** 0.5 + 1.25 * temp) ** 1.175
+        bo = (
+            0.972
+            + 1.47 * 10**-4 * (rs * (gas_sg / oil_sg) ** 0.5 + 1.25 * temp) ** 1.175
+        )
         return bo
 
     @staticmethod
-    def fvf_almarhoun_below(temp: float, oil_api: float, gas_sg: float, rs: float) -> float:
+    def fvf_almarhoun_below(
+        temp: float, oil_api: float, gas_sg: float, rs: float
+    ) -> float:
         """Al-Marhoun FVF Below Bubblepoint
 
         Calculate the formation volume factor at / or below bubblepoint.
@@ -295,11 +287,19 @@ class BlackOil:
         a3 = 4.292580 * 10**-6
         a4 = 0.528707 * 10**-3
         oil_sg = 141.5 / (oil_api + 131.5)  # oil specific gravity
-        bo = 1 + a1 * rs + a2 * rs * gas_sg / oil_sg + a3 * rs * (temp - 60) * (1 - oil_sg) + a4 * (temp - 60)
+        bo = (
+            1
+            + a1 * rs
+            + a2 * rs * gas_sg / oil_sg
+            + a3 * rs * (temp - 60) * (1 - oil_sg)
+            + a4 * (temp - 60)
+        )
         return bo
 
     @staticmethod
-    def fvf_kartoatmodjo_below(temp: float, oil_api: float, gas_sg: float, rs: float) -> float:
+    def fvf_kartoatmodjo_below(
+        temp: float, oil_api: float, gas_sg: float, rs: float
+    ) -> float:
         """Kartoatmodjo and Schmidt FVF Below Bubblepoint
 
         Calculate the formation volume factor at / or below bubblepoint.
@@ -347,7 +347,9 @@ class BlackOil:
         return bo
 
     @staticmethod
-    def solubility_kartoatmodjo(press: float, temp: float, oil_api: float, gas_sg: float) -> float:
+    def solubility_kartoatmodjo(
+        press: float, temp: float, oil_api: float, gas_sg: float
+    ) -> float:
         """Kartoatmodjo and Schmidt Solubility of Gas in Oil
 
         Calculate the Solubility of Gas in Oil.
@@ -380,7 +382,9 @@ class BlackOil:
         return rs
 
     @staticmethod
-    def solubility_vasquez(press: float, temp: float, oil_api: float, gas_sg: float) -> float:
+    def solubility_vasquez(
+        press: float, temp: float, oil_api: float, gas_sg: float
+    ) -> float:
         """Vasquez and Beggs Solubility of Gas in Oil
 
         Calculate solubility of the gas in oil. Using the Vasquez and Beggs Methodology
@@ -407,7 +411,9 @@ class BlackOil:
         return rs
 
     @staticmethod
-    def compressibility_vasquez_above(press: float, temp: float, oil_api: float, gas_sg: float, rs: float) -> float:
+    def compressibility_vasquez_above(
+        press: float, temp: float, oil_api: float, gas_sg: float, rs: float
+    ) -> float:
         """Vasquez and Beggs compressibility of oil above bubblepoint
 
         Calculate isothermal oil compressibility. Inverse of the bulk modulus of elasticity.
@@ -428,7 +434,9 @@ class BlackOil:
             - Correlations for Fluid Physical Property... Vasquez and Beggs (1980)
         """
         pabs = press + 14.7
-        co = (5 * rs + 17.2 * temp - 1180 * gas_sg + 12.61 * oil_api - 1433) / (pabs * 10**5)
+        co = (5 * rs + 17.2 * temp - 1180 * gas_sg + 12.61 * oil_api - 1433) / (
+            pabs * 10**5
+        )
         return co
 
     @staticmethod
@@ -456,11 +464,21 @@ class BlackOil:
             - Applied Multiphase Flow in Pipes (2017) Al-Safran and Brill, Page 286
         """
         pa = press + 14.7
-        co = 6.8257 * 10**-6 * rs**0.5002 * oil_api**0.3613 * temp**0.7606 * gas_sg**-0.35505 / pa
+        co = (
+            6.8257
+            * 10**-6
+            * rs**0.5002
+            * oil_api**0.3613
+            * temp**0.7606
+            * gas_sg**-0.35505
+            / pa
+        )
         return co
 
     @staticmethod
-    def compressibility_mccain_below(press: float, temp: float, oil_api: float, gas_sg: float, rs: float) -> float:
+    def compressibility_mccain_below(
+        press: float, temp: float, oil_api: float, gas_sg: float, rs: float
+    ) -> float:
         """McCain et. al compressibility of oil below bubblepoint
 
         Calculate isothermal oil compressibility. Valid for pressures below bubblepoint.
@@ -482,7 +500,11 @@ class BlackOil:
         # gas_sg isn't used, eqn 4 in paper takes oil bubblepoint as input
         pa = press + 14.7
         co = math.exp(
-            -7.633 - 1.497 * math.log(pa) + 1.115 * math.log(temp) + 0.533 * math.log(oil_api) + 0.184 * math.log(rs)
+            -7.633
+            - 1.497 * math.log(pa)
+            + 1.115 * math.log(temp)
+            + 0.533 * math.log(oil_api)
+            + 0.184 * math.log(rs)
         )
         return co
 
@@ -591,7 +613,11 @@ class BlackOil:
             - New Correlations for Crude Oil Physical Properties, Kartoatmodjo and Schmidt (1991) SPE-23556
             - Applied Multiphase Flow in Pipes (2017) Al-Safran and Brill, Page 289
         """
-        uod = (16 * 10**8) * temp**-2.8177 * (math.log(oil_api, 10)) ** (5.7526 * math.log(temp, 10) - 26.9718)
+        uod = (
+            (16 * 10**8)
+            * temp**-2.8177
+            * (math.log(oil_api, 10)) ** (5.7526 * math.log(temp, 10) - 26.9718)
+        )
         return uod
 
     @staticmethod
@@ -617,7 +643,9 @@ class BlackOil:
         return uol
 
     @staticmethod
-    def viscosity_live_kartoatmodjo_above(uob: float, press: float, pbp: float) -> float:
+    def viscosity_live_kartoatmodjo_above(
+        uob: float, press: float, pbp: float
+    ) -> float:
         """Live Oil Viscosity, Above Bubble Point
 
         Live oil viscosity above bubblepoint following Kartoatmodjo methodology.
@@ -634,7 +662,9 @@ class BlackOil:
             - New Correlations for Crude Oil Physical Properties, Kartoatmodjo and Schmidt (1991) SPE-23556
             - Applied Multiphase Flow in Pipes (2017) Al-Safran and Brill, Page 290
         """
-        uol = 1.00081 * uob + 0.001127 * (press - pbp) * (-0.006517 * uob**1.8148 + 0.038 * uob**1.590)
+        uol = 1.00081 * uob + 0.001127 * (press - pbp) * (
+            -0.006517 * uob**1.8148 + 0.038 * uob**1.590
+        )
         return uol
 
     @staticmethod
@@ -651,7 +681,8 @@ class BlackOil:
             sigod (float): Dead Oil Surface Tension, dyne/cm
 
         References:
-            - Estimation of gas - oil surface tension, G.H. Abdul-Majeed, J Petroleum Science (2000)"""
+            - Estimation of gas - oil surface tension, G.H. Abdul-Majeed, J Petroleum Science (2000)
+        """
 
         temp_c = (5 / 9) * (temp - 32)
         A = 1.11591 - 0.00305 * temp_c

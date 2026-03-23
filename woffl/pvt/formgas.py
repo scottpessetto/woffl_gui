@@ -23,7 +23,6 @@ class FormGas:
         self.gas_sg = gas_sg
         self.ppc, self.tpc = self._sutton_pseudo_crit(gas_sg)
         self.mw = 28.96443 * gas_sg  # molecular weight
-        self._cache = {}
 
     def __repr__(self):
         return f"Gas: {self.gas_sg} SG and {self.mw} Mol Weight"
@@ -90,15 +89,9 @@ class FormGas:
         # not adjusted for non-hydrocarbon gas such as H2S or CO2
         self.ppr = self.pabs / self.ppc  # unitless, pressure pseudo reduced
         self.tpr = self.tabs / self.tpc  # unitless, temperature pseudo reduced
-        self._cache = {}
         return self
 
-    def _cached(self, key, fn):
-        """Return cached value or compute and cache it."""
-        if key not in self._cache:
-            self._cache[key] = fn()
-        return self._cache[key]
-
+    @property
     def zfactor(self) -> float:
         """Gas Z-Factor Compressibility
 
@@ -108,9 +101,6 @@ class FormGas:
         Returns:
             zfactor(float): gas zfactor, no units
         """
-        return self._cached("zfactor", self._compute_zfactor)
-
-    def _compute_zfactor(self) -> float:
         zfactor = self._zfactor_grad_school(self.ppr, self.tpr)
         # zfactor = self._zfactor_dak(self.ppr, self.tpr)
         return zfactor
@@ -125,19 +115,16 @@ class FormGas:
             None
 
         Returns:
-            dgas (float): density of the gas, lbm/ft3
+            rho_gas (float): density of the gas, lbm/ft3
 
         References:
             Fundamental Principles of Reservoir Engineering, B.Towler (2002) Page 16
             Applied Multiphase Flow in Pipes..., Al-Safran and Brill (2017) Page 305
         """
-        return self._cached("density", self._compute_density)
+        rho_gas = self.pabs * self.mw / (self.zfactor * FormGas._R * self.tabs)
+        return rho_gas
 
-    def _compute_density(self) -> float:
-        zval = self.zfactor()
-        dgas = self.pabs * self.mw / (zval * FormGas._R * self.tabs)
-        return dgas
-
+    @property
     def viscosity(self) -> float:
         """Gas Viscosity, cP
 
@@ -149,12 +136,10 @@ class FormGas:
         Returns:
             ugas (float): gas viscosity, cP
         """
-        return self._cached("viscosity", self._compute_viscosity)
-
-    def _compute_viscosity(self) -> float:
         ug = self._viscosity_lee(self.tabs, self.mw, self.density)
         return ug
 
+    @property
     def compress(self) -> float:
         """Gas Compressibility Isothermal
 
@@ -170,17 +155,14 @@ class FormGas:
             Fundamental Principles of Reservoir Engineering, B.Towler (2002) Page 16
             Applied Multiphase Flow in Pipes..., Al-Safran and Brill (2017) Page 305
         """
-        return self._cached("compress", self._compute_compress)
-
-    def _compute_compress(self) -> float:
+        temp = self.temp
         p1 = self.press
-        p2 = p1 + 10  # add 10 psi to evaluate a different condition for compressibility
+        p2 = (
+            p1 + 10
+        )  # add 100 psi to evaluate a different condition for compressibility
 
-        z1 = self.zfactor()
-        # compute z2 at perturbed pressure without mutating self
-        pabs2 = p2 + 14.7
-        ppr2 = pabs2 / self.ppc
-        z2 = self._zfactor_grad_school(ppr2, self.tpr)
+        z1 = self.zfactor
+        z2 = self.condition(p2, temp).zfactor
 
         cg = 1 / p1 - (1 / z1) * ((z2 - z1) / (p2 - p1))
         return cg
@@ -299,7 +281,11 @@ class FormGas:
         return z_ray[-1]
 
     @staticmethod
-    def _dak_constants() -> tuple[float, float, float, float, float, float, float, float, float, float, float]:
+    def _dak_constants() -> (
+        tuple[
+            float, float, float, float, float, float, float, float, float, float, float
+        ]
+    ):
         """Dranchuk and Abu-Kassem Constants
 
         Returns the constants used in the Dranchuk and Abu-Kassem Z factor Correlation
@@ -318,7 +304,9 @@ class FormGas:
         return a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11
 
     @staticmethod
-    def _dak_c1(tpr: float, a1: float, a2: float, a3: float, a4: float, a5: float) -> float:
+    def _dak_c1(
+        tpr: float, a1: float, a2: float, a3: float, a4: float, a5: float
+    ) -> float:
         """Dranchuk and Abu-Kassem C1
 
         First Part of the Dranchuk and Abu-Kassem Equation
@@ -375,7 +363,12 @@ class FormGas:
         Returns:
             c4 (float): Dranchuk and Abu-Kassem C4
         """
-        c4 = a10 * (1 + a11 * rho_pr**2) * (rho_pr**2 / tpr**3) * math.exp(-a11 * rho_pr**2)
+        c4 = (
+            a10
+            * (1 + a11 * rho_pr**2)
+            * (rho_pr**2 / tpr**3)
+            * math.exp(-a11 * rho_pr**2)
+        )
         return c4
 
     @staticmethod
@@ -396,7 +389,9 @@ class FormGas:
         return rho_pr
 
     @staticmethod
-    def _dak_zfun(zf: float, rho_pr: float, c1: float, c2: float, c3: float, c4: float) -> float:
+    def _dak_zfun(
+        zf: float, rho_pr: float, c1: float, c2: float, c3: float, c4: float
+    ) -> float:
         """Calculated Z Factor with Dranchuk and Abu-Kassem Calculation
 
         Used to compare to the guess value to create a residual to minimize.
@@ -440,7 +435,9 @@ class FormGas:
         return c5
 
     @staticmethod
-    def _dak_zderv(zf: float, rho_pr: float, c1: float, c2: float, c3: float, c5: float) -> float:
+    def _dak_zderv(
+        zf: float, rho_pr: float, c1: float, c2: float, c3: float, c5: float
+    ) -> float:
         """Z Factor Derivative from Dranchuk and Abu-Kassem
 
         Analytical derivative of the DAK zfun residual function.
@@ -458,5 +455,11 @@ class FormGas:
         Returns:
             zderv (float): Z Factor Derivative
         """
-        zderv = 1 + c1 * rho_pr / zf + 2 * c2 * rho_pr**2 / zf - 5 * c3 * rho_pr**5 / zf + c5
+        zderv = (
+            1
+            + c1 * rho_pr / zf
+            + 2 * c2 * rho_pr**2 / zf
+            - 5 * c3 * rho_pr**5 / zf
+            + c5
+        )
         return zderv

@@ -29,7 +29,11 @@ def create_power_fluid_pie_chart(results: list["OptimizationResult"]):
 
     # Create pie chart
     wedges, texts, autotexts = ax.pie(
-        sizes, labels=labels, autopct="%1.1f%%", startangle=90, textprops={"fontsize": 10}
+        sizes,
+        labels=labels,
+        autopct="%1.1f%%",
+        startangle=90,
+        textprops={"fontsize": 10},
     )
 
     # Make percentage text bold
@@ -43,7 +47,9 @@ def create_power_fluid_pie_chart(results: list["OptimizationResult"]):
     return fig
 
 
-def create_oil_rate_bar_chart(results: list["OptimizationResult"], show_baseline=False, baseline_dict=None):
+def create_oil_rate_bar_chart(
+    results: list["OptimizationResult"], show_baseline=False, baseline_dict=None
+):
     """Create bar chart comparing well oil rates
 
     Args:
@@ -101,7 +107,9 @@ def create_pump_config_chart(results: list["OptimizationResult"]):
 
     # Add config labels
     for i, (well, config) in enumerate(zip(wells, configs)):
-        ax.text(0.5, i, config, ha="center", va="center", fontsize=12, fontweight="bold")
+        ax.text(
+            0.5, i, config, ha="center", va="center", fontsize=12, fontweight="bold"
+        )
 
     ax.set_yticks(y_pos)
     ax.set_yticklabels(wells)
@@ -129,7 +137,11 @@ def create_watercut_comparison(results: list["OptimizationResult"]):
     # Calculate formation watercut
     form_wc = [
         (
-            (r.predicted_formation_water / (r.predicted_oil_rate + r.predicted_formation_water) * 100)
+            (
+                r.predicted_formation_water
+                / (r.predicted_oil_rate + r.predicted_formation_water)
+                * 100
+            )
             if (r.predicted_oil_rate + r.predicted_formation_water) > 0
             else 0
         )
@@ -172,11 +184,19 @@ def create_efficiency_scatter(results: list["OptimizationResult"]):
     fig, ax = plt.subplots(figsize=(10, 8))
 
     # Create scatter plot
-    scatter = ax.scatter(pf_rates, oil_rates, s=200, alpha=0.6, edgecolors="black", linewidths=1.5)
+    scatter = ax.scatter(
+        pf_rates, oil_rates, s=200, alpha=0.6, edgecolors="black", linewidths=1.5
+    )
 
     # Add well labels
     for i, well in enumerate(wells):
-        ax.annotate(well, (pf_rates[i], oil_rates[i]), xytext=(5, 5), textcoords="offset points", fontsize=9)
+        ax.annotate(
+            well,
+            (pf_rates[i], oil_rates[i]),
+            xytext=(5, 5),
+            textcoords="offset points",
+            fontsize=9,
+        )
 
     # Add efficiency lines (oil/pf ratio)
     max_pf = max(pf_rates) if pf_rates else 1
@@ -189,11 +209,20 @@ def create_efficiency_scatter(results: list["OptimizationResult"]):
         ax.plot(x_line, y_line, ":", color="gray", alpha=0.5, linewidth=1)
         # Label the line
         if max_pf * ratio < max_oil:
-            ax.text(max_pf * 0.95, max_pf * ratio * 0.95, f"{ratio:.2f}", fontsize=8, color="gray", alpha=0.7)
+            ax.text(
+                max_pf * 0.95,
+                max_pf * ratio * 0.95,
+                f"{ratio:.2f}",
+                fontsize=8,
+                color="gray",
+                alpha=0.7,
+            )
 
     ax.set_xlabel("Power Fluid Rate (BWPD)", fontsize=12)
     ax.set_ylabel("Oil Rate (BOPD)", fontsize=12)
-    ax.set_title("Oil Production vs Power Fluid Allocation", fontsize=14, fontweight="bold")
+    ax.set_title(
+        "Oil Production vs Power Fluid Allocation", fontsize=14, fontweight="bold"
+    )
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
@@ -223,14 +252,23 @@ def create_marginal_rate_chart(results: list["OptimizationResult"]):
 
     ax.set_xlabel("Well", fontsize=12)
     ax.set_ylabel("Marginal Oil Rate (bbl oil / bbl PF)", fontsize=12)
-    ax.set_title("Marginal Oil Production Efficiency by Well", fontsize=14, fontweight="bold")
+    ax.set_title(
+        "Marginal Oil Production Efficiency by Well", fontsize=14, fontweight="bold"
+    )
     ax.set_xticks(range(len(wells)))
     ax.set_xticklabels(wells, rotation=45, ha="right")
     ax.grid(True, alpha=0.3, axis="y")
 
     # Add value labels on bars
     for i, (bar, val) in enumerate(zip(bars, marginal_rates)):
-        ax.text(bar.get_x() + bar.get_width() / 2, val, f"{val:.3f}", ha="center", va="bottom", fontsize=9)
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            val,
+            f"{val:.3f}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
 
     plt.tight_layout()
     return fig
@@ -250,7 +288,9 @@ def create_calibration_chart(calibration_results: dict[str, "CalibrationResult"]
         ax.text(0.5, 0.5, "No calibration data", ha="center", va="center", fontsize=14)
         return fig
 
-    sorted_items = sorted(calibration_results.items(), key=lambda x: x[1].calibration_factor)
+    sorted_items = sorted(
+        calibration_results.items(), key=lambda x: x[1].calibration_factor
+    )
     wells = [name for name, _ in sorted_items]
     factors = [c.calibration_factor for _, c in sorted_items]
     errors = [c.oil_error_pct for _, c in sorted_items]
@@ -267,7 +307,9 @@ def create_calibration_chart(calibration_results: dict[str, "CalibrationResult"]
 
     fig, ax = plt.subplots(figsize=(10, max(4, len(wells) * 0.5)))
     y_pos = np.arange(len(wells))
-    bars = ax.barh(y_pos, factors, color=colors, alpha=0.8, edgecolor="black", linewidth=0.5)
+    bars = ax.barh(
+        y_pos, factors, color=colors, alpha=0.8, edgecolor="black", linewidth=0.5
+    )
 
     # Vertical reference line at 1.0
     ax.axvline(x=1.0, color="black", linestyle="--", linewidth=1.5, alpha=0.7)
@@ -276,12 +318,16 @@ def create_calibration_chart(calibration_results: dict[str, "CalibrationResult"]
     for i, (bar, factor, error) in enumerate(zip(bars, factors, errors)):
         label = f"{factor:.2f} ({error:.0f}%)"
         x_pos = bar.get_width() + 0.02
-        ax.text(x_pos, bar.get_y() + bar.get_height() / 2, label, va="center", fontsize=9)
+        ax.text(
+            x_pos, bar.get_y() + bar.get_height() / 2, label, va="center", fontsize=9
+        )
 
     ax.set_yticks(y_pos)
     ax.set_yticklabels(wells)
     ax.set_xlabel("Calibration Factor", fontsize=12)
-    ax.set_title("Model Calibration Factors (Actual / Model)", fontsize=14, fontweight="bold")
+    ax.set_title(
+        "Model Calibration Factors (Actual / Model)", fontsize=14, fontweight="bold"
+    )
     ax.set_xlim(0, max(factors) * 1.3 if factors else 2.5)
     ax.grid(True, alpha=0.3, axis="x")
 
@@ -334,7 +380,9 @@ def create_ipr_comparison_pdf(
             # Vogel IPR curve
             qmax = qwf / (1 - 0.2 * (pwf / pres) - 0.8 * (pwf / pres) ** 2)
             pressures = np.linspace(0, pres, 200)
-            oil_rates = qmax * (1 - 0.2 * (pressures / pres) - 0.8 * (pressures / pres) ** 2)
+            oil_rates = qmax * (
+                1 - 0.2 * (pressures / pres) - 0.8 * (pressures / pres) ** 2
+            )
 
             # Optimized operating point
             opt_bhp = r.suction_pressure
@@ -357,7 +405,9 @@ def create_ipr_comparison_pdf(
 
             # IPR chart — upper portion
             ax = fig.add_axes([0.12, 0.40, 0.80, 0.50])
-            ax.plot(oil_rates, pressures, "b-", linewidth=2.5, label="Vogel IPR", zorder=2)
+            ax.plot(
+                oil_rates, pressures, "b-", linewidth=2.5, label="Vogel IPR", zorder=2
+            )
 
             # Current operating point
             if actual_oil is not None and current_bhp is not None:
@@ -392,14 +442,19 @@ def create_ipr_comparison_pdf(
                     "",
                     xy=(opt_oil, opt_bhp),
                     xytext=(actual_oil, current_bhp),
-                    arrowprops=dict(arrowstyle="->", color="gray", lw=1.5, linestyle="--"),
+                    arrowprops=dict(
+                        arrowstyle="->", color="gray", lw=1.5, linestyle="--"
+                    ),
                     zorder=3,
                 )
 
             ax.set_xlabel("Oil Rate (BOPD)", fontsize=12)
             ax.set_ylabel("Bottomhole Pressure (psi)", fontsize=12)
             ax.set_title(
-                f"{r.well_name} — IPR Comparison", fontsize=15, fontweight="bold", pad=12
+                f"{r.well_name} — IPR Comparison",
+                fontsize=15,
+                fontweight="bold",
+                pad=12,
             )
             ax.legend(fontsize=10, loc="upper right")
             ax.grid(True, alpha=0.3)
@@ -408,25 +463,44 @@ def create_ipr_comparison_pdf(
 
             # --- Separator line ---
             sep = Line2D(
-                [0.08, 0.92], [0.37, 0.37],
-                transform=fig.transFigure, color="gray", linewidth=0.5,
+                [0.08, 0.92],
+                [0.37, 0.37],
+                transform=fig.transFigure,
+                color="gray",
+                linewidth=0.5,
             )
             fig.add_artist(sep)
 
             # --- Text: Current (left column) ---
-            fig.text(0.12, 0.33, "CURRENT", fontsize=13, fontweight="bold", color="#d62728")
+            fig.text(
+                0.12, 0.33, "CURRENT", fontsize=13, fontweight="bold", color="#d62728"
+            )
             cy = 0.30
             for line in [
                 f"Jet Pump:    {current_jp}",
-                f"Oil Rate:    {actual_oil:.0f} BOPD" if actual_oil is not None else "Oil Rate:    N/A",
-                f"PF Rate:     {actual_pf:.0f} BWPD" if actual_pf is not None else "PF Rate:     N/A",
-                f"Suction P:   {current_bhp:.0f} psi" if current_bhp is not None else "Suction P:   N/A",
+                (
+                    f"Oil Rate:    {actual_oil:.0f} BOPD"
+                    if actual_oil is not None
+                    else "Oil Rate:    N/A"
+                ),
+                (
+                    f"PF Rate:     {actual_pf:.0f} BWPD"
+                    if actual_pf is not None
+                    else "PF Rate:     N/A"
+                ),
+                (
+                    f"Suction P:   {current_bhp:.0f} psi"
+                    if current_bhp is not None
+                    else "Suction P:   N/A"
+                ),
             ]:
                 fig.text(0.12, cy, line, fontsize=10, family="monospace")
                 cy -= 0.025
 
             # --- Text: Proposed (right column) ---
-            fig.text(0.55, 0.33, "PROPOSED", fontsize=13, fontweight="bold", color="#2ca02c")
+            fig.text(
+                0.55, 0.33, "PROPOSED", fontsize=13, fontweight="bold", color="#2ca02c"
+            )
             py = 0.30
             proposed_lines = [
                 f"Jet Pump:    {r.recommended_nozzle}{r.recommended_throat}",
@@ -449,18 +523,32 @@ def create_ipr_comparison_pdf(
                 delta_oil = opt_oil - actual_oil
                 fig.text(0.12, 0.16, "CHANGE", fontsize=13, fontweight="bold")
                 dy = 0.13
-                fig.text(0.12, dy, f"Oil:  {delta_oil:+.0f} BOPD", fontsize=10, family="monospace")
+                fig.text(
+                    0.12,
+                    dy,
+                    f"Oil:  {delta_oil:+.0f} BOPD",
+                    fontsize=10,
+                    family="monospace",
+                )
                 if actual_pf is not None:
                     delta_pf = r.allocated_power_fluid - actual_pf
                     dy -= 0.025
-                    fig.text(0.12, dy, f"PF:   {delta_pf:+.0f} BWPD", fontsize=10, family="monospace")
+                    fig.text(
+                        0.12,
+                        dy,
+                        f"PF:   {delta_pf:+.0f} BWPD",
+                        fontsize=10,
+                        family="monospace",
+                    )
 
             # --- Footer with well metadata ---
             fig.text(
-                0.12, 0.04,
+                0.12,
+                0.04,
                 f"Res Pres: {pres:.0f} psi  |  Form WC: {well_config.form_wc:.0%}  |  "
                 f"GOR: {well_config.form_gor:.0f} scf/bbl  |  JP TVD: {well_config.jpump_tvd:.0f} ft",
-                fontsize=8, color="gray",
+                fontsize=8,
+                color="gray",
             )
 
             pdf.savefig(fig)

@@ -6,6 +6,7 @@ deviation profiles, and inclination data when survey data is available.
 
 import matplotlib.pyplot as plt
 import streamlit as st
+
 from woffl.gui.params import SimulationParams
 from woffl.gui.utils import get_well_survey_data
 
@@ -28,21 +29,30 @@ def render_tab(params: SimulationParams, well_profile) -> None:
 
     with col1:
         st.write("**Well Profile Information:**")
-        well_label = selected_well if selected_well != "Custom" else f"Generic {field_model}"
+        well_label = (
+            selected_well if selected_well != "Custom" else f"Generic {field_model}"
+        )
         st.write(f"- Well Name: {well_label}")
         st.write(f"- Number of Survey Points: {len(well_profile.md_ray)}")
-        st.write(f"- MD Range: {well_profile.md_ray[0]:.1f} to {well_profile.md_ray[-1]:.1f} ft")
-        st.write(f"- TVD Range: {well_profile.vd_ray[0]:.1f} to {well_profile.vd_ray[-1]:.1f} ft")
+        st.write(
+            f"- MD Range: {well_profile.md_ray[0]:.1f} to {well_profile.md_ray[-1]:.1f} ft"
+        )
+        st.write(
+            f"- TVD Range: {well_profile.vd_ray[0]:.1f} to {well_profile.vd_ray[-1]:.1f} ft"
+        )
         st.write(f"- Jetpump MD: {well_profile.jetpump_md:.1f} ft")
         st.write(f"- Jetpump TVD: {jpump_tvd:.1f} ft")
 
         max_deviation = max(
-            abs(well_profile.md_ray[i] - well_profile.vd_ray[i]) for i in range(len(well_profile.md_ray))
+            abs(well_profile.md_ray[i] - well_profile.vd_ray[i])
+            for i in range(len(well_profile.md_ray))
         )
         st.write(f"- Max Deviation: {max_deviation:.1f} ft")
 
     with col2:
-        survey_data = get_well_survey_data(selected_well) if selected_well != "Custom" else None
+        survey_data = (
+            get_well_survey_data(selected_well) if selected_well != "Custom" else None
+        )
 
         if survey_data is not None and not survey_data.empty:
             st.success("✅ Using Actual Survey Data")
@@ -52,7 +62,8 @@ def render_tab(params: SimulationParams, well_profile) -> None:
                 st.write(f"- Max Inclination: {max_inc:.2f}°")
             if "azimuth" in survey_data.columns:
                 st.write(
-                    f"- Azimuth Range: {survey_data['azimuth'].min():.1f}°" f" to {survey_data['azimuth'].max():.1f}°"
+                    f"- Azimuth Range: {survey_data['azimuth'].min():.1f}°"
+                    f" to {survey_data['azimuth'].max():.1f}°"
                 )
         else:
             st.info(f"ℹ️ Using Default {field_model} Model")
@@ -63,12 +74,15 @@ def render_tab(params: SimulationParams, well_profile) -> None:
     _render_trajectory_plots(well_profile, jpump_tvd)
 
     # Inclination plot if survey data is available
-    if survey_data is not None and not survey_data.empty and "inclination" in survey_data.columns:
+    if (
+        survey_data is not None
+        and not survey_data.empty
+        and "inclination" in survey_data.columns
+    ):
         _render_inclination_plot(survey_data, well_profile)
 
     # Explanation
-    st.markdown(
-        """
+    st.markdown("""
     **Well Profile Explanation:**
     - **TVD vs MD Plot**: Shows the well's path from surface to total depth
     - **Deviation Plot**: Shows horizontal offset from vertical at each depth
@@ -78,8 +92,7 @@ def render_tab(params: SimulationParams, well_profile) -> None:
     
     A vertical well would show MD = TVD (45° line on first plot).
     Deviation indicates how far the well has moved horizontally from the surface location.
-    """
-    )
+    """)
 
 
 def _render_trajectory_plots(well_profile, jpump_tvd: int) -> None:
@@ -89,7 +102,9 @@ def _render_trajectory_plots(well_profile, jpump_tvd: int) -> None:
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
 
     # Plot 1: TVD vs MD
-    ax1.plot(well_profile.md_ray, well_profile.vd_ray, "b-", linewidth=2, label="Well Path")
+    ax1.plot(
+        well_profile.md_ray, well_profile.vd_ray, "b-", linewidth=2, label="Well Path"
+    )
     ax1.axhline(
         y=jpump_tvd,
         color="r",
@@ -121,7 +136,10 @@ def _render_trajectory_plots(well_profile, jpump_tvd: int) -> None:
     ax1.invert_yaxis()
 
     # Plot 2: Deviation (MD - TVD) vs Depth
-    deviation = [well_profile.md_ray[i] - well_profile.vd_ray[i] for i in range(len(well_profile.md_ray))]
+    deviation = [
+        well_profile.md_ray[i] - well_profile.vd_ray[i]
+        for i in range(len(well_profile.md_ray))
+    ]
     ax2.plot(deviation, well_profile.vd_ray, "g-", linewidth=2)
     ax2.axhline(
         y=jpump_tvd,

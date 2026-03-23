@@ -23,7 +23,6 @@ from woffl.assembly.ipr_analyzer import (
     generate_ipr_curves,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers for generating synthetic Vogel data
 # ---------------------------------------------------------------------------
@@ -100,11 +99,13 @@ class TestCalculateGlobalSSE:
         pres = 1000.0
         qmax = 500.0
         bhp_values = np.array([200.0, 400.0, 1000.0])
-        fluid_values = np.array([
-            vogel_flow(200.0, pres, qmax),
-            vogel_flow(400.0, pres, qmax),
-            50.0,
-        ])
+        fluid_values = np.array(
+            [
+                vogel_flow(200.0, pres, qmax),
+                vogel_flow(400.0, pres, qmax),
+                50.0,
+            ]
+        )
 
         sse = _calculate_global_sse(bhp_values, fluid_values, pres)
         assert sse >= 1e8
@@ -169,7 +170,9 @@ class TestCalculateRSquared:
         anchor_bhp = bhp_values[0]
         anchor_fluid = fluid_values[0]
 
-        r2 = _calculate_r_squared(bhp_values, fluid_values, pres, anchor_bhp, anchor_fluid)
+        r2 = _calculate_r_squared(
+            bhp_values, fluid_values, pres, anchor_bhp, anchor_fluid
+        )
         assert r2 == pytest.approx(1.0, abs=1e-6)
 
     def test_anchor_bhp_gte_pres_returns_zero(self):
@@ -186,7 +189,9 @@ class TestCalculateRSquared:
 
     def test_fewer_than_two_points_returns_zero(self):
         """With fewer than 2 fluid values, R^2 should be 0.0."""
-        r2 = _calculate_r_squared(np.array([500.0]), np.array([300.0]), 1500.0, 500.0, 300.0)
+        r2 = _calculate_r_squared(
+            np.array([500.0]), np.array([300.0]), 1500.0, 500.0, 300.0
+        )
         assert r2 == 0.0
 
     def test_noisy_data_r2_less_than_one(self):
@@ -202,7 +207,9 @@ class TestCalculateRSquared:
         anchor_bhp = bhp_values[2]
         anchor_fluid = noisy_fluid[2]
 
-        r2 = _calculate_r_squared(bhp_values, noisy_fluid, pres, anchor_bhp, anchor_fluid)
+        r2 = _calculate_r_squared(
+            bhp_values, noisy_fluid, pres, anchor_bhp, anchor_fluid
+        )
         assert 0.0 < r2 < 1.0
 
     def test_any_anchor_gives_consistent_qmax(self):
@@ -245,9 +252,9 @@ class TestEstimateReservoirPressure:
         assert "PI" in result.columns
 
         optimal_rp = result["Optimal_RP"].iloc[0]
-        assert abs(optimal_rp - true_pres) < 50, (
-            f"Optimal RP {optimal_rp} too far from true {true_pres}"
-        )
+        assert (
+            abs(optimal_rp - true_pres) < 50
+        ), f"Optimal RP {optimal_rp} too far from true {true_pres}"
 
     def test_pi_column_computed_correctly(self):
         """PI should equal WtTotalFluid / (Optimal_RP - BHP)."""
@@ -285,7 +292,9 @@ class TestEstimateReservoirPressure:
         df = self._make_well_data("WELL-SCH", true_pres, qmax, (400, 1400))
 
         jp_chars = pd.DataFrame({"Well": ["WELL-SCH"], "is_sch": [True]})
-        result = estimate_reservoir_pressure(df, max_pres_schrader=max_schrader, jp_chars=jp_chars)
+        result = estimate_reservoir_pressure(
+            df, max_pres_schrader=max_schrader, jp_chars=jp_chars
+        )
 
         optimal_rp = result["Optimal_RP"].iloc[0]
         assert optimal_rp <= max_schrader
@@ -353,9 +362,17 @@ class TestComputeVogelCoefficients:
         result = compute_vogel_coefficients(df)
 
         expected_cols = [
-            "Well", "ResP", "QMax_recent", "QMax_lowest_bhp",
-            "QMax_median", "qwf", "pwf", "form_wc", "num_tests",
-            "most_recent_date", "R2",
+            "Well",
+            "ResP",
+            "QMax_recent",
+            "QMax_lowest_bhp",
+            "QMax_median",
+            "qwf",
+            "pwf",
+            "form_wc",
+            "num_tests",
+            "most_recent_date",
+            "R2",
         ]
         for col in expected_cols:
             assert col in result.columns, f"Missing column: {col}"
@@ -411,7 +428,9 @@ class TestComputeVogelCoefficients:
 
     def test_r2_for_perfect_data_is_high(self):
         """R^2 should be close to 1.0 for perfect Vogel data."""
-        df = self._make_merged_with_rp("WELL-R2", 1500.0, 800.0, (300, 1200), n_points=6)
+        df = self._make_merged_with_rp(
+            "WELL-R2", 1500.0, 800.0, (300, 1200), n_points=6
+        )
 
         result = compute_vogel_coefficients(df)
         assert result.iloc[0]["R2"] >= 0.99
@@ -602,13 +621,27 @@ class TestExportOptimizationTemplate:
     def test_output_columns_match_template(self):
         """Output should have all the expected columns."""
         coeffs = self._make_vogel_coeffs_df()
-        result = export_optimization_template(coeffs, jp_chars_path="__nonexistent__.csv")
+        result = export_optimization_template(
+            coeffs, jp_chars_path="__nonexistent__.csv"
+        )
 
         expected_cols = [
-            "Well", "res_pres", "form_temp", "JP_TVD", "JP_MD",
-            "out_dia", "thick", "casing_od", "casing_thick",
-            "form_wc", "form_gor", "field_model", "surf_pres",
-            "qwf_bopd", "pwf", "comments",
+            "Well",
+            "res_pres",
+            "form_temp",
+            "JP_TVD",
+            "JP_MD",
+            "out_dia",
+            "thick",
+            "casing_od",
+            "casing_thick",
+            "form_wc",
+            "form_gor",
+            "field_model",
+            "surf_pres",
+            "qwf_bopd",
+            "pwf",
+            "comments",
         ]
         for col in expected_cols:
             assert col in result.columns, f"Missing column: {col}"
@@ -616,31 +649,41 @@ class TestExportOptimizationTemplate:
     def test_one_row_per_well(self):
         """Output should have one row per well in the input."""
         coeffs = self._make_vogel_coeffs_df(n_wells=3)
-        result = export_optimization_template(coeffs, jp_chars_path="__nonexistent__.csv")
+        result = export_optimization_template(
+            coeffs, jp_chars_path="__nonexistent__.csv"
+        )
         assert len(result) == 3
 
     def test_res_pres_from_vogel_coeffs(self):
         """res_pres should come from the ResP column in vogel_coeffs."""
         coeffs = self._make_vogel_coeffs_df(n_wells=1)
-        result = export_optimization_template(coeffs, jp_chars_path="__nonexistent__.csv")
+        result = export_optimization_template(
+            coeffs, jp_chars_path="__nonexistent__.csv"
+        )
         assert result.iloc[0]["res_pres"] == coeffs.iloc[0]["ResP"]
 
     def test_qwf_bopd_from_vogel_coeffs(self):
         """qwf_bopd should come from the qwf column in vogel_coeffs."""
         coeffs = self._make_vogel_coeffs_df(n_wells=1)
-        result = export_optimization_template(coeffs, jp_chars_path="__nonexistent__.csv")
+        result = export_optimization_template(
+            coeffs, jp_chars_path="__nonexistent__.csv"
+        )
         assert result.iloc[0]["qwf_bopd"] == coeffs.iloc[0]["qwf"]
 
     def test_form_wc_from_vogel_coeffs(self):
         """form_wc should come from the vogel_coeffs."""
         coeffs = self._make_vogel_coeffs_df(n_wells=1)
-        result = export_optimization_template(coeffs, jp_chars_path="__nonexistent__.csv")
+        result = export_optimization_template(
+            coeffs, jp_chars_path="__nonexistent__.csv"
+        )
         assert result.iloc[0]["form_wc"] == coeffs.iloc[0]["form_wc"]
 
     def test_default_field_model_schrader(self):
         """Without jp_chars, field_model should default to Schrader."""
         coeffs = self._make_vogel_coeffs_df(n_wells=1)
-        result = export_optimization_template(coeffs, jp_chars_path="__nonexistent__.csv")
+        result = export_optimization_template(
+            coeffs, jp_chars_path="__nonexistent__.csv"
+        )
         assert result.iloc[0]["field_model"] == "Schrader"
 
     def test_with_jp_chars_csv(self):
@@ -682,14 +725,18 @@ class TestExportOptimizationTemplate:
     def test_comments_include_num_tests(self):
         """Comments should include the number of tests."""
         coeffs = self._make_vogel_coeffs_df(n_wells=1)
-        result = export_optimization_template(coeffs, jp_chars_path="__nonexistent__.csv")
+        result = export_optimization_template(
+            coeffs, jp_chars_path="__nonexistent__.csv"
+        )
         num_tests = coeffs.iloc[0]["num_tests"]
         assert str(num_tests) in result.iloc[0]["comments"]
 
     def test_fixed_defaults(self):
         """Verify hardcoded defaults: casing_od, casing_thick, form_gor, surf_pres."""
         coeffs = self._make_vogel_coeffs_df(n_wells=1)
-        result = export_optimization_template(coeffs, jp_chars_path="__nonexistent__.csv")
+        result = export_optimization_template(
+            coeffs, jp_chars_path="__nonexistent__.csv"
+        )
 
         row = result.iloc[0]
         assert row["casing_od"] == 6.875

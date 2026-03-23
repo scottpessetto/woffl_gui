@@ -27,7 +27,7 @@ sys.modules.setdefault("streamlit", _st_mock)
 
 from woffl.flow.inflow import InFlow
 from woffl.geometry.jetpump import JetPump
-from woffl.geometry.pipe import Annulus, Pipe
+from woffl.geometry.pipe import Pipe, PipeInPipe
 from woffl.geometry.wellprofile import WellProfile
 from woffl.gui.utils import (
     _validate_water_type,
@@ -68,6 +68,13 @@ def e41_params():
 @pytest.fixture
 def e41_tube():
     return Pipe(out_dia=4.5, thick=0.5)
+
+
+@pytest.fixture
+def e41_wellbore():
+    tube = Pipe(out_dia=4.5, thick=0.5)
+    case = Pipe(out_dia=6.875, thick=0.5)
+    return PipeInPipe(inn_pipe=tube, out_pipe=case)
 
 
 @pytest.fixture
@@ -306,7 +313,7 @@ class TestCreatePipes:
         tube, case, ann = create_pipes()
         assert isinstance(tube, Pipe)
         assert isinstance(case, Pipe)
-        assert isinstance(ann, Annulus)
+        assert isinstance(ann, PipeInPipe)
 
     def test_default_tubing_dimensions(self):
         tube, case, ann = create_pipes()
@@ -320,8 +327,10 @@ class TestCreatePipes:
 
     def test_custom_dimensions(self):
         tube, case, ann = create_pipes(
-            tubing_od=3.5, tubing_thickness=0.254,
-            casing_od=7.0, casing_thickness=0.408,
+            tubing_od=3.5,
+            tubing_thickness=0.254,
+            casing_od=7.0,
+            casing_thickness=0.408,
         )
         assert tube.out_dia == 3.5
         assert tube.thick == 0.254
@@ -339,8 +348,8 @@ class TestCreatePipes:
 
     def test_annulus_references_inner_and_outer(self):
         tube, case, ann = create_pipes()
-        # Annulus should be defined by the tube (inner) and case (outer)
-        assert isinstance(ann, Annulus)
+        # PipeInPipe should be defined by the tube (inner) and case (outer)
+        assert isinstance(ann, PipeInPipe)
 
 
 # ===================================================================
@@ -370,15 +379,22 @@ class TestCreateInflow:
 # Tests: run_jetpump_solver (uses real E-41 data)
 # ===================================================================
 class TestRunJetpumpSolver:
-    def test_successful_solve(self, e41_params, e41_tube, e41_well_profile,
-                              e41_inflow, e41_res_mix, e41_jetpump):
+    def test_successful_solve(
+        self,
+        e41_params,
+        e41_wellbore,
+        e41_well_profile,
+        e41_inflow,
+        e41_res_mix,
+        e41_jetpump,
+    ):
         result = run_jetpump_solver(
             surf_pres=e41_params["surf_pres"],
             form_temp=e41_params["form_temp"],
             rho_pf=e41_params["rho_pf"],
             ppf_surf=e41_params["ppf_surf"],
             jetpump=e41_jetpump,
-            tube=e41_tube,
+            wellbore=e41_wellbore,
             well_profile=e41_well_profile,
             inflow=e41_inflow,
             res_mix=e41_res_mix,
@@ -386,16 +402,22 @@ class TestRunJetpumpSolver:
         assert result is not None
         assert len(result) == 6
 
-    def test_returns_six_element_tuple(self, e41_params, e41_tube,
-                                       e41_well_profile, e41_inflow,
-                                       e41_res_mix, e41_jetpump):
+    def test_returns_six_element_tuple(
+        self,
+        e41_params,
+        e41_wellbore,
+        e41_well_profile,
+        e41_inflow,
+        e41_res_mix,
+        e41_jetpump,
+    ):
         result = run_jetpump_solver(
             surf_pres=e41_params["surf_pres"],
             form_temp=e41_params["form_temp"],
             rho_pf=e41_params["rho_pf"],
             ppf_surf=e41_params["ppf_surf"],
             jetpump=e41_jetpump,
-            tube=e41_tube,
+            wellbore=e41_wellbore,
             well_profile=e41_well_profile,
             inflow=e41_inflow,
             res_mix=e41_res_mix,
@@ -408,15 +430,22 @@ class TestRunJetpumpSolver:
         assert isinstance(qnz_bwpd, float)
         assert isinstance(mach_te, float)
 
-    def test_positive_rates(self, e41_params, e41_tube, e41_well_profile,
-                            e41_inflow, e41_res_mix, e41_jetpump):
+    def test_positive_rates(
+        self,
+        e41_params,
+        e41_wellbore,
+        e41_well_profile,
+        e41_inflow,
+        e41_res_mix,
+        e41_jetpump,
+    ):
         result = run_jetpump_solver(
             surf_pres=e41_params["surf_pres"],
             form_temp=e41_params["form_temp"],
             rho_pf=e41_params["rho_pf"],
             ppf_surf=e41_params["ppf_surf"],
             jetpump=e41_jetpump,
-            tube=e41_tube,
+            wellbore=e41_wellbore,
             well_profile=e41_well_profile,
             inflow=e41_inflow,
             res_mix=e41_res_mix,
@@ -427,8 +456,9 @@ class TestRunJetpumpSolver:
         assert qnz_bwpd > 0, "Power fluid rate must be positive"
         assert psu > 0, "Suction pressure must be positive"
 
-    def test_solver_failure_returns_none(self, e41_tube, e41_well_profile,
-                                         e41_inflow, e41_res_mix):
+    def test_solver_failure_returns_none(
+        self, e41_wellbore, e41_well_profile, e41_inflow, e41_res_mix
+    ):
         """A very small pump at low power fluid pressure should fail."""
         small_jp = JetPump(nozzle_no="1", area_ratio="A", ken=0.03, kth=0.3, kdi=0.4)
         with patch("woffl.gui.utils.st") as mock_st:
@@ -438,7 +468,7 @@ class TestRunJetpumpSolver:
                 rho_pf=62.4,
                 ppf_surf=100,  # very low power fluid pressure
                 jetpump=small_jp,
-                tube=e41_tube,
+                wellbore=e41_wellbore,
                 well_profile=e41_well_profile,
                 inflow=e41_inflow,
                 res_mix=e41_res_mix,
@@ -452,15 +482,16 @@ class TestRunJetpumpSolver:
 # Tests: run_batch_pump (uses real E-41 data)
 # ===================================================================
 class TestRunBatchPump:
-    def test_basic_batch_run(self, e41_params, e41_tube, e41_well_profile,
-                             e41_inflow, e41_res_mix):
+    def test_basic_batch_run(
+        self, e41_params, e41_wellbore, e41_well_profile, e41_inflow, e41_res_mix
+    ):
         with patch("woffl.gui.utils.st") as mock_st:
             bp = run_batch_pump(
                 surf_pres=e41_params["surf_pres"],
                 form_temp=e41_params["form_temp"],
                 rho_pf=e41_params["rho_pf"],
                 ppf_surf=e41_params["ppf_surf"],
-                tube=e41_tube,
+                wellbore=e41_wellbore,
                 well_profile=e41_well_profile,
                 inflow=e41_inflow,
                 res_mix=e41_res_mix,
@@ -472,16 +503,16 @@ class TestRunBatchPump:
         assert hasattr(bp, "df")
         assert not bp.df.empty
 
-    def test_batch_pump_has_results_columns(self, e41_params, e41_tube,
-                                            e41_well_profile, e41_inflow,
-                                            e41_res_mix):
+    def test_batch_pump_has_results_columns(
+        self, e41_params, e41_wellbore, e41_well_profile, e41_inflow, e41_res_mix
+    ):
         with patch("woffl.gui.utils.st") as mock_st:
             bp = run_batch_pump(
                 surf_pres=e41_params["surf_pres"],
                 form_temp=e41_params["form_temp"],
                 rho_pf=e41_params["rho_pf"],
                 ppf_surf=e41_params["ppf_surf"],
-                tube=e41_tube,
+                wellbore=e41_wellbore,
                 well_profile=e41_well_profile,
                 inflow=e41_inflow,
                 res_mix=e41_res_mix,
@@ -493,9 +524,9 @@ class TestRunBatchPump:
         assert "nozzle" in bp.df.columns
         assert "throat" in bp.df.columns
 
-    def test_batch_pump_with_single_nozzle(self, e41_params, e41_tube,
-                                           e41_well_profile, e41_inflow,
-                                           e41_res_mix):
+    def test_batch_pump_with_single_nozzle(
+        self, e41_params, e41_wellbore, e41_well_profile, e41_inflow, e41_res_mix
+    ):
         """A single nozzle may not produce enough semi-finalists for curve
         fitting, so process_results() can fail and run_batch_pump may return
         None or a BatchPump without curve-fit coefficients.  Either outcome
@@ -506,7 +537,7 @@ class TestRunBatchPump:
                 form_temp=e41_params["form_temp"],
                 rho_pf=e41_params["rho_pf"],
                 ppf_surf=e41_params["ppf_surf"],
-                tube=e41_tube,
+                wellbore=e41_wellbore,
                 well_profile=e41_well_profile,
                 inflow=e41_inflow,
                 res_mix=e41_res_mix,
@@ -518,15 +549,16 @@ class TestRunBatchPump:
         if bp is not None:
             assert hasattr(bp, "df")
 
-    def test_default_wellname(self, e41_params, e41_tube, e41_well_profile,
-                              e41_inflow, e41_res_mix):
+    def test_default_wellname(
+        self, e41_params, e41_wellbore, e41_well_profile, e41_inflow, e41_res_mix
+    ):
         with patch("woffl.gui.utils.st") as mock_st:
             bp = run_batch_pump(
                 surf_pres=e41_params["surf_pres"],
                 form_temp=e41_params["form_temp"],
                 rho_pf=e41_params["rho_pf"],
                 ppf_surf=e41_params["ppf_surf"],
-                tube=e41_tube,
+                wellbore=e41_wellbore,
                 well_profile=e41_well_profile,
                 inflow=e41_inflow,
                 res_mix=e41_res_mix,
@@ -535,9 +567,9 @@ class TestRunBatchPump:
             )
         assert bp.wellname == "Test Well"
 
-    def test_batch_pump_process_results(self, e41_params, e41_tube,
-                                        e41_well_profile, e41_inflow,
-                                        e41_res_mix):
+    def test_batch_pump_process_results(
+        self, e41_params, e41_wellbore, e41_well_profile, e41_inflow, e41_res_mix
+    ):
         """Batch pump with enough nozzles should produce curve-fit coefficients."""
         with patch("woffl.gui.utils.st") as mock_st:
             bp = run_batch_pump(
@@ -545,7 +577,7 @@ class TestRunBatchPump:
                 form_temp=e41_params["form_temp"],
                 rho_pf=e41_params["rho_pf"],
                 ppf_surf=e41_params["ppf_surf"],
-                tube=e41_tube,
+                wellbore=e41_wellbore,
                 well_profile=e41_well_profile,
                 inflow=e41_inflow,
                 res_mix=e41_res_mix,
@@ -563,8 +595,9 @@ class TestRunBatchPump:
 # ===================================================================
 class TestRecommendJetpump:
     @pytest.fixture
-    def batch_pump_with_results(self, e41_params, e41_tube, e41_well_profile,
-                                e41_inflow, e41_res_mix):
+    def batch_pump_with_results(
+        self, e41_params, e41_wellbore, e41_well_profile, e41_inflow, e41_res_mix
+    ):
         """Create a BatchPump with processed results for recommendation tests."""
         with patch("woffl.gui.utils.st") as mock_st:
             bp = run_batch_pump(
@@ -572,7 +605,7 @@ class TestRecommendJetpump:
                 form_temp=e41_params["form_temp"],
                 rho_pf=e41_params["rho_pf"],
                 ppf_surf=e41_params["ppf_surf"],
-                tube=e41_tube,
+                wellbore=e41_wellbore,
                 well_profile=e41_well_profile,
                 inflow=e41_inflow,
                 res_mix=e41_res_mix,
@@ -594,8 +627,14 @@ class TestRecommendJetpump:
         if not hasattr(bp, "coeff_totl"):
             pytest.skip("Curve fitting did not succeed for this data set")
         rec = recommend_jetpump(bp, marginal_watercut=0.95, water_type="lift")
-        required_keys = {"nozzle", "throat", "qoil_std", "water_rate",
-                         "marginal_ratio", "recommendation_type"}
+        required_keys = {
+            "nozzle",
+            "throat",
+            "qoil_std",
+            "water_rate",
+            "marginal_ratio",
+            "recommendation_type",
+        }
         assert required_keys.issubset(rec.keys())
 
     def test_recommend_oil_rate_positive(self, batch_pump_with_results):
@@ -629,7 +668,9 @@ class TestRecommendJetpump:
     def test_recommend_no_coefficients_raises(self):
         """If curve fitting was not performed, recommend should raise."""
         mock_bp = MagicMock()
-        mock_bp.df = pd.DataFrame({"qoil_std": [100], "nozzle": ["12"], "throat": ["A"]})
+        mock_bp.df = pd.DataFrame(
+            {"qoil_std": [100], "nozzle": ["12"], "throat": ["A"]}
+        )
         del mock_bp.coeff_totl
         del mock_bp.coeff_lift
         with pytest.raises(ValueError, match="curve fitting"):
@@ -679,8 +720,16 @@ class TestLoadWellCharacteristics:
         df = load_well_characteristics()
         if df.empty:
             pytest.skip("jp_chars.csv not found or empty")
-        expected_cols = {"Well", "is_sch", "out_dia", "thick",
-                         "res_pres", "form_temp", "JP_TVD", "JP_MD"}
+        expected_cols = {
+            "Well",
+            "is_sch",
+            "out_dia",
+            "thick",
+            "res_pres",
+            "form_temp",
+            "JP_TVD",
+            "JP_MD",
+        }
         assert expected_cols.issubset(set(df.columns))
 
     def test_has_known_wells(self):
@@ -760,8 +809,16 @@ class TestGetWellData:
         data = get_well_data("MPB-28")
         if data is None:
             pytest.skip("jp_chars.csv not loaded")
-        required_keys = {"Well", "is_sch", "out_dia", "thick",
-                         "res_pres", "form_temp", "JP_TVD", "JP_MD"}
+        required_keys = {
+            "Well",
+            "is_sch",
+            "out_dia",
+            "thick",
+            "res_pres",
+            "form_temp",
+            "JP_TVD",
+            "JP_MD",
+        }
         assert required_keys.issubset(data.keys())
 
     def test_mpb28_values(self):
@@ -810,9 +867,9 @@ class TestDataFlowIntegration:
         assert isinstance(rm, ResMix)
 
     def test_pipes_to_annulus(self):
-        """Pipe objects should combine into an Annulus."""
+        """Pipe objects should combine into a PipeInPipe."""
         tube, case, ann = create_pipes()
-        assert isinstance(ann, Annulus)
+        assert isinstance(ann, PipeInPipe)
 
     def test_full_solver_flow(self):
         """Full flow from component creation to solver execution."""
@@ -820,7 +877,7 @@ class TestDataFlowIntegration:
         oil, water, gas = create_pvt_components("Schrader")
         rm = ResMix(wc=0.894, fgor=600, oil=oil, wat=water, gas=gas)
         jp = create_jetpump("13", "A", ken=0.03, kth=0.3, kdi=0.4)
-        tube, case, ann = create_pipes()
+        tube, case, wellbore = create_pipes()
         wp = create_well_profile(field_model="schrader")
         ipr = create_inflow(qwf=246, pwf=1049, pres=1400)
 
@@ -830,7 +887,7 @@ class TestDataFlowIntegration:
             rho_pf=62.4,
             ppf_surf=3168,
             jetpump=jp,
-            tube=tube,
+            wellbore=wellbore,
             well_profile=wp,
             inflow=ipr,
             res_mix=rm,

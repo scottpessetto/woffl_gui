@@ -12,36 +12,51 @@ from woffl.assembly.network_optimizer import (
     validate_well_config,
 )
 
-
 # ── WellConfig validation ──────────────────────────────────────────────────
 
 
 class TestWellConfig:
     def test_valid_schrader(self):
-        wc = WellConfig(well_name="TestWell", res_pres=1500, form_temp=70, jpump_tvd=4000)
+        wc = WellConfig(
+            well_name="TestWell", res_pres=1500, form_temp=70, jpump_tvd=4000
+        )
         assert wc.field_model == "Schrader"
 
     def test_valid_kuparuk(self):
         wc = WellConfig(
-            well_name="TestWell", res_pres=2500, form_temp=170,
-            jpump_tvd=6500, field_model="Kuparuk",
+            well_name="TestWell",
+            res_pres=2500,
+            form_temp=170,
+            jpump_tvd=6500,
+            field_model="Kuparuk",
         )
         assert wc.field_model == "Kuparuk"
 
     def test_jpump_md_defaults_to_tvd(self):
-        wc = WellConfig(well_name="TestWell", res_pres=1500, form_temp=70, jpump_tvd=4000)
+        wc = WellConfig(
+            well_name="TestWell", res_pres=1500, form_temp=70, jpump_tvd=4000
+        )
         assert wc.jpump_md == 4000
 
     def test_jpump_md_explicit(self):
         wc = WellConfig(
-            well_name="TestWell", res_pres=1500, form_temp=70,
-            jpump_tvd=4000, jpump_md=4500,
+            well_name="TestWell",
+            res_pres=1500,
+            form_temp=70,
+            jpump_tvd=4000,
+            jpump_md=4500,
         )
         assert wc.jpump_md == 4500
 
     def test_invalid_field_model(self):
         with pytest.raises(ValueError, match="field_model"):
-            WellConfig(well_name="X", res_pres=1500, form_temp=70, jpump_tvd=4000, field_model="BadModel")
+            WellConfig(
+                well_name="X",
+                res_pres=1500,
+                form_temp=70,
+                jpump_tvd=4000,
+                field_model="BadModel",
+            )
 
     def test_res_pres_too_low(self):
         with pytest.raises(ValueError, match="res_pres"):
@@ -69,16 +84,24 @@ class TestWellConfig:
 
     def test_form_wc_negative(self):
         with pytest.raises(ValueError, match="form_wc"):
-            WellConfig(well_name="X", res_pres=1500, form_temp=70, jpump_tvd=4000, form_wc=-0.1)
+            WellConfig(
+                well_name="X", res_pres=1500, form_temp=70, jpump_tvd=4000, form_wc=-0.1
+            )
 
     def test_form_wc_above_one(self):
         with pytest.raises(ValueError, match="form_wc"):
-            WellConfig(well_name="X", res_pres=1500, form_temp=70, jpump_tvd=4000, form_wc=1.1)
+            WellConfig(
+                well_name="X", res_pres=1500, form_temp=70, jpump_tvd=4000, form_wc=1.1
+            )
 
     def test_boundary_values_valid(self):
         """Boundary values should be accepted."""
         wc = WellConfig(
-            well_name="X", res_pres=400, form_temp=32, jpump_tvd=2500, form_wc=0.0,
+            well_name="X",
+            res_pres=400,
+            form_temp=32,
+            jpump_tvd=2500,
+            form_wc=0.0,
         )
         assert wc.res_pres == 400
 
@@ -155,12 +178,18 @@ class TestOptimizationResult:
         assert r.predicted_total_water == 600
 
     def test_total_watercut(self):
-        r = self._make_result(predicted_oil_rate=200, predicted_formation_water=100, predicted_lift_water=500)
+        r = self._make_result(
+            predicted_oil_rate=200,
+            predicted_formation_water=100,
+            predicted_lift_water=500,
+        )
         expected = 600 / (200 + 600)  # 0.75
         assert r.total_watercut == pytest.approx(expected)
 
     def test_total_watercut_zero_rates(self):
-        r = self._make_result(predicted_oil_rate=0, predicted_formation_water=0, predicted_lift_water=0)
+        r = self._make_result(
+            predicted_oil_rate=0, predicted_formation_water=0, predicted_lift_water=0
+        )
         assert r.total_watercut == 0.0
 
 
@@ -195,10 +224,30 @@ class TestNetworkOptimizer:
         opt = self._make_optimizer()
         results = [
             OptimizationResult(
-                "WellA", "12", "B", 500, 200, 100, 500, 1100, 0.4, True, 1.05,
+                "WellA",
+                "12",
+                "B",
+                500,
+                200,
+                100,
+                500,
+                1100,
+                0.4,
+                True,
+                1.05,
             ),
             OptimizationResult(
-                "WellB", "11", "A", 400, 150, 80, 400, 1050, 0.3, False, 0.9,
+                "WellB",
+                "11",
+                "A",
+                400,
+                150,
+                80,
+                400,
+                1050,
+                0.3,
+                False,
+                0.9,
             ),
         ]
         metrics = opt.calculate_field_metrics(results)
@@ -215,7 +264,17 @@ class TestNetworkOptimizer:
         opt = self._make_optimizer()
         results = [
             OptimizationResult(
-                "WellA", "12", "B", 500, 200, 100, 500, 1100, 0.4, True, 1.05,
+                "WellA",
+                "12",
+                "B",
+                500,
+                200,
+                100,
+                500,
+                1100,
+                0.4,
+                True,
+                1.05,
             ),
         ]
         df = opt.to_dataframe(results)
@@ -236,7 +295,11 @@ class TestValidateWellConfig:
 
     def test_deep_well_small_tubing_warning(self):
         wc = WellConfig(
-            well_name="X", res_pres=1500, form_temp=70, jpump_tvd=6500, tubing_od=2.5,
+            well_name="X",
+            res_pres=1500,
+            form_temp=70,
+            jpump_tvd=6500,
+            tubing_od=2.5,
         )
         is_valid, errors = validate_well_config(wc)
         assert not is_valid
@@ -244,8 +307,12 @@ class TestValidateWellConfig:
 
     def test_high_wc_low_gor_warning(self):
         wc = WellConfig(
-            well_name="X", res_pres=1500, form_temp=70, jpump_tvd=4000,
-            form_wc=0.96, form_gor=50,
+            well_name="X",
+            res_pres=1500,
+            form_temp=70,
+            jpump_tvd=4000,
+            form_wc=0.96,
+            form_gor=50,
         )
         is_valid, errors = validate_well_config(wc)
         assert not is_valid
@@ -263,5 +330,13 @@ class TestCreateWellTemplateCSV:
     def test_has_header_columns(self):
         csv = create_well_template_csv()
         header = csv.split("\n")[0]
-        for col in ["Well", "res_pres", "form_temp", "JP_TVD", "field_model", "qwf_bopd", "pwf"]:
+        for col in [
+            "Well",
+            "res_pres",
+            "form_temp",
+            "JP_TVD",
+            "field_model",
+            "qwf_bopd",
+            "pwf",
+        ]:
             assert col in header

@@ -5,8 +5,15 @@ Creates simulation objects from parameters and delegates to tab renderers.
 """
 
 import streamlit as st
+
 from woffl.gui.params import SimulationParams
-from woffl.gui.tabs import batch_run, jp_history_tab, jetpump_solver, power_fluid_range, well_profile
+from woffl.gui.tabs import (
+    batch_run,
+    jetpump_solver,
+    jp_history_tab,
+    power_fluid_range,
+    well_profile,
+)
 from woffl.gui.utils import (
     create_inflow,
     create_jetpump,
@@ -29,31 +36,49 @@ def run_single_well_page(params: SimulationParams) -> None:
     """
     with st.spinner("Running simulation..."):
         # Create simulation objects from params
-        jetpump = create_jetpump(params.nozzle_no, params.area_ratio, params.ken, params.kth, params.kdi)
-        tube, case, ann = create_pipes(
-            params.tubing_od, params.tubing_thickness, params.casing_od, params.casing_thickness
+        jetpump = create_jetpump(
+            params.nozzle_no, params.area_ratio, params.ken, params.kth, params.kdi
+        )
+        tube, case, wellbore = create_pipes(
+            params.tubing_od,
+            params.tubing_thickness,
+            params.casing_od,
+            params.casing_thickness,
         )
         inflow = create_inflow(params.qwf, params.pwf, params.pres)
-        res_mix = create_reservoir_mix(params.form_wc, params.form_gor, params.form_temp, params.field_model)
+        res_mix = create_reservoir_mix(
+            params.form_wc, params.form_gor, params.form_temp, params.field_model
+        )
 
         # Use survey data for well profile if a specific well is selected
         if params.selected_well != "Custom":
-            wp = create_well_profile_from_survey(params.selected_well, params.jpump_tvd, params.field_model)
+            wp = create_well_profile_from_survey(
+                params.selected_well, params.jpump_tvd, params.field_model
+            )
             survey_data = get_well_survey_data(params.selected_well)
             if survey_data is not None and not survey_data.empty:
                 st.info(f"✅ Using actual survey data for {params.selected_well}")
             else:
-                st.info(f"⚠️ Using default model for {params.selected_well} (survey data not available)")
+                st.info(
+                    f"⚠️ Using default model for {params.selected_well} (survey data not available)"
+                )
         else:
             wp = create_well_profile(params.field_model, params.jpump_tvd)
 
         # Build tab list — JP History tab only when data is available
-        tab_labels = ["Jetpump Solution", "Batch Run", "Power Fluid Range Analysis", "Well Profile"]
+        tab_labels = [
+            "Jetpump Solution",
+            "Batch Run",
+            "Power Fluid Range Analysis",
+            "Well Profile",
+        ]
 
         show_jp_tab = False
         jp_hist = st.session_state.get("jp_history_df")
         if jp_hist is not None and params.selected_well != "Custom":
-            well_jp = jp_hist[jp_hist["Well Name"] == params.selected_well].dropna(subset=["Date Set"])
+            well_jp = jp_hist[jp_hist["Well Name"] == params.selected_well].dropna(
+                subset=["Date Set"]
+            )
             show_jp_tab = not well_jp.empty
 
         if show_jp_tab:
@@ -62,13 +87,13 @@ def run_single_well_page(params: SimulationParams) -> None:
         tabs = st.tabs(tab_labels)
 
         with tabs[0]:
-            jetpump_solver.render_tab(params, jetpump, tube, wp, inflow, res_mix)
+            jetpump_solver.render_tab(params, jetpump, wellbore, wp, inflow, res_mix)
 
         with tabs[1]:
-            batch_run.render_tab(params, tube, wp, inflow, res_mix)
+            batch_run.render_tab(params, wellbore, wp, inflow, res_mix)
 
         with tabs[2]:
-            power_fluid_range.render_tab(params, tube, wp, inflow, res_mix)
+            power_fluid_range.render_tab(params, wellbore, wp, inflow, res_mix)
 
         with tabs[3]:
             well_profile.render_tab(params, wp)
@@ -80,10 +105,11 @@ def run_single_well_page(params: SimulationParams) -> None:
 
 def show_welcome_message() -> None:
     """Display the welcome/instructions message when no simulation is running."""
-    st.info("Adjust the parameters in the sidebar and click 'Run Simulation' to generate results.")
+    st.info(
+        "Adjust the parameters in the sidebar and click 'Run Simulation' to generate results."
+    )
 
-    st.markdown(
-        """
+    st.markdown("""
     ## About WOFFL Jetpump Simulator
     
     This application provides a graphical user interface for the WOFFL package's jetpump functionality. 
@@ -103,5 +129,4 @@ def show_welcome_message() -> None:
     - **Well Parameters**: Surface pressure, jetpump TVD, power fluid properties
     - **Inflow Parameters**: Flow rate, pressures
     - **Analysis Options**: Suction pressure range for multi-suction analysis
-    """
-    )
+    """)

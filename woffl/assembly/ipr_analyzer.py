@@ -12,10 +12,13 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+
 from woffl.flow.inflow import InFlow
 
 
-def _calculate_global_sse(bhp_values: np.ndarray, fluid_values: np.ndarray, pres: float) -> float:
+def _calculate_global_sse(
+    bhp_values: np.ndarray, fluid_values: np.ndarray, pres: float
+) -> float:
     """Calculate sum of squared errors for a candidate reservoir pressure.
 
     For each test point used as the anchor, computes the Vogel curve and
@@ -75,7 +78,11 @@ def _calculate_global_sse(bhp_values: np.ndarray, fluid_values: np.ndarray, pres
 
 
 def _calculate_r_squared(
-    bhp_values: np.ndarray, fluid_values: np.ndarray, pres: float, anchor_bhp: float, anchor_fluid: float
+    bhp_values: np.ndarray,
+    fluid_values: np.ndarray,
+    pres: float,
+    anchor_bhp: float,
+    anchor_fluid: float,
 ) -> float:
     """Calculate R² goodness-of-fit for a Vogel curve.
 
@@ -253,35 +260,52 @@ def compute_vogel_coefficients(
             recent_fluid = well_data["WtTotalFluid"].iloc[0]
             recent_bhp = well_data["BHP"].iloc[0]
             vogel_recent = InFlow(recent_fluid, recent_bhp, optimal_res_p)
-            qmax_recent = vogel_recent.vogel_qmax(recent_fluid, recent_bhp, optimal_res_p)
+            qmax_recent = vogel_recent.vogel_qmax(
+                recent_fluid, recent_bhp, optimal_res_p
+            )
 
             # Lowest BHP test
             well_data_by_bhp = well_data.sort_values(by="BHP")
             lowest_fluid = well_data_by_bhp["WtTotalFluid"].iloc[0]
             lowest_bhp = well_data_by_bhp["BHP"].iloc[0]
             vogel_lowest = InFlow(lowest_fluid, lowest_bhp, optimal_res_p)
-            qmax_lowest = vogel_lowest.vogel_qmax(lowest_fluid, lowest_bhp, optimal_res_p)
+            qmax_lowest = vogel_lowest.vogel_qmax(
+                lowest_fluid, lowest_bhp, optimal_res_p
+            )
 
             # Median BHP test
             median_bhp_val = well_data["BHP"].median()
-            closest_row = well_data.iloc[(well_data["BHP"] - median_bhp_val).abs().argsort()[:1]]
+            closest_row = well_data.iloc[
+                (well_data["BHP"] - median_bhp_val).abs().argsort()[:1]
+            ]
             median_fluid = closest_row["WtTotalFluid"].values[0]
             median_bhp = closest_row["BHP"].values[0]
             vogel_median = InFlow(median_fluid, median_bhp, optimal_res_p)
-            qmax_median = vogel_median.vogel_qmax(median_fluid, median_bhp, optimal_res_p)
+            qmax_median = vogel_median.vogel_qmax(
+                median_fluid, median_bhp, optimal_res_p
+            )
 
             # Calculate watercut from most recent test
             wc = 0.5  # default
-            if "WtWaterVol" in well_data.columns and "WtTotalFluid" in well_data.columns:
+            if (
+                "WtWaterVol" in well_data.columns
+                and "WtTotalFluid" in well_data.columns
+            ):
                 total = well_data["WtTotalFluid"].iloc[0]
-                water = well_data["WtWaterVol"].iloc[0] if "WtWaterVol" in well_data.columns else 0
+                water = (
+                    well_data["WtWaterVol"].iloc[0]
+                    if "WtWaterVol" in well_data.columns
+                    else 0
+                )
                 if total > 0:
                     wc = water / total
 
             # Calculate R² fit quality using the median anchor
             bhp_vals = well_data["BHP"].values.astype(float)
             fluid_vals = well_data["WtTotalFluid"].values.astype(float)
-            r_squared = _calculate_r_squared(bhp_vals, fluid_vals, optimal_res_p, median_bhp, median_fluid)
+            r_squared = _calculate_r_squared(
+                bhp_vals, fluid_vals, optimal_res_p, median_bhp, median_fluid
+            )
 
             coeffs_list.append(
                 {
@@ -293,7 +317,12 @@ def compute_vogel_coefficients(
                     "qwf": recent_fluid,
                     "pwf": recent_bhp,
                     "form_wc": round(wc, 3),
-                    "fgor": well_data["fgor"].iloc[0] if "fgor" in well_data.columns and pd.notna(well_data["fgor"].iloc[0]) else 250,
+                    "fgor": (
+                        well_data["fgor"].iloc[0]
+                        if "fgor" in well_data.columns
+                        and pd.notna(well_data["fgor"].iloc[0])
+                        else 250
+                    ),
                     "num_tests": len(well_data),
                     "most_recent_date": well_data["date"].iloc[0],
                     "R2": round(r_squared, 3),

@@ -16,7 +16,9 @@ DEFAULT_WAREHOUSE_ID = "698745db7da46ba3"
 
 
 def _is_deployed() -> bool:
-    return bool(os.getenv("DATABRICKS_CLIENT_ID") and os.getenv("DATABRICKS_CLIENT_SECRET"))
+    return bool(
+        os.getenv("DATABRICKS_CLIENT_ID") and os.getenv("DATABRICKS_CLIENT_SECRET")
+    )
 
 
 def _query_via_connector(query: str) -> pd.DataFrame:
@@ -68,7 +70,9 @@ def _query_via_connector(query: str) -> pd.DataFrame:
 
         host = os.getenv("bricks_host")
         token = os.getenv("bricks_token")
-        http_path = os.getenv("bricks_http") or f"/sql/1.0/warehouses/{DEFAULT_WAREHOUSE_ID}"
+        http_path = (
+            os.getenv("bricks_http") or f"/sql/1.0/warehouses/{DEFAULT_WAREHOUSE_ID}"
+        )
 
         if not all([host, token]):
             raise RuntimeError(
@@ -213,12 +217,16 @@ def query_bhp_for_well_tests(
     for well, (bhp_tag, headerP_tag, whp_tag) in well_tags.items():
         well_df = raw[raw["tag"].isin([bhp_tag, headerP_tag, whp_tag])]
         if not well_df.empty:
-            well_df_pivoted = well_df.pivot(index="date", columns="tag", values="max_average_value")
+            well_df_pivoted = well_df.pivot(
+                index="date", columns="tag", values="max_average_value"
+            )
             column_mapping = {bhp_tag: "BHP", headerP_tag: "HeaderP", whp_tag: "WHP"}
             well_df_pivoted = well_df_pivoted.rename(columns=column_mapping)
             for col in ["BHP", "HeaderP", "WHP"]:
                 if col in well_df_pivoted.columns:
-                    well_df_pivoted[col] = pd.to_numeric(well_df_pivoted[col], errors="coerce")
+                    well_df_pivoted[col] = pd.to_numeric(
+                        well_df_pivoted[col], errors="coerce"
+                    )
             well_dfs[well] = well_df_pivoted
 
     return well_dfs

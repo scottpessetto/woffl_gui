@@ -35,18 +35,25 @@ def test_initialization():
 
 def test_initialization_invalid_lengths():
     """Test initialization failure for mismatched lengths"""
-    with pytest.raises(ValueError, match="Lists for Measured Depth and Vertical Depth need to be the same length"):
+    with pytest.raises(
+        ValueError,
+        match="Lists for Measured Depth and Vertical Depth need to be the same length",
+    ):
         WellProfile([0, 100], [0, 80, 150], 100)
 
 
 def test_initialization_invalid_order():
     """Test initialization failure for measured depth being too short"""
-    with pytest.raises(ValueError, match="Measured Depth needs to extend farther than Vertical Depth"):
+    with pytest.raises(
+        ValueError, match="Measured Depth needs to extend farther than Vertical Depth"
+    ):
         WellProfile([0, 80, 150], [0, 100, 200], 100)
 
 
 def test_init_invalid_jetpump() -> None:
-    with pytest.raises(ValueError, match="Jet pump not inside well profile measured depth"):
+    with pytest.raises(
+        ValueError, match="Jet pump not inside well profile measured depth"
+    ):
         WellProfile(md_list, vd_list, jetpump_md=1200)
 
 

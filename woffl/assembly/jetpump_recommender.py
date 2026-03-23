@@ -7,7 +7,7 @@ This module analyzes batch run results to identify the most economical jet pump 
 import numpy as np
 import pandas as pd
 
-import woffl.assembly.curvefit as cf
+from woffl.assembly.batchpump import exp_model, rev_exp_deriv
 
 
 def recommend_jetpump(batch_pump, marginal_watercut, water_type="lift"):
@@ -89,8 +89,8 @@ def recommend_jetpump(batch_pump, marginal_watercut, water_type="lift"):
     oil_water_ratio = (1 - marginal_watercut) / marginal_watercut
 
     a, b, c = coeff
-    optimal_water_rate = cf.rev_exp_deriv(oil_water_ratio, b, c)
-    optimal_oil_rate = cf.exp_model(optimal_water_rate, a, b, c)
+    optimal_water_rate = rev_exp_deriv(oil_water_ratio, b, c)
+    optimal_oil_rate = exp_model(optimal_water_rate, a, b, c)
 
     # Find the closest semi-finalist pump just below the threshold
     # First, filter to only those below threshold
@@ -104,7 +104,10 @@ def recommend_jetpump(batch_pump, marginal_watercut, water_type="lift"):
             pump_water = water_rates[idx]
             pump_oil = semi_df.iloc[idx]["qoil_std"]
             # Calculate Euclidean distance in the oil-water space
-            distance = np.sqrt((pump_water - optimal_water_rate) ** 2 + (pump_oil - optimal_oil_rate) ** 2)
+            distance = np.sqrt(
+                (pump_water - optimal_water_rate) ** 2
+                + (pump_oil - optimal_oil_rate) ** 2
+            )
             distances.append(distance)
 
         # Find the closest pump
@@ -140,7 +143,9 @@ def _validate_water_type(water_type):
     """
     # Validate the 'water' argument
     if water_type not in {"lift", "total", "totl"}:
-        raise ValueError(f"Invalid value for 'water_type': {water_type}. Expected 'lift', 'total', or 'totl'.")
+        raise ValueError(
+            f"Invalid value for 'water_type': {water_type}. Expected 'lift', 'total', or 'totl'."
+        )
 
     # Standardize "totl" to "total"
     if water_type == "totl":

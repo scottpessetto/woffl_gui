@@ -174,7 +174,11 @@ class TestMergeTestsWithBhp:
         """Create sample BHP data dict."""
         dates = pd.to_datetime(["2024-01-15", "2024-02-20", "2024-03-01"])
         bhp_df = pd.DataFrame(
-            {"BHP": [800, 850, 900], "HeaderP": [200, 210, 220], "WHP": [150, 160, 170]},
+            {
+                "BHP": [800, 850, 900],
+                "HeaderP": [200, 210, 220],
+                "WHP": [150, 160, 170],
+            },
             index=dates,
         )
         bhp_df.index.name = "date"

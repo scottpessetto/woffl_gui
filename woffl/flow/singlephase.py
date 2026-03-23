@@ -185,11 +185,14 @@ def ffactor_darcy(reynolds: float, rel_ruff: float) -> float:
 
 
 # dp_friction, friction_dp, fric_dp, or dp_fric
-def diff_press_friction(ff: float, rho: float, vel: float, dhyd: float, length: float) -> float:
+def diff_press_friction(
+    ff: float, rho: float, vel: float, dhyd: float, length: float
+) -> float:
     """Frictional Differential Pressure in Piping
 
     Calculate the frictional pressure loss in a piping system.
-    Positive length is with flow direction, negative length is against flow.
+    Negative is calculation is against flow, positive is with the flow.
+    Matters if doing bottom down or top up calculations.
 
     Args:
         ff (float): Darcy friction factor of the pipe, unitless

@@ -9,14 +9,14 @@ import os
 import numpy as np
 import pandas as pd
 import streamlit as st
-from woffl.assembly.batchrun import BatchPump, validate_water
-from woffl.assembly.curvefit import exp_model, rev_exp_deriv
-from woffl.assembly.sysops import jetpump_solver
+
+from woffl.assembly.batchpump import BatchPump, exp_model, rev_exp_deriv, validate_water
+from woffl.assembly.solopump import jetpump_solver
 from woffl.flow import jetgraphs as jg
 from woffl.flow import jetplot as jplt
 from woffl.flow.inflow import InFlow
 from woffl.geometry.jetpump import JetPump
-from woffl.geometry.pipe import Annulus, Pipe
+from woffl.geometry.pipe import Pipe, PipeInPipe
 from woffl.geometry.wellprofile import WellProfile
 from woffl.pvt.blackoil import BlackOil
 from woffl.pvt.formgas import FormGas
@@ -33,7 +33,9 @@ def is_valid_number(val) -> bool:
 
 def create_jetpump(nozzle_no, area_ratio, ken, kth, kdi):
     """Create a JetPump object with the given parameters."""
-    return JetPump(nozzle_no=nozzle_no, area_ratio=area_ratio, ken=ken, kth=kth, kdi=kdi)
+    return JetPump(
+        nozzle_no=nozzle_no, area_ratio=area_ratio, ken=ken, kth=kth, kdi=kdi
+    )
 
 
 def create_pvt_components(field_model=None):
@@ -85,7 +87,9 @@ def create_well_profile(field_model=None, jpump_tvd=None):
     if field_model is None:
         field_model = "schrader"
 
-    field_model = field_model.lower()  # Convert to lowercase for case-insensitive comparison
+    field_model = (
+        field_model.lower()
+    )  # Convert to lowercase for case-insensitive comparison
 
     # First create a well profile with the default jetpump MD
     if field_model == "schrader":
@@ -103,7 +107,11 @@ def create_well_profile(field_model=None, jpump_tvd=None):
             jpump_md = well_profile.md_interp(jpump_tvd)
 
             # Create a new well profile with the same MD/VD arrays but with the new jetpump MD
-            well_profile = WellProfile(md_list=well_profile.md_ray, vd_list=well_profile.vd_ray, jetpump_md=jpump_md)
+            well_profile = WellProfile(
+                md_list=well_profile.md_ray,
+                vd_list=well_profile.vd_ray,
+                jetpump_md=jpump_md,
+            )
         except ValueError as e:
             # If the TVD is outside the well profile's range, log a warning and use the default
             print(f"Warning: {e}. Using default jetpump MD.")
@@ -111,12 +119,14 @@ def create_well_profile(field_model=None, jpump_tvd=None):
     return well_profile
 
 
-def create_pipes(tubing_od=4.5, tubing_thickness=0.5, casing_od=6.875, casing_thickness=0.5):
-    """Create tubing, casing, and annulus objects."""
+def create_pipes(
+    tubing_od=4.5, tubing_thickness=0.5, casing_od=6.875, casing_thickness=0.5
+):
+    """Create tubing, casing, and wellbore (PipeInPipe) objects."""
     tube = Pipe(out_dia=tubing_od, thick=tubing_thickness)
     case = Pipe(out_dia=casing_od, thick=casing_thickness)
-    ann = Annulus(inn_pipe=tube, out_pipe=case)
-    return tube, case, ann
+    wellbore = PipeInPipe(inn_pipe=tube, out_pipe=case)
+    return tube, case, wellbore
 
 
 def create_inflow(qwf, pwf, pres):
@@ -124,14 +134,38 @@ def create_inflow(qwf, pwf, pres):
     return InFlow(qwf=qwf, pwf=pwf, pres=pres)
 
 
-def generate_choked_figures(form_temp, rho_pf, ppf_surf, jetpump, tube, well_profile, inflow, res_mix):
+def generate_choked_figures(
+    form_temp, rho_pf, ppf_surf, jetpump, tube, well_profile, inflow, res_mix
+):
     """Generate choked figures using the jetgraphs module."""
-    return jg.choked_figures(form_temp, rho_pf, ppf_surf, jetpump, tube, well_profile, inflow, res_mix)
+    return jg.choked_figures(
+        form_temp, rho_pf, ppf_surf, jetpump, tube, well_profile, inflow, res_mix
+    )
 
 
-def generate_discharge_check(surf_pres, form_temp, rho_pf, ppf_surf, jetpump, tube, well_profile, inflow, res_mix):
+def generate_discharge_check(
+    surf_pres,
+    form_temp,
+    rho_pf,
+    ppf_surf,
+    jetpump,
+    wellbore,
+    well_profile,
+    inflow,
+    res_mix,
+):
     """Generate discharge check using the jetgraphs module."""
-    return jg.discharge_check(surf_pres, form_temp, rho_pf, ppf_surf, jetpump, tube, well_profile, inflow, res_mix)
+    return jg.discharge_check(
+        surf_pres,
+        form_temp,
+        rho_pf,
+        ppf_surf,
+        jetpump,
+        wellbore,
+        well_profile,
+        inflow,
+        res_mix,
+    )
 
 
 def generate_multi_throat_entry_books(psu_ray, form_temp, ken, ate, inflow, res_mix):
@@ -144,27 +178,42 @@ def generate_multi_suction_graphs(qoil_list, book_list):
     return jplt.multi_suction_graphs(qoil_list, book_list)
 
 
-def run_jetpump_solver(surf_pres, form_temp, rho_pf, ppf_surf, jetpump, tube, well_profile, inflow, res_mix):
+def run_jetpump_solver(
+    surf_pres,
+    form_temp,
+    rho_pf,
+    ppf_surf,
+    jetpump,
+    wellbore,
+    well_profile,
+    inflow,
+    res_mix,
+    field_model=None,
+):
     """Run the jetpump solver and return the results.
 
-    This function uses the jetpump_solver from sysops to find a solution for the jetpump system
+    This function uses the jetpump_solver from solopump to find a solution for the jetpump system
     that factors in the wellhead pressure and reservoir conditions.
 
     Returns:
         tuple or None: (psu, sonic_status, qoil_std, fwat_bwpd, qnz_bwpd, mach_te) if successful,
                        None if the solver fails
     """
+    # Create power fluid properties from field model water
+    _, prop_pf, _ = create_pvt_components(field_model)
+    prop_pf = prop_pf.condition(0, 60)
+
     try:
         return jetpump_solver(
             pwh=surf_pres,
             tsu=form_temp,
-            rho_pf=rho_pf,
             ppf_surf=ppf_surf,
             jpump=jetpump,
-            wellbore=tube,  # Note: jetpump_solver expects wellbore, not tube
+            wellbore=wellbore,
             wellprof=well_profile,
             ipr_su=inflow,
             prop_su=res_mix,
+            prop_pf=prop_pf,
         )
     except ValueError as e:
         # Handle the case where the well cannot lift at max suction pressure
@@ -266,7 +315,10 @@ def recommend_jetpump(batch_pump, marginal_watercut, water_type="lift"):
             pump_water = water_rates[idx]
             pump_oil = semi_df.iloc[idx]["qoil_std"]
             # Calculate Euclidean distance in the oil-water space
-            distance = np.sqrt((pump_water - optimal_water_rate) ** 2 + (pump_oil - optimal_oil_rate) ** 2)
+            distance = np.sqrt(
+                (pump_water - optimal_water_rate) ** 2
+                + (pump_oil - optimal_oil_rate) ** 2
+            )
             distances.append(distance)
 
         # Find the closest pump
@@ -291,7 +343,7 @@ def recommend_jetpump(batch_pump, marginal_watercut, water_type="lift"):
 def _validate_water_type(water_type):
     """Validate Type of Water String
 
-    Thin wrapper around the canonical validate_water() from batchrun.py.
+    Thin wrapper around the canonical validate_water() from batchpump.py.
     Kept for backward compatibility with existing GUI code.
 
     Args:
@@ -350,32 +402,38 @@ def run_batch_pump(
     form_temp,
     rho_pf,
     ppf_surf,
-    tube,
+    wellbore,
     well_profile,
     inflow,
     res_mix,
     nozzle_options,
     throat_options,
     wellname="Test Well",
+    field_model=None,
 ):
     """Run a batch pump simulation with multiple nozzle and throat combinations.
 
     Args:
         surf_pres: Surface pressure (psi)
         form_temp: Formation temperature (°F)
-        rho_pf: Power fluid density (lbm/ft³)
+        rho_pf: Power fluid density (lbm/ft³) — used for display only
         ppf_surf: Power fluid surface pressure (psi)
-        tube: Tubing pipe object
+        wellbore: PipeInPipe wellbore object
         well_profile: Well profile object
         inflow: Inflow performance object
         res_mix: Reservoir mixture object
         nozzle_options: List of nozzle sizes to test
         throat_options: List of throat ratios to test
         wellname: Name of the well for display purposes
+        field_model: Field model for power fluid properties
 
     Returns:
         BatchPump: A BatchPump object with results, or None if processing fails
     """
+    # Create power fluid properties from field model water
+    _, prop_pf, _ = create_pvt_components(field_model)
+    prop_pf = prop_pf.condition(0, 60)
+
     # Create a list of jet pumps with all combinations of nozzles and throats
     jp_list = BatchPump.jetpump_list(nozzle_options, throat_options)
 
@@ -383,12 +441,12 @@ def run_batch_pump(
     batch_pump = BatchPump(
         pwh=surf_pres,
         tsu=form_temp,
-        rho_pf=rho_pf,
         ppf_surf=ppf_surf,
-        wellbore=tube,
+        wellbore=wellbore,
         wellprof=well_profile,
         ipr_su=inflow,
         prop_su=res_mix,
+        prop_pf=prop_pf,
         wellname=wellname,
     )
 
@@ -399,11 +457,15 @@ def run_batch_pump(
     try:
         batch_pump.process_results()
         return batch_pump
-    except (ValueError, RuntimeError) as e:
+    except (ValueError, RuntimeError, TypeError) as e:
         error_msg = str(e)
         if "Optimal parameters not found" in error_msg:
-            st.error("Could not fit curve to the data. Try selecting more nozzle sizes and throat ratios.")
-            st.info("The batch run results are still available in the data table, but the curve fitting failed.")
+            st.error(
+                "Could not fit curve to the data. Try selecting more nozzle sizes and throat ratios."
+            )
+            st.info(
+                "The batch run results are still available in the data table, but the curve fitting failed."
+            )
             # Return the batch_pump object without curve fitting
             return batch_pump
         else:
@@ -418,36 +480,44 @@ def run_power_fluid_range_batch(
     power_fluid_min,
     power_fluid_max,
     power_fluid_step,
-    tube,
+    wellbore,
     well_profile,
     inflow,
     res_mix,
     nozzle_options,
     throat_options,
     wellname="Test Well",
+    field_model=None,
 ):
     """Run a comprehensive batch pump simulation across a range of power fluid pressures.
 
     Args:
         surf_pres: Surface pressure (psi)
         form_temp: Formation temperature (°F)
-        rho_pf: Power fluid density (lbm/ft³)
+        rho_pf: Power fluid density (lbm/ft³) — used for display only
         power_fluid_min: Minimum power fluid pressure (psi)
         power_fluid_max: Maximum power fluid pressure (psi)
         power_fluid_step: Step size for power fluid pressure (psi)
-        tube: Tubing pipe object
+        wellbore: PipeInPipe wellbore object
         well_profile: Well profile object
         inflow: Inflow performance object
         res_mix: Reservoir mixture object
         nozzle_options: List of nozzle sizes to test
         throat_options: List of throat ratios to test
         wellname: Name of the well for display purposes
+        field_model: Field model for power fluid properties
 
     Returns:
         pandas.DataFrame: Comprehensive results across all power fluid pressures
     """
+    # Create power fluid properties from field model water
+    _, prop_pf, _ = create_pvt_components(field_model)
+    prop_pf = prop_pf.condition(0, 60)
+
     # Create pressure range
-    pressure_range = np.arange(power_fluid_min, power_fluid_max + power_fluid_step, power_fluid_step)
+    pressure_range = np.arange(
+        power_fluid_min, power_fluid_max + power_fluid_step, power_fluid_step
+    )
 
     # Create a list of jet pumps with all combinations of nozzles and throats
     jp_list = BatchPump.jetpump_list(nozzle_options, throat_options)
@@ -464,12 +534,12 @@ def run_power_fluid_range_batch(
         batch_pump = BatchPump(
             pwh=surf_pres,
             tsu=form_temp,
-            rho_pf=rho_pf,
             ppf_surf=pressure,
-            wellbore=tube,
+            wellbore=wellbore,
             wellprof=well_profile,
             ipr_su=inflow,
             prop_su=res_mix,
+            prop_pf=prop_pf,
             wellname=wellname,
         )
 
@@ -513,7 +583,9 @@ def load_well_characteristics():
         well_chars = pd.read_csv(csv_path)
         return well_chars
     except FileNotFoundError:
-        st.error("Could not find jp_chars.csv file. Please ensure the file exists in the jp_data directory.")
+        st.error(
+            "Could not find jp_chars.csv file. Please ensure the file exists in the jp_data directory."
+        )
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Error loading well characteristics: {str(e)}")
@@ -612,11 +684,15 @@ def create_well_profile_from_survey(well_name, jpump_tvd=None, field_model=None)
                 jpump_md = float(md_list[-1]) if md_list else 5000.0
 
             # Create WellProfile with survey data
-            well_profile = WellProfile(md_list=md_list, vd_list=tvd_list, jetpump_md=jpump_md)
+            well_profile = WellProfile(
+                md_list=md_list, vd_list=tvd_list, jetpump_md=jpump_md
+            )
             return well_profile
 
         except Exception as e:
-            st.warning(f"Error creating well profile from survey data: {str(e)}. Using default model.")
+            st.warning(
+                f"Error creating well profile from survey data: {str(e)}. Using default model."
+            )
 
     # Fallback to default model
     return create_well_profile(field_model=field_model, jpump_tvd=jpump_tvd)

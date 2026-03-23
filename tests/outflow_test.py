@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 import woffl.flow.outflow as of
-from woffl.geometry.pipe import Pipe
+from woffl.geometry.pipe import Pipe, PipeInPipe
 from woffl.geometry.wellprofile import WellProfile
 from woffl.pvt import BlackOil, FormGas, FormWater, ResMix
 
@@ -23,11 +23,15 @@ qoil_std = 100  # stbopd
 test_prop = ResMix(form_wc, form_gor, mpu_oil, mpu_wat, mpu_gas)
 wellprof = WellProfile(md_list, vd_list, 6000)
 tubing = Pipe(out_dia=4.5, thick=0.5)
+casing = Pipe(out_dia=6.875, thick=0.5)
+wellbore = PipeInPipe(inn_pipe=tubing, out_pipe=casing)
 
 ptop = 350  # psig
 ttop = 100  # deg f
 
-md_seg, prs_ray, slh_ray = of.top_down_press(ptop, ttop, qoil_std, test_prop, tubing, wellprof)
+md_seg, prs_ray, slh_ray = of.production_top_down_press(
+    ptop, ttop, qoil_std, test_prop, wellbore, wellprof
+)
 
 
 def test_bottom_pressure() -> None:
@@ -48,11 +52,15 @@ def test_array_lengths() -> None:
 
 
 def test_holdup_range() -> None:
-    assert np.all(slh_ray >= 0) and np.all(slh_ray <= 1), "Liquid holdup must be between 0 and 1"
+    assert np.all(slh_ray >= 0) and np.all(
+        slh_ray <= 1
+    ), "Liquid holdup must be between 0 and 1"
 
 
 if __name__ == "__main__":
-    slh_ray_plot = np.append(slh_ray, np.nan)  # add a nan to make same length for graphing
+    slh_ray_plot = np.append(
+        slh_ray, np.nan
+    )  # add a nan to make same length for graphing
     fig, ax1 = plt.subplots()
     ax2 = ax1.twinx()
     ax1.plot(md_seg, prs_ray, linestyle="--", color="b", label="Pressure")

@@ -35,7 +35,11 @@ if __name__ == "__main__":
 
     engine = create_engine(
         "oracle+oracledb://:@",
-        connect_args={"user": os.getenv("pdb_user"), "password": os.getenv("pdb_pw"), "dsn": "pdbfprd.world"},
+        connect_args={
+            "user": os.getenv("pdb_user"),
+            "password": os.getenv("pdb_pw"),
+            "dsn": "pdbfprd.world",
+        },
     )
     pdb_conn = engine.connect()
 
@@ -61,7 +65,9 @@ if __name__ == "__main__":
 
         for index, well_name, jp_md in wells_to_pull:
             print(f"Querying database for {well_name}...")
-            survey = pd.read_sql_query(sql=text(sql_text), con=pdb_conn, params={"param": well_name})
+            survey = pd.read_sql_query(
+                sql=text(sql_text), con=pdb_conn, params={"param": well_name}
+            )
 
             survey = survey.dropna()
             survey = survey.drop_duplicates()
@@ -70,7 +76,9 @@ if __name__ == "__main__":
             survey.to_csv(f"well_surveys/{well_name} Deviation Survey.csv")
             print(f"  Saved survey for {well_name}")
 
-            jp_tvd = tvd_interp(survey["meas_depth"].tolist(), survey["tvd_depth"].tolist(), jp_md)
+            jp_tvd = tvd_interp(
+                survey["meas_depth"].tolist(), survey["tvd_depth"].tolist(), jp_md
+            )
             well_chars.at[index, "JP_TVD"] = jp_tvd
             print(f"  Calculated JP_TVD: {jp_tvd:.2f} ft")
 

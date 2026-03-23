@@ -74,13 +74,15 @@ def throat_entry_zero_tde(
         qoil_std (float): Oil Rate, STBOPD
         te_book (JetBook): Book of values for inside the throat entry
     """
-    qoil_std = ipr_su.oil_flow(psu, method="vogel")  # oil standard flow, bopd
+    qoil_std = ipr_su.oil_flow(psu, method="pidx")  # oil standard flow, bopd
 
     prop_su = prop_su.condition(psu, tsu)
     qtot = sum(prop_su.insitu_volm_flow(qoil_std))
     vte = sp.velocity(qtot, ate)
 
-    te_book = jp.JetBook(psu, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte))
+    te_book = jp.JetBook(
+        psu, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte)
+    )
 
     pdec = 25  # pressure decrease
     pmin = 50
@@ -92,7 +94,9 @@ def throat_entry_zero_tde(
         qtot = sum(prop_su.insitu_volm_flow(qoil_std))
         vte = sp.velocity(qtot, ate)
 
-        te_book.append(pte, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte))
+        te_book.append(
+            pte, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte)
+        )
 
         # re-evaluate criteria for this...
         # ensures crossing zero tde while below mach limit
@@ -128,13 +132,15 @@ def throat_entry_mach_one(
         qoil_std (float): Oil Produced at psu with set IPR, bopd
         te_book (JetBook): Book of values for inside the throat entry
     """
-    qoil_std = ipr_su.oil_flow(psu, method="vogel")  # oil standard flow, bopd
+    qoil_std = ipr_su.oil_flow(psu, method="pidx")  # oil standard flow, bopd
 
     prop_su = prop_su.condition(psu, tsu)
     qtot = sum(prop_su.insitu_volm_flow(qoil_std))
     vte = sp.velocity(qtot, ate)
 
-    te_book = jp.JetBook(psu, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte))
+    te_book = jp.JetBook(
+        psu, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte)
+    )
 
     pdec = 25  # pressure decrease
     pmin = 50  # minimum pressure
@@ -147,10 +153,14 @@ def throat_entry_mach_one(
         qtot = sum(prop_su.insitu_volm_flow(qoil_std))
         vte = sp.velocity(qtot, ate)
 
-        te_book.append(pte, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte))
+        te_book.append(
+            pte, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte)
+        )
 
     # the length clause was added because some throats were too small and the jp was mach'in out on the first run
-    if te_book.mach_ray[-1] >= 1 and len(te_book.mach_ray) > 1:  # return nearest value instead of interpolating
+    if (
+        te_book.mach_ray[-1] >= 1 and len(te_book.mach_ray) > 1
+    ):  # return nearest value instead of interpolating
         tde_fin = te_book.tde_ray[-2]
     else:
         tde_fin = te_book.tde_ray[-1]
@@ -192,8 +202,12 @@ def psu_minimize(
     n = 0  # loop counter
     while abs(psu_list[-2] - psu_list[-1]) > psu_diff:
         # prevent suction pressure from dropping below 50
-        psu_nxt = max(psu_secant(psu_list[-2], psu_list[-1], tee_list[-2], tee_list[-1]), 50)
-        tee_nxt, qoil_std, te_book = throat_entry_mach_one(psu_nxt, tsu, ken, ate, ipr_su, prop_su)
+        psu_nxt = max(
+            psu_secant(psu_list[-2], psu_list[-1], tee_list[-2], tee_list[-1]), 50
+        )
+        tee_nxt, qoil_std, te_book = throat_entry_mach_one(
+            psu_nxt, tsu, ken, ate, ipr_su, prop_su
+        )
         psu_list.append(psu_nxt)
         tee_list.append(tee_nxt)
         n = n + 1
@@ -300,7 +314,9 @@ def throat_inlet_momentum(
     return mom_nz, mom_te
 
 
-def throat_outlet_momentum(kth: float, vtm: float, ath: float, rho_tm: float) -> tuple[float, float]:
+def throat_outlet_momentum(
+    kth: float, vtm: float, ath: float, rho_tm: float
+) -> tuple[float, float]:
     """Throat Outlet Momentum
 
     Calculate the outlet momentum of the throat in lbm/(s2*ft). The units
@@ -317,7 +333,9 @@ def throat_outlet_momentum(kth: float, vtm: float, ath: float, rho_tm: float) ->
         mom_fr (float): Throat Friction Momemum, lbm*ft/s2
     """
     mom_tm = sp.momentum(rho_tm, vtm, ath)
-    mom_fr = 1 / 2 * kth * mom_tm  # this is accurate, it is lumped into the mom to psi equation
+    mom_fr = (
+        1 / 2 * kth * mom_tm
+    )  # this is accurate, it is lumped into the mom to psi equation
     return mom_tm, mom_fr
 
 
@@ -401,7 +419,13 @@ def throat_pressure_ratio(cunn_n: float, cunn_v: float) -> tuple[float, float]:
 
 
 def throat_momentum_balance(
-    pte: float, ptm: float, mom_nz: float, mom_te: float, mom_tm: float, mom_fr: float, ath: float
+    pte: float,
+    ptm: float,
+    mom_nz: float,
+    mom_te: float,
+    mom_tm: float,
+    mom_fr: float,
+    ath: float,
 ) -> float:
     """Throat Momentum Balance
 
@@ -511,12 +535,11 @@ def throat_discharge_old(
     rho_te: float,
     prop_tm: ResMix,
 ):
-    """Throat Discharge Pressure
+    """Throat Discharge Pressure Old
 
-    Solves the throat mixture equation of the jet pump. Calculates throat differntial pressure.
-    Use the throat entry pressure and differential pressure to calculate throat mix pressure.
-    Account for the discharge pressure is greater than the inlet pressure. Loops through the
-    calculated discharge pressure until a converged answer occurs.
+    This is the old way of trying to get the throat mixture to converge.
+    As you can see, the secant method was not used and no guardrails were
+    in place to keep mixture pressure above 15 psig.
 
     Args:
         pte (float): Pressure of Throat Entry, psig
@@ -615,7 +638,13 @@ def diffuser_ke(kdi: float, vtm: float, vdi: float) -> float:
 
 
 def diffuser_discharge(
-    ptm: float, ttm: float, kdi: float, ath: float, adi: float, qoil_std: float, prop_tm: ResMix
+    ptm: float,
+    ttm: float,
+    kdi: float,
+    ath: float,
+    adi: float,
+    qoil_std: float,
+    prop_tm: ResMix,
 ) -> tuple[float, float]:
     """Diffuser Discharge Pressure
 
@@ -640,7 +669,9 @@ def diffuser_discharge(
     vdi = sp.velocity(qtot, adi)
     vtm = sp.velocity(qtot, ath)
 
-    di_book = jp.JetBook(ptm, vdi, prop_tm.rho_mix(), prop_tm.cmix(), diffuser_ke(kdi, vtm, vdi))
+    di_book = jp.JetBook(
+        ptm, vdi, prop_tm.rho_mix(), prop_tm.cmix(), diffuser_ke(kdi, vtm, vdi)
+    )
 
     pinc = 100  # pressure increase
 
@@ -651,13 +682,15 @@ def diffuser_discharge(
         qtot = sum(prop_tm.insitu_volm_flow(qoil_std))
         vdi = sp.velocity(qtot, adi)
 
-        di_book.append(pdi, vdi, prop_tm.rho_mix(), prop_tm.cmix(), diffuser_ke(kdi, vtm, vdi))
+        di_book.append(
+            pdi, vdi, prop_tm.rho_mix(), prop_tm.cmix(), diffuser_ke(kdi, vtm, vdi)
+        )
 
     pdi = di_book.dedi_zero()
     return vtm, pdi  # type: ignore
 
 
-def jetpump_overall(
+def jetpump_base_calcs(
     psu: float,
     tsu: float,
     pni: float,
@@ -675,7 +708,11 @@ def jetpump_overall(
     """Jet Pump Overall Equations
 
     Solve the jetpump equations, calculating out the expected discharge conditions.
-    Function dete_zero() will raise a ValueError if the selected psu is too low.
+    Function dete_zero() will raise a ValueError if the selected psu is too low. This method is
+    being depreciated because it assumes a fixed powerfluid pressure directly at the jet pump. In
+    practice this is difficult. Part of the code is being moved into "solopump" file under the
+    discharge residual code so a power fluid rate iteration can be added. Additionally, discharge
+    residual will allow for defining if the jetpump is forward or reverse circulating.
 
     Args:
         psu (float): Suction Pressure, psig
@@ -703,12 +740,14 @@ def jetpump_overall(
         prop_tm (ResMix): Properties of Discharge Fluid
     """
     ate = ath - anz
-    qoil_std, te_book = throat_entry_zero_tde(psu=psu, tsu=tsu, ken=ken, ate=ate, ipr_su=ipr_su, prop_su=prop_su)
+    qoil_std, te_book = throat_entry_zero_tde(
+        psu=psu, tsu=tsu, ken=ken, ate=ate, ipr_su=ipr_su, prop_su=prop_su
+    )
     pte, vte, rho_te, mach_te = te_book.dete_zero()
 
     vnz = nozzle_velocity(pni, pte, knz, rho_ni)
-
     qnz_ft3s, qnz_bwpd = nozzle_rate(vnz, anz)
+
     wc_tm, fwat_bwpd = throat_wc(qoil_std, prop_su.wc, qnz_bwpd)
 
     prop_tm = ResMix(wc_tm, prop_su.fgor, prop_su.oil, prop_su.wat, prop_su.gas)

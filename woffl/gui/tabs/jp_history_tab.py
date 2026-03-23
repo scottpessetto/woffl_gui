@@ -41,11 +41,15 @@ def render_tab(params: SimulationParams) -> None:
     test_df = _fetch_extended_well_tests(well_name, earliest_date)
 
     if test_df is not None and not test_df.empty:
-        bhp_zero = st.checkbox("BHP axis starts at 0", value=True, key="jp_hist_bhp_zero")
+        bhp_zero = st.checkbox(
+            "BHP axis starts at 0", value=True, key="jp_hist_bhp_zero"
+        )
         fig = _create_history_chart(well_name, test_df, well_jp, bhp_from_zero=bhp_zero)
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.warning("Could not fetch well test data from Databricks for this date range.")
+        st.warning(
+            "Could not fetch well test data from Databricks for this date range."
+        )
 
     # Always show JP changes table
     _show_jp_table(well_jp)
@@ -84,8 +88,13 @@ def _cached_extended_tests(db_name: str, start_date: str, end_date: str):
     if df.empty:
         return df
 
-    rename = {"well_name": "well", "wt_date": "WtDate", "bhp": "BHP",
-              "oil_rate": "WtOilVol", "fwat_rate": "WtWaterVol"}
+    rename = {
+        "well_name": "well",
+        "wt_date": "WtDate",
+        "bhp": "BHP",
+        "oil_rate": "WtOilVol",
+        "fwat_rate": "WtWaterVol",
+    }
     df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
 
     if "well" in df.columns:
@@ -131,7 +140,9 @@ def _format_jp(nozzle, throat) -> str:
 
 
 def _create_history_chart(
-    well_name: str, test_df: pd.DataFrame, jp_changes: pd.DataFrame,
+    well_name: str,
+    test_df: pd.DataFrame,
+    jp_changes: pd.DataFrame,
     bhp_from_zero: bool = False,
 ) -> go.Figure:
     """Create interactive Plotly chart with stacked production, BHP, and JP change lines."""
@@ -142,40 +153,49 @@ def _create_history_chart(
 
     # Oil rate (bottom of stack)
     if "WtOilVol" in test_df.columns:
-        fig.add_trace(go.Scatter(
-            x=test_df["WtDate"],
-            y=test_df["WtOilVol"],
-            name="Oil (BOPD)",
-            mode="lines",
-            line=dict(color="#2E7D32", width=1.5),
-            fillcolor="rgba(46,125,50,0.4)",
-            stackgroup="production",
-        ), secondary_y=False)
+        fig.add_trace(
+            go.Scatter(
+                x=test_df["WtDate"],
+                y=test_df["WtOilVol"],
+                name="Oil (BOPD)",
+                mode="lines",
+                line=dict(color="#2E7D32", width=1.5),
+                fillcolor="rgba(46,125,50,0.4)",
+                stackgroup="production",
+            ),
+            secondary_y=False,
+        )
 
     # Formation water (stacked on top of oil)
     if "WtWaterVol" in test_df.columns:
-        fig.add_trace(go.Scatter(
-            x=test_df["WtDate"],
-            y=test_df["WtWaterVol"],
-            name="Form Water (BWPD)",
-            mode="lines",
-            line=dict(color="#1565C0", width=1.5),
-            fillcolor="rgba(21,101,192,0.3)",
-            stackgroup="production",
-        ), secondary_y=False)
+        fig.add_trace(
+            go.Scatter(
+                x=test_df["WtDate"],
+                y=test_df["WtWaterVol"],
+                name="Form Water (BWPD)",
+                mode="lines",
+                line=dict(color="#1565C0", width=1.5),
+                fillcolor="rgba(21,101,192,0.3)",
+                stackgroup="production",
+            ),
+            secondary_y=False,
+        )
 
     # BHP on secondary y-axis
     if "BHP" in test_df.columns:
         bhp_data = test_df.dropna(subset=["BHP"])
         if not bhp_data.empty:
-            fig.add_trace(go.Scatter(
-                x=bhp_data["WtDate"],
-                y=bhp_data["BHP"],
-                name="BHP (psi)",
-                mode="lines+markers",
-                line=dict(color="#E65100", width=2),
-                marker=dict(size=4),
-            ), secondary_y=True)
+            fig.add_trace(
+                go.Scatter(
+                    x=bhp_data["WtDate"],
+                    y=bhp_data["BHP"],
+                    name="BHP (psi)",
+                    mode="lines+markers",
+                    line=dict(color="#E65100", width=2),
+                    marker=dict(size=4),
+                ),
+                secondary_y=True,
+            )
 
     # Vertical lines for each JP change with JPCO labels
     for idx in range(len(jp_changes)):
@@ -199,8 +219,10 @@ def _create_history_chart(
 
         fig.add_shape(
             type="line",
-            x0=date_str, x1=date_str,
-            y0=0, y1=1,
+            x0=date_str,
+            x1=date_str,
+            y0=0,
+            y1=1,
             yref="paper",
             line=dict(dash="dash", color="rgba(211,47,47,0.7)", width=1.5),
         )
@@ -223,7 +245,9 @@ def _create_history_chart(
     )
     fig.update_yaxes(title_text="Rate (BPD)", secondary_y=False)
     if bhp_from_zero:
-        fig.update_yaxes(title_text="BHP (psi)", rangemode="tozero", showgrid=False, secondary_y=True)
+        fig.update_yaxes(
+            title_text="BHP (psi)", rangemode="tozero", showgrid=False, secondary_y=True
+        )
     else:
         fig.update_yaxes(title_text="BHP (psi)", showgrid=False, secondary_y=True)
 
