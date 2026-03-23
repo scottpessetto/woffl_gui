@@ -69,18 +69,26 @@ def create_ipr_plotly(
 
     # Test data scatter points
     well_test_data = merged_data[merged_data["well"] == well_name].copy()
-    if not well_test_data.empty and "BHP" in well_test_data.columns and "WtTotalFluid" in well_test_data.columns:
+    if (
+        not well_test_data.empty
+        and "BHP" in well_test_data.columns
+        and "WtTotalFluid" in well_test_data.columns
+    ):
         well_test_data = well_test_data.dropna(subset=["BHP", "WtTotalFluid"])
         if not well_test_data.empty:
             # Calculate days since test for color
             if "WtDate" in well_test_data.columns:
                 well_test_data["date"] = pd.to_datetime(well_test_data["WtDate"])
                 current_date = pd.to_datetime("today")
-                well_test_data["days_since"] = (current_date - well_test_data["date"]).dt.days
+                well_test_data["days_since"] = (
+                    current_date - well_test_data["date"]
+                ).dt.days
                 hover_text = []
                 for _, row in well_test_data.iterrows():
                     oil_str = ""
-                    if "WtOilVol" in well_test_data.columns and pd.notna(row.get("WtOilVol")):
+                    if "WtOilVol" in well_test_data.columns and pd.notna(
+                        row.get("WtOilVol")
+                    ):
                         oil_str = f"Oil: {row['WtOilVol']:.0f} BOPD<br>"
                     hover_text.append(
                         f"Fluid: {row['WtTotalFluid']:.0f} BPD<br>"
@@ -114,7 +122,9 @@ def create_ipr_plotly(
                         y=well_test_data["BHP"],
                         mode="markers",
                         name="Test Data",
-                        marker=dict(size=10, color="red", line=dict(width=1, color="black")),
+                        marker=dict(
+                            size=10, color="red", line=dict(width=1, color="black")
+                        ),
                         hovertemplate="Fluid: %{x:.0f} BPD<br>BHP: %{y:.0f} psi<extra></extra>",
                     )
                 )
@@ -170,7 +180,13 @@ def create_ipr_grid_plotly(
 
     if num_wells == 0:
         fig = go.Figure()
-        fig.add_annotation(text="No IPR data available", x=0.5, y=0.5, showarrow=False, font=dict(size=20))
+        fig.add_annotation(
+            text="No IPR data available",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            font=dict(size=20),
+        )
         return fig
 
     # Scale columns based on well count to keep grid manageable
@@ -233,7 +249,11 @@ def create_ipr_grid_plotly(
 
         # Test data scatter
         well_test_data = df[df["well"] == well].copy()
-        if not well_test_data.empty and "BHP" in well_test_data.columns and "WtTotalFluid" in well_test_data.columns:
+        if (
+            not well_test_data.empty
+            and "BHP" in well_test_data.columns
+            and "WtTotalFluid" in well_test_data.columns
+        ):
             well_test_data = well_test_data.dropna(subset=["BHP", "WtTotalFluid"])
             if not well_test_data.empty:
                 fig.add_trace(
@@ -246,7 +266,11 @@ def create_ipr_grid_plotly(
                         marker=dict(
                             size=7,
                             color=well_test_data.get("days_since", "red"),
-                            colorscale="Viridis" if "days_since" in well_test_data.columns else None,
+                            colorscale=(
+                                "Viridis"
+                                if "days_since" in well_test_data.columns
+                                else None
+                            ),
                             line=dict(width=0.5, color="black"),
                         ),
                         hovertemplate=f"{well}<br>Fluid: %{{x:.0f}} BPD<br>BHP: %{{y:.0f}} psi<extra></extra>",
@@ -280,8 +304,16 @@ def create_ipr_grid_plotly(
 
     # Set axis ranges
     for i in range(1, num_wells + 1):
-        fig.update_xaxes(range=[0, None], row=(i - 1) // num_columns + 1, col=(i - 1) % num_columns + 1)
-        fig.update_yaxes(range=[0, None], row=(i - 1) // num_columns + 1, col=(i - 1) % num_columns + 1)
+        fig.update_xaxes(
+            range=[0, None],
+            row=(i - 1) // num_columns + 1,
+            col=(i - 1) % num_columns + 1,
+        )
+        fig.update_yaxes(
+            range=[0, None],
+            row=(i - 1) // num_columns + 1,
+            col=(i - 1) % num_columns + 1,
+        )
 
     return fig
 
@@ -370,7 +402,12 @@ def create_ipr_pdf(
                 transform=ax.transAxes,
                 fontsize=13,
                 verticalalignment="top",
-                bbox=dict(boxstyle="round,pad=0.4", facecolor="lightyellow", alpha=0.9, edgecolor="gray"),
+                bbox=dict(
+                    boxstyle="round,pad=0.4",
+                    facecolor="lightyellow",
+                    alpha=0.9,
+                    edgecolor="gray",
+                ),
             )
 
             ax.set_xlabel("Total Fluid Rate (BPD)", fontsize=14)
@@ -537,7 +574,9 @@ def create_rp_comparison_chart(vogel_coeffs: pd.DataFrame) -> plt.Figure:
     res_pressures = vogel_coeffs["ResP"].values
 
     colors = plt.cm.RdYlGn_r(np.linspace(0.2, 0.8, len(wells)))
-    bars = ax.bar(range(len(wells)), res_pressures, color=colors, edgecolor="black", linewidth=0.5)
+    bars = ax.bar(
+        range(len(wells)), res_pressures, color=colors, edgecolor="black", linewidth=0.5
+    )
 
     ax.set_xticks(range(len(wells)))
     ax.set_xticklabels(wells, rotation=45, ha="right", fontsize=9)
@@ -574,12 +613,16 @@ def create_qmax_comparison_chart(vogel_coeffs: pd.DataFrame) -> plt.Figure:
     qmax_values = vogel_coeffs["QMax_recent"].values
 
     colors = plt.cm.Blues(np.linspace(0.4, 0.9, len(wells)))
-    bars = ax.bar(range(len(wells)), qmax_values, color=colors, edgecolor="black", linewidth=0.5)
+    bars = ax.bar(
+        range(len(wells)), qmax_values, color=colors, edgecolor="black", linewidth=0.5
+    )
 
     ax.set_xticks(range(len(wells)))
     ax.set_xticklabels(wells, rotation=45, ha="right", fontsize=9)
     ax.set_ylabel("Qmax (BPD)", fontsize=11)
-    ax.set_title("Vogel Qmax by Well (Most Recent Test)", fontsize=13, fontweight="bold")
+    ax.set_title(
+        "Vogel Qmax by Well (Most Recent Test)", fontsize=13, fontweight="bold"
+    )
     ax.grid(True, axis="y", alpha=0.3)
 
     for bar, val in zip(bars, qmax_values):

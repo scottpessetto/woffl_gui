@@ -66,11 +66,15 @@ class JetBook:
     def __repr__(self):
         """Creates a fancy table to see some of the stored data"""
         sformat = "{:>8} | {:>8} | {:>7} | {:>6} | {:>6} \n"  # string format
-        nformat = "{:>8.1f} | {:>8.1f} | {:>7.1f} | {:>6.1f} | {:>6.2f} \n"  # number format
+        nformat = (
+            "{:>8.1f} | {:>8.1f} | {:>7.1f} | {:>6.1f} | {:>6.2f} \n"  # number format
+        )
         spc = 48 * "-" + "\n"  # spacing
         pout = sformat.format("pressure", "velocity", "density", "sound", "mach")
         pout = pout + sformat.format("psig", "ft/s", "lbm/ft3", "ft/s", "no_u") + spc
-        for prs, vel, rho, snd, mach in zip(self.prs_ray, self.vel_ray, self.rho_ray, self.snd_ray, self.mach_ray):
+        for prs, vel, rho, snd, mach in zip(
+            self.prs_ray, self.vel_ray, self.rho_ray, self.snd_ray, self.mach_ray
+        ):
             pout += nformat.format(prs, vel, rho, snd, mach)
         return pout
 
@@ -99,7 +103,9 @@ class JetBook:
         self.tde_ray = np.append(self.tde_ray, tde)
         self.mach_ray = np.append(self.mach_ray, vel / snd)  # mach number
 
-        grad = (self.tde_ray[-2] - self.tde_ray[-1]) / (self.prs_ray[-2] - self.prs_ray[-1])
+        grad = (self.tde_ray[-2] - self.tde_ray[-1]) / (
+            self.prs_ray[-2] - self.prs_ray[-1]
+        )
         self.grad_ray = np.append(self.grad_ray, grad)  # gradient of tde vs prs
 
     def plot_te(self, pte_min=200, fig_path: str | os.PathLike | None = None) -> None:
@@ -172,7 +178,9 @@ class JetBook:
             rho_te (float): Throat Entry Density, lbm/ft3
             mach_te (float): Mach Throat Entry, unitless
         """
-        return self._dete_zero(self.prs_ray, self.vel_ray, self.rho_ray, self.tde_ray, self.mach_ray)
+        return self._dete_zero(
+            self.prs_ray, self.vel_ray, self.rho_ray, self.tde_ray, self.mach_ray
+        )
 
     def dedi_zero(self) -> float:
         """Diffuser Discharge Pressure at Zero Total Differential Energy
@@ -245,10 +253,18 @@ class JetBook:
         # grad_ray = np.gradient(tde_ray, prs_ray)
         # psu = prs_ray[0]
         idx_sort = np.argsort(mach_ray)
-        pidx = np.searchsorted(mach_ray, 1, side="left", sorter=idx_sort)  # find index location where mach is 1
-        pmo = float(np.interp(1, mach_ray, prs_ray))  # interpolate for pressure at mach 1, pmo
-        pgo = float(np.interp(0, np.flip(grad_ray), np.flip(prs_ray)))  # find point where gradient is zero
-        pte, vte, rho_te, mach_te = JetBook._dete_zero(prs_ray, vel_ray, rho_ray, tde_ray, mach_ray)
+        pidx = np.searchsorted(
+            mach_ray, 1, side="left", sorter=idx_sort
+        )  # find index location where mach is 1
+        pmo = float(
+            np.interp(1, mach_ray, prs_ray)
+        )  # interpolate for pressure at mach 1, pmo
+        pgo = float(
+            np.interp(0, np.flip(grad_ray), np.flip(prs_ray))
+        )  # find point where gradient is zero
+        pte, vte, rho_te, mach_te = JetBook._dete_zero(
+            prs_ray, vel_ray, rho_ray, tde_ray, mach_ray
+        )
 
         fig, axs = plt.subplots(4, sharex=True, figsize=(5.5, 7.5))
         axs = cast(np.ndarray, axs)
@@ -260,32 +276,69 @@ class JetBook:
         line_style = "-"
 
         # first plot
-        axs[0].plot(prs_ray, 1 / rho_ray, marker=marker_style, linestyle=line_style, color=colors[0])
+        axs[0].plot(
+            prs_ray,
+            1 / rho_ray,
+            marker=marker_style,
+            linestyle=line_style,
+            color=colors[0],
+        )
         axs[0].set_ylabel("Spec. Vol, $ft^{3}/lb_{m}$")
 
         # second plot
         axs[1].plot(
-            prs_ray, vel_ray, label="Mixture Velocity", marker=marker_style, linestyle=line_style, color=colors[3]
+            prs_ray,
+            vel_ray,
+            label="Mixture Velocity",
+            marker=marker_style,
+            linestyle=line_style,
+            color=colors[3],
         )
         axs[1].plot(
-            prs_ray, snd_ray, label="Speed of Sound", marker=marker_style, linestyle=line_style, color=colors[0]
+            prs_ray,
+            snd_ray,
+            label="Speed of Sound",
+            marker=marker_style,
+            linestyle=line_style,
+            color=colors[0],
         )
         vel_span = vel_ray[pidx] - min(vel_ray)
         axs[1].annotate(
-            text="Mach 1", xy=(pmo, vel_ray[pidx] - (1 / 8) * vel_span), rotation=90, ha="center", va="top", fontsize=10
+            text="Mach 1",
+            xy=(pmo, vel_ray[pidx] - (1 / 8) * vel_span),
+            rotation=90,
+            ha="center",
+            va="top",
+            fontsize=10,
         )
         axs[1].set_ylabel("Velocity, ft/s")
         axs[1].legend()
 
         # third plot
-        axs[2].plot(prs_ray, kde_ray, label="Kinetic", marker=marker_style, linestyle=line_style, color=colors[3])
-        axs[2].plot(prs_ray, ede_ray, label="Expansion", marker=marker_style, linestyle=line_style, color=colors[0])
+        axs[2].plot(
+            prs_ray,
+            kde_ray,
+            label="Kinetic",
+            marker=marker_style,
+            linestyle=line_style,
+            color=colors[3],
+        )
+        axs[2].plot(
+            prs_ray,
+            ede_ray,
+            label="Expansion",
+            marker=marker_style,
+            linestyle=line_style,
+            color=colors[0],
+        )
         axs[2].set_ylabel("Energy, $ft^{2}/s^{2}$")
         axs[2].ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
         axs[2].legend(loc="center left")
 
         # fourth plot
-        axs[3].plot(prs_ray, tde_ray, marker=marker_style, linestyle=line_style, color=colors[4])
+        axs[3].plot(
+            prs_ray, tde_ray, marker=marker_style, linestyle=line_style, color=colors[4]
+        )
 
         tde_span = max(tde_ray) - tde_ray[pidx]
         axs[3].annotate(
@@ -300,7 +353,9 @@ class JetBook:
         axs[3].axhline(y=0, linestyle="--", linewidth=1, color=colors[7])
         axs[3].set_ylabel("$E_{te}$, $ft^{2}/s^{2}$")
         axs[3].set_xlabel("Throat Entry Pressure, psig")
-        plt.subplots_adjust(left=0.13, bottom=0.075, right=0.975, top=0.99, wspace=0.2, hspace=0.1)
+        plt.subplots_adjust(
+            left=0.13, bottom=0.075, right=0.975, top=0.99, wspace=0.2, hspace=0.1
+        )
         return fig, axs
 
     @staticmethod
@@ -330,27 +385,59 @@ class JetBook:
         axs = cast(np.ndarray, axs)
         plt.rcParams["mathtext.default"] = "regular"
 
-        axs[0].plot(prs_ray, 1 / rho_ray, marker=marker_style, linestyle=line_style, color=colors[0])
+        axs[0].plot(
+            prs_ray,
+            1 / rho_ray,
+            marker=marker_style,
+            linestyle=line_style,
+            color=colors[0],
+        )
         axs[0].set_ylabel("Spec. Vol, $ft^{3}/lb_{m}$")
 
         axs[1].plot(
-            prs_ray, vel_ray, label="Diffuser Outlet", marker=marker_style, linestyle=line_style, color=colors[3]
+            prs_ray,
+            vel_ray,
+            label="Diffuser Outlet",
+            marker=marker_style,
+            linestyle=line_style,
+            color=colors[3],
         )
         axs[1].plot(
-            prs_ray, snd_ray, label="Speed of Sound", marker=marker_style, linestyle=line_style, color=colors[0]
+            prs_ray,
+            snd_ray,
+            label="Speed of Sound",
+            marker=marker_style,
+            linestyle=line_style,
+            color=colors[0],
         )
         # axs[1].scatter(ptm, vtm, label="Diffuser Inlet")
         axs[1].set_ylabel("Velocity, ft/s")
         axs[1].legend(loc="center right")
 
-        axs[2].plot(prs_ray, kde_ray, label="Kinetic", marker=marker_style, linestyle=line_style, color=colors[3])
-        axs[2].plot(prs_ray, ede_ray, label="Expansion", marker=marker_style, linestyle=line_style, color=colors[0])
+        axs[2].plot(
+            prs_ray,
+            kde_ray,
+            label="Kinetic",
+            marker=marker_style,
+            linestyle=line_style,
+            color=colors[3],
+        )
+        axs[2].plot(
+            prs_ray,
+            ede_ray,
+            label="Expansion",
+            marker=marker_style,
+            linestyle=line_style,
+            color=colors[0],
+        )
         # axs[2].axhline(y=0, linestyle="--", linewidth=1, color=colors[7])
         axs[2].set_ylabel("Energy, $ft^{2}/s^{2}$")
         axs[2].ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
         axs[2].legend()
 
-        axs[3].plot(prs_ray, tde_ray, marker=marker_style, linestyle=line_style, color=colors[4])
+        axs[3].plot(
+            prs_ray, tde_ray, marker=marker_style, linestyle=line_style, color=colors[4]
+        )
         axs[3].axhline(y=0, linestyle="--", linewidth=1, color=colors[7])
         axs[3].ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
         axs[3].set_ylabel("$E_{di}$, $ft^{2}/s^{2}$")
@@ -371,7 +458,9 @@ class JetBook:
         else:
             fig.suptitle(f"Diffuser Inlet at {round(ptm,0)} psi")
         """
-        plt.subplots_adjust(left=0.13, bottom=0.075, right=0.975, top=0.99, wspace=0.2, hspace=0.1)
+        plt.subplots_adjust(
+            left=0.13, bottom=0.075, right=0.975, top=0.99, wspace=0.2, hspace=0.1
+        )
         return fig, axs
 
 
@@ -397,31 +486,43 @@ def throat_entry_book(
         qoil_std (float): Oil Rate, STBOPD
         te_book (JetBook): Book of values for inside the throat entry
     """
-    qoil_std = ipr_su.oil_flow(psu, method="vogel")  # oil standard flow, bopd
+    qoil_std = ipr_su.oil_flow(psu, method="pidx")  # oil standard flow, bopd
 
     prop_su = prop_su.condition(psu, tsu)
     qtot = sum(prop_su.insitu_volm_flow(qoil_std))
     vte = sp.velocity(qtot, ate)
 
-    te_book = JetBook(psu, vte, prop_su.rho_mix(), prop_su.cmix(), jf.enterance_ke(ken, vte))
+    te_book = JetBook(
+        psu, vte, prop_su.rho_mix(), prop_su.cmix(), jf.enterance_ke(ken, vte)
+    )
 
     ray_len = 50  # number of elements in the array
     pte_ray = np.linspace(200, psu, ray_len)  # throat entry pressures
     pte_ray = np.flip(pte_ray, axis=0)  # start with high pressure and go low
 
-    for pte in pte_ray[1:]:  # start with the second value, psu is the first and is used to create array
+    for pte in pte_ray[
+        1:
+    ]:  # start with the second value, psu is the first and is used to create array
 
         prop_su = prop_su.condition(pte, tsu)
         qtot = sum(prop_su.insitu_volm_flow(qoil_std))
         vte = sp.velocity(qtot, ate)
 
-        te_book.append(pte, vte, prop_su.rho_mix(), prop_su.cmix(), jf.enterance_ke(ken, vte))
+        te_book.append(
+            pte, vte, prop_su.rho_mix(), prop_su.cmix(), jf.enterance_ke(ken, vte)
+        )
 
     return qoil_std, te_book
 
 
 def diffuser_book(
-    ptm: float, ttm: float, ath: float, kdi: float, adi: float, qoil_std: float, prop_tm: ResMix
+    ptm: float,
+    ttm: float,
+    ath: float,
+    kdi: float,
+    adi: float,
+    qoil_std: float,
+    prop_tm: ResMix,
 ) -> tuple[float, JetBook]:
     """Create a Diffuser Book
 
@@ -446,7 +547,9 @@ def diffuser_book(
     vtm = sp.velocity(qtot, ath)
     vdi = sp.velocity(qtot, adi)
 
-    di_book = JetBook(ptm, vdi, prop_tm.rho_mix(), prop_tm.cmix(), jf.diffuser_ke(kdi, vtm, vdi))
+    di_book = JetBook(
+        ptm, vdi, prop_tm.rho_mix(), prop_tm.cmix(), jf.diffuser_ke(kdi, vtm, vdi)
+    )
 
     ray_len = 30
     pdi_ray = np.linspace(ptm, ptm + 1500, ray_len)  # throat entry pressures
@@ -457,13 +560,20 @@ def diffuser_book(
         qtot = sum(prop_tm.insitu_volm_flow(qoil_std))
         vdi = sp.velocity(qtot, adi)
 
-        di_book.append(pdi, vdi, prop_tm.rho_mix(), prop_tm.cmix(), jf.diffuser_ke(kdi, vtm, vdi))
+        di_book.append(
+            pdi, vdi, prop_tm.rho_mix(), prop_tm.cmix(), jf.diffuser_ke(kdi, vtm, vdi)
+        )
 
     return vtm, di_book
 
 
 def multi_throat_entry_books(
-    psu_ray: list | np.ndarray, tsu: float, ken: float, ate: float, ipr_su: InFlow, prop_su: ResMix
+    psu_ray: list | np.ndarray,
+    tsu: float,
+    ken: float,
+    ate: float,
+    ipr_su: InFlow,
+    prop_su: ResMix,
 ) -> tuple[list, list]:
     """Multiple Throat Entry Arrays
 
@@ -500,7 +610,9 @@ def multi_throat_entry_books(
     return qoil_list, book_list
 
 
-def te_tde_subsonic_plot(qoil_std: float, te_book: JetBook, color: str) -> tuple[Axes, float, float, float, float]:
+def te_tde_subsonic_plot(
+    qoil_std: float, te_book: JetBook, color: str
+) -> tuple[Axes, float, float, float, float]:
     """Throat Entry (TE) Total Differential Energy (TDE) for Subsonic Values Plot
 
     Args:
@@ -517,7 +629,9 @@ def te_tde_subsonic_plot(qoil_std: float, te_book: JetBook, color: str) -> tuple
 
     """
     # psu = te_book.prs_ray[0]
-    pgo = float(np.interp(0, np.flip(te_book.grad_ray), np.flip(te_book.prs_ray)))  # find point where gradient is zero
+    pgo = float(
+        np.interp(0, np.flip(te_book.grad_ray), np.flip(te_book.prs_ray))
+    )  # find point where gradient is zero
     # pmo = np.interp(1, te_book.mach_ray, te_book.prs_ray)
 
     # idx_sort = np.argsort(te_book.prs_ray)
@@ -621,7 +735,9 @@ def inflow_annotate(x_ipr: list, y_ipr: list) -> None:
     )
 
 
-def multi_suction_graphs(qoil_list: list, book_list: list, fig_path: str | os.PathLike | None = None) -> None:
+def multi_suction_graphs(
+    qoil_list: list, book_list: list, fig_path: str | os.PathLike | None = None
+) -> None:
     """Throat Entry Graphs for Multiple Suction Pressures
 
     Create a graph that shows throat entry equation solutions for multiple suction pressures. The optional
@@ -658,9 +774,13 @@ def multi_suction_graphs(qoil_list: list, book_list: list, fig_path: str | os.Pa
     inflow_annotate(ipr_x, ipr_y)
     ax.set_xlabel("Throat Entry Pressure, psig")
     ax.set_ylabel("$E_{te}$, $ft^{2}/s^{2}$")
-    ax.axhline(y=0, linestyle="--", linewidth=1, color="#7f7f7f")  # grey color from tab10
+    ax.axhline(
+        y=0, linestyle="--", linewidth=1, color="#7f7f7f"
+    )  # grey color from tab10
     ax.legend(loc="lower right")
-    plt.subplots_adjust(left=0.2, bottom=0.135, right=0.975, top=0.975, wspace=0.2, hspace=0.15)
+    plt.subplots_adjust(
+        left=0.2, bottom=0.135, right=0.975, top=0.975, wspace=0.2, hspace=0.15
+    )
     plt.tight_layout()
 
     if fig_path is not None:

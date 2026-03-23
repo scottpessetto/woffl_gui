@@ -12,7 +12,13 @@ from woffl.pvt import BlackOil, FormGas, FormWater, ResMix
 
 
 def compute_resmix_data(
-    prs_ray: np.ndarray | pd.Series, temp: float, wc: float, fgor: float, oil_api: float, pbub: float, gas_sg: float
+    prs_ray: np.ndarray | pd.Series,
+    temp: float,
+    wc: float,
+    fgor: float,
+    oil_api: float,
+    pbub: float,
+    gas_sg: float,
 ) -> dict:
     """Compute Reservoir Mixture
 
@@ -63,11 +69,29 @@ def plot_resmix_compare(hydict: dict, pydict: dict):
     fig, axs = plt.subplots(3, sharex=True)
     axs = np.array(axs).flatten()
     for cat in cats:
-        axs[0].scatter(hydict["pres_psig"], hydict["mass_fracs"][cat], label=f"Hy {cat.capitalize()}")
-        axs[0].scatter(hydict["pres_psig"], pydict["mass_fracs"][cat], marker="*", label=f"Py {cat.capitalize()}")
+        axs[0].scatter(
+            hydict["pres_psig"],
+            hydict["mass_fracs"][cat],
+            label=f"Hy {cat.capitalize()}",
+        )
+        axs[0].scatter(
+            hydict["pres_psig"],
+            pydict["mass_fracs"][cat],
+            marker="*",
+            label=f"Py {cat.capitalize()}",
+        )
 
-        axs[1].scatter(hydict["pres_psig"], hydict["volm_fracs"][cat], label=f"Hy {cat.capitalize()}")
-        axs[1].scatter(hydict["pres_psig"], pydict["volm_fracs"][cat], marker="*", label=f"Py {cat.capitalize()}")
+        axs[1].scatter(
+            hydict["pres_psig"],
+            hydict["volm_fracs"][cat],
+            label=f"Hy {cat.capitalize()}",
+        )
+        axs[1].scatter(
+            hydict["pres_psig"],
+            pydict["volm_fracs"][cat],
+            marker="*",
+            label=f"Py {cat.capitalize()}",
+        )
 
     axs[0].set_ylabel("Mass Fraction")
     axs[0].legend()
@@ -101,16 +125,28 @@ pymix = compute_resmix_data(
 
 def test_mass_fractions() -> None:
     name_frac = "mass_fracs"
-    np.testing.assert_allclose(hymix[name_frac]["oil"], pymix[name_frac]["oil"], rtol=0.01)
-    np.testing.assert_allclose(hymix[name_frac]["wat"], pymix[name_frac]["wat"], rtol=0.01)
-    np.testing.assert_allclose(hymix[name_frac]["gas"], pymix[name_frac]["gas"], rtol=0.06)
+    np.testing.assert_allclose(
+        hymix[name_frac]["oil"], pymix[name_frac]["oil"], rtol=0.01
+    )
+    np.testing.assert_allclose(
+        hymix[name_frac]["wat"], pymix[name_frac]["wat"], rtol=0.01
+    )
+    np.testing.assert_allclose(
+        hymix[name_frac]["gas"], pymix[name_frac]["gas"], rtol=0.06
+    )
 
 
 def test_volm_fractions() -> None:
     name_frac = "volm_fracs"
-    np.testing.assert_allclose(hymix[name_frac]["oil"], pymix[name_frac]["oil"], rtol=0.03)
-    np.testing.assert_allclose(hymix[name_frac]["wat"], pymix[name_frac]["wat"], rtol=0.04)
-    np.testing.assert_allclose(hymix[name_frac]["gas"], pymix[name_frac]["gas"], rtol=0.06)
+    np.testing.assert_allclose(
+        hymix[name_frac]["oil"], pymix[name_frac]["oil"], rtol=0.03
+    )
+    np.testing.assert_allclose(
+        hymix[name_frac]["wat"], pymix[name_frac]["wat"], rtol=0.04
+    )
+    np.testing.assert_allclose(
+        hymix[name_frac]["gas"], pymix[name_frac]["gas"], rtol=0.06
+    )
 
 
 def test_mixture_density() -> None:

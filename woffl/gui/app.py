@@ -22,7 +22,9 @@ from woffl.assembly.jp_history import parse_jp_history
 from woffl.gui.sidebar import render_sidebar
 from woffl.gui.single_well_page import run_single_well_page, show_welcome_message
 
-_JP_HISTORY_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "jetpump_history.xlsx"
+_JP_HISTORY_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "data" / "jetpump_history.xlsx"
+)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -43,7 +45,9 @@ def _cached_all_well_tests(months_back: int = 3):
     from woffl.assembly.well_test_client import fetch_milne_well_tests
 
     end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - relativedelta(months=months_back)).strftime("%Y-%m-%d")
+    start_date = (datetime.now() - relativedelta(months=months_back)).strftime(
+        "%Y-%m-%d"
+    )
     df, _ = fetch_milne_well_tests(start_date, end_date)
     return df
 
@@ -69,7 +73,9 @@ def main():
                     st.session_state["jp_history_source"] = "Databricks"
                 except Exception as e:
                     if _JP_HISTORY_PATH.exists():
-                        st.session_state["jp_history_df"] = parse_jp_history(str(_JP_HISTORY_PATH))
+                        st.session_state["jp_history_df"] = parse_jp_history(
+                            str(_JP_HISTORY_PATH)
+                        )
                         st.session_state["jp_history_source"] = "Excel (fallback)"
                         st.warning(f"Databricks unavailable, using bundled Excel: {e}")
                     else:
@@ -77,7 +83,9 @@ def main():
 
         if "jp_history_df" in st.session_state:
             source = st.session_state.get("jp_history_source", "")
-            st.caption(f"JP History: {len(st.session_state['jp_history_df'])} records ({source})")
+            st.caption(
+                f"JP History: {len(st.session_state['jp_history_df'])} records ({source})"
+            )
 
         jp_file = st.file_uploader(
             "Upload JP History override (xlsx)",
@@ -88,7 +96,9 @@ def main():
         if jp_file:
             st.session_state["jp_history_df"] = parse_jp_history(jp_file)
             st.session_state["jp_history_source"] = "Excel (uploaded)"
-            st.success(f"Using uploaded JP History ({len(st.session_state['jp_history_df'])} records)")
+            st.success(
+                f"Using uploaded JP History ({len(st.session_state['jp_history_df'])} records)"
+            )
 
         if "jp_history_df" in st.session_state:
             # Pre-fetch all well tests once (cached 24h for all users)
@@ -149,7 +159,9 @@ def main():
     if not st.session_state.get("_scotts_tools", False):
         with st.sidebar:
             st.divider()
-            code = st.text_input("", placeholder="", label_visibility="collapsed", key="_egg_input")
+            code = st.text_input(
+                "", placeholder="", label_visibility="collapsed", key="_egg_input"
+            )
             if code.strip().lower() == "scott":
                 st.session_state["_scotts_tools"] = True
                 st.rerun()

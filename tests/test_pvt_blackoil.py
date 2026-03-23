@@ -11,7 +11,11 @@ from woffl.pvt.blackoil import BlackOil
 
 
 def compute_blackoil_data(
-    prs_ray: np.ndarray | list, temp: float, oil_api: float, bubblepoint: float, gas_sg: float
+    prs_ray: np.ndarray | list,
+    temp: float,
+    oil_api: float,
+    bubblepoint: float,
+    gas_sg: float,
 ) -> dict:
     """Compute BlackOil Data
 
@@ -25,7 +29,7 @@ def compute_blackoil_data(
         py_gas = py_oil.condition(prs, temp)
 
         rho_oil.append(py_gas.density)
-        visc_oil.append(py_gas.viscosity())
+        visc_oil.append(py_gas.viscosity)
 
     pyoil = {"rho_oil": rho_oil, "visc_oil": visc_oil}
     return pyoil
@@ -51,7 +55,9 @@ def plot_blackoil_compare(hydict: dict, pydict: dict):
     axs[1].set_ylabel("Viscosity, cP")
     axs[1].legend()
 
-    fig.suptitle(f"{hydict['oil_api']}\u00b0 API Oil Properties at {hydict['temp_degf']}\u00b0 F")
+    fig.suptitle(
+        f"{hydict['oil_api']}\u00b0 API Oil Properties at {hydict['temp_degf']}\u00b0 F"
+    )
     plt.show()
     return None
 
@@ -63,7 +69,11 @@ with open(hysys_path) as json_file:
 
 # generate python comparison data
 pyprop = compute_blackoil_data(
-    hyprop["pres_psig"], hyprop["temp_degf"], hyprop["oil_api"], hyprop["bubblepoint"], hyprop["gas_sg"]
+    hyprop["pres_psig"],
+    hyprop["temp_degf"],
+    hyprop["oil_api"],
+    hyprop["bubblepoint"],
+    hyprop["gas_sg"],
 )
 
 
@@ -85,19 +95,19 @@ py_boil.condition(pres_psig, temp_degf)
 
 def test_oil_tension() -> None:
     # try to find where this example is
-    assert py_boil.tension() / 0.0000685 == pytest.approx(16.04, rel=0.01)  # dyne/cm
+    assert py_boil.tension / 0.0000685 == pytest.approx(16.04, rel=0.01)  # dyne/cm
 
 
 def test_oil_compressibility_above() -> None:
     oil = BlackOil.test_oil()
     oil.condition(2500, 80)
-    assert oil.compress() == pytest.approx(2.7953e-06, rel=0.01)
+    assert oil.compress == pytest.approx(2.7953e-06, rel=0.01)
 
 
 def test_oil_compressibility_below() -> None:
     oil = BlackOil.test_oil()
     oil.condition(1000, 80)
-    assert oil.compress() == pytest.approx(2.5762e-05, rel=0.01)
+    assert oil.compress == pytest.approx(2.5762e-05, rel=0.01)
 
 
 if __name__ == "__main__":

@@ -63,7 +63,9 @@ def test_beggs_regime() -> None:
 
 
 def test_beggs_holdup() -> None:
-    calc_ilh = tp.beggs_holdup_inc(book_nslh, book_NFr, book_Nlv, 90, book_hpat, book_tparm)
+    calc_ilh = tp.beggs_holdup_inc(
+        book_nslh, book_NFr, book_Nlv, 90, book_hpat, book_tparm
+    )
     assert calc_ilh == pytest.approx(book_ilh, rel=0.01)
 
 
@@ -73,7 +75,9 @@ def test_reynolds_number() -> None:
 
 
 def test_friction_factor() -> None:
-    calc_rr = sp.relative_roughness(book_dhyd, 0.004)  # book doesn't say what abs ruff they use...
+    calc_rr = sp.relative_roughness(
+        book_dhyd, 0.004
+    )  # book doesn't say what abs ruff they use...
     calc_ff = sp.ffactor_darcy(book_NRe, calc_rr)
     assert calc_ff == pytest.approx(book_ff, abs=0.03)
 
@@ -94,7 +98,9 @@ def test_beggs_friction_factor() -> None:
 
 
 def test_beggs_press_friction() -> None:
-    calc_fric = tp.beggs_press_friction(book_ftp, book_rho_mix, book_vmix, book_dhyd, pipe_len)
+    calc_fric = tp.beggs_press_friction(
+        book_ftp, book_rho_mix, book_vmix, book_dhyd, pipe_len
+    )
     assert calc_fric == pytest.approx(book_fric, rel=0.01)
 
 

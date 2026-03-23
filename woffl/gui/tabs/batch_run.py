@@ -12,8 +12,10 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from woffl.assembly import curvefit as cf
+
+from woffl.assembly.batchpump import exp_model
 from woffl.assembly.calibration import CalibrationResult
+from woffl.geometry.jetpump import JetPump
 from woffl.gui.components.dataframe_display import display_results_table
 from woffl.gui.params import SimulationParams
 from woffl.gui.utils import (
@@ -29,7 +31,9 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
     water = params.water_type if params.water_type is not None else "lift"
     st.subheader(f"Jet Pump Performance ({water.capitalize()} Water)")
 
-    has_curve_fit = hasattr(batch_pump, "coeff_totl") and hasattr(batch_pump, "coeff_lift")
+    has_curve_fit = hasattr(batch_pump, "coeff_totl") and hasattr(
+        batch_pump, "coeff_lift"
+    )
 
     try:
         df = batch_pump.df.copy()
@@ -50,12 +54,20 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
                     y=elim["qoil_std"],
                     mode="markers+text",
                     name="Eliminated",
-                    marker=dict(size=10, color="royalblue", line=dict(width=1, color="black")),
+                    marker=dict(
+                        size=10, color="royalblue", line=dict(width=1, color="black")
+                    ),
                     text=jp_names_elim,
                     textposition="top right",
                     textfont=dict(size=10),
                     customdata=np.stack(
-                        [elim["nozzle"], elim["throat"], elim["psu_solv"], elim["mach_te"], elim["form_wat"]],
+                        [
+                            elim["nozzle"],
+                            elim["throat"],
+                            elim["psu_solv"],
+                            elim["mach_te"],
+                            elim["form_wat"],
+                        ],
                         axis=-1,
                     ),
                     hovertemplate=(
@@ -80,12 +92,23 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
                     y=semi["qoil_std"],
                     mode="markers+text",
                     name="Semi-Finalist",
-                    marker=dict(size=12, color="crimson", symbol="diamond", line=dict(width=1, color="black")),
+                    marker=dict(
+                        size=12,
+                        color="crimson",
+                        symbol="diamond",
+                        line=dict(width=1, color="black"),
+                    ),
                     text=jp_names_semi,
                     textposition="top right",
                     textfont=dict(size=10, color="crimson"),
                     customdata=np.stack(
-                        [semi["nozzle"], semi["throat"], semi["psu_solv"], semi["mach_te"], semi["form_wat"]],
+                        [
+                            semi["nozzle"],
+                            semi["throat"],
+                            semi["psu_solv"],
+                            semi["mach_te"],
+                            semi["form_wat"],
+                        ],
                         axis=-1,
                     ),
                     hovertemplate=(
@@ -106,7 +129,7 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
             a, b, c = coeff
             max_water = df[water_col].max()
             fit_water = np.linspace(0, max_water, 200)
-            fit_oil = np.array([cf.exp_model(w, a, b, c) for w in fit_water])
+            fit_oil = np.array([exp_model(w, a, b, c) for w in fit_water])
             fig.add_trace(
                 go.Scatter(
                     x=fit_water,
@@ -121,7 +144,9 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
         # Recommended pump star
         recommendation = None
         try:
-            recommendation = recommend_jetpump(batch_pump, params.marginal_watercut, water)
+            recommendation = recommend_jetpump(
+                batch_pump, params.marginal_watercut, water
+            )
             rec_water = recommendation["water_rate"]
             rec_oil = recommendation["qoil_std"]
             fig.add_trace(
@@ -130,7 +155,12 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
                     y=[rec_oil],
                     mode="markers",
                     name="Recommended",
-                    marker=dict(size=20, color="gold", symbol="star", line=dict(width=2, color="black")),
+                    marker=dict(
+                        size=20,
+                        color="gold",
+                        symbol="star",
+                        line=dict(width=2, color="black"),
+                    ),
                     hovertemplate=(
                         f"<b>Recommended: {recommendation['nozzle']}{recommendation['throat']}</b><br>"
                         f"Oil: {rec_oil:.0f} BOPD<br>"
@@ -144,7 +174,10 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
             pass
 
         fig.update_layout(
-            title=dict(text=f"<b>{batch_pump.wellname}</b> Jet Pump Performance", font=dict(size=16)),
+            title=dict(
+                text=f"<b>{batch_pump.wellname}</b> Jet Pump Performance",
+                font=dict(size=16),
+            ),
             xaxis_title=f"{water.capitalize()} Water Rate (BWPD)",
             yaxis_title="Produced Oil Rate (BOPD)",
             xaxis=dict(range=[0, None], gridcolor="lightgray"),
@@ -152,7 +185,9 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
             plot_bgcolor="white",
             hovermode="closest",
             height=550,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            legend=dict(
+                orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
+            ),
         )
 
         st.plotly_chart(fig, use_container_width=True)
@@ -169,7 +204,9 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
 
             with rec_col2:
                 st.metric(water_label, f"{recommendation['water_rate']:.1f} BWPD")
-                st.metric("Marginal Watercut", f"{recommendation['marginal_ratio']:.3f}")
+                st.metric(
+                    "Marginal Watercut", f"{recommendation['marginal_ratio']:.3f}"
+                )
 
                 if recommendation["recommendation_type"] == "best_available":
                     st.warning(
@@ -179,10 +216,11 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
 
     except Exception as e:
         st.error(f"Error generating performance plot: {str(e)}")
-        st.info("Could not generate the performance plot. Try selecting different nozzle sizes and throat ratios.")
+        st.info(
+            "Could not generate the performance plot. Try selecting different nozzle sizes and throat ratios."
+        )
 
-    st.markdown(
-        """
+    st.markdown("""
     **Graph Explanation:**
     - **Red diamonds**: Semi-finalist jet pumps (no other pump produces more oil with less water)
     - **Blue circles**: Eliminated jet pumps (another pump produces more oil with less water)
@@ -190,8 +228,7 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
     - **Gold star**: Recommended jet pump based on marginal watercut threshold
     - **Labels**: Show nozzle size + throat ratio (e.g., "12B" = nozzle 12, throat B)
     - **Hover** over any point for detailed metrics
-    """
-    )
+    """)
 
 
 def _render_derivative_graph(batch_pump, params: SimulationParams) -> None:
@@ -199,7 +236,9 @@ def _render_derivative_graph(batch_pump, params: SimulationParams) -> None:
     water = params.water_type if params.water_type is not None else "lift"
     st.subheader(f"Marginal Oil-Water Ratio ({water.capitalize()} Water)")
 
-    has_curve_fit = hasattr(batch_pump, "coeff_totl") and hasattr(batch_pump, "coeff_lift")
+    has_curve_fit = hasattr(batch_pump, "coeff_totl") and hasattr(
+        batch_pump, "coeff_lift"
+    )
 
     if has_curve_fit:
         try:
@@ -220,14 +259,12 @@ def _render_derivative_graph(batch_pump, params: SimulationParams) -> None:
             "At least two semi-finalist jet pumps are required."
         )
 
-    st.markdown(
-        """
+    st.markdown("""
     **Graph Explanation:**
     - **Points**: Marginal oil-water ratio for each semi-finalist jet pump
     - **Line**: Analytical derivative of the exponential curve fit
     - **Marginal Oil-Water Ratio**: Additional oil production per additional barrel of water
-    """
-    )
+    """)
 
 
 def _render_data_table(batch_pump, params: SimulationParams) -> None:
@@ -291,7 +328,9 @@ def _render_recommender_table(batch_pump, params: SimulationParams, water: str) 
     semi_df = batch_pump.df[batch_pump.df["semi"]].copy()
 
     if semi_df.empty:
-        st.warning("No semi-finalist jet pumps found. Cannot display recommender results.")
+        st.warning(
+            "No semi-finalist jet pumps found. Cannot display recommender results."
+        )
         return
 
     semi_df = semi_df.sort_values(by="qoil_std", ascending=True)
@@ -304,9 +343,15 @@ def _render_recommender_table(batch_pump, params: SimulationParams, water: str) 
 
     # Build display columns
     water_label = "Lift Water (BWPD)" if water == "lift" else "Total Water (BWPD)"
-    ratio_label = "Marginal Oil/Lift Water Ratio" if water == "lift" else "Marginal Oil/Total Water Ratio"
+    ratio_label = (
+        "Marginal Oil/Lift Water Ratio"
+        if water == "lift"
+        else "Marginal Oil/Total Water Ratio"
+    )
 
-    recommender_df = semi_df[["nozzle", "throat", "qoil_std", water_col, marg_col, "marginal_watercut"]].copy()
+    recommender_df = semi_df[
+        ["nozzle", "throat", "qoil_std", water_col, marg_col, "marginal_watercut"]
+    ].copy()
 
     recommender_df = recommender_df.rename(
         columns={
@@ -369,7 +414,9 @@ def _get_well_tests(well_name: str):
     return well_df if not well_df.empty else None
 
 
-def _compute_batch_calibration(batch_pump, params: SimulationParams) -> CalibrationResult | None:
+def _compute_batch_calibration(
+    batch_pump, params: SimulationParams
+) -> CalibrationResult | None:
     """Compute calibration factor by comparing the installed pump's batch result to actual well test.
 
     Returns CalibrationResult or None if data is insufficient.
@@ -444,7 +491,11 @@ def _render_model_vs_actual(batch_pump, params: SimulationParams) -> None:
 
     jp_hist = st.session_state.get("jp_history_df")
     current_pump = get_current_pump(jp_hist, params.selected_well)
-    date_str = current_pump["date_set"].strftime("%Y-%m-%d") if current_pump["date_set"] is not None else "N/A"
+    date_str = (
+        current_pump["date_set"].strftime("%Y-%m-%d")
+        if current_pump["date_set"] is not None
+        else "N/A"
+    )
 
     st.divider()
     st.subheader("Model vs Actual Comparison")
@@ -503,12 +554,130 @@ def _render_model_vs_actual(batch_pump, params: SimulationParams) -> None:
     st.session_state["batch_calibration_result"] = cal
 
 
-def render_tab(params: SimulationParams, tube, well_profile, inflow, res_mix) -> None:
+def _render_nelder_mead_section(batch_pump, params: SimulationParams) -> None:
+    """Render the Nelder-Mead continuous optimization section.
+
+    Uses the best semi-finalist from the batch run as a seed for Nelder-Mead
+    optimization to find the continuous optimal nozzle/throat diameters, then
+    snaps to the nearest catalog pump.
+    """
+    semi_df = (
+        batch_pump.df[batch_pump.df["semi"]].copy()
+        if "semi" in batch_pump.df.columns
+        else pd.DataFrame()
+    )
+    if semi_df.empty:
+        return
+
+    with st.expander("Nelder-Mead Continuous Optimization", expanded=False):
+        st.markdown(
+            "Use Nelder-Mead optimization to find the continuous optimal nozzle and throat "
+            "diameters, then snap to the nearest catalog pump. The **lift cost** penalizes "
+            "power fluid usage (bbl oil / bbl lift water). Higher values favor smaller pumps."
+        )
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            marg_wc_input = st.number_input(
+                "Marginal Watercut",
+                min_value=0.01,
+                max_value=0.99,
+                value=0.94,
+                step=0.01,
+                format="%.2f",
+                key="nm_marginal_wc",
+                help="Enter a marginal watercut to auto-calculate lift cost. OWR = (1 - WC) / WC.",
+            )
+            # Convert: WOR = wc / (1 - wc), OWR = 1/WOR = (1 - wc) / wc
+            calculated_lift_cost = (1 - marg_wc_input) / marg_wc_input
+            st.caption(
+                f"WOR = {marg_wc_input / (1 - marg_wc_input):.2f} | "
+                f"OWR (lift cost) = {calculated_lift_cost:.4f}"
+            )
+        with col2:
+            lift_cost = st.slider(
+                "Lift Cost (bbl oil / bbl lift water)",
+                min_value=0.00,
+                max_value=0.20,
+                value=round(calculated_lift_cost, 2),
+                step=0.01,
+                format="%.2f",
+                key="nm_lift_cost",
+                help="Penalty for lift water usage. Auto-populated from marginal watercut, or override manually.",
+            )
+        with col3:
+            # Show the seed pump (best semi-finalist by oil rate)
+            best_semi = semi_df.loc[semi_df["qoil_std"].idxmax()]
+            st.info(
+                f"Seed pump: **{best_semi['nozzle']}{best_semi['throat']}** ({best_semi['qoil_std']:.0f} BOPD)"
+            )
+
+        run_nm = st.button("Run Nelder-Mead Optimization", key="run_nelder_mead")
+
+        if run_nm:
+            seed_jp = JetPump(
+                nozzle_no=best_semi["nozzle"],
+                area_ratio=best_semi["throat"],
+                ken=params.ken,
+                kth=params.kth,
+                kdi=params.kdi,
+            )
+
+            with st.spinner("Running Nelder-Mead optimization..."):
+                try:
+                    result_df = batch_pump.search_run(seed_jp, lift_cost=lift_cost)
+                except Exception as e:
+                    st.error(f"Nelder-Mead optimization failed: {e}")
+                    return
+
+            if result_df is None or result_df.empty:
+                st.warning("Optimization did not produce a result.")
+                return
+
+            row = result_df.iloc[0]
+            st.markdown("#### Optimization Result")
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.markdown("**Catalog Pump (Snapped)**")
+                st.metric("Pump", f"{row['nozzle']}{row['throat']}")
+                if not pd.isna(row.get("qoil_std")):
+                    st.metric("Oil Rate", f"{row['qoil_std']:.1f} BOPD")
+                else:
+                    st.metric("Oil Rate", "N/A (solver failed)")
+            with col2:
+                st.markdown("**Continuous Optimum**")
+                st.metric("Nozzle Dia", f"{row['dnz_opt']:.4f} in")
+                st.metric("Throat Dia", f"{row['dth_opt']:.4f} in")
+            with col3:
+                st.markdown("**Details**")
+                if not pd.isna(row.get("lift_wat")):
+                    st.metric("Lift Water", f"{row['lift_wat']:.0f} BWPD")
+                if not pd.isna(row.get("psu_solv")):
+                    st.metric("Suction P", f"{row['psu_solv']:.0f} psi")
+
+            # Compare to batch best
+            if not pd.isna(row.get("qoil_std")):
+                delta = row["qoil_std"] - best_semi["qoil_std"]
+                if abs(delta) > 0.5:
+                    st.caption(
+                        f"Nelder-Mead catalog pump produces **{delta:+.1f} BOPD** vs batch best "
+                        f"({best_semi['nozzle']}{best_semi['throat']} at {best_semi['qoil_std']:.0f} BOPD)."
+                    )
+                else:
+                    st.caption(
+                        "Nelder-Mead confirms the batch best is already near-optimal."
+                    )
+
+
+def render_tab(
+    params: SimulationParams, wellbore, well_profile, inflow, res_mix
+) -> None:
     """Render the Batch Pump Analysis tab.
 
     Args:
         params: Simulation parameters from sidebar
-        tube: Tubing Pipe object
+        wellbore: PipeInPipe wellbore object
         well_profile: WellProfile object
         inflow: InFlow object
         res_mix: ResMix object
@@ -516,7 +685,9 @@ def render_tab(params: SimulationParams, tube, well_profile, inflow, res_mix) ->
     st.subheader("Batch Pump Analysis")
 
     if not params.nozzle_batch_options or not params.throat_batch_options:
-        st.warning("Please select at least one nozzle size and one throat ratio for batch analysis.")
+        st.warning(
+            "Please select at least one nozzle size and one throat ratio for batch analysis."
+        )
         return
 
     with st.spinner("Running batch pump simulation..."):
@@ -525,13 +696,14 @@ def render_tab(params: SimulationParams, tube, well_profile, inflow, res_mix) ->
             params.form_temp,
             params.rho_pf,
             params.ppf_surf,
-            tube,
+            wellbore,
             well_profile,
             inflow,
             res_mix,
             params.nozzle_batch_options,
             params.throat_batch_options,
             wellname=f"{params.field_model} Well",
+            field_model=params.field_model,
         )
 
     if not batch_pump:
@@ -557,15 +729,23 @@ def render_tab(params: SimulationParams, tube, well_profile, inflow, res_mix) ->
             # Scale oil and formation water by calibration factor
             batch_pump.df["qoil_std_raw"] = batch_pump.df["qoil_std"]
             batch_pump.df["form_wat_raw"] = batch_pump.df["form_wat"]
-            batch_pump.df["qoil_std"] = batch_pump.df["qoil_std"] * cal.calibration_factor
-            batch_pump.df["form_wat"] = batch_pump.df["form_wat"] * cal.calibration_factor
-            batch_pump.df["totl_wat"] = batch_pump.df["form_wat"] + batch_pump.df["lift_wat"]
+            batch_pump.df["qoil_std"] = (
+                batch_pump.df["qoil_std"] * cal.calibration_factor
+            )
+            batch_pump.df["form_wat"] = (
+                batch_pump.df["form_wat"] * cal.calibration_factor
+            )
+            batch_pump.df["totl_wat"] = (
+                batch_pump.df["form_wat"] + batch_pump.df["lift_wat"]
+            )
 
             # Re-run process_results to recompute semi-finalists, marginal ratios,
             # and curve fits from calibrated data. Oil scales uniformly but total water
             # does not (lift water is unchanged), so the recommendation may shift to a
             # smaller pump when the model over-predicts.
-            batch_pump.df.drop(columns=["semi", "motwr", "molwr"], errors="ignore", inplace=True)
+            batch_pump.df.drop(
+                columns=["semi", "motwr", "molwr"], errors="ignore", inplace=True
+            )
             try:
                 batch_pump.process_results()
             except ValueError:
@@ -579,7 +759,9 @@ def render_tab(params: SimulationParams, tube, well_profile, inflow, res_mix) ->
                 "have been recomputed from calibrated rates."
             )
 
-    batch_tab1, batch_tab2, batch_tab3 = st.tabs(["Performance Graph", "Derivative Graph", "Data Table"])
+    batch_tab1, batch_tab2, batch_tab3 = st.tabs(
+        ["Performance Graph", "Derivative Graph", "Data Table"]
+    )
 
     with batch_tab1:
         _render_performance_graph(batch_pump, params)
@@ -589,3 +771,6 @@ def render_tab(params: SimulationParams, tube, well_profile, inflow, res_mix) ->
 
     with batch_tab3:
         _render_data_table(batch_pump, params)
+
+    # Nelder-Mead continuous optimization
+    _render_nelder_mead_section(batch_pump, params)

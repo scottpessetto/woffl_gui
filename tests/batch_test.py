@@ -2,10 +2,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from woffl.assembly.batchrun import BatchPump
+from woffl.assembly.batchpump import BatchPump
 from woffl.flow.inflow import InFlow
 from woffl.geometry.jetpump import JetPump
-from woffl.geometry.pipe import Annulus, Pipe
+from woffl.geometry.pipe import Pipe, PipeInPipe
 from woffl.geometry.wellprofile import WellProfile
 from woffl.pvt.blackoil import BlackOil
 from woffl.pvt.formgas import FormGas
@@ -17,14 +17,13 @@ from woffl.pvt.resmix import ResMix
 
 surf_pres = 210
 jpump_tvd = 4065  # feet, interpolated off well profile
-rho_pf = 62.4  # lbm/ft3
 ppf_surf = 3168  # psi, power fluid surf pressure 3168
 tsu = 80
 
 # testing the jet pump code on E-41
 tube = Pipe(out_dia=4.5, thick=0.5)  # E-42 tubing
 case = Pipe(out_dia=6.875, thick=0.5)  # E-42 casing
-ann = Annulus(inn_pipe=tube, out_pipe=case)  # define the annulus
+wellbore = PipeInPipe(inn_pipe=tube, out_pipe=case)  # define the wellbore
 
 e41_ipr = InFlow(qwf=246, pwf=1049, pres=1400)  # define an ipr
 
@@ -42,9 +41,20 @@ nozs = ["9", "10", "11", "12", "13", "14", "15", "16"]
 thrs = ["X", "A", "B", "C", "D", "E"]
 
 jp_list = BatchPump.jetpump_list(nozs, thrs)
-e41_batch = BatchPump(surf_pres, tsu, rho_pf, ppf_surf, tube, e41_profile, e41_ipr, e41_res, wellname="MPE-41")
+e41_batch = BatchPump(
+    surf_pres,
+    tsu,
+    ppf_surf,
+    wellbore,
+    e41_profile,
+    e41_ipr,
+    e41_res,
+    mpu_wat,
+    jpump_direction="reverse",
+    wellname="MPE-41",
+)
 
-df = e41_batch.batch_run(jp_list, parallel=False)
+df = e41_batch.batch_run(jp_list)
 
 
 def test_batch_row_count() -> None:
@@ -56,43 +66,43 @@ def test_no_errors() -> None:
 
 
 def test_sonic_count() -> None:
-    assert df["sonic_status"].sum() == 12
+    assert df["sonic_status"].sum() == 7
 
 
 def test_9X_reference() -> None:
     """Nozzle 9, Throat X — known sonic case."""
     row = df[(df["nozzle"] == "9") & (df["throat"] == "X")].iloc[0]
-    assert row["qoil_std"] == pytest.approx(59.00, rel=0.01)
-    assert row["totl_wat"] == pytest.approx(1946.76, rel=0.01)
-    assert row["mach_te"] == pytest.approx(0.9064, rel=0.01)
-    assert row["psu_solv"] == pytest.approx(1323.34, rel=0.01)
+    assert row["qoil_std"] == pytest.approx(58.83, rel=0.01)
+    assert row["totl_wat"] == pytest.approx(1937.20, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.9298, rel=0.01)
+    assert row["psu_solv"] == pytest.approx(1316.06, rel=0.01)
 
 
 def test_9D_reference() -> None:
     """Nozzle 9, Throat D — subsonic case."""
     row = df[(df["nozzle"] == "9") & (df["throat"] == "D")].iloc[0]
-    assert row["qoil_std"] == pytest.approx(147.20, rel=0.01)
-    assert row["totl_wat"] == pytest.approx(2605.97, rel=0.01)
-    assert row["mach_te"] == pytest.approx(0.2397, rel=0.01)
-    assert row["psu_solv"] == pytest.approx(1200.78, rel=0.01)
+    assert row["qoil_std"] == pytest.approx(140.03, rel=0.01)
+    assert row["totl_wat"] == pytest.approx(2532.74, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.2209, rel=0.01)
+    assert row["psu_solv"] == pytest.approx(1200.20, rel=0.01)
 
 
 def test_12B_reference() -> None:
     """Nozzle 12, Throat B — mid-range pump."""
     row = df[(df["nozzle"] == "12") & (df["throat"] == "B")].iloc[0]
-    assert row["qoil_std"] == pytest.approx(205.12, rel=0.01)
-    assert row["totl_wat"] == pytest.approx(4653.21, rel=0.01)
-    assert row["mach_te"] == pytest.approx(0.4430, rel=0.01)
-    assert row["psu_solv"] == pytest.approx(1113.97, rel=0.01)
+    assert row["qoil_std"] == pytest.approx(192.16, rel=0.01)
+    assert row["totl_wat"] == pytest.approx(4478.07, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.3684, rel=0.01)
+    assert row["psu_solv"] == pytest.approx(1125.82, rel=0.01)
 
 
 def test_16E_reference() -> None:
     """Nozzle 16, Throat E — largest pump."""
     row = df[(df["nozzle"] == "16") & (df["throat"] == "E")].iloc[0]
-    assert row["qoil_std"] == pytest.approx(128.00, rel=0.01)
-    assert row["totl_wat"] == pytest.approx(8270.10, rel=0.01)
-    assert row["mach_te"] == pytest.approx(0.0218, rel=0.02)
-    assert row["psu_solv"] == pytest.approx(1228.36, rel=0.01)
+    assert row["qoil_std"] == pytest.approx(72.36, rel=0.01)
+    assert row["totl_wat"] == pytest.approx(7347.43, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.0114, rel=0.02)
+    assert row["psu_solv"] == pytest.approx(1296.76, rel=0.01)
 
 
 def test_oil_always_positive() -> None:

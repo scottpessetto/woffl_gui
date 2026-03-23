@@ -12,6 +12,7 @@ Third mode in the WOFFL GUI. Allows users to:
 import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
+
 from woffl.assembly.databricks_client import (
     get_tags_for_wells,
     load_tag_dict,
@@ -78,7 +79,6 @@ from woffl.assembly.ipr_analyzer import (
     generate_ipr_curves,
 )
 from woffl.assembly.well_test_processor import WellTestProcessor, merge_tests_with_bhp
-from woffl.gui.utils import load_well_characteristics
 from woffl.gui.ipr_viz import (
     create_ipr_grid_png,
     create_ipr_pdf,
@@ -86,6 +86,7 @@ from woffl.gui.ipr_viz import (
     create_qmax_comparison_chart,
     create_rp_comparison_chart,
 )
+from woffl.gui.utils import load_well_characteristics
 
 
 def run_well_test_analysis_page():
@@ -93,12 +94,10 @@ def run_well_test_analysis_page():
 
     st.title("Well Test Analysis")
 
-    st.markdown(
-        """
+    st.markdown("""
     Upload FDC well test data, query Databricks for BHP gauge data,
     and generate Vogel IPR parameters for use in multi-well optimization.
-    """
-    )
+    """)
 
     # --- Sidebar parameters ---
     with st.sidebar:
@@ -134,7 +133,8 @@ def run_well_test_analysis_page():
         st.divider()
         st.subheader("BHP Data Cache")
         st.caption(
-            "BHP query results are cached for 24 hours. " "The cache persists across users while the app is running."
+            "BHP query results are cached for 24 hours. "
+            "The cache persists across users while the app is running."
         )
         force_refresh = st.checkbox(
             "Force fresh Databricks query",
@@ -206,7 +206,9 @@ def _run_restls_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
         return
 
     if not all_well_names:
-        st.warning("No well names returned from Databricks. Check connectivity and try 'Force fresh Databricks query' in the sidebar.")
+        st.warning(
+            "No well names returned from Databricks. Check connectivity and try 'Force fresh Databricks query' in the sidebar."
+        )
         return
 
     all_pads = get_pad_names(all_well_names)
@@ -217,7 +219,9 @@ def _run_restls_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
         selected_pads = []
         for pad in all_pads:
             pad_wells = filter_wells_by_pad(all_well_names, [pad])
-            if st.checkbox(f"Pad {pad} ({len(pad_wells)})", value=False, key=f"pad_{pad}"):
+            if st.checkbox(
+                f"Pad {pad} ({len(pad_wells)})", value=False, key=f"pad_{pad}"
+            ):
                 selected_pads.append(pad)
 
     if not selected_pads:
@@ -230,7 +234,9 @@ def _run_restls_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
     col_start, col_end = st.columns(2)
     with col_start:
         default_start = date.today() - timedelta(days=730)
-        start_date = st.date_input("Start Date", value=default_start, key="db_start_date")
+        start_date = st.date_input(
+            "Start Date", value=default_start, key="db_start_date"
+        )
     with col_end:
         end_date = st.date_input("End Date", value=date.today(), key="db_end_date")
 
@@ -240,7 +246,9 @@ def _run_restls_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
 
     st.caption(f"{len(filtered_well_names)} wells across {len(selected_pads)} pads")
 
-    if st.button("🔄 Load Well Tests from Databricks", type="primary", use_container_width=True):
+    if st.button(
+        "🔄 Load Well Tests from Databricks", type="primary", use_container_width=True
+    ):
         try:
             with st.spinner("Querying Databricks for well tests (cached 24h)..."):
                 df, dropped_wells = _cached_well_test_query(
@@ -268,7 +276,9 @@ def _run_restls_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
             return
 
     if "restls_well_tests" not in st.session_state:
-        st.info("Select pads in the sidebar, then click the button above to load well tests.")
+        st.info(
+            "Select pads in the sidebar, then click the button above to load well tests."
+        )
         return
 
     df = st.session_state["restls_well_tests"]
@@ -284,7 +294,12 @@ def _run_restls_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
         )
 
     # --- Run Analysis ---
-    if st.button("🚀 Run Well Test Analysis", type="primary", use_container_width=True, key="restls_run"):
+    if st.button(
+        "🚀 Run Well Test Analysis",
+        type="primary",
+        use_container_width=True,
+        key="restls_run",
+    ):
         try:
             merged_data = df.copy()
 
@@ -293,9 +308,13 @@ def _run_restls_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
                 return
 
             wells_in_data = merged_data["well"].nunique()
-            st.success(f"✅ {len(merged_data)} test points across {wells_in_data} wells (BHP included)")
+            st.success(
+                f"✅ {len(merged_data)} test points across {wells_in_data} wells (BHP included)"
+            )
 
-            if not _run_ipr_analysis(merged_data, max_rp_schrader, max_rp_kuparuk, resp_modifier):
+            if not _run_ipr_analysis(
+                merged_data, max_rp_schrader, max_rp_kuparuk, resp_modifier
+            ):
                 return
 
         except Exception as e:
@@ -328,8 +347,7 @@ def _run_fdc_csv_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
         st.info("👆 Upload an FDC well test CSV file to begin.")
 
         with st.expander("📖 How to Use", expanded=True):
-            st.markdown(
-                """
+            st.markdown("""
             ### Quick Start Guide
 
             1. **Export well tests** from FDC as a CSV file
@@ -349,8 +367,7 @@ def _run_fdc_csv_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
             - Wells must have BHP gauge tags in bhp_dict.csv
             - Databricks connectivity for BHP data queries
             - At least 2 well tests per well for reliable IPR estimation
-            """
-            )
+            """)
         return
 
     # --- Parse FDC CSV ---
@@ -434,13 +451,16 @@ def _run_fdc_csv_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
             wells_tuple = tuple(sorted(wells_with_tags))
 
             with st.spinner(
-                "Loading BHP data (using cache if available, " "otherwise querying Databricks — may take 1-2 min)..."
+                "Loading BHP data (using cache if available, "
+                "otherwise querying Databricks — may take 1-2 min)..."
             ):
                 bhp_data = _cached_bhp_query(tag_dict_frozen, wells_tuple)
 
             wells_with_bhp = list(bhp_data.keys())
             if not wells_with_bhp:
-                st.error("❌ No BHP data returned. Check tag mappings and Databricks connectivity.")
+                st.error(
+                    "❌ No BHP data returned. Check tag mappings and Databricks connectivity."
+                )
                 return
 
             st.success(
@@ -459,10 +479,14 @@ def _run_fdc_csv_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
                 return
 
             wells_in_merged = merged_data["well"].nunique()
-            st.success(f"✅ Merged data: {len(merged_data)} test points across {wells_in_merged} wells")
+            st.success(
+                f"✅ Merged data: {len(merged_data)} test points across {wells_in_merged} wells"
+            )
 
             # Step 3-5: Run IPR analysis pipeline
-            if not _run_ipr_analysis(merged_data, max_rp_schrader, max_rp_kuparuk, resp_modifier):
+            if not _run_ipr_analysis(
+                merged_data, max_rp_schrader, max_rp_kuparuk, resp_modifier
+            ):
                 return
 
         except Exception as e:
@@ -470,7 +494,10 @@ def _run_fdc_csv_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
             st.exception(e)
             return
 
-def _run_ipr_analysis(merged_data, max_rp_schrader, max_rp_kuparuk, resp_modifier) -> bool:
+
+def _run_ipr_analysis(
+    merged_data, max_rp_schrader, max_rp_kuparuk, resp_modifier
+) -> bool:
     """Run the shared IPR analysis pipeline: estimate RP, compute Vogel, generate curves.
 
     Stores results in session state on success.
@@ -492,7 +519,9 @@ def _run_ipr_analysis(merged_data, max_rp_schrader, max_rp_kuparuk, resp_modifie
 
     st.write("### Computing Vogel IPR Coefficients")
     with st.spinner("Computing Vogel IPR parameters..."):
-        vogel_coeffs = compute_vogel_coefficients(merged_with_rp, resp_modifier=resp_modifier)
+        vogel_coeffs = compute_vogel_coefficients(
+            merged_with_rp, resp_modifier=resp_modifier
+        )
 
     if vogel_coeffs.empty:
         st.error("❌ Could not compute Vogel coefficients for any wells.")
@@ -516,7 +545,6 @@ def _render_model_check_tab(vogel_coeffs: pd.DataFrame, merged_with_rp: pd.DataF
     and IPR-derived inflow, then compares modeled vs actual production.
     """
     from woffl.assembly.jp_history import get_current_pump
-    from woffl.assembly.sysops import jetpump_solver
     from woffl.gui.utils import (
         create_inflow,
         create_jetpump,
@@ -525,6 +553,7 @@ def _render_model_check_tab(vogel_coeffs: pd.DataFrame, merged_with_rp: pd.DataF
         create_well_profile,
         is_valid_number,
         load_well_characteristics,
+        run_jetpump_solver,
     )
 
     st.write("### Model Check")
@@ -535,7 +564,9 @@ def _render_model_check_tab(vogel_coeffs: pd.DataFrame, merged_with_rp: pd.DataF
 
     jp_hist = st.session_state.get("jp_history_df")
     if jp_hist is None:
-        st.warning("JP History not loaded. Upload a JP History file on the main page to use Model Check.")
+        st.warning(
+            "JP History not loaded. Upload a JP History file on the main page to use Model Check."
+        )
         return
 
     jp_chars = load_well_characteristics()
@@ -545,18 +576,75 @@ def _render_model_check_tab(vogel_coeffs: pd.DataFrame, merged_with_rp: pd.DataF
         st.caption("These apply to all wells during the model check.")
         cfg_col1, cfg_col2, cfg_col3 = st.columns(3)
         with cfg_col1:
-            mc_surf_pres = st.number_input("Surface Pressure (psi)", value=210, min_value=10, max_value=600, step=10, key="mc_surf_pres")
-            mc_rho_pf = st.number_input("PF Density (lbm/ft³)", value=62.4, min_value=50.0, max_value=70.0, step=0.1, key="mc_rho_pf")
+            mc_surf_pres = st.number_input(
+                "Surface Pressure (psi)",
+                value=210,
+                min_value=10,
+                max_value=600,
+                step=10,
+                key="mc_surf_pres",
+            )
+            mc_rho_pf = st.number_input(
+                "PF Density (lbm/ft³)",
+                value=62.4,
+                min_value=50.0,
+                max_value=70.0,
+                step=0.1,
+                key="mc_rho_pf",
+            )
         with cfg_col2:
-            mc_ppf_surf = st.number_input("PF Pressure (psi)", value=3168, min_value=1500, max_value=4000, step=10, key="mc_ppf_surf")
-            mc_default_gor = st.number_input("Default GOR (scf/bbl)", value=250, min_value=20, max_value=10000, step=25, key="mc_default_gor", help="Used when GOR is not available from well test data")
+            mc_ppf_surf = st.number_input(
+                "PF Pressure (psi)",
+                value=3168,
+                min_value=1500,
+                max_value=4000,
+                step=10,
+                key="mc_ppf_surf",
+            )
+            mc_default_gor = st.number_input(
+                "Default GOR (scf/bbl)",
+                value=250,
+                min_value=20,
+                max_value=10000,
+                step=25,
+                key="mc_default_gor",
+                help="Used when GOR is not available from well test data",
+            )
         with cfg_col3:
-            mc_ken = st.number_input("ken", value=0.03, min_value=0.01, max_value=0.10, step=0.01, format="%.2f", key="mc_ken")
-            mc_kth = st.number_input("kth", value=0.30, min_value=0.10, max_value=0.50, step=0.10, format="%.1f", key="mc_kth")
-            mc_kdi = st.number_input("kdi", value=0.40, min_value=0.10, max_value=0.50, step=0.10, format="%.1f", key="mc_kdi")
+            mc_ken = st.number_input(
+                "ken",
+                value=0.03,
+                min_value=0.01,
+                max_value=0.10,
+                step=0.01,
+                format="%.2f",
+                key="mc_ken",
+            )
+            mc_kth = st.number_input(
+                "kth",
+                value=0.30,
+                min_value=0.10,
+                max_value=0.50,
+                step=0.10,
+                format="%.1f",
+                key="mc_kth",
+            )
+            mc_kdi = st.number_input(
+                "kdi",
+                value=0.40,
+                min_value=0.10,
+                max_value=0.50,
+                step=0.10,
+                format="%.1f",
+                key="mc_kdi",
+            )
 
-    if not st.button("Run Model Check", type="primary", use_container_width=True, key="mc_run"):
-        st.info("Click the button above to run the solver for all wells and compare modeled vs actual.")
+    if not st.button(
+        "Run Model Check", type="primary", use_container_width=True, key="mc_run"
+    ):
+        st.info(
+            "Click the button above to run the solver for all wells and compare modeled vs actual."
+        )
         return
 
     wells = sorted(vogel_coeffs["Well"].tolist())
@@ -571,7 +659,11 @@ def _render_model_check_tab(vogel_coeffs: pd.DataFrame, merged_with_rp: pd.DataF
 
         # 1. Look up current JP from history
         current_pump = get_current_pump(jp_hist, well_name)
-        if current_pump is None or not current_pump["nozzle_no"] or not current_pump["throat_ratio"]:
+        if (
+            current_pump is None
+            or not current_pump["nozzle_no"]
+            or not current_pump["throat_ratio"]
+        ):
             skipped.append((well_name, "No JP in history"))
             continue
 
@@ -579,7 +671,11 @@ def _render_model_check_tab(vogel_coeffs: pd.DataFrame, merged_with_rp: pd.DataF
         throat = current_pump["throat_ratio"]
 
         # 2. Look up well characteristics from jp_chars
-        well_row = jp_chars[jp_chars["Well"] == well_name] if not jp_chars.empty else pd.DataFrame()
+        well_row = (
+            jp_chars[jp_chars["Well"] == well_name]
+            if not jp_chars.empty
+            else pd.DataFrame()
+        )
         if not well_row.empty:
             wr = well_row.iloc[0]
             form_temp = int(wr.get("form_temp", 70))
@@ -602,7 +698,9 @@ def _render_model_check_tab(vogel_coeffs: pd.DataFrame, merged_with_rp: pd.DataF
         form_wc = coeff_row["form_wc"]
 
         # 4. Get GOR from most recent well test (if available)
-        well_tests = merged_with_rp[merged_with_rp["well"] == well_name].sort_values("WtDate", ascending=False)
+        well_tests = merged_with_rp[merged_with_rp["well"] == well_name].sort_values(
+            "WtDate", ascending=False
+        )
         recent_test = well_tests.iloc[0] if not well_tests.empty else None
 
         gor = mc_default_gor
@@ -614,7 +712,7 @@ def _render_model_check_tab(vogel_coeffs: pd.DataFrame, merged_with_rp: pd.DataF
         # 5. Create simulation objects
         try:
             jp = create_jetpump(nozzle, throat, mc_ken, mc_kth, mc_kdi)
-            tube, _, _ = create_pipes(tubing_od, tubing_thick)
+            _, _, wellbore = create_pipes(tubing_od, tubing_thick)
             wp = create_well_profile(field_model, jp_tvd)
             oil_qwf = qwf * (1 - form_wc)
             ipr = create_inflow(oil_qwf, pwf, res_pres)
@@ -625,19 +723,34 @@ def _render_model_check_tab(vogel_coeffs: pd.DataFrame, merged_with_rp: pd.DataF
 
         # 6. Run solver
         try:
-            result = jetpump_solver(
-                pwh=mc_surf_pres, tsu=form_temp, rho_pf=mc_rho_pf, ppf_surf=mc_ppf_surf,
-                jpump=jp, wellbore=tube, wellprof=wp, ipr_su=ipr, prop_su=rm,
+            result = run_jetpump_solver(
+                mc_surf_pres,
+                form_temp,
+                mc_rho_pf,
+                mc_ppf_surf,
+                jp,
+                wellbore,
+                wp,
+                ipr,
+                rm,
+                field_model=field_model,
             )
+            if result is None:
+                skipped.append((well_name, "Solver returned None"))
+                continue
             psu, sonic, modeled_oil, fwat, modeled_pf, mach = result
         except Exception:
             skipped.append((well_name, "Solver failed"))
             continue
 
         # 7. Get actual values from most recent test
-        actual_oil = recent_test.get("WtOilVol", None) if recent_test is not None else None
+        actual_oil = (
+            recent_test.get("WtOilVol", None) if recent_test is not None else None
+        )
         actual_bhp = recent_test.get("BHP", None) if recent_test is not None else None
-        actual_pf = recent_test.get("lift_wat", None) if recent_test is not None else None
+        actual_pf = (
+            recent_test.get("lift_wat", None) if recent_test is not None else None
+        )
 
         row = {
             "Well": well_name,
@@ -658,7 +771,9 @@ def _render_model_check_tab(vogel_coeffs: pd.DataFrame, merged_with_rp: pd.DataF
     status.empty()
 
     if not rows:
-        st.warning("No wells could be modeled. Check that JP History has matching wells.")
+        st.warning(
+            "No wells could be modeled. Check that JP History has matching wells."
+        )
         if skipped:
             st.caption(f"Skipped: {', '.join(f'{w} ({r})' for w, r in skipped)}")
         return
@@ -668,13 +783,22 @@ def _render_model_check_tab(vogel_coeffs: pd.DataFrame, merged_with_rp: pd.DataF
 
     # Compute deltas
     df["Delta Oil"] = df.apply(
-        lambda r: r["Modeled Oil"] - r["Actual Oil"] if r["Actual Oil"] is not None else None, axis=1
+        lambda r: (
+            r["Modeled Oil"] - r["Actual Oil"] if r["Actual Oil"] is not None else None
+        ),
+        axis=1,
     )
     df["Delta BHP"] = df.apply(
-        lambda r: r["Modeled BHP"] - r["Actual BHP"] if r["Actual BHP"] is not None else None, axis=1
+        lambda r: (
+            r["Modeled BHP"] - r["Actual BHP"] if r["Actual BHP"] is not None else None
+        ),
+        axis=1,
     )
     df["Delta PF"] = df.apply(
-        lambda r: r["Modeled PF"] - r["Actual PF"] if r["Actual PF"] is not None else None, axis=1
+        lambda r: (
+            r["Modeled PF"] - r["Actual PF"] if r["Actual PF"] is not None else None
+        ),
+        axis=1,
     )
 
     # --- Field totals ---
@@ -692,10 +816,15 @@ def _render_model_check_tab(vogel_coeffs: pd.DataFrame, merged_with_rp: pd.DataF
     with col2:
         st.metric("Total Modeled Oil", f"{total_modeled_oil:,.0f} BOPD")
     with col3:
-        st.metric("Total Actual Oil", f"{total_actual_oil:,.0f} BOPD" if total_actual_oil > 0 else "N/A")
+        st.metric(
+            "Total Actual Oil",
+            f"{total_actual_oil:,.0f} BOPD" if total_actual_oil > 0 else "N/A",
+        )
     with col4:
         if total_actual_oil > 0:
-            st.metric("Total Delta Oil", f"{total_modeled_oil - total_actual_oil:+,.0f} BOPD")
+            st.metric(
+                "Total Delta Oil", f"{total_modeled_oil - total_actual_oil:+,.0f} BOPD"
+            )
         else:
             st.metric("Total Delta Oil", "N/A")
 
@@ -705,10 +834,15 @@ def _render_model_check_tab(vogel_coeffs: pd.DataFrame, merged_with_rp: pd.DataF
     with col2:
         st.metric("Total Modeled PF", f"{total_modeled_pf:,.0f} BWPD")
     with col3:
-        st.metric("Total Actual PF", f"{total_actual_pf:,.0f} BWPD" if total_actual_pf > 0 else "N/A")
+        st.metric(
+            "Total Actual PF",
+            f"{total_actual_pf:,.0f} BWPD" if total_actual_pf > 0 else "N/A",
+        )
     with col4:
         if total_actual_pf > 0:
-            st.metric("Total Delta PF", f"{total_modeled_pf - total_actual_pf:+,.0f} BWPD")
+            st.metric(
+                "Total Delta PF", f"{total_modeled_pf - total_actual_pf:+,.0f} BWPD"
+            )
         else:
             st.metric("Total Delta PF", "N/A")
 
@@ -717,8 +851,22 @@ def _render_model_check_tab(vogel_coeffs: pd.DataFrame, merged_with_rp: pd.DataF
 
     # Format for display
     display_df = df.copy()
-    display_cols = ["Well", "JP", "Field", "GOR", "Modeled Oil", "Actual Oil", "Delta Oil",
-                    "Modeled BHP", "Actual BHP", "Delta BHP", "Modeled PF", "Actual PF", "Delta PF", "Sonic"]
+    display_cols = [
+        "Well",
+        "JP",
+        "Field",
+        "GOR",
+        "Modeled Oil",
+        "Actual Oil",
+        "Delta Oil",
+        "Modeled BHP",
+        "Actual BHP",
+        "Delta BHP",
+        "Modeled PF",
+        "Actual PF",
+        "Delta PF",
+        "Sonic",
+    ]
     display_df = display_df[display_cols]
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
@@ -789,7 +937,9 @@ def _render_ipr_curves_tab(ipr_curves, merged_data, vogel_coeffs):
     Each chart is full-size, zoomable, and hoverable.
     """
     st.write("### Vogel IPR Curves")
-    st.caption("Interactive charts — zoom, pan, and hover for details. Use the dropdown to switch wells.")
+    st.caption(
+        "Interactive charts — zoom, pan, and hover for details. Use the dropdown to switch wells."
+    )
 
     if not ipr_curves:
         st.warning("No IPR curves to display.")
@@ -812,7 +962,12 @@ def _render_ipr_curves_tab(ipr_curves, merged_data, vogel_coeffs):
 
     # Render the selected well's IPR chart
     if selected_well and selected_well in ipr_curves:
-        fig_single = create_ipr_plotly(selected_well, ipr_curves[selected_well], merged_data, form_wc=st.session_state.get("form_wc"))
+        fig_single = create_ipr_plotly(
+            selected_well,
+            ipr_curves[selected_well],
+            merged_data,
+            form_wc=st.session_state.get("form_wc"),
+        )
         st.plotly_chart(fig_single, use_container_width=True)
 
         # Show well-specific stats below the chart
@@ -832,7 +987,9 @@ def _render_ipr_curves_tab(ipr_curves, merged_data, vogel_coeffs):
     exp_col1, exp_col2 = st.columns(2)
 
     with exp_col1:
-        st.caption("**Grid PNG** — High-res image of all wells in a grid. Download and zoom in.")
+        st.caption(
+            "**Grid PNG** — High-res image of all wells in a grid. Download and zoom in."
+        )
         if st.button("🖼️ Generate Grid PNG", use_container_width=True):
             with st.spinner(f"Rendering {len(wells)} wells at 200 DPI..."):
                 png_bytes = create_ipr_grid_png(ipr_curves, merged_data, dpi=200)
@@ -845,7 +1002,9 @@ def _render_ipr_curves_tab(ipr_curves, merged_data, vogel_coeffs):
             )
 
     with exp_col2:
-        st.caption("**Multi-page PDF** — One full-page plot per well, suitable for printing.")
+        st.caption(
+            "**Multi-page PDF** — One full-page plot per well, suitable for printing."
+        )
         if st.button("📄 Generate PDF", use_container_width=True):
             with st.spinner(f"Generating PDF for {len(wells)} wells..."):
                 pdf_bytes = create_ipr_pdf(ipr_curves, merged_data)
@@ -910,9 +1069,13 @@ def _render_export_tab(vogel_coeffs):
     col_send, col_download = st.columns(2)
 
     with col_send:
-        if st.button("Send to Multi-Well Optimization", type="primary", use_container_width=True):
+        if st.button(
+            "Send to Multi-Well Optimization", type="primary", use_container_width=True
+        ):
             st.session_state["wt_export_for_multiwell"] = edited_df
-            st.success(f"Sent {len(edited_df)} wells. Switch to the Multi-Well Optimization page to load them.")
+            st.success(
+                f"Sent {len(edited_df)} wells. Switch to the Multi-Well Optimization page to load them."
+            )
 
     with col_download:
         csv_data = edited_df.to_csv(index=False)

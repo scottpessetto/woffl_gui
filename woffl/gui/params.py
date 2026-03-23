@@ -82,8 +82,12 @@ class SimulationParams:
     pres: int = 1700
 
     # Batch run parameters
-    nozzle_batch_options: list[str] = field(default_factory=lambda: ["9", "10", "11", "12", "13", "14", "15"])
-    throat_batch_options: list[str] = field(default_factory=lambda: ["A", "B", "C", "D"])
+    nozzle_batch_options: list[str] = field(
+        default_factory=lambda: ["9", "10", "11", "12", "13", "14", "15"]
+    )
+    throat_batch_options: list[str] = field(
+        default_factory=lambda: ["A", "B", "C", "D"]
+    )
     water_type: str = "total"
     marginal_watercut: float = 0.94
 

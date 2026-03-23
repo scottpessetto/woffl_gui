@@ -83,7 +83,9 @@ class WellTestProcessor:
         ]
         for column in numeric_columns:
             if column in df.columns:
-                df[column] = df[column].astype(str).str.replace(",", "").replace("nan", "0")
+                df[column] = (
+                    df[column].astype(str).str.replace(",", "").replace("nan", "0")
+                )
                 df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0)
 
         self._processed_df = df
@@ -174,11 +176,15 @@ def merge_tests_with_bhp(
 
         # Normalize timezone on WtDate
         if filtered_tests["WtDate"].dt.tz is not None:
-            filtered_tests["WtDate"] = filtered_tests["WtDate"].dt.tz_convert("UTC").dt.tz_localize(None)
+            filtered_tests["WtDate"] = (
+                filtered_tests["WtDate"].dt.tz_convert("UTC").dt.tz_localize(None)
+            )
 
         # Normalize timezone on BHP data index
         if filtered_tag_data.index.tz is not None:
-            filtered_tag_data.index = filtered_tag_data.index.tz_convert("UTC").tz_localize(None)
+            filtered_tag_data.index = filtered_tag_data.index.tz_convert(
+                "UTC"
+            ).tz_localize(None)
 
         # Convert WtDate to date-only for matching (BHP data is daily)
         filtered_tests["merge_date"] = filtered_tests["WtDate"].dt.normalize()
@@ -186,12 +192,18 @@ def merge_tests_with_bhp(
         # Reset index on tag data to get date column
         filtered_tag_data = filtered_tag_data.reset_index()
         if "date" in filtered_tag_data.columns:
-            filtered_tag_data["merge_date"] = pd.to_datetime(filtered_tag_data["date"]).dt.normalize()
+            filtered_tag_data["merge_date"] = pd.to_datetime(
+                filtered_tag_data["date"]
+            ).dt.normalize()
         elif "datetime" in filtered_tag_data.columns:
-            filtered_tag_data["merge_date"] = pd.to_datetime(filtered_tag_data["datetime"]).dt.normalize()
+            filtered_tag_data["merge_date"] = pd.to_datetime(
+                filtered_tag_data["datetime"]
+            ).dt.normalize()
         else:
             # Index was the date
-            filtered_tag_data["merge_date"] = pd.to_datetime(filtered_tag_data.index).normalize()
+            filtered_tag_data["merge_date"] = pd.to_datetime(
+                filtered_tag_data.index
+            ).normalize()
 
         merged_well_data = pd.merge(
             filtered_tests,

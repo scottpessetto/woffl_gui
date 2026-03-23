@@ -4,7 +4,8 @@ Helper functions for multi-well optimization GUI integration.
 """
 
 import pandas as pd
-from woffl.assembly.batchrun import BatchPump
+
+from woffl.assembly.batchpump import BatchPump
 from woffl.assembly.network_optimizer import (
     NetworkOptimizer,
     OptimizationResult,
@@ -14,7 +15,7 @@ from woffl.assembly.network_optimizer import (
     load_wells_from_csv,
 )
 from woffl.flow.inflow import InFlow
-from woffl.geometry.pipe import Annulus, Pipe
+from woffl.geometry.pipe import Pipe, PipeInPipe
 from woffl.geometry.wellprofile import WellProfile
 from woffl.pvt.resmix import ResMix
 
@@ -49,15 +50,21 @@ def create_optimizer_from_csv(
     wells = load_wells_from_csv(csv_path)
 
     # Create power fluid constraint
-    power_fluid = PowerFluidConstraint(total_rate=total_power_fluid, pressure=power_fluid_pressure, rho_pf=rho_pf)
+    power_fluid = PowerFluidConstraint(
+        total_rate=total_power_fluid, pressure=power_fluid_pressure, rho_pf=rho_pf
+    )
 
     # Create optimizer
-    optimizer = NetworkOptimizer(wells, power_fluid, nozzle_options, throat_options, marginal_watercut)
+    optimizer = NetworkOptimizer(
+        wells, power_fluid, nozzle_options, throat_options, marginal_watercut
+    )
 
     return optimizer
 
 
-def format_optimization_results_table(results: list[OptimizationResult]) -> pd.DataFrame:
+def format_optimization_results_table(
+    results: list[OptimizationResult],
+) -> pd.DataFrame:
     """Format optimization results for display
 
     Args:

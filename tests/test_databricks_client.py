@@ -13,7 +13,6 @@ from woffl.assembly.databricks_client import (
     query_bhp_for_well_tests,
 )
 
-
 # ── get_tags_for_wells ──────────────────────────────────────────────────────
 
 
@@ -76,37 +75,43 @@ class TestLoadTagDict:
 class TestFetchJPHistory:
     @patch("woffl.assembly.databricks_client.execute_query")
     def test_date_columns_are_datetime(self, mock_query):
-        mock_query.return_value = pd.DataFrame({
-            "Well Name": ["MPB-28 ", "MPE-41"],
-            "Date Set": ["2024-01-15", "2024-02-20"],
-            "Date Pulled": ["2024-06-01", None],
-            "Nozzle Number": [12, 13],
-            "Throat Ratio": ["A", "B"],
-            "Tubing Diameter": [4.5, 4.5],
-        })
+        mock_query.return_value = pd.DataFrame(
+            {
+                "Well Name": ["MPB-28 ", "MPE-41"],
+                "Date Set": ["2024-01-15", "2024-02-20"],
+                "Date Pulled": ["2024-06-01", None],
+                "Nozzle Number": [12, 13],
+                "Throat Ratio": ["A", "B"],
+                "Tubing Diameter": [4.5, 4.5],
+            }
+        )
         result = fetch_jp_history()
         assert pd.api.types.is_datetime64_any_dtype(result["Date Set"])
 
     @patch("woffl.assembly.databricks_client.execute_query")
     def test_well_name_stripped(self, mock_query):
-        mock_query.return_value = pd.DataFrame({
-            "Well Name": ["  MPB-28  ", "MPE-41 "],
-            "Date Set": ["2024-01-15", "2024-02-20"],
-            "Nozzle Number": [12, 13],
-            "Throat Ratio": ["A", "B"],
-        })
+        mock_query.return_value = pd.DataFrame(
+            {
+                "Well Name": ["  MPB-28  ", "MPE-41 "],
+                "Date Set": ["2024-01-15", "2024-02-20"],
+                "Nozzle Number": [12, 13],
+                "Throat Ratio": ["A", "B"],
+            }
+        )
         result = fetch_jp_history()
         assert result["Well Name"].iloc[0] == "MPB-28"
         assert result["Well Name"].iloc[1] == "MPE-41"
 
     @patch("woffl.assembly.databricks_client.execute_query")
     def test_returns_dataframe(self, mock_query):
-        mock_query.return_value = pd.DataFrame({
-            "Well Name": ["MPB-28"],
-            "Date Set": ["2024-01-15"],
-            "Nozzle Number": [12],
-            "Throat Ratio": ["A"],
-        })
+        mock_query.return_value = pd.DataFrame(
+            {
+                "Well Name": ["MPB-28"],
+                "Date Set": ["2024-01-15"],
+                "Nozzle Number": [12],
+                "Throat Ratio": ["A"],
+            }
+        )
         result = fetch_jp_history()
         assert isinstance(result, pd.DataFrame)
 
@@ -120,11 +125,13 @@ class TestQueryBhpForWellTests:
         tag_dict = {
             "MPB-28": ("bhp_b28", "hp_b28", "whp_b28"),
         }
-        mock_query.return_value = pd.DataFrame({
-            "date": ["2024-01-15", "2024-01-15", "2024-01-15"],
-            "tag": ["bhp_b28", "hp_b28", "whp_b28"],
-            "max_average_value": [800.0, 200.0, 150.0],
-        })
+        mock_query.return_value = pd.DataFrame(
+            {
+                "date": ["2024-01-15", "2024-01-15", "2024-01-15"],
+                "tag": ["bhp_b28", "hp_b28", "whp_b28"],
+                "max_average_value": [800.0, 200.0, 150.0],
+            }
+        )
         result = query_bhp_for_well_tests(tag_dict, ["MPB-28"])
         assert "MPB-28" in result
         df = result["MPB-28"]

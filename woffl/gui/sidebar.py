@@ -5,11 +5,14 @@ into a dedicated module. Returns a SimulationParams dataclass and run button sta
 """
 
 import streamlit as st
+
 from woffl.gui.params import NOZZLE_OPTIONS, THROAT_OPTIONS, SimulationParams
 from woffl.gui.utils import get_available_wells, get_well_data
 
 
-def _update_well_parameters_from_data(well_data: dict | None, selected_well: str) -> None:
+def _update_well_parameters_from_data(
+    well_data: dict | None, selected_well: str
+) -> None:
     """Update session state parameters when well selection changes.
 
     Args:
@@ -21,7 +24,9 @@ def _update_well_parameters_from_data(well_data: dict | None, selected_well: str
         st.session_state.pop("sw_vogel_coeffs", None)
         return
 
-    is_new_well = selected_well != st.session_state.get("last_selected_well_all", "Custom")
+    is_new_well = selected_well != st.session_state.get(
+        "last_selected_well_all", "Custom"
+    )
 
     if is_new_well:
         st.session_state.tubing_od = float(well_data.get("out_dia", 4.5))
@@ -96,7 +101,9 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
         num_tests = int(coeff_row["num_tests"])
         most_recent = coeff_row["most_recent_date"]
         date_str = (
-            most_recent.strftime("%Y-%m-%d") if hasattr(most_recent, "strftime") else str(most_recent)
+            most_recent.strftime("%Y-%m-%d")
+            if hasattr(most_recent, "strftime")
+            else str(most_recent)
         )
         st.session_state["sw_ipr_info"] = (
             f"IPR values loaded from {num_tests} well tests (most recent: {date_str})"
@@ -141,7 +148,10 @@ def _render_well_selection() -> tuple[str, dict | None]:
 
     well_data = None
     if selected_well != "Custom":
-        if "well_data" not in st.session_state or st.session_state.get("current_well") != selected_well:
+        if (
+            "well_data" not in st.session_state
+            or st.session_state.get("current_well") != selected_well
+        ):
             st.session_state.well_data = get_well_data(selected_well)
             st.session_state.current_well = selected_well
 
@@ -153,12 +163,20 @@ def _render_well_selection() -> tuple[str, dict | None]:
             with st.expander("Well Information"):
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.write(f"**Field Model:** {'Schrader' if well_data.get('is_sch', True) else 'Kuparuk'}")
+                    st.write(
+                        f"**Field Model:** {'Schrader' if well_data.get('is_sch', True) else 'Kuparuk'}"
+                    )
                     st.write(f"**Tubing OD:** {well_data.get('out_dia', 'N/A')} inches")
-                    st.write(f"**Tubing Thickness:** {well_data.get('thick', 'N/A')} inches")
-                    st.write(f"**Reservoir Pressure:** {well_data.get('res_pres', 'N/A')} psi")
+                    st.write(
+                        f"**Tubing Thickness:** {well_data.get('thick', 'N/A')} inches"
+                    )
+                    st.write(
+                        f"**Reservoir Pressure:** {well_data.get('res_pres', 'N/A')} psi"
+                    )
                 with col2:
-                    st.write(f"**Formation Temp:** {well_data.get('form_temp', 'N/A')} °F")
+                    st.write(
+                        f"**Formation Temp:** {well_data.get('form_temp', 'N/A')} °F"
+                    )
                     st.write(f"**Jetpump TVD:** {well_data.get('JP_TVD', 'N/A')} ft")
                     st.write(f"**Jetpump MD:** {well_data.get('JP_MD', 'N/A')} ft")
                 ipr_info = st.session_state.get("sw_ipr_info")
@@ -199,17 +217,38 @@ def _render_jetpump_params() -> tuple[str, str, float, float, float]:
 
     if "ken" not in st.session_state:
         st.session_state.ken = 0.03
-    ken = st.slider("Nozzle Loss Coefficient (ken)", 0.01, 0.10, st.session_state.ken, 0.01, key="ken_input")
+    ken = st.slider(
+        "Nozzle Loss Coefficient (ken)",
+        0.01,
+        0.10,
+        st.session_state.ken,
+        0.01,
+        key="ken_input",
+    )
     st.session_state.ken = ken
 
     if "kth" not in st.session_state:
         st.session_state.kth = 0.3
-    kth = st.slider("Throat Loss Coefficient (kth)", 0.1, 0.5, st.session_state.kth, 0.1, key="kth_input")
+    kth = st.slider(
+        "Throat Loss Coefficient (kth)",
+        0.1,
+        0.5,
+        st.session_state.kth,
+        0.1,
+        key="kth_input",
+    )
     st.session_state.kth = kth
 
     if "kdi" not in st.session_state:
         st.session_state.kdi = 0.4
-    kdi = st.slider("Diffuser Loss Coefficient (kdi)", 0.1, 0.5, st.session_state.kdi, 0.1, key="kdi_input")
+    kdi = st.slider(
+        "Diffuser Loss Coefficient (kdi)",
+        0.1,
+        0.5,
+        st.session_state.kdi,
+        0.1,
+        key="kdi_input",
+    )
     st.session_state.kdi = kdi
 
     return nozzle_no, area_ratio, ken, kth, kdi
@@ -545,12 +584,16 @@ def render_sidebar() -> tuple[bool, SimulationParams]:
 
         # Collect all parameter groups
         nozzle_no, area_ratio, ken, kth, kdi = _render_jetpump_params()
-        tubing_od, tubing_thickness, casing_od, casing_thickness = _render_pipe_params(well_data)
+        tubing_od, tubing_thickness, casing_od, casing_thickness = _render_pipe_params(
+            well_data
+        )
         form_wc, form_gor, form_temp = _render_formation_params(well_data)
         surf_pres, jpump_tvd, rho_pf, ppf_surf = _render_well_params(well_data)
         qwf, pwf, pres = _render_inflow_params(well_data)
         nozzle_batch_options, throat_batch_options, water_type = _render_batch_params()
-        power_fluid_min, power_fluid_max, power_fluid_step = _render_power_fluid_range_params()
+        power_fluid_min, power_fluid_max, power_fluid_step = (
+            _render_power_fluid_range_params()
+        )
 
     params = SimulationParams(
         nozzle_no=nozzle_no,

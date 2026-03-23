@@ -9,12 +9,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+
 from woffl.gui.components.dataframe_display import display_results_table
 from woffl.gui.params import SimulationParams
 from woffl.gui.utils import run_power_fluid_range_batch
 
 
-def _render_performance_vs_pressure(successful_df: pd.DataFrame, field_model: str) -> None:
+def _render_performance_vs_pressure(
+    successful_df: pd.DataFrame, field_model: str
+) -> None:
     """Render the Performance vs Pressure sub-tab."""
     st.subheader("Oil Rate vs Power Fluid Pressure")
 
@@ -185,12 +188,14 @@ def _render_best_performers(successful_df: pd.DataFrame) -> None:
         st.metric("Sonic Flow", "Yes" if bool(overall_best["sonic_status"]) else "No")
 
 
-def render_tab(params: SimulationParams, tube, well_profile, inflow, res_mix) -> None:
+def render_tab(
+    params: SimulationParams, wellbore, well_profile, inflow, res_mix
+) -> None:
     """Render the Power Fluid Range Analysis tab.
 
     Args:
         params: Simulation parameters from sidebar
-        tube: Tubing Pipe object
+        wellbore: PipeInPipe wellbore object
         well_profile: WellProfile object
         inflow: InFlow object
         res_mix: ResMix object
@@ -198,20 +203,33 @@ def render_tab(params: SimulationParams, tube, well_profile, inflow, res_mix) ->
     st.subheader("Power Fluid Range Analysis")
 
     if not params.nozzle_batch_options or not params.throat_batch_options:
-        st.warning("Please select at least one nozzle size and one throat ratio for power fluid range analysis.")
+        st.warning(
+            "Please select at least one nozzle size and one throat ratio for power fluid range analysis."
+        )
         return
 
     if params.power_fluid_min >= params.power_fluid_max:
-        st.error("Minimum power fluid pressure must be less than maximum power fluid pressure.")
+        st.error(
+            "Minimum power fluid pressure must be less than maximum power fluid pressure."
+        )
         return
 
-    if params.power_fluid_step <= 0 or params.power_fluid_step >= (params.power_fluid_max - params.power_fluid_min):
+    if params.power_fluid_step <= 0 or params.power_fluid_step >= (
+        params.power_fluid_max - params.power_fluid_min
+    ):
         st.error("Power fluid step must be positive and less than the pressure range.")
         return
 
     # Calculate number of pressure points
-    pressure_points = int((params.power_fluid_max - params.power_fluid_min) / params.power_fluid_step) + 1
-    total_combinations = pressure_points * len(params.nozzle_batch_options) * len(params.throat_batch_options)
+    pressure_points = (
+        int((params.power_fluid_max - params.power_fluid_min) / params.power_fluid_step)
+        + 1
+    )
+    total_combinations = (
+        pressure_points
+        * len(params.nozzle_batch_options)
+        * len(params.throat_batch_options)
+    )
 
     st.info(
         f"This analysis will test {pressure_points} pressure points with "
@@ -227,17 +245,20 @@ def render_tab(params: SimulationParams, tube, well_profile, inflow, res_mix) ->
             params.power_fluid_min,
             params.power_fluid_max,
             params.power_fluid_step,
-            tube,
+            wellbore,
             well_profile,
             inflow,
             res_mix,
             params.nozzle_batch_options,
             params.throat_batch_options,
             wellname=f"{params.field_model} Well",
+            field_model=params.field_model,
         )
 
     if comprehensive_df is None or comprehensive_df.empty:
-        st.error("Failed to run power fluid range analysis. Check your parameters and try again.")
+        st.error(
+            "Failed to run power fluid range analysis. Check your parameters and try again."
+        )
         return
 
     successful_df = comprehensive_df[~comprehensive_df["qoil_std"].isna()].copy()
@@ -263,12 +284,16 @@ def render_tab(params: SimulationParams, tube, well_profile, inflow, res_mix) ->
         st.metric("Min Total Water", f"{successful_df['totl_wat'].min():.1f} BWPD")
 
     with col4:
-        st.metric("Pressure Range", f"{params.power_fluid_min}-{params.power_fluid_max} psi")
+        st.metric(
+            "Pressure Range", f"{params.power_fluid_min}-{params.power_fluid_max} psi"
+        )
         success_pct = len(successful_df) / len(comprehensive_df) * 100
         st.metric("Success Rate", f"{success_pct:.1f}%")
 
     # Visualization tabs
-    viz_tab1, viz_tab2, viz_tab3 = st.tabs(["Performance vs Pressure", "Comprehensive Data", "Best Performers"])
+    viz_tab1, viz_tab2, viz_tab3 = st.tabs(
+        ["Performance vs Pressure", "Comprehensive Data", "Best Performers"]
+    )
 
     with viz_tab1:
         _render_performance_vs_pressure(successful_df, params.field_model)
@@ -279,12 +304,10 @@ def render_tab(params: SimulationParams, tube, well_profile, inflow, res_mix) ->
     with viz_tab3:
         _render_best_performers(successful_df)
 
-    st.markdown(
-        """
+    st.markdown("""
         **Analysis Explanation:**
         - This comprehensive analysis tests all selected nozzle and throat combinations across the specified power fluid pressure range
         - **Performance vs Pressure**: Shows how oil and water rates change with power fluid pressure for each pump configuration
         - **Comprehensive Data**: Complete results table with all successful combinations
         - **Best Performers**: Shows the highest oil-producing pump at each pressure point and identifies the overall best performer
-        """
-    )
+        """)

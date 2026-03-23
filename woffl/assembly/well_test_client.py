@@ -166,7 +166,15 @@ def fetch_milne_well_tests(
         df["WtDate"] = pd.to_datetime(df["WtDate"], utc=True).dt.tz_localize(None)
 
     # Ensure numeric columns
-    for col in ["BHP", "WtOilVol", "WtWaterVol", "WtTotalFluid", "WtGasVol", "lift_wat", "whp"]:
+    for col in [
+        "BHP",
+        "WtOilVol",
+        "WtWaterVol",
+        "WtTotalFluid",
+        "WtGasVol",
+        "lift_wat",
+        "whp",
+    ]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -188,9 +196,7 @@ def fetch_milne_well_tests(
     return df, dropped_wells
 
 
-def fetch_single_well_tests(
-    well_name: str, months_back: int = 3
-) -> pd.DataFrame:
+def fetch_single_well_tests(well_name: str, months_back: int = 3) -> pd.DataFrame:
     """Query last N months of tests for one well.
 
     Args:
@@ -205,7 +211,9 @@ def fetch_single_well_tests(
     from dateutil.relativedelta import relativedelta
 
     end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - relativedelta(months=months_back)).strftime("%Y-%m-%d")
+    start_date = (datetime.now() - relativedelta(months=months_back)).strftime(
+        "%Y-%m-%d"
+    )
 
     db_name = _denormalize_well_name(well_name)
     df, _ = fetch_milne_well_tests(start_date, end_date, well_names=[db_name])

@@ -1,4 +1,4 @@
-class DeadOil():
+class DeadOil:
 
     def __init__(self, oil_api, bubblepoint):
         # define an oil stream that has no live gas in it
@@ -9,7 +9,8 @@ class DeadOil():
 
     # does something when you print your class
     def __repr__(self):
-        return f'Dead Oil: {self.oil_api} API and {self.pbp} PSIG BubblePoint'
+        return f"Dead Oil: {self.oil_api} API and {self.pbp} PSIG BubblePoint"
+
 
 # note, the problem with inheritance is that it inherits your method names
 # so if BlackOil inherits properties from FormGas, when I call density, it

@@ -9,6 +9,7 @@ and modeled vs actual metrics.
 """
 
 import streamlit as st
+
 from woffl.gui.params import SimulationParams
 from woffl.gui.utils import is_valid_number, run_jetpump_solver
 
@@ -76,13 +77,15 @@ def _render_pump_identity_banner(params: SimulationParams) -> None:
         )
 
 
-def render_tab(params: SimulationParams, jetpump, tube, well_profile, inflow, res_mix) -> None:
+def render_tab(
+    params: SimulationParams, jetpump, wellbore, well_profile, inflow, res_mix
+) -> None:
     """Render the Jetpump Solver Results tab.
 
     Args:
         params: Simulation parameters from sidebar
         jetpump: JetPump object
-        tube: Tubing Pipe object
+        wellbore: PipeInPipe wellbore object
         well_profile: WellProfile object
         inflow: InFlow object
         res_mix: ResMix object
@@ -104,10 +107,11 @@ def render_tab(params: SimulationParams, jetpump, tube, well_profile, inflow, re
             params.rho_pf,
             params.ppf_surf,
             jetpump,
-            tube,
+            wellbore,
             well_profile,
             inflow,
             res_mix,
+            field_model=params.field_model,
         )
 
     if solver_results:
@@ -126,7 +130,9 @@ def render_tab(params: SimulationParams, jetpump, tube, well_profile, inflow, re
             st.metric("Sonic Flow", "Yes" if sonic_status else "No")
 
         if sonic_status:
-            st.info("The well is operating at critical flow conditions (sonic velocity at throat entry).")
+            st.info(
+                "The well is operating at critical flow conditions (sonic velocity at throat entry)."
+            )
         else:
             st.success("The well is operating at stable flow conditions.")
 
@@ -139,7 +145,10 @@ def render_tab(params: SimulationParams, jetpump, tube, well_profile, inflow, re
                 key="sw_apply_calibration",
             )
             if apply_cal:
-                if params.nozzle_no != _cal.current_nozzle or params.area_ratio != _cal.current_throat:
+                if (
+                    params.nozzle_no != _cal.current_nozzle
+                    or params.area_ratio != _cal.current_throat
+                ):
                     st.caption(
                         f"Factor derived from installed pump ({_cal.current_nozzle}{_cal.current_throat}) "
                         "\u2014 applying to a different pump is an approximation"
@@ -149,16 +158,25 @@ def render_tab(params: SimulationParams, jetpump, tube, well_profile, inflow, re
                 st.markdown("**Calibrated Predictions:**")
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.metric("Calibrated Oil", f"{cal_oil:.1f} BOPD", delta=f"{cal_oil - qoil_std:+.1f}")
+                    st.metric(
+                        "Calibrated Oil",
+                        f"{cal_oil:.1f} BOPD",
+                        delta=f"{cal_oil - qoil_std:+.1f}",
+                    )
                 with c2:
-                    st.metric("Calibrated Water", f"{cal_water:.1f} BWPD", delta=f"{cal_water - fwat_bwpd:+.1f}")
+                    st.metric(
+                        "Calibrated Water",
+                        f"{cal_water:.1f} BWPD",
+                        delta=f"{cal_water - fwat_bwpd:+.1f}",
+                    )
     else:
         st.warning(
-            "The solver could not find a solution with the current parameters. " "Try adjusting the input values."
+            "The solver could not find a solution with the current parameters. "
+            "Try adjusting the input values."
         )
 
     # Model vs Actual comparison (requires JP history + non-Custom well)
-    _render_model_vs_actual(params, tube, well_profile)
+    _render_model_vs_actual(params, wellbore, well_profile)
 
 
 def _get_well_tests(well_name: str):
@@ -170,7 +188,7 @@ def _get_well_tests(well_name: str):
     return well_df if not well_df.empty else None
 
 
-def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> None:
+def _render_model_vs_actual(params: SimulationParams, wellbore, well_profile) -> None:
     """Render the Model vs Actual comparison section.
 
     Only shown when JP history is uploaded and a non-Custom well is selected.
@@ -186,11 +204,7 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
     )
     from woffl.assembly.jp_history import get_current_pump
     from woffl.gui.ipr_viz import create_ipr_plotly
-    from woffl.gui.utils import (
-        create_inflow,
-        create_jetpump,
-        create_reservoir_mix,
-    )
+    from woffl.gui.utils import create_inflow, create_jetpump, create_reservoir_mix
 
     st.divider()
     st.subheader("Model vs Actual Comparison")
@@ -204,7 +218,9 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
     nozzle = current_pump["nozzle_no"]
     throat = current_pump["throat_ratio"]
     if not nozzle or not throat:
-        st.warning(f"JP history for {params.selected_well} is missing nozzle or throat data.")
+        st.warning(
+            f"JP history for {params.selected_well} is missing nozzle or throat data."
+        )
         return
 
     st.info(
@@ -216,7 +232,9 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
     # 2. Get well tests from pre-fetched cache
     test_df = _get_well_tests(params.selected_well)
     if test_df is None or len(test_df) < 2:
-        st.info(f"Not enough recent test data for {params.selected_well} (need 2+ tests with BHP).")
+        st.info(
+            f"Not enough recent test data for {params.selected_well} (need 2+ tests with BHP)."
+        )
         return
 
     # 3. Estimate reservoir pressure + compute Vogel coefficients
@@ -237,7 +255,12 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
     # 4. Generate IPR curves and display chart with test points
     ipr_data = generate_ipr_curves(vogel_coeffs)
     if params.selected_well in ipr_data:
-        fig = create_ipr_plotly(params.selected_well, ipr_data[params.selected_well], merged_with_rp, form_wc=params.form_wc)
+        fig = create_ipr_plotly(
+            params.selected_well,
+            ipr_data[params.selected_well],
+            merged_with_rp,
+            form_wc=params.form_wc,
+        )
         st.plotly_chart(fig, use_container_width=True)
 
     # 5. Run model with current JP + IPR-derived inflow
@@ -256,10 +279,14 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
         key="mva_override_gor",
     )
     model_gor = params.form_gor if override_gor or test_gor is None else test_gor
-    st.caption(f"Using GOR: **{model_gor}** scf/bbl ({'sidebar' if override_gor or test_gor is None else 'well test'})")
+    st.caption(
+        f"Using GOR: **{model_gor}** scf/bbl ({'sidebar' if override_gor or test_gor is None else 'well test'})"
+    )
 
     model_surf_pres = test_whp if test_whp is not None else params.surf_pres
-    st.caption(f"Using Surface Pressure: **{model_surf_pres:.0f}** psi ({'well test' if test_whp is not None else 'sidebar'})")
+    st.caption(
+        f"Using Surface Pressure: **{model_surf_pres:.0f}** psi ({'well test' if test_whp is not None else 'sidebar'})"
+    )
 
     oil_qwf = coeff_row["qwf"] * (1 - coeff_row["form_wc"])
     ipr_inflow = create_inflow(oil_qwf, coeff_row["pwf"], coeff_row["ResP"])
@@ -274,10 +301,11 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
         params.rho_pf,
         params.ppf_surf,
         current_jp,
-        tube,
+        wellbore,
         well_profile,
         ipr_inflow,
         ipr_res_mix,
+        field_model=params.field_model,
     )
 
     # 6. Display comparison metrics
@@ -294,7 +322,10 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
         with col1:
             st.metric("Modeled Oil Rate", f"{modeled_oil:.0f} BOPD")
         with col2:
-            st.metric("Actual Oil Rate", f"{actual_oil:.0f} BOPD" if is_valid_number(actual_oil) else "N/A")
+            st.metric(
+                "Actual Oil Rate",
+                f"{actual_oil:.0f} BOPD" if is_valid_number(actual_oil) else "N/A",
+            )
         with col3:
             if is_valid_number(actual_oil):
                 st.metric("Delta", f"{modeled_oil - actual_oil:+.0f} BOPD")
@@ -314,7 +345,10 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
         with col1:
             st.metric("Modeled PF Rate", f"{modeled_pf:.0f} BWPD")
         with col2:
-            st.metric("Actual PF Rate", f"{actual_pf:.0f} BWPD" if is_valid_number(actual_pf) else "N/A")
+            st.metric(
+                "Actual PF Rate",
+                f"{actual_pf:.0f} BWPD" if is_valid_number(actual_pf) else "N/A",
+            )
         with col3:
             if is_valid_number(actual_pf):
                 st.metric("Delta", f"{modeled_pf - actual_pf:+.0f} BWPD")
@@ -387,7 +421,9 @@ def _render_model_vs_actual(params: SimulationParams, tube, well_profile) -> Non
     table_df = test_df[available].copy()
     table_df = table_df.rename(columns=display_cols)
     if "Test Date" in table_df.columns:
-        table_df["Test Date"] = pd.to_datetime(table_df["Test Date"]).dt.strftime("%Y-%m-%d")
+        table_df["Test Date"] = pd.to_datetime(table_df["Test Date"]).dt.strftime(
+            "%Y-%m-%d"
+        )
     table_df = table_df.sort_values("Test Date", ascending=False).reset_index(drop=True)
 
     st.markdown(f"#### Well Test Data ({len(table_df)} tests)")

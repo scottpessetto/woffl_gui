@@ -11,7 +11,9 @@ import numpy as np
 from woffl.flow import singlephase as sp
 
 
-def velocities(qoil: float, qwat: float, qgas: float, area: float) -> tuple[float, float, float]:
+def velocities(
+    qoil: float, qwat: float, qgas: float, area: float
+) -> tuple[float, float, float]:
     """Velocities for Two Phase Flow Calcs
 
     Superficial Liquid, Superficial Gas and Mixture Velocities.
@@ -219,7 +221,9 @@ def beggs_flow_pattern(nslh: float, froude: float) -> tuple[str, float]:
     return hpat, tran
 
 
-def beggs_holdup_base(nslh: float, froude: float, a: float, b: float, c: float) -> float:
+def beggs_holdup_base(
+    nslh: float, froude: float, a: float, b: float, c: float
+) -> float:
     """Beggs and Brill Liquid Holdup Horizontal Piping
 
     Args:
@@ -260,7 +264,9 @@ def beggs_holdup_horz(nslh: float, froude: float) -> tuple[float, float, float]:
     return hlh_seg, hlh_int, hlh_dis
 
 
-def beggs_cf_base(nslh: float, froude: float, ros_nlv: float, e: float, f: float, g: float, h: float) -> float:
+def beggs_cf_base(
+    nslh: float, froude: float, ros_nlv: float, e: float, f: float, g: float, h: float
+) -> float:
     """Beggs and Brill C Factor Base
 
     Args:
@@ -279,7 +285,9 @@ def beggs_cf_base(nslh: float, froude: float, ros_nlv: float, e: float, f: float
     return c
 
 
-def beggs_cf(nslh: float, froude: float, ros_nlv: float) -> tuple[float, float, float, float]:
+def beggs_cf(
+    nslh: float, froude: float, ros_nlv: float
+) -> tuple[float, float, float, float]:
     """Beggs and Brill C Factor Equation
 
     Args:
@@ -319,7 +327,9 @@ def beggs_phi(c: float, incline: float) -> float:
 
 
 # inc looks like int...
-def beggs_holdup_inc(nslh: float, froude: float, ros_nlv: float, incline: float, hpat: str, tparm: float) -> float:
+def beggs_holdup_inc(
+    nslh: float, froude: float, ros_nlv: float, incline: float, hpat: str, tparm: float
+) -> float:
     """Beggs and Brill Incline Holdup
 
     Args:
@@ -493,7 +503,9 @@ def beggs_press_static(rho_slip: float, height: float) -> float:
     return dp_stat
 
 
-def beggs_press_friction(fb: float, rho_mix: float, vmix: float, dhyd: float, length: float) -> float:
+def beggs_press_friction(
+    fb: float, rho_mix: float, vmix: float, dhyd: float, length: float
+) -> float:
     """Beggs Frictional Differential Pressure
 
     Similiar to single phase but uses beggs friction factor, and no-slip mixture

@@ -10,6 +10,12 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+
+from woffl.assembly.calibration import (
+    apply_calibration,
+    compute_field_calibration_summary,
+    run_calibration,
+)
 from woffl.assembly.ipr_analyzer import (
     compute_vogel_coefficients,
     estimate_reservoir_pressure,
@@ -21,16 +27,8 @@ from woffl.assembly.network_optimizer import (
     load_wells_from_csv,
 )
 from woffl.assembly.optimization_algorithms import optimize
-from woffl.assembly.well_test_client import (
-    filter_wells_by_pad,
-    get_pad_names,
-)
+from woffl.assembly.well_test_client import filter_wells_by_pad, get_pad_names
 from woffl.gui.optimization_utils import get_template_csv_content
-from woffl.assembly.calibration import (
-    apply_calibration,
-    compute_field_calibration_summary,
-    run_calibration,
-)
 from woffl.gui.optimization_viz import (
     create_calibration_chart,
     create_efficiency_scatter,
@@ -43,10 +41,7 @@ from woffl.gui.optimization_viz import (
 )
 from woffl.gui.params import NOZZLE_OPTIONS, THROAT_OPTIONS
 from woffl.gui.utils import is_valid_number, load_well_characteristics
-from woffl.gui.well_test_page import (
-    _cached_mpu_well_names,
-    _cached_well_test_query,
-)
+from woffl.gui.well_test_page import _cached_mpu_well_names, _cached_well_test_query
 
 
 def run_multi_well_optimization_page():
@@ -54,12 +49,10 @@ def run_multi_well_optimization_page():
 
     st.title("🛢️ Multi-Well Jet Pump Optimization")
 
-    st.markdown(
-        """
+    st.markdown("""
     Optimize jet pump sizing across multiple wells to maximize field oil production 
     given a constrained power fluid supply.
-    """
-    )
+    """)
 
     # Sidebar for parameters
     with st.sidebar:
@@ -92,19 +85,30 @@ def run_multi_well_optimization_page():
             help="Surface power fluid pressure",
         )
 
-        rho_pf = st.number_input("Power Fluid Density (lbm/ft³)", min_value=50.0, max_value=70.0, value=62.4, step=0.1)
+        rho_pf = st.number_input(
+            "Power Fluid Density (lbm/ft³)",
+            min_value=50.0,
+            max_value=70.0,
+            value=62.4,
+            step=0.1,
+        )
 
         # Optimization Settings
         st.subheader("Optimization Settings")
         opt_method = st.selectbox(
             "Algorithm",
-            ["milp", "greedy", "proportional"],
+            ["milp", "mckp"],
             index=0,
-            help="MILP: Optimal (exact solver). Greedy: Iterative marginal allocation. Proportional: Productivity-based.",
+            help="MILP: Optimal via scipy linear programming. MCKP: Multi-choice knapsack via OR-Tools CP-SAT.",
         )
 
         marginal_wc = st.number_input(
-            "Marginal Watercut Threshold", min_value=0.0, max_value=1.0, value=0.94, step=0.01, format="%.2f"
+            "Marginal Watercut Threshold",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.94,
+            step=0.01,
+            format="%.2f",
         )
 
         has_jp_history_sidebar = "jp_history_df" in st.session_state
@@ -233,9 +237,15 @@ def run_multi_well_optimization_page():
         if "wt_export_for_multiwell" in st.session_state:
             wt_df = st.session_state["wt_export_for_multiwell"]
             n_wells = len(wt_df)
-            st.info(f"Well Test Analysis results available ({n_wells} wells). Load them or upload a CSV below.")
-            if st.button("Load Well Test Results", type="primary", use_container_width=True):
-                tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w", newline="")
+            st.info(
+                f"Well Test Analysis results available ({n_wells} wells). Load them or upload a CSV below."
+            )
+            if st.button(
+                "Load Well Test Results", type="primary", use_container_width=True
+            ):
+                tmp = tempfile.NamedTemporaryFile(
+                    suffix=".csv", delete=False, mode="w", newline=""
+                )
                 wt_df.to_csv(tmp, index=False)
                 tmp.close()
                 try:
@@ -272,11 +282,12 @@ def run_multi_well_optimization_page():
             )
 
         if not uploaded_file and not has_wt_wells:
-            st.info("👆 Upload a CSV file to begin. Click 'Download CSV Template' to get started.")
+            st.info(
+                "👆 Upload a CSV file to begin. Click 'Download CSV Template' to get started."
+            )
 
             with st.expander("📖 How to Use", expanded=True):
-                st.markdown(
-                    """
+                st.markdown("""
                 ### Quick Start Guide
 
                 1. **Download the CSV template** using the button above
@@ -302,17 +313,20 @@ def run_multi_well_optimization_page():
                 - Total field oil production prediction
                 - Power fluid allocation across wells
                 - Comprehensive visualizations and metrics
-                """
-                )
+                """)
             return
 
     # Validation check for pump options
     if not nozzle_opts or not throat_opts:
-        st.warning("⚠️ Please select at least one nozzle size and one throat ratio in the sidebar.")
+        st.warning(
+            "⚠️ Please select at least one nozzle size and one throat ratio in the sidebar."
+        )
         return
 
     # Run Optimization
-    if st.button("🚀 Run Multi-Well Optimization", type="primary", use_container_width=True):
+    if st.button(
+        "🚀 Run Multi-Well Optimization", type="primary", use_container_width=True
+    ):
         try:
             # Load wells from the appropriate source
             if has_db_wells:
@@ -322,7 +336,9 @@ def run_multi_well_optimization_page():
                 wells = st.session_state["mw_wells_from_wt"]
                 st.success(f"✅ Using {len(wells)} wells from Well Test Analysis")
             else:
-                with tempfile.NamedTemporaryFile(mode="wb", suffix=".csv", delete=False) as f:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb", suffix=".csv", delete=False
+                ) as f:
                     f.write(uploaded_file.getvalue())
                     temp_csv_path = f.name
 
@@ -337,7 +353,9 @@ def run_multi_well_optimization_page():
                     st.write(f"- {well.well_name} ({well.field_model})")
 
             # Create optimizer
-            pf_constraint = PowerFluidConstraint(total_rate=total_pf, pressure=pf_pressure, rho_pf=rho_pf)
+            pf_constraint = PowerFluidConstraint(
+                total_rate=total_pf, pressure=pf_pressure, rho_pf=rho_pf
+            )
 
             # Inject current JP configs into nozzle/throat options so batch sims include them
             effective_nozzles = list(nozzle_opts)
@@ -382,11 +400,17 @@ def run_multi_well_optimization_page():
             calibration_results = None
             if use_calibration and current_jp_map and has_jp_history_sidebar:
                 all_tests = st.session_state.get("all_well_tests_df")
-                actual_oil_map, actual_pf_map, actual_bhp_map = _build_actual_maps(opt_well_names, all_tests)
+                actual_oil_map, actual_pf_map, actual_bhp_map = _build_actual_maps(
+                    opt_well_names, all_tests
+                )
 
                 if actual_oil_map:
                     calibration_results = run_calibration(
-                        optimizer, actual_oil_map, actual_pf_map, actual_bhp_map, current_jp_map
+                        optimizer,
+                        actual_oil_map,
+                        actual_pf_map,
+                        actual_bhp_map,
+                        current_jp_map,
                     )
                     optimizer.set_calibration(calibration_results)
 
@@ -398,15 +422,25 @@ def run_multi_well_optimization_page():
 
                         cal_col1, cal_col2, cal_col3, cal_col4 = st.columns(4)
                         with cal_col1:
-                            st.metric("Calibrated Wells", f"{summary['num_calibrated']}/{len(wells)}")
+                            st.metric(
+                                "Calibrated Wells",
+                                f"{summary['num_calibrated']}/{len(wells)}",
+                            )
                         with cal_col2:
-                            st.metric("Median Factor", f"{summary['median_factor']:.2f}")
+                            st.metric(
+                                "Median Factor", f"{summary['median_factor']:.2f}"
+                            )
                         with cal_col3:
                             st.metric("Mean Factor", f"{summary['mean_factor']:.2f}")
                         with cal_col4:
                             if summary["worst_well"]:
-                                worst_err = calibration_results[summary["worst_well"]].oil_error_pct
-                                st.metric("Worst Fit", f"{summary['worst_well']} ({worst_err:.0f}%)")
+                                worst_err = calibration_results[
+                                    summary["worst_well"]
+                                ].oil_error_pct
+                                st.metric(
+                                    "Worst Fit",
+                                    f"{summary['worst_well']} ({worst_err:.0f}%)",
+                                )
 
                         # Calibration chart
                         fig_cal = create_calibration_chart(calibration_results)
@@ -417,16 +451,22 @@ def run_multi_well_optimization_page():
                         with st.expander("Calibration Details"):
                             cal_rows = []
                             for name, c in calibration_results.items():
-                                cal_rows.append({
-                                    "Well": name,
-                                    "Current JP": f"{c.current_nozzle}{c.current_throat}",
-                                    "Model Oil": f"{c.model_oil:.0f}",
-                                    "Actual Oil": f"{c.actual_oil:.0f}",
-                                    "Factor": f"{c.calibration_factor:.2f}",
-                                    "Error %": f"{c.oil_error_pct:.1f}%",
-                                    "Grade": c.quality_grade,
-                                })
-                            st.dataframe(pd.DataFrame(cal_rows), use_container_width=True, hide_index=True)
+                                cal_rows.append(
+                                    {
+                                        "Well": name,
+                                        "Current JP": f"{c.current_nozzle}{c.current_throat}",
+                                        "Model Oil": f"{c.model_oil:.0f}",
+                                        "Actual Oil": f"{c.actual_oil:.0f}",
+                                        "Factor": f"{c.calibration_factor:.2f}",
+                                        "Error %": f"{c.oil_error_pct:.1f}%",
+                                        "Grade": c.quality_grade,
+                                    }
+                                )
+                            st.dataframe(
+                                pd.DataFrame(cal_rows),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
 
             # Run optimization
             st.write("### Running Optimization")
@@ -434,10 +474,14 @@ def run_multi_well_optimization_page():
                 results = optimize(optimizer, method=opt_method)
 
             if not results:
-                st.warning("⚠️ Optimization did not produce viable results. Try adjusting constraints or pump options.")
+                st.warning(
+                    "⚠️ Optimization did not produce viable results. Try adjusting constraints or pump options."
+                )
                 return
 
-            st.success(f"✅ Optimization complete! Allocated pumps to {len(results)} wells")
+            st.success(
+                f"✅ Optimization complete! Allocated pumps to {len(results)} wells"
+            )
 
             _render_result_tabs(results, optimizer, calibration_results)
 
@@ -481,7 +525,9 @@ def _build_actual_maps(opt_wells: list[str], test_df) -> tuple[dict, dict, dict]
 
     well_tests = test_df[test_df["well"].isin(opt_wells)].copy()
     for well in opt_wells:
-        wt = well_tests[well_tests["well"] == well].sort_values("WtDate", ascending=False)
+        wt = well_tests[well_tests["well"] == well].sort_values(
+            "WtDate", ascending=False
+        )
         if wt.empty:
             continue
         row_data = wt.iloc[0]
@@ -559,7 +605,11 @@ def _render_result_tabs(results, optimizer, calibration_results=None) -> None:
         if calibration_results:
             # Add Cal Factor column
             results_df["Cal Factor"] = results_df["Well"].map(
-                lambda w: calibration_results[w].calibration_factor if w in calibration_results else 1.0
+                lambda w: (
+                    calibration_results[w].calibration_factor
+                    if w in calibration_results
+                    else 1.0
+                )
             )
         st.dataframe(results_df, use_container_width=True, height=400)
 
@@ -604,7 +654,11 @@ def _render_result_tabs(results, optimizer, calibration_results=None) -> None:
         export_df = optimizer.to_dataframe(display_results)
         if calibration_results:
             export_df["Cal Factor"] = export_df["Well"].map(
-                lambda w: calibration_results[w].calibration_factor if w in calibration_results else 1.0
+                lambda w: (
+                    calibration_results[w].calibration_factor
+                    if w in calibration_results
+                    else 1.0
+                )
             )
         csv_data = export_df.to_csv(index=False)
 
@@ -641,7 +695,9 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None) -
 
     # Build actual maps from session state
     all_tests = st.session_state.get("all_well_tests_df")
-    actual_oil_map, actual_pf_map, actual_bhp_map = _build_actual_maps(opt_wells, all_tests)
+    actual_oil_map, actual_pf_map, actual_bhp_map = _build_actual_maps(
+        opt_wells, all_tests
+    )
 
     # Get calibrated results for display
     if calibration_results:
@@ -677,9 +733,15 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None) -
         }
         if calibration_results:
             row["Cal Oil (BOPD)"] = f"{cal_oil:.0f}"
-            row["Cal Factor"] = f"{calibration_results[well].calibration_factor:.2f}" if well in calibration_results else "1.00"
+            row["Cal Factor"] = (
+                f"{calibration_results[well].calibration_factor:.2f}"
+                if well in calibration_results
+                else "1.00"
+            )
         row["Opt PF (BWPD)"] = f"{r.allocated_power_fluid:.0f}"
-        row["Delta Oil (BOPD)"] = f"{cal_oil - actual:+.0f}" if actual is not None else "N/A"
+        row["Delta Oil (BOPD)"] = (
+            f"{cal_oil - actual:+.0f}" if actual is not None else "N/A"
+        )
         rows.append(row)
 
     comp_df = pd.DataFrame(rows)
@@ -694,9 +756,16 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None) -
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Total Current Oil", f"{total_actual_oil:.0f} BOPD" if total_actual_oil > 0 else "N/A")
+        st.metric(
+            "Total Current Oil",
+            f"{total_actual_oil:.0f} BOPD" if total_actual_oil > 0 else "N/A",
+        )
     with col2:
-        label = "Total Optimized Oil (Cal)" if calibration_results else "Total Optimized Oil"
+        label = (
+            "Total Optimized Oil (Cal)"
+            if calibration_results
+            else "Total Optimized Oil"
+        )
         st.metric(label, f"{total_optimized:.0f} BOPD")
     with col3:
         if total_actual_oil > 0:
@@ -706,7 +775,10 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None) -
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Total Actual PF", f"{total_actual_pf:.0f} BWPD" if total_actual_pf > 0 else "N/A")
+        st.metric(
+            "Total Actual PF",
+            f"{total_actual_pf:.0f} BWPD" if total_actual_pf > 0 else "N/A",
+        )
     with col2:
         st.metric("Total Optimized PF", f"{total_opt_pf:.0f} BWPD")
     with col3:
@@ -717,7 +789,12 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None) -
 
     # IPR Comparison PDF download
     pdf_bytes = create_ipr_comparison_pdf(
-        results, optimizer, actual_oil_map, actual_pf_map, actual_bhp_map, current_jp_map,
+        results,
+        optimizer,
+        actual_oil_map,
+        actual_pf_map,
+        actual_bhp_map,
+        current_jp_map,
         calibration=calibration_results,
     )
     st.download_button(
@@ -753,7 +830,9 @@ def _render_databricks_loader(max_rp_schrader, max_rp_kuparuk, resp_modifier):
         selected_pads = []
         for pad in all_pads:
             pad_wells = filter_wells_by_pad(all_well_names, [pad])
-            if st.checkbox(f"Pad {pad} ({len(pad_wells)})", value=False, key=f"mw_pad_{pad}"):
+            if st.checkbox(
+                f"Pad {pad} ({len(pad_wells)})", value=False, key=f"mw_pad_{pad}"
+            ):
                 selected_pads.append(pad)
 
     if not selected_pads:
@@ -777,7 +856,11 @@ def _render_databricks_loader(max_rp_schrader, max_rp_kuparuk, resp_modifier):
     st.caption(f"{len(filtered_well_names)} wells across {len(selected_pads)} pads")
 
     # Load & Analyze button
-    if st.button("🔄 Load & Analyze Wells from Databricks", type="primary", use_container_width=True):
+    if st.button(
+        "🔄 Load & Analyze Wells from Databricks",
+        type="primary",
+        use_container_width=True,
+    ):
         try:
             # Step 1: Fetch well tests
             st.write("### Step 1: Fetching Well Tests")
@@ -794,7 +877,9 @@ def _render_databricks_loader(max_rp_schrader, max_rp_kuparuk, resp_modifier):
 
             st.success(f"Loaded {len(df)} well tests for {df['well'].nunique()} wells")
             if dropped_wells:
-                st.warning(f"{len(dropped_wells)} wells dropped (no BHP/fluid data): {', '.join(dropped_wells)}")
+                st.warning(
+                    f"{len(dropped_wells)} wells dropped (no BHP/fluid data): {', '.join(dropped_wells)}"
+                )
 
             # Step 2: Estimate reservoir pressure
             st.write("### Step 2: Estimating Reservoir Pressure")
@@ -810,7 +895,9 @@ def _render_databricks_loader(max_rp_schrader, max_rp_kuparuk, resp_modifier):
             # Step 3: Compute Vogel coefficients
             st.write("### Step 3: Computing IPR Parameters")
             with st.spinner("Computing Vogel IPR parameters..."):
-                vogel_coeffs = compute_vogel_coefficients(merged_with_rp, resp_modifier=resp_modifier)
+                vogel_coeffs = compute_vogel_coefficients(
+                    merged_with_rp, resp_modifier=resp_modifier
+                )
 
             if vogel_coeffs.empty:
                 st.error("Could not compute IPR parameters for any wells.")
@@ -822,7 +909,9 @@ def _render_databricks_loader(max_rp_schrader, max_rp_kuparuk, resp_modifier):
             st.write("### Step 4: Building Well Configurations")
             template_df = export_optimization_template(vogel_coeffs)
 
-            tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w", newline="")
+            tmp = tempfile.NamedTemporaryFile(
+                suffix=".csv", delete=False, mode="w", newline=""
+            )
             template_df.to_csv(tmp, index=False)
             tmp.close()
             try:
@@ -836,8 +925,17 @@ def _render_databricks_loader(max_rp_schrader, max_rp_kuparuk, resp_modifier):
 
             # Show loaded wells
             with st.expander(f"Wells Loaded ({len(wells)})"):
-                summary_df = template_df[["Well", "res_pres", "form_wc", "qwf_bopd", "pwf", "field_model"]].copy()
-                summary_df.columns = ["Well", "Res Pres (psi)", "WC", "Qwf (BPD)", "Pwf (psi)", "Field"]
+                summary_df = template_df[
+                    ["Well", "res_pres", "form_wc", "qwf_bopd", "pwf", "field_model"]
+                ].copy()
+                summary_df.columns = [
+                    "Well",
+                    "Res Pres (psi)",
+                    "WC",
+                    "Qwf (BPD)",
+                    "Pwf (psi)",
+                    "Field",
+                ]
                 st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
         except Exception as e:
@@ -880,8 +978,12 @@ def _render_pf_sensitivity(
         st.warning("PF Pressure Min must be less than Max.")
         return
 
-    rate_range = list(range(int(rate_min), int(rate_max) + int(rate_step), int(rate_step)))
-    press_range = list(range(int(press_min), int(press_max) + int(press_step), int(press_step)))
+    rate_range = list(
+        range(int(rate_min), int(rate_max) + int(rate_step), int(rate_step))
+    )
+    press_range = list(
+        range(int(press_min), int(press_max) + int(press_step), int(press_step))
+    )
     total_runs = len(press_range) * len(rate_range)
 
     st.caption(
@@ -1023,10 +1125,16 @@ def _render_pf_sensitivity(
     # --- Summary table ---
     st.write("### Sensitivity Results")
     display_df = df.copy()
-    display_df["Total Oil (BOPD)"] = display_df["Total Oil (BOPD)"].apply(lambda x: f"{x:,.0f}")
-    display_df["Total Water (BWPD)"] = display_df["Total Water (BWPD)"].apply(lambda x: f"{x:,.0f}")
+    display_df["Total Oil (BOPD)"] = display_df["Total Oil (BOPD)"].apply(
+        lambda x: f"{x:,.0f}"
+    )
+    display_df["Total Water (BWPD)"] = display_df["Total Water (BWPD)"].apply(
+        lambda x: f"{x:,.0f}"
+    )
     display_df["Field WC"] = display_df["Field WC"].apply(lambda x: f"{x:.1%}")
-    display_df["PF Utilization"] = display_df["PF Utilization"].apply(lambda x: f"{x:.1%}")
+    display_df["PF Utilization"] = display_df["PF Utilization"].apply(
+        lambda x: f"{x:.1%}"
+    )
     display_df["Wells Allocated"] = display_df["Wells Allocated"].astype(int)
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 

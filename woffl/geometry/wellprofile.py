@@ -13,7 +13,9 @@ class WellProfile:
     Can be used to interpolate values for understanding how measured depth relates to vertical depth.
     """
 
-    def __init__(self, md_list: list | np.ndarray, vd_list: list | np.ndarray, jetpump_md: float) -> None:
+    def __init__(
+        self, md_list: list | np.ndarray, vd_list: list | np.ndarray, jetpump_md: float
+    ) -> None:
         """Create a Well Profile
 
         Args:
@@ -25,10 +27,14 @@ class WellProfile:
             Self
         """
         if len(md_list) != len(vd_list):
-            raise ValueError("Lists for Measured Depth and Vertical Depth need to be the same length")
+            raise ValueError(
+                "Lists for Measured Depth and Vertical Depth need to be the same length"
+            )
 
         if max(md_list) < max(vd_list):
-            raise ValueError("Measured Depth needs to extend farther than Vertical Depth")
+            raise ValueError(
+                "Measured Depth needs to extend farther than Vertical Depth"
+            )
 
         if jetpump_md > max(md_list):
             raise ValueError("Jet pump not inside well profile measured depth")
@@ -99,12 +105,26 @@ class WellProfile:
     def plot_raw(self) -> None:
         """Plot the Raw Profile Data"""
 
-        self._profileplot(self.hd_ray, self.vd_ray, self.md_ray, self.jetpump_hd, self.jetpump_vd, self.jetpump_md)
+        self._profileplot(
+            self.hd_ray,
+            self.vd_ray,
+            self.md_ray,
+            self.jetpump_hd,
+            self.jetpump_vd,
+            self.jetpump_md,
+        )
         return None
 
     def plot_filter(self) -> None:
         """Plot the Filtered Data"""
-        self._profileplot(self.hd_fit, self.vd_fit, self.md_fit, self.jetpump_hd, self.jetpump_vd, self.jetpump_md)
+        self._profileplot(
+            self.hd_fit,
+            self.vd_fit,
+            self.md_fit,
+            self.jetpump_hd,
+            self.jetpump_vd,
+            self.jetpump_md,
+        )
         return None
 
     def filter(self):
@@ -124,7 +144,9 @@ class WellProfile:
         # have to use md since the valve will always be increasing
         md_fit, vd_fit = segments_fit(self.md_ray, self.vd_ray)
         md_fit[0], vd_fit[0] = 0, 0  # first values always need to start at zero
-        idx = np.searchsorted(self.md_ray, md_fit)  # why is this pulling one more? because md_ray and
+        idx = np.searchsorted(
+            self.md_ray, md_fit
+        )  # why is this pulling one more? because md_ray and
 
         hd_fit = self.hd_ray[idx]
         return hd_fit, vd_fit, md_fit
@@ -177,7 +199,9 @@ class WellProfile:
         for i, dis in enumerate(dist):
             # force there to always be at least three (?) spaces?
             dis = max(int(np.ceil(dis / seg_len)), 3)  # evenly space out the spaces
-            md_seg = np.append(md_seg, np.linspace(md1[i], md2[i], dis))  # double counting
+            md_seg = np.append(
+                md_seg, np.linspace(md1[i], md2[i], dis)
+            )  # double counting
         md_seg = np.unique(md_seg)  # get rid of weird double counts from linspace
         vd_seg = np.interp(md_seg, md_fit, vd_fit)
         return md_seg, vd_seg
@@ -213,14 +237,25 @@ class WellProfile:
         """
         md_diff = np.diff(md_ray, n=1)  # difference between values in array
         vd_diff = np.diff(vd_ray, n=1)  # difference between values in array
-        hd_diff = np.zeros(1)  # start with zero at top to make array match original size
-        hd_diff = np.append(hd_diff, np.sqrt(md_diff**2 - vd_diff**2))  # pythagorean theorem
-        hd_ray = np.cumsum(hd_diff)  # rolling sum, previous values are finite differences
+        hd_diff = np.zeros(
+            1
+        )  # start with zero at top to make array match original size
+        hd_diff = np.append(
+            hd_diff, np.sqrt(md_diff**2 - vd_diff**2)
+        )  # pythagorean theorem
+        hd_ray = np.cumsum(
+            hd_diff
+        )  # rolling sum, previous values are finite differences
         return hd_ray
 
     @staticmethod
     def _profileplot(
-        hd_ray: np.ndarray, vd_ray: np.ndarray, md_ray: np.ndarray, hd_jp: float, vd_jp: float, md_jp: float
+        hd_ray: np.ndarray,
+        vd_ray: np.ndarray,
+        md_ray: np.ndarray,
+        hd_jp: float,
+        vd_jp: float,
+        md_jp: float,
     ) -> None:
         """Create a Well Profile Plot
 
@@ -241,7 +276,14 @@ class WellProfile:
             plt.plot(hd_ray, vd_ray, marker="o", linestyle="--", label="Survey")
 
         # plot jetpump location
-        plt.plot(hd_jp, vd_jp, marker="o", color="r", linestyle="", label=f"Jetpump MD: {int(md_jp)} ft")
+        plt.plot(
+            hd_jp,
+            vd_jp,
+            marker="o",
+            color="r",
+            linestyle="",
+            label=f"Jetpump MD: {int(md_jp)} ft",
+        )
 
         plt.gca().invert_yaxis()
         plt.title(f"Dir Survey, Length: {max(md_ray)} ft")
@@ -294,7 +336,9 @@ class WellProfile:
         return cls(md_list=c23_md, vd_list=c23_vd, jetpump_md=7926)
 
 
-def sort_profile(md_ray: np.ndarray, vd_ray: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def sort_profile(
+    md_ray: np.ndarray, vd_ray: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
     """Sort Well Profile
 
     Take in the raw data from various databases. Sort the measured
@@ -315,7 +359,9 @@ def sort_profile(md_ray: np.ndarray, vd_ray: np.ndarray) -> tuple[np.ndarray, np
     return md_sort, vd_sort
 
 
-def segments_fit(X: np.ndarray, Y: np.ndarray, maxcount: int = 18) -> tuple[np.ndarray, np.ndarray]:
+def segments_fit(
+    X: np.ndarray, Y: np.ndarray, maxcount: int = 18
+) -> tuple[np.ndarray, np.ndarray]:
     """Segments Fit DankOC
 
     Feed the method the raw data. Function will assess the raw data.
@@ -347,7 +393,9 @@ def segments_fit(X: np.ndarray, Y: np.ndarray, maxcount: int = 18) -> tuple[np.n
         seg = np.full(count - 1, (xmax - xmin) / count)
 
         px_init = np.r_[np.r_[xmin, seg].cumsum(), xmax]
-        py_init = np.array([Y[np.abs(X - x) < (xmax - xmin) * 0.1].mean() for x in px_init])
+        py_init = np.array(
+            [Y[np.abs(X - x) < (xmax - xmin) * 0.1].mean() for x in px_init]
+        )
 
         def func(p):
             seg = p[: count - 1]
@@ -366,7 +414,7 @@ def segments_fit(X: np.ndarray, Y: np.ndarray, maxcount: int = 18) -> tuple[np.n
         AIC = n * np.log(err(res.x)) + 4 * count
         BIC = n * np.log(err(res.x)) + 2 * count * np.log(n)
 
-        if (BIC < best_BIC) and (AIC < best_AIC):  # Continue adding complexity.
+        if (BIC < best_BIC) & (AIC < best_AIC):  # Continue adding complexity.
             best_fit = res
             best_AIC, best_BIC = AIC, BIC
         else:  # Stop.
@@ -379,7 +427,9 @@ def segments_fit(X: np.ndarray, Y: np.ndarray, maxcount: int = 18) -> tuple[np.n
     return px, py  # type: ignore [return the last (n-1)]
 
 
-def segments_guardrails(px: np.ndarray, py: np.ndarray, xmax: float, ymax: float) -> tuple[np.ndarray, np.ndarray]:
+def segments_guardrails(
+    px: np.ndarray, py: np.ndarray, xmax: float, ymax: float
+) -> tuple[np.ndarray, np.ndarray]:
     """Segments Guardrails
 
     Add some guardrails to ensure the returned datapoints don't go past the max values.
@@ -397,7 +447,9 @@ def segments_guardrails(px: np.ndarray, py: np.ndarray, xmax: float, ymax: float
         py (np.array): Filtered y data with guardrails
     """
     px = np.clip(px, None, xmax)  # Replace any px values longer than xmax with xmax.
-    py[px == xmax] = ymax  # Any place that xmax exists in px, replace the corresponding py with ymax.
+    py[px == xmax] = (
+        ymax  # Any place that xmax exists in px, replace the corresponding py with ymax.
+    )
 
     combo = np.stack((px, py), axis=-1)  # zip together 1D into 2D that you can review
     unq_vals, unq_idxs = np.unique(combo, return_index=True, axis=0)
