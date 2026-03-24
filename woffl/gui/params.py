@@ -25,6 +25,7 @@ class SimulationParams:
         ken: Nozzle loss coefficient
         kth: Throat loss coefficient
         kdi: Diffuser loss coefficient
+        jpump_direction: Circulation direction ("forward" or "reverse")
         tubing_od: Tubing outer diameter, inches
         tubing_thickness: Tubing wall thickness, inches
         casing_od: Casing outer diameter, inches
@@ -57,6 +58,7 @@ class SimulationParams:
     ken: float = 0.03
     kth: float = 0.3
     kdi: float = 0.4
+    jpump_direction: str = "reverse"
 
     # Pipe parameters
     tubing_od: float = 4.5

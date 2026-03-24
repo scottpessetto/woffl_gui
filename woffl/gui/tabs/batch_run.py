@@ -606,18 +606,28 @@ def _render_nelder_mead_section(batch_pump, params: SimulationParams) -> None:
                 help="Penalty for lift water usage. Auto-populated from marginal watercut, or override manually.",
             )
         with col3:
-            # Show the seed pump (best semi-finalist by oil rate)
-            best_semi = semi_df.loc[semi_df["qoil_std"].idxmax()]
-            st.info(
-                f"Seed pump: **{best_semi['nozzle']}{best_semi['throat']}** ({best_semi['qoil_std']:.0f} BOPD)"
+            # Let user pick the seed pump from semi-finalists
+            semi_sorted = semi_df.sort_values("qoil_std", ascending=False)
+            seed_options = [
+                f"{row['nozzle']}{row['throat']} ({row['qoil_std']:.0f} BOPD)"
+                for _, row in semi_sorted.iterrows()
+            ]
+            seed_choice = st.selectbox(
+                "Seed Pump",
+                options=seed_options,
+                index=0,
+                key="nm_seed_pump",
+                help="Semi-finalist pump to seed the Nelder-Mead optimizer. Defaults to highest oil rate.",
             )
+            seed_idx = seed_options.index(seed_choice)
+            selected_semi = semi_sorted.iloc[seed_idx]
 
         run_nm = st.button("Run Nelder-Mead Optimization", key="run_nelder_mead")
 
         if run_nm:
             seed_jp = JetPump(
-                nozzle_no=best_semi["nozzle"],
-                area_ratio=best_semi["throat"],
+                nozzle_no=selected_semi["nozzle"],
+                area_ratio=selected_semi["throat"],
                 ken=params.ken,
                 kth=params.kth,
                 kdi=params.kdi,
@@ -656,17 +666,17 @@ def _render_nelder_mead_section(batch_pump, params: SimulationParams) -> None:
                 if not pd.isna(row.get("psu_solv")):
                     st.metric("Suction P", f"{row['psu_solv']:.0f} psi")
 
-            # Compare to batch best
+            # Compare to seed pump
             if not pd.isna(row.get("qoil_std")):
-                delta = row["qoil_std"] - best_semi["qoil_std"]
+                delta = row["qoil_std"] - selected_semi["qoil_std"]
                 if abs(delta) > 0.5:
                     st.caption(
-                        f"Nelder-Mead catalog pump produces **{delta:+.1f} BOPD** vs batch best "
-                        f"({best_semi['nozzle']}{best_semi['throat']} at {best_semi['qoil_std']:.0f} BOPD)."
+                        f"Nelder-Mead catalog pump produces **{delta:+.1f} BOPD** vs seed pump "
+                        f"({selected_semi['nozzle']}{selected_semi['throat']} at {selected_semi['qoil_std']:.0f} BOPD)."
                     )
                 else:
                     st.caption(
-                        "Nelder-Mead confirms the batch best is already near-optimal."
+                        f"Nelder-Mead confirms the seed pump ({selected_semi['nozzle']}{selected_semi['throat']}) is already near-optimal."
                     )
 
 
@@ -704,6 +714,7 @@ def render_tab(
             params.throat_batch_options,
             wellname=f"{params.field_model} Well",
             field_model=params.field_model,
+            jpump_direction=params.jpump_direction,
         )
 
     if not batch_pump:

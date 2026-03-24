@@ -23,6 +23,7 @@ class FormGas:
         self.gas_sg = gas_sg
         self.ppc, self.tpc = self._sutton_pseudo_crit(gas_sg)
         self.mw = 28.96443 * gas_sg  # molecular weight
+        self._cache = {}
 
     def __repr__(self):
         return f"Gas: {self.gas_sg} SG and {self.mw} Mol Weight"
@@ -69,6 +70,11 @@ class FormGas:
             gas_sg (float): 0.55"""
         return cls(gas_sg=0.55)
 
+    def _cached(self, key, fn):
+        if key not in self._cache:
+            self._cache[key] = fn()
+        return self._cache[key]
+
     # almost need seperate function to change pressure / temperature
     def condition(self, press, temp):
         """Set condition of evaluation
@@ -89,7 +95,13 @@ class FormGas:
         # not adjusted for non-hydrocarbon gas such as H2S or CO2
         self.ppr = self.pabs / self.ppc  # unitless, pressure pseudo reduced
         self.tpr = self.tabs / self.tpc  # unitless, temperature pseudo reduced
+        self._cache = {}
         return self
+
+    def _compute_zfactor(self) -> float:
+        zfactor = self._zfactor_grad_school(self.ppr, self.tpr)
+        # zfactor = self._zfactor_dak(self.ppr, self.tpr)
+        return zfactor
 
     @property
     def zfactor(self) -> float:
@@ -101,9 +113,11 @@ class FormGas:
         Returns:
             zfactor(float): gas zfactor, no units
         """
-        zfactor = self._zfactor_grad_school(self.ppr, self.tpr)
-        # zfactor = self._zfactor_dak(self.ppr, self.tpr)
-        return zfactor
+        return self._cached("zfactor", self._compute_zfactor)
+
+    def _compute_density(self) -> float:
+        rho_gas = self.pabs * self.mw / (self.zfactor * FormGas._R * self.tabs)
+        return rho_gas
 
     @property
     def density(self) -> float:
@@ -121,8 +135,11 @@ class FormGas:
             Fundamental Principles of Reservoir Engineering, B.Towler (2002) Page 16
             Applied Multiphase Flow in Pipes..., Al-Safran and Brill (2017) Page 305
         """
-        rho_gas = self.pabs * self.mw / (self.zfactor * FormGas._R * self.tabs)
-        return rho_gas
+        return self._cached("density", self._compute_density)
+
+    def _compute_viscosity(self) -> float:
+        ug = self._viscosity_lee(self.tabs, self.mw, self.density)
+        return ug
 
     @property
     def viscosity(self) -> float:
@@ -136,8 +153,7 @@ class FormGas:
         Returns:
             ugas (float): gas viscosity, cP
         """
-        ug = self._viscosity_lee(self.tabs, self.mw, self.density)
-        return ug
+        return self._cached("viscosity", self._compute_viscosity)
 
     @property
     def compress(self) -> float:

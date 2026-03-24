@@ -42,6 +42,7 @@ class BlackOil:
         self.oil_api = oil_api
         self.pbp = bubblepoint
         self.gas_sg = gas_sg
+        self._cache = {}
 
     def __repr__(self):
         return f"Oil: {self.oil_api} API and a {round(self.gas_sg, 2)} SG Gas"
@@ -107,6 +108,11 @@ class BlackOil:
         """
         return cls(oil_api=22, bubblepoint=1750, gas_sg=0.55)
 
+    def _cached(self, key, fn):
+        if key not in self._cache:
+            self._cache[key] = fn()
+        return self._cache[key]
+
     def condition(self, press: float, temp: float):
         """Set condition of evaluation
 
@@ -119,7 +125,16 @@ class BlackOil:
         """
         self.press = press
         self.temp = temp
+        self._cache = {}
         return self
+
+    def _compute_gas_solubility(self) -> float:
+        if self.press > self.pbp:  # above bubblepoint pressure
+            press = self.pbp  # calculate gas solubility using bubblepoint pressure
+        else:
+            press = self.press
+        rs = self.solubility_kartoatmodjo(press, self.temp, self.oil_api, self.gas_sg)
+        return rs
 
     def gas_solubility(self) -> float:
         """Gas Solubility in Oil (Solution GOR)
@@ -132,12 +147,20 @@ class BlackOil:
         Returns:
             rs (float): Gas solubility in the oil, scf/stb
         """
-        if self.press > self.pbp:  # above bubblepoint pressure
-            press = self.pbp  # calculate gas solubility using bubblepoint pressure
-        else:
-            press = self.press
-        rs = self.solubility_kartoatmodjo(press, self.temp, self.oil_api, self.gas_sg)
-        return rs
+        return self._cached("gas_solubility", self._compute_gas_solubility)
+
+    def _compute_compressibility(self) -> float:
+        rs = self.gas_solubility()  # solubility of gas in the oil
+        if self.press > self.pbp:  # above bubblepoint
+            co = self.compressibility_vasquez_above(
+                self.press, self.temp, self.oil_api, self.gas_sg, rs
+            )
+        else:  # below the bubblepoint
+            co = self.compressibility_mccain_below(
+                self.press, self.temp, self.oil_api, self.gas_sg, rs
+            )
+            # co = self.compressibility_kartoatmodjo_above(self.press, self.temp, self.oil_api, self.gas_sg, rs)
+        return co
 
     @property
     def compress(self) -> float:
@@ -151,17 +174,16 @@ class BlackOil:
         Returns:
             co (float): oil compressibility, psi**-1
         """
-        rs = self.gas_solubility()  # solubility of gas in the oil
-        if self.press > self.pbp:  # above bubblepoint
-            co = self.compressibility_vasquez_above(
-                self.press, self.temp, self.oil_api, self.gas_sg, rs
-            )
-        else:  # below the bubblepoint
-            co = self.compressibility_mccain_below(
-                self.press, self.temp, self.oil_api, self.gas_sg, rs
-            )
-            # co = self.compressibility_kartoatmodjo_above(self.press, self.temp, self.oil_api, self.gas_sg, rs)
-        return co
+        return self._cached("compressibility", self._compute_compressibility)
+
+    def _compute_oil_fvf(self) -> float:
+        rs = self.gas_solubility()
+        bo = self.fvf_kartoatmodjo_below(self.temp, self.oil_api, self.gas_sg, rs)
+        if self.press > self.pbp:  # above bubblepoint pressure
+            bob = bo
+            co = self.compress
+            bo = self.fvf_vasquez_above(self.press, self.pbp, bob, co)
+        return bo
 
     def oil_fvf(self) -> float:
         """Oil Formation Volume Factor, Bo
@@ -174,13 +196,13 @@ class BlackOil:
         Returns:
             bo (float): oil formation volume, rb/stb
         """
+        return self._cached("oil_fvf", self._compute_oil_fvf)
+
+    def _compute_density(self) -> float:
         rs = self.gas_solubility()
-        bo = self.fvf_kartoatmodjo_below(self.temp, self.oil_api, self.gas_sg, rs)
-        if self.press > self.pbp:  # above bubblepoint pressure
-            bob = bo
-            co = self.compress
-            bo = self.fvf_vasquez_above(self.press, self.pbp, bob, co)
-        return bo
+        bo = self.oil_fvf()
+        rho_oil = self.live_oil_density(self.oil_api, self.gas_sg, rs, bo)
+        return rho_oil
 
     @property  # property decorator makes it so you don't need brackets
     def density(self) -> float:
@@ -194,10 +216,15 @@ class BlackOil:
         Returns:
             rho_oil (float): density of the oil, lbm/ft3
         """
-        rs = self.gas_solubility()
-        bo = self.oil_fvf()
-        rho_oil = self.live_oil_density(self.oil_api, self.gas_sg, rs, bo)
-        return rho_oil
+        return self._cached("density", self._compute_density)
+
+    def _compute_viscosity(self) -> float:
+        uod = self.viscosity_dead_kartoatmodjo(self.temp, self.oil_api)
+        uol = self.viscosity_live_kartoatmodjo_below(uod, self.gas_solubility())
+        if self.press > self.pbp:  # above bubblepoint
+            uob = uol
+            uol = self.viscosity_live_kartoatmodjo_above(uob, self.press, self.pbp)
+        return uol
 
     @property
     def viscosity(self) -> float:
@@ -212,12 +239,13 @@ class BlackOil:
         Returns:
             uoil (float): live oil viscosity, cP
         """
-        uod = self.viscosity_dead_kartoatmodjo(self.temp, self.oil_api)
-        uol = self.viscosity_live_kartoatmodjo_below(uod, self.gas_solubility())
-        if self.press > self.pbp:  # above bubblepoint
-            uob = uol
-            uol = self.viscosity_live_kartoatmodjo_above(uob, self.press, self.pbp)
-        return uol
+        return self._cached("viscosity", self._compute_viscosity)
+
+    def _compute_tension(self) -> float:
+        sigod = self.tension_dead_abdul(self.temp, self.oil_api)
+        sigol = self.tension_live_abdul(sigod, self.gas_solubility())  # dyne/cm
+        sigo = sigol * 0.0000685  # lbf/ft
+        return sigo
 
     @property
     def tension(self) -> float:
@@ -230,10 +258,7 @@ class BlackOil:
 
         Returns:
             sigo (float): Live Oil Surface Tension, lbf/ft"""
-        sigod = self.tension_dead_abdul(self.temp, self.oil_api)
-        sigol = self.tension_live_abdul(sigod, self.gas_solubility())  # dyne/cm
-        sigo = sigol * 0.0000685  # lbf/ft
-        return sigo
+        return self._cached("tension", self._compute_tension)
 
     @staticmethod
     def fvf_standing_below(

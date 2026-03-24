@@ -253,6 +253,7 @@ def render_tab(
             params.throat_batch_options,
             wellname=f"{params.field_model} Well",
             field_model=params.field_model,
+            jpump_direction=params.jpump_direction,
         )
 
     if comprehensive_df is None or comprehensive_df.empty:

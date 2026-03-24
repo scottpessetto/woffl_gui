@@ -218,13 +218,25 @@ def _render_well_selection() -> tuple[str, dict | None]:
     return selected_well, well_data
 
 
-def _render_jetpump_params() -> tuple[str, str, float, float, float]:
+def _render_jetpump_params() -> tuple[str, str, float, float, float, str]:
     """Render jetpump parameter widgets.
 
     Returns:
-        Tuple of (nozzle_no, area_ratio, ken, kth, kdi)
+        Tuple of (nozzle_no, area_ratio, ken, kth, kdi, jpump_direction)
     """
     st.subheader("Jetpump Parameters")
+
+    if "jpump_direction" not in st.session_state:
+        st.session_state.jpump_direction = "Reverse"
+    jpump_direction = st.radio(
+        "Circulation Direction",
+        options=["Reverse", "Forward"],
+        index=["Reverse", "Forward"].index(st.session_state.jpump_direction),
+        help="Reverse: power fluid down annulus, production up tubing. Forward: power fluid down tubing, production up annulus.",
+        key="jpump_direction_input",
+    )
+    st.session_state.jpump_direction = jpump_direction
+
     if "nozzle_no" not in st.session_state:
         st.session_state.nozzle_no = "12"
     nozzle_no = st.selectbox(
@@ -281,7 +293,7 @@ def _render_jetpump_params() -> tuple[str, str, float, float, float]:
     )
     st.session_state.kdi = kdi
 
-    return nozzle_no, area_ratio, ken, kth, kdi
+    return nozzle_no, area_ratio, ken, kth, kdi, jpump_direction.lower()
 
 
 def _render_pipe_params(well_data: dict | None) -> tuple[float, float, float, float]:
@@ -598,7 +610,7 @@ def render_sidebar() -> tuple[bool, SimulationParams]:
 
         # Collect all parameter groups
         surf_pres, jpump_tvd, rho_pf, ppf_surf = _render_well_params(well_data)
-        nozzle_no, area_ratio, ken, kth, kdi = _render_jetpump_params()
+        nozzle_no, area_ratio, ken, kth, kdi, jpump_direction = _render_jetpump_params()
         tubing_od, tubing_thickness, casing_od, casing_thickness = _render_pipe_params(
             well_data
         )
@@ -615,6 +627,7 @@ def render_sidebar() -> tuple[bool, SimulationParams]:
         ken=ken,
         kth=kth,
         kdi=kdi,
+        jpump_direction=jpump_direction,
         tubing_od=tubing_od,
         tubing_thickness=tubing_thickness,
         casing_od=casing_od,

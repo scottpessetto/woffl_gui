@@ -189,6 +189,7 @@ def run_jetpump_solver(
     inflow,
     res_mix,
     field_model=None,
+    jpump_direction="reverse",
 ):
     """Run the jetpump solver and return the results.
 
@@ -214,6 +215,7 @@ def run_jetpump_solver(
             ipr_su=inflow,
             prop_su=res_mix,
             prop_pf=prop_pf,
+            jpump_direction=jpump_direction,
         )
     except ValueError as e:
         # Handle the case where the well cannot lift at max suction pressure
@@ -410,6 +412,7 @@ def run_batch_pump(
     throat_options,
     wellname="Test Well",
     field_model=None,
+    jpump_direction="reverse",
 ):
     """Run a batch pump simulation with multiple nozzle and throat combinations.
 
@@ -426,6 +429,7 @@ def run_batch_pump(
         throat_options: List of throat ratios to test
         wellname: Name of the well for display purposes
         field_model: Field model for power fluid properties
+        jpump_direction: Circulation direction ("forward" or "reverse")
 
     Returns:
         BatchPump: A BatchPump object with results, or None if processing fails
@@ -447,6 +451,7 @@ def run_batch_pump(
         ipr_su=inflow,
         prop_su=res_mix,
         prop_pf=prop_pf,
+        jpump_direction=jpump_direction,
         wellname=wellname,
     )
 
@@ -488,6 +493,7 @@ def run_power_fluid_range_batch(
     throat_options,
     wellname="Test Well",
     field_model=None,
+    jpump_direction="reverse",
 ):
     """Run a comprehensive batch pump simulation across a range of power fluid pressures.
 
@@ -540,6 +546,7 @@ def run_power_fluid_range_batch(
             ipr_su=inflow,
             prop_su=res_mix,
             prop_pf=prop_pf,
+            jpump_direction=jpump_direction,
             wellname=wellname,
         )
 

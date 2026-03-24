@@ -112,6 +112,7 @@ def render_tab(
             inflow,
             res_mix,
             field_model=params.field_model,
+            jpump_direction=params.jpump_direction,
         )
 
     if solver_results:
@@ -306,6 +307,7 @@ def _render_model_vs_actual(params: SimulationParams, wellbore, well_profile) ->
         ipr_inflow,
         ipr_res_mix,
         field_model=params.field_model,
+        jpump_direction=params.jpump_direction,
     )
 
     # 6. Display comparison metrics
