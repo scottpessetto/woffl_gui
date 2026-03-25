@@ -162,6 +162,7 @@ def _create_history_chart(
                 line=dict(color="#2E7D32", width=1.5),
                 fillcolor="rgba(46,125,50,0.4)",
                 stackgroup="production",
+                hovertemplate="%{x|%Y-%m-%d}<br>Oil: %{y:.0f} BOPD<extra></extra>",
             ),
             secondary_y=False,
         )
@@ -177,6 +178,7 @@ def _create_history_chart(
                 line=dict(color="#1565C0", width=1.5),
                 fillcolor="rgba(21,101,192,0.3)",
                 stackgroup="production",
+                hovertemplate="%{x|%Y-%m-%d}<br>Water: %{y:.0f} BWPD<extra></extra>",
             ),
             secondary_y=False,
         )
@@ -193,6 +195,7 @@ def _create_history_chart(
                     mode="lines+markers",
                     line=dict(color="#E65100", width=2),
                     marker=dict(size=4),
+                    hovertemplate="%{x|%Y-%m-%d}<br>BHP: %{y:.0f} psi<extra></extra>",
                 ),
                 secondary_y=True,
             )

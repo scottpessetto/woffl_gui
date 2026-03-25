@@ -1052,6 +1052,7 @@ def _render_pf_sensitivity(
             colorscale="YlGnBu",
             colorbar=dict(title="Oil (BOPD)"),
             contours=dict(showlabels=True, labelfont=dict(size=11, color="white")),
+            hovertemplate="PF Rate: %{x:.0f} BWPD<br>PF Pressure: %{y:.0f} psi<br>Oil: %{z:.0f} BOPD<extra></extra>",
         )
     )
 
@@ -1066,6 +1067,7 @@ def _render_pf_sensitivity(
             text=["Current"],
             textposition="top center",
             textfont=dict(color="red", size=12),
+            hovertemplate="PF Rate: %{x:.0f} BWPD<br>PF Pressure: %{y:.0f} psi<extra></extra>",
         )
     )
 
@@ -1093,6 +1095,7 @@ def _render_pf_sensitivity(
                 name=f"{pressure} psi",
                 line=dict(color=color, width=2),
                 marker=dict(size=5),
+                hovertemplate="PF Rate: %{x:.0f} BWPD<br>Oil: %{y:.0f} BOPD<extra></extra>",
             )
         )
 
@@ -1109,6 +1112,7 @@ def _render_pf_sensitivity(
                 mode="markers",
                 name="Current",
                 marker=dict(color="red", size=14, symbol="star"),
+                hovertemplate="PF Rate: %{x:.0f} BWPD<br>Oil: %{y:.0f} BOPD<extra></extra>",
             )
         )
 

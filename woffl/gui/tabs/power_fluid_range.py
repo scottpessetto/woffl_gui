@@ -4,68 +4,132 @@ Renders the comprehensive power fluid range analysis including scatter plots,
 data tables, and best performer identification.
 """
 
-import matplotlib.cm as cm
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
 from woffl.gui.components.dataframe_display import display_results_table
 from woffl.gui.params import SimulationParams
 from woffl.gui.utils import run_power_fluid_range_batch
+
+# Qualitative palette that stays legible on white
+_PALETTE = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+    "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
+    "#c49c94", "#f7b6d2", "#c7c7c7", "#dbdb8d", "#9edae5",
+]
 
 
 def _render_performance_vs_pressure(
     successful_df: pd.DataFrame, field_model: str
 ) -> None:
     """Render the Performance vs Pressure sub-tab."""
-    st.subheader("Oil Rate vs Power Fluid Pressure")
 
     successful_df = successful_df.copy()
     successful_df["pump_combo"] = successful_df["nozzle"] + successful_df["throat"]
-    unique_combos = successful_df["pump_combo"].unique()
-    colors = cm.get_cmap("tab20")(np.linspace(0, 1, len(unique_combos)))
+    combos = sorted(successful_df["pump_combo"].unique())
 
-    # Oil rate plot
-    fig, ax = plt.subplots(figsize=(12, 8))
-    for i, combo in enumerate(unique_combos):
-        combo_data = successful_df[successful_df["pump_combo"] == combo]
-        ax.scatter(
-            combo_data["power_fluid_pressure"],
-            combo_data["qoil_std"],
-            c=[colors[i]],
-            label=combo,
-            alpha=0.7,
-            s=50,
-        )
-    ax.set_xlabel("Power Fluid Pressure (psi)")
-    ax.set_ylabel("Oil Rate (BOPD)")
-    ax.set_title(f"{field_model} Well - Oil Rate vs Power Fluid Pressure")
-    ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
-    ax.grid(True, alpha=0.3)
-    st.pyplot(fig)
-    plt.close(fig)
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=("Oil Rate vs PF Pressure", "Total Water vs PF Pressure"),
+        horizontal_spacing=0.10,
+    )
 
-    # Total water plot
-    st.subheader("Total Water vs Power Fluid Pressure")
-    fig2, ax2 = plt.subplots(figsize=(12, 8))
-    for i, combo in enumerate(unique_combos):
-        combo_data = successful_df[successful_df["pump_combo"] == combo]
-        ax2.scatter(
-            combo_data["power_fluid_pressure"],
-            combo_data["totl_wat"],
-            c=[colors[i]],
-            label=combo,
-            alpha=0.7,
-            s=50,
+    for i, combo in enumerate(combos):
+        cd = successful_df[successful_df["pump_combo"] == combo].sort_values(
+            "power_fluid_pressure"
         )
-    ax2.set_xlabel("Power Fluid Pressure (psi)")
-    ax2.set_ylabel("Total Water (BWPD)")
-    ax2.set_title(f"{field_model} Well - Total Water vs Power Fluid Pressure")
-    ax2.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
-    ax2.grid(True, alpha=0.3)
-    st.pyplot(fig2)
-    plt.close(fig2)
+        color = _PALETTE[i % len(_PALETTE)]
+
+        custom = np.stack(
+            [cd["psu_solv"], cd["totl_wat"], cd["form_wat"], cd["lift_wat"]], axis=-1
+        )
+
+        hover = (
+            f"<b>{combo}</b><br>"
+            "PF Pressure: %{x:.0f} psi<br>"
+            "Oil: %{y:.0f} BOPD<br>"
+            "Suction P: %{customdata[0]:.0f} psi<br>"
+            "Total Water: %{customdata[1]:.0f} BWPD<br>"
+            "Form Water: %{customdata[2]:.0f} BWPD<br>"
+            "Lift Water: %{customdata[3]:.0f} BWPD"
+            "<extra></extra>"
+        )
+
+        hover_water = (
+            f"<b>{combo}</b><br>"
+            "PF Pressure: %{x:.0f} psi<br>"
+            "Total Water: %{y:.0f} BWPD<br>"
+            "Oil: %{customdata[0]:.0f} BOPD"
+            "<extra></extra>"
+        )
+
+        # Oil rate trace (left)
+        fig.add_trace(
+            go.Scatter(
+                x=cd["power_fluid_pressure"],
+                y=cd["qoil_std"],
+                mode="lines+markers",
+                name=combo,
+                legendgroup=combo,
+                line=dict(color=color, width=2),
+                marker=dict(size=7, line=dict(width=0.5, color="black")),
+                customdata=custom,
+                hovertemplate=hover,
+            ),
+            row=1, col=1,
+        )
+
+        # Total water trace (right) — hide from legend (shared legendgroup)
+        fig.add_trace(
+            go.Scatter(
+                x=cd["power_fluid_pressure"],
+                y=cd["totl_wat"],
+                mode="lines+markers",
+                name=combo,
+                legendgroup=combo,
+                showlegend=False,
+                line=dict(color=color, width=2),
+                marker=dict(size=7, line=dict(width=0.5, color="black")),
+                customdata=np.stack([cd["qoil_std"]], axis=-1),
+                hovertemplate=hover_water,
+            ),
+            row=1, col=2,
+        )
+
+    fig.update_xaxes(title_text="Power Fluid Pressure (psi)", gridcolor="lightgray",
+                     row=1, col=1)
+    fig.update_xaxes(title_text="Power Fluid Pressure (psi)", gridcolor="lightgray",
+                     row=1, col=2)
+    fig.update_yaxes(title_text="Oil Rate (BOPD)", gridcolor="lightgray",
+                     rangemode="tozero", row=1, col=1)
+    fig.update_yaxes(title_text="Total Water (BWPD)", gridcolor="lightgray",
+                     rangemode="tozero", row=1, col=2)
+
+    fig.update_layout(
+        title=dict(
+            text=f"<b>{field_model} Well</b> — Power Fluid Sensitivity",
+            font=dict(size=16),
+        ),
+        plot_bgcolor="white",
+        hovermode="closest",
+        height=600,
+        legend=dict(
+            title_text="Pump",
+            orientation="v",
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.02,
+            font=dict(size=10),
+        ),
+        margin=dict(r=100),
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def _render_comprehensive_data(successful_df: pd.DataFrame) -> None:
