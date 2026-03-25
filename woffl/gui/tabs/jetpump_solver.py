@@ -253,8 +253,29 @@ def _render_model_vs_actual(params: SimulationParams, wellbore, well_profile) ->
 
     coeff_row = well_coeffs.iloc[0]
 
+    # Reservoir pressure override (same pattern as GOR override below)
+    ipr_res_p = coeff_row["ResP"]
+    override_res_p = st.checkbox(
+        "Override Reservoir Pressure from IPR analysis",
+        value=False,
+        help=f"IPR analysis ResP: {ipr_res_p:.0f} psi. Check to use sidebar value ({params.pres}) instead.",
+        key="mva_override_res_p",
+    )
+    model_res_p = params.pres if override_res_p else ipr_res_p
+    st.caption(
+        f"Using Reservoir Pressure: **{model_res_p:.0f}** psi "
+        f"({'sidebar' if override_res_p else 'IPR analysis'})"
+    )
+
     # 4. Generate IPR curves and display chart with test points
-    ipr_data = generate_ipr_curves(vogel_coeffs)
+    if override_res_p:
+        vogel_coeffs_plot = vogel_coeffs.copy()
+        vogel_coeffs_plot.loc[
+            vogel_coeffs_plot["Well"] == params.selected_well, "ResP"
+        ] = model_res_p
+        ipr_data = generate_ipr_curves(vogel_coeffs_plot)
+    else:
+        ipr_data = generate_ipr_curves(vogel_coeffs)
     if params.selected_well in ipr_data:
         fig = create_ipr_plotly(
             params.selected_well,
@@ -290,7 +311,7 @@ def _render_model_vs_actual(params: SimulationParams, wellbore, well_profile) ->
     )
 
     oil_qwf = coeff_row["qwf"] * (1 - coeff_row["form_wc"])
-    ipr_inflow = create_inflow(oil_qwf, coeff_row["pwf"], coeff_row["ResP"])
+    ipr_inflow = create_inflow(oil_qwf, coeff_row["pwf"], model_res_p)
     ipr_res_mix = create_reservoir_mix(
         coeff_row["form_wc"], model_gor, params.form_temp, params.field_model
     )

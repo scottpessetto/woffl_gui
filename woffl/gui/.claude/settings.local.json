@@ -10,7 +10,8 @@
       "Bash(grep -r \"jp_history\" /c/Users/sc9864/OneDrive\\\\ -\\\\ Hilcorp/code/woffl_gui/woffl_gui --include=\"*.md\" 2>/dev/null | head -20)",
       "Bash(ls -la \"C:\\\\Users\\\\sc9864\\\\OneDrive - Hilcorp\\\\code\\\\woffl_gui\\\\woffl_gui\\\\woffl\\\\\" | grep -E \"^d\")",
       "Bash(pip show:*)",
-      "Bash(find \"C:/Users/sc9864/OneDrive - Hilcorp/code/woffl_gui\" -name \"test*.py\" -o -name \"*_test.py\" 2>/dev/null | head -20)"
+      "Bash(find \"C:/Users/sc9864/OneDrive - Hilcorp/code/woffl_gui\" -name \"test*.py\" -o -name \"*_test.py\" 2>/dev/null | head -20)",
+      "Bash(xargs grep:*)"
     ]
   }
 }

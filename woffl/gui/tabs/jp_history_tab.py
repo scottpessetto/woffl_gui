@@ -38,13 +38,15 @@ def render_tab(params: SimulationParams) -> None:
     )
 
     # Fetch well tests back to earliest JP change
-    test_df = _fetch_extended_well_tests(well_name, earliest_date)
+    test_df, bhp_daily_df = _fetch_extended_well_tests(well_name, earliest_date)
 
     if test_df is not None and not test_df.empty:
         bhp_zero = st.checkbox(
             "BHP axis starts at 0", value=True, key="jp_hist_bhp_zero"
         )
-        fig = _create_history_chart(well_name, test_df, well_jp, bhp_from_zero=bhp_zero)
+        fig = _create_history_chart(
+            well_name, test_df, well_jp, bhp_daily_df=bhp_daily_df, bhp_from_zero=bhp_zero
+        )
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning(
@@ -71,6 +73,21 @@ WHERE vwt.well_name = '{well_name}'
     AND vwt.wt_date BETWEEN '{start_date}' AND '{end_date}'
     AND vwt.allocated = True
 ORDER BY vwt.wt_date
+"""
+
+_BHP_DAILY_QUERY = """\
+SELECT
+    vbdc.tag_date,
+    round(vbdc.bhp_cln_value, 2) AS bhp
+FROM mpu.wells.vw_bhp_daily_clean vbdc
+WHERE vbdc.enthid = (
+    SELECT DISTINCT enthid
+    FROM mpu.wells.vw_well_test
+    WHERE well_name = '{well_name}'
+    LIMIT 1
+)
+AND vbdc.tag_date BETWEEN '{start_date}' AND '{end_date}'
+ORDER BY vbdc.tag_date
 """
 
 
@@ -111,8 +128,31 @@ def _cached_extended_tests(db_name: str, start_date: str, end_date: str):
     return df.sort_values("WtDate")
 
 
-def _fetch_extended_well_tests(well_name: str, earliest_date) -> pd.DataFrame | None:
-    """Fetch well tests going back to earliest JP change date."""
+@st.cache_data(ttl=86400, show_spinner=False)
+def _cached_bhp_daily(db_name: str, start_date: str, end_date: str):
+    """Fetch daily BHP for all dates (not just well test dates). Cached 24h."""
+    from woffl.assembly.databricks_client import execute_query
+
+    df = execute_query(
+        _BHP_DAILY_QUERY.format(
+            well_name=db_name, start_date=start_date, end_date=end_date
+        )
+    )
+    if df.empty:
+        return df
+
+    if "tag_date" in df.columns:
+        df["tag_date"] = pd.to_datetime(df["tag_date"], utc=True).dt.tz_localize(None)
+    if "bhp" in df.columns:
+        df["bhp"] = pd.to_numeric(df["bhp"], errors="coerce")
+
+    return df.dropna(subset=["tag_date", "bhp"]).sort_values("tag_date")
+
+
+def _fetch_extended_well_tests(
+    well_name: str, earliest_date
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """Fetch well tests and daily BHP going back to earliest JP change date."""
     from datetime import datetime
 
     from woffl.assembly.well_test_client import _denormalize_well_name
@@ -121,12 +161,18 @@ def _fetch_extended_well_tests(well_name: str, earliest_date) -> pd.DataFrame | 
     start = earliest_date.strftime("%Y-%m-%d")
     end = datetime.now().strftime("%Y-%m-%d")
 
+    test_df = None
+    bhp_df = None
     with st.spinner(f"Fetching tests for {well_name} ({start} to {end})..."):
         try:
-            return _cached_extended_tests(db_name, start, end)
+            test_df = _cached_extended_tests(db_name, start, end)
         except Exception as e:
             st.warning(f"Databricks query failed: {e}")
-            return None
+        try:
+            bhp_df = _cached_bhp_daily(db_name, start, end)
+        except Exception:
+            pass  # BHP daily is optional; fall back to test-date BHP
+    return test_df, bhp_df
 
 
 def _format_jp(nozzle, throat) -> str:
@@ -143,6 +189,7 @@ def _create_history_chart(
     well_name: str,
     test_df: pd.DataFrame,
     jp_changes: pd.DataFrame,
+    bhp_daily_df: pd.DataFrame | None = None,
     bhp_from_zero: bool = False,
 ) -> go.Figure:
     """Create interactive Plotly chart with stacked production, BHP, and JP change lines."""
@@ -183,8 +230,20 @@ def _create_history_chart(
             secondary_y=False,
         )
 
-    # BHP on secondary y-axis
-    if "BHP" in test_df.columns:
+    # BHP on secondary y-axis — prefer daily BHP, fall back to test-date BHP
+    if bhp_daily_df is not None and not bhp_daily_df.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=bhp_daily_df["tag_date"],
+                y=bhp_daily_df["bhp"],
+                name="BHP (psi)",
+                mode="lines",
+                line=dict(color="#E65100", width=1.5),
+                hovertemplate="%{x|%Y-%m-%d}<br>BHP: %{y:.0f} psi<extra></extra>",
+            ),
+            secondary_y=True,
+        )
+    elif "BHP" in test_df.columns:
         bhp_data = test_df.dropna(subset=["BHP"])
         if not bhp_data.empty:
             fig.add_trace(
@@ -235,7 +294,8 @@ def _create_history_chart(
             yref="paper",
             text=label,
             showarrow=False,
-            textangle=-45,
+            textangle=-90,
+            xshift=-7,
             font=dict(size=10, color="#D32F2F"),
         )
 
