@@ -10,18 +10,53 @@ from woffl.gui.params import NOZZLE_OPTIONS, THROAT_OPTIONS, SimulationParams
 from woffl.gui.utils import get_available_wells, get_well_data
 
 
+# ---------------------------------------------------------------------------
+# Helpers for two-tier session state (logical key + widget key)
+# ---------------------------------------------------------------------------
+
+
+def _set_param(key: str, value) -> None:
+    """Set both the logical state key and its widget key in session state.
+
+    Streamlit keyed widgets ignore the ``value`` param after first render and
+    read from ``st.session_state[key]`` instead, so both must be kept in sync.
+    """
+    st.session_state[key] = value
+    st.session_state[f"{key}_input"] = value
+
+
+def _number_input(label: str, key: str, default, **kwargs):
+    """Render a ``st.number_input`` with two-tier session state.
+
+    On first render (or after a page switch clears the widget key), the widget
+    is initialized from the persisted logical state rather than a hardcoded
+    default.  After render, the logical state is updated from the widget value.
+    """
+    widget_key = f"{key}_input"
+    if widget_key not in st.session_state:
+        st.session_state[widget_key] = st.session_state.get(key, default)
+    value = st.number_input(label, key=widget_key, **kwargs)
+    st.session_state[key] = value
+    return value
+
+
+def _clear_ipr_state() -> None:
+    """Remove cached IPR analysis results from session state."""
+    st.session_state.pop("sw_ipr_info", None)
+    st.session_state.pop("sw_vogel_coeffs", None)
+
+
+# ---------------------------------------------------------------------------
+# Well data → session state population
+# ---------------------------------------------------------------------------
+
+
 def _update_well_parameters_from_data(
     well_data: dict | None, selected_well: str
 ) -> None:
-    """Update session state parameters when well selection changes.
-
-    Args:
-        well_data: Dictionary containing well characteristics from CSV
-        selected_well: Name of the selected well
-    """
+    """Update session state parameters when well selection changes."""
     if selected_well == "Custom" or not well_data:
-        st.session_state.pop("sw_ipr_info", None)
-        st.session_state.pop("sw_vogel_coeffs", None)
+        _clear_ipr_state()
         return
 
     is_new_well = selected_well != st.session_state.get(
@@ -29,32 +64,16 @@ def _update_well_parameters_from_data(
     )
 
     if is_new_well:
-        # Update both the session state variables AND the widget keys.
-        # Streamlit keyed widgets ignore the `value` param after first render
-        # and read from st.session_state[key] instead.
-        tubing_od = float(well_data.get("out_dia", 4.5))
-        tubing_thickness = float(well_data.get("thick", 0.5))
-        form_temp = int(well_data.get("form_temp", 70))
-        jpump_tvd = int(well_data.get("JP_TVD", 4065))
-        res_pres = int(well_data.get("res_pres", 1700))
+        _set_param("tubing_od", float(well_data.get("out_dia", 4.5)))
+        _set_param("tubing_thickness", float(well_data.get("thick", 0.5)))
+        _set_param("form_temp", int(well_data.get("form_temp", 70)))
+        _set_param("jpump_tvd", int(well_data.get("JP_TVD", 4065)))
+        _set_param("res_pres", int(well_data.get("res_pres", 1700)))
+        st.session_state.field_model_index = (
+            0 if well_data.get("is_sch", True) else 1
+        )
 
-        st.session_state.tubing_od = tubing_od
-        st.session_state.tubing_thickness = tubing_thickness
-        st.session_state.form_temp = form_temp
-        st.session_state.jpump_tvd = jpump_tvd
-        st.session_state.res_pres = res_pres
-        st.session_state.field_model_index = 0 if well_data.get("is_sch", True) else 1
-
-        # Also update the widget keys directly so Streamlit renders the new values
-        st.session_state.tubing_od_input = tubing_od
-        st.session_state.tubing_thickness_input = tubing_thickness
-        st.session_state.form_temp_input = form_temp
-        st.session_state.jpump_tvd_input = jpump_tvd
-        st.session_state.res_pres_input = res_pres
-
-        # Auto-populate inflow/formation params from IPR analysis
         _auto_populate_from_ipr(selected_well)
-
         st.session_state.last_selected_well_all = selected_well
 
 
@@ -67,14 +86,12 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
     """
     all_tests = st.session_state.get("all_well_tests_df")
     if all_tests is None or all_tests.empty:
-        st.session_state.pop("sw_ipr_info", None)
-        st.session_state.pop("sw_vogel_coeffs", None)
+        _clear_ipr_state()
         return
 
     well_tests = all_tests[all_tests["well"] == selected_well].copy()
     if well_tests.empty or len(well_tests) < 2:
-        st.session_state.pop("sw_ipr_info", None)
-        st.session_state.pop("sw_vogel_coeffs", None)
+        _clear_ipr_state()
         return
 
     try:
@@ -88,8 +105,7 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
 
         well_coeffs = vogel_coeffs[vogel_coeffs["Well"] == selected_well]
         if well_coeffs.empty:
-            st.session_state.pop("sw_ipr_info", None)
-            st.session_state.pop("sw_vogel_coeffs", None)
+            _clear_ipr_state()
             return
 
         coeff_row = well_coeffs.iloc[0]
@@ -97,25 +113,12 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
         # Cache Vogel coefficients for use by jetpump solver tab
         st.session_state["sw_vogel_coeffs"] = coeff_row.to_dict()
 
-        # Auto-populate sidebar values (both state vars and widget keys)
-        form_wc = round(float(coeff_row["form_wc"]), 2)
-        form_gor = int(coeff_row["fgor"])
-        oil_qwf = coeff_row["qwf"] * (1 - coeff_row["form_wc"])
-        qwf = int(oil_qwf)
-        pwf = int(coeff_row["pwf"])
-        res_pres = int(coeff_row["ResP"])
-
-        st.session_state.form_wc = form_wc
-        st.session_state.form_gor = form_gor
-        st.session_state.qwf = qwf
-        st.session_state.pwf = pwf
-        st.session_state.res_pres = res_pres
-
-        st.session_state.form_wc_input = form_wc
-        st.session_state.form_gor_input = form_gor
-        st.session_state.qwf_input = qwf
-        st.session_state.pwf_input = pwf
-        st.session_state.res_pres_input = res_pres
+        # Auto-populate sidebar values
+        _set_param("form_wc", round(float(coeff_row["form_wc"]), 2))
+        _set_param("form_gor", int(coeff_row["fgor"]))
+        _set_param("qwf", int(coeff_row["qwf"] * (1 - coeff_row["form_wc"])))
+        _set_param("pwf", int(coeff_row["pwf"]))
+        _set_param("res_pres", int(coeff_row["ResP"]))
 
         # Auto-populate surface pressure from most recent test
         import math
@@ -123,9 +126,7 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
         recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
         whp = recent.get("whp")
         if whp is not None and not (isinstance(whp, float) and math.isnan(whp)):
-            surf_pres = int(whp)
-            st.session_state.surf_pres = surf_pres
-            st.session_state.surf_pres_input = surf_pres
+            _set_param("surf_pres", int(whp))
 
         # Store info message for display in the Well Information expander
         num_tests = int(coeff_row["num_tests"])
@@ -140,8 +141,12 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
         )
 
     except Exception:
-        st.session_state.pop("sw_ipr_info", None)
-        st.session_state.pop("sw_vogel_coeffs", None)
+        _clear_ipr_state()
+
+
+# ---------------------------------------------------------------------------
+# Widget rendering helpers
+# ---------------------------------------------------------------------------
 
 
 def _on_well_change() -> None:
@@ -152,11 +157,7 @@ def _on_well_change() -> None:
 
 
 def _render_well_selection() -> tuple[str, dict | None]:
-    """Render well selection widgets and return selected well + data.
-
-    Returns:
-        Tuple of (selected_well_name, well_data_dict_or_None)
-    """
+    """Render well selection widgets and return selected well + data."""
     st.subheader("Well Selection")
     available_wells = get_available_wells()
 
@@ -219,11 +220,7 @@ def _render_well_selection() -> tuple[str, dict | None]:
 
 
 def _render_jetpump_params() -> tuple[str, str, float, float, float, str]:
-    """Render jetpump parameter widgets.
-
-    Returns:
-        Tuple of (nozzle_no, area_ratio, ken, kth, kdi, jpump_direction)
-    """
+    """Render jetpump parameter widgets."""
     st.subheader("Jetpump Parameters")
 
     if "jpump_direction" not in st.session_state:
@@ -297,225 +294,95 @@ def _render_jetpump_params() -> tuple[str, str, float, float, float, str]:
 
 
 def _render_pipe_params(well_data: dict | None) -> tuple[float, float, float, float]:
-    """Render pipe parameter widgets.
-
-    Returns:
-        Tuple of (tubing_od, tubing_thickness, casing_od, casing_thickness)
-    """
+    """Render pipe parameter widgets."""
     st.subheader("Pipe Parameters")
+    auto_help = "Auto-populated from well data" if well_data else None
 
-    # Initialize widget keys from logical state (survives page switches) or defaults
-    if "tubing_od_input" not in st.session_state:
-        st.session_state.tubing_od_input = st.session_state.get("tubing_od", 4.5)
-    if "tubing_thickness_input" not in st.session_state:
-        st.session_state.tubing_thickness_input = st.session_state.get(
-            "tubing_thickness", 0.5
-        )
-
-    tubing_od = st.number_input(
-        "Tubing Outer Diameter (inches)",
-        min_value=2.0,
-        max_value=9.0,
-        step=0.1,
-        format="%.3f",
-        help="Auto-populated from well data" if well_data else None,
-        key="tubing_od_input",
+    tubing_od = _number_input(
+        "Tubing Outer Diameter (inches)", "tubing_od", 4.5,
+        min_value=2.0, max_value=9.0, step=0.1, format="%.3f", help=auto_help,
     )
-    tubing_thickness = st.number_input(
-        "Tubing Wall Thickness (inches)",
-        min_value=0.1,
-        max_value=2.0,
-        step=0.1,
-        format="%.3f",
-        help="Auto-populated from well data" if well_data else None,
-        key="tubing_thickness_input",
+    tubing_thickness = _number_input(
+        "Tubing Wall Thickness (inches)", "tubing_thickness", 0.5,
+        min_value=0.1, max_value=2.0, step=0.1, format="%.3f", help=auto_help,
     )
-
-    st.session_state.tubing_od = tubing_od
-    st.session_state.tubing_thickness = tubing_thickness
-
-    if "casing_od_input" not in st.session_state:
-        st.session_state.casing_od_input = st.session_state.get("casing_od", 6.875)
-    casing_od = st.number_input(
-        "Casing Outer Diameter (inches)",
-        min_value=4.0,
-        max_value=17.0,
-        step=0.125,
-        format="%.3f",
-        key="casing_od_input",
+    casing_od = _number_input(
+        "Casing Outer Diameter (inches)", "casing_od", 6.875,
+        min_value=4.0, max_value=17.0, step=0.125, format="%.3f",
     )
-    st.session_state.casing_od = casing_od
-
-    if "casing_thickness_input" not in st.session_state:
-        st.session_state.casing_thickness_input = st.session_state.get(
-            "casing_thickness", 0.5
-        )
-    casing_thickness = st.number_input(
-        "Casing Wall Thickness (inches)",
-        min_value=0.1,
-        max_value=2.0,
-        step=0.1,
-        format="%.3f",
-        key="casing_thickness_input",
+    casing_thickness = _number_input(
+        "Casing Wall Thickness (inches)", "casing_thickness", 0.5,
+        min_value=0.1, max_value=2.0, step=0.1, format="%.3f",
     )
-    st.session_state.casing_thickness = casing_thickness
-
     return tubing_od, tubing_thickness, casing_od, casing_thickness
 
 
 def _render_formation_params(well_data: dict | None) -> tuple[float, int, int]:
-    """Render formation parameter widgets.
-
-    Returns:
-        Tuple of (form_wc, form_gor, form_temp)
-    """
+    """Render formation parameter widgets."""
     st.subheader("Formation Parameters")
+    auto_help = "Auto-populated from well data" if well_data else None
 
-    if "form_wc_input" not in st.session_state:
-        st.session_state.form_wc_input = st.session_state.get("form_wc", 0.50)
-    form_wc = st.number_input(
-        "Water Cut (form_wc)",
-        min_value=0.0,
-        max_value=1.0,
-        step=0.01,
-        format="%.2f",
-        key="form_wc_input",
+    form_wc = _number_input(
+        "Water Cut (form_wc)", "form_wc", 0.50,
+        min_value=0.0, max_value=1.0, step=0.01, format="%.2f",
     )
-    st.session_state.form_wc = form_wc
-
-    if "form_gor_input" not in st.session_state:
-        st.session_state.form_gor_input = st.session_state.get("form_gor", 250)
-    form_gor = st.number_input(
-        "Gas-Oil Ratio (form_gor)",
-        min_value=20,
-        max_value=10000,
-        step=25,
-        key="form_gor_input",
+    form_gor = _number_input(
+        "Gas-Oil Ratio (form_gor)", "form_gor", 250,
+        min_value=20, max_value=10000, step=25,
     )
-    st.session_state.form_gor = form_gor
-
-    if "form_temp_input" not in st.session_state:
-        st.session_state.form_temp_input = st.session_state.get("form_temp", 70)
-    form_temp = st.number_input(
-        "Formation Temperature (form_temp, °F)",
-        min_value=32,
-        max_value=350,
-        step=1,
-        help="Auto-populated from well data" if well_data else None,
-        key="form_temp_input",
+    form_temp = _number_input(
+        "Formation Temperature (form_temp, °F)", "form_temp", 70,
+        min_value=32, max_value=350, step=1, help=auto_help,
     )
-    st.session_state.form_temp = form_temp
-
     return form_wc, form_gor, form_temp
 
 
 def _render_well_params(well_data: dict | None) -> tuple[int, int, float, int]:
-    """Render well parameter widgets.
-
-    Returns:
-        Tuple of (surf_pres, jpump_tvd, rho_pf, ppf_surf)
-    """
+    """Render well parameter widgets."""
     st.subheader("Well Parameters")
+    auto_help = "Auto-populated from well data" if well_data else None
 
-    if "ppf_surf_input" not in st.session_state:
-        st.session_state.ppf_surf_input = st.session_state.get("ppf_surf", 3168)
-    ppf_surf = st.number_input(
-        "Power Fluid Surface Pressure (psi)",
-        min_value=1500,
-        max_value=4000,
-        step=10,
-        key="ppf_surf_input",
+    ppf_surf = _number_input(
+        "Power Fluid Surface Pressure (psi)", "ppf_surf", 3168,
+        min_value=1500, max_value=4000, step=10,
     )
-    st.session_state.ppf_surf = ppf_surf
-
-    if "surf_pres_input" not in st.session_state:
-        st.session_state.surf_pres_input = st.session_state.get("surf_pres", 210)
-    surf_pres = st.number_input(
-        "Surface Pressure (psi)",
-        min_value=10,
-        max_value=600,
-        step=10,
-        key="surf_pres_input",
+    surf_pres = _number_input(
+        "Surface Pressure (psi)", "surf_pres", 210,
+        min_value=10, max_value=600, step=10,
     )
-    st.session_state.surf_pres = surf_pres
-
-    if "jpump_tvd_input" not in st.session_state:
-        st.session_state.jpump_tvd_input = st.session_state.get("jpump_tvd", 4065)
-    jpump_tvd = st.number_input(
-        "Jetpump TVD (feet)",
-        min_value=2500,
-        max_value=8000,
-        step=10,
-        help="Auto-populated from well data" if well_data else None,
-        key="jpump_tvd_input",
+    jpump_tvd = _number_input(
+        "Jetpump TVD (feet)", "jpump_tvd", 4065,
+        min_value=2500, max_value=8000, step=10, help=auto_help,
     )
-    st.session_state.jpump_tvd = jpump_tvd
-
-    if "rho_pf_input" not in st.session_state:
-        st.session_state.rho_pf_input = st.session_state.get("rho_pf", 62.4)
-    rho_pf = st.number_input(
-        "Power Fluid Density (lbm/ft³)",
-        min_value=50.0,
-        max_value=70.0,
-        step=0.1,
-        key="rho_pf_input",
+    rho_pf = _number_input(
+        "Power Fluid Density (lbm/ft³)", "rho_pf", 62.4,
+        min_value=50.0, max_value=70.0, step=0.1,
     )
-    st.session_state.rho_pf = rho_pf
-
     return surf_pres, jpump_tvd, rho_pf, ppf_surf
 
 
 def _render_inflow_params(well_data: dict | None) -> tuple[int, int, int]:
-    """Render inflow parameter widgets.
-
-    Returns:
-        Tuple of (qwf, pwf, pres)
-    """
+    """Render inflow parameter widgets."""
     st.subheader("Inflow Parameters")
+    auto_help = "Auto-populated from well data" if well_data else None
 
-    if "qwf_input" not in st.session_state:
-        st.session_state.qwf_input = st.session_state.get("qwf", 750)
-    qwf = st.number_input(
-        "Oil Rate at FBHP (qwf, BOPD)",
-        min_value=100,
-        max_value=6000,
-        step=10,
-        key="qwf_input",
+    qwf = _number_input(
+        "Oil Rate at FBHP (qwf, BOPD)", "qwf", 750,
+        min_value=100, max_value=6000, step=10,
     )
-    st.session_state.qwf = qwf
-
-    if "pwf_input" not in st.session_state:
-        st.session_state.pwf_input = st.session_state.get("pwf", 500)
-    pwf = st.number_input(
-        "Flowing Bottom Hole Pressure @ qwf (pwf, psi)",
-        min_value=100,
-        max_value=2500,
-        step=10,
-        key="pwf_input",
+    pwf = _number_input(
+        "Flowing Bottom Hole Pressure @ qwf (pwf, psi)", "pwf", 500,
+        min_value=100, max_value=2500, step=10,
     )
-    st.session_state.pwf = pwf
-
-    if "res_pres_input" not in st.session_state:
-        st.session_state.res_pres_input = st.session_state.get("res_pres", 1700)
-    pres = st.number_input(
-        "Reservoir Pressure (pres, psi)",
-        min_value=400,
-        max_value=5000,
-        step=10,
-        help="Auto-populated from well data" if well_data else None,
-        key="res_pres_input",
+    pres = _number_input(
+        "Reservoir Pressure (pres, psi)", "res_pres", 1700,
+        min_value=400, max_value=5000, step=10, help=auto_help,
     )
-    st.session_state.res_pres = pres
-
     return qwf, pwf, pres
 
 
 def _render_batch_params() -> tuple[list[str], list[str], str]:
-    """Render batch run parameter widgets.
-
-    Returns:
-        Tuple of (nozzle_batch_options, throat_batch_options, water_type)
-    """
+    """Render batch run parameter widgets."""
     st.subheader("Batch Run Parameters")
     nozzle_batch_options = st.multiselect(
         "Nozzle Sizes to Test",
@@ -538,11 +405,7 @@ def _render_batch_params() -> tuple[list[str], list[str], str]:
 
 
 def _render_power_fluid_range_params() -> tuple[int, int, int]:
-    """Render power fluid range analysis parameter widgets.
-
-    Returns:
-        Tuple of (power_fluid_min, power_fluid_max, power_fluid_step)
-    """
+    """Render power fluid range analysis parameter widgets."""
     st.subheader("Power Fluid Range Analysis")
     power_fluid_min = st.number_input(
         "Min Power Fluid Pressure (psi)",
@@ -572,12 +435,13 @@ def _render_power_fluid_range_params() -> tuple[int, int, int]:
     return power_fluid_min, power_fluid_max, power_fluid_step
 
 
-def render_sidebar() -> tuple[bool, SimulationParams]:
-    """Render the complete sidebar and collect all parameters.
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
 
-    Returns:
-        Tuple of (run_button_pressed, simulation_params)
-    """
+
+def render_sidebar() -> tuple[bool, SimulationParams]:
+    """Render the complete sidebar and collect all parameters."""
     with st.sidebar:
         run_button = st.button("Run Simulation")
         st.sidebar.header("Parameters")
@@ -586,19 +450,11 @@ def render_sidebar() -> tuple[bool, SimulationParams]:
         selected_well, well_data = _render_well_selection()
 
         # Marginal watercut
-        if "marginal_watercut" not in st.session_state:
-            st.session_state.marginal_watercut = 0.94
-        marginal_watercut = st.number_input(
-            "Field Marginal Watercut",
-            min_value=0.0,
-            max_value=1.0,
-            value=st.session_state.marginal_watercut,
-            step=0.01,
-            format="%.2f",
+        marginal_watercut = _number_input(
+            "Field Marginal Watercut", "marginal_watercut", 0.94,
+            min_value=0.0, max_value=1.0, step=0.01, format="%.2f",
             help="Economic threshold for water handling in the field",
-            key="marginal_watercut_input",
         )
-        st.session_state.marginal_watercut = marginal_watercut
 
         # Field model
         st.subheader("Field Model")

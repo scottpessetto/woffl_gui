@@ -12,6 +12,8 @@ from woffl.gui.tabs import (
     jetpump_solver,
     jp_history_tab,
     power_fluid_range,
+    pressure_profile,
+    pump_equivalent,
     well_profile,
 )
 from woffl.gui.utils import (
@@ -65,12 +67,14 @@ def run_single_well_page(params: SimulationParams) -> None:
         else:
             wp = create_well_profile(params.field_model, params.jpump_tvd)
 
-        # Build tab list — JP History tab only when data is available
+        # Build tab list — conditional tabs appended when data is available
         tab_labels = [
             "Jetpump Solution",
             "Batch Run",
             "Power Fluid Range Analysis",
+            "Pressure Profile",
             "Well Profile",
+            "Pump Equivalents",
         ]
 
         show_jp_tab = False
@@ -96,10 +100,18 @@ def run_single_well_page(params: SimulationParams) -> None:
             power_fluid_range.render_tab(params, wellbore, wp, inflow, res_mix)
 
         with tabs[3]:
+            pressure_profile.render_tab(
+                params, jetpump, wellbore, wp, inflow, res_mix
+            )
+
+        with tabs[4]:
             well_profile.render_tab(params, wp)
 
+        with tabs[5]:
+            pump_equivalent.render_tab(params, jetpump)
+
         if show_jp_tab:
-            with tabs[4]:
+            with tabs[6]:
                 jp_history_tab.render_tab(params)
 
 
