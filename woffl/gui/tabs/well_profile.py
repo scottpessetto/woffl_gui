@@ -4,7 +4,7 @@ Renders the well trajectory visualization including TVD vs MD plots,
 deviation profiles, and inclination data when survey data is available.
 """
 
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 import streamlit as st
 
 from woffl.gui.params import SimulationParams
@@ -89,7 +89,7 @@ def render_tab(params: SimulationParams, well_profile) -> None:
     - **Inclination Plot**: Shows well angle from vertical (0° = vertical, 90° = horizontal)
     - **Red star**: Jetpump location
     - **Dashed lines**: Jetpump MD and TVD reference lines
-    
+
     A vertical well would show MD = TVD (45° line on first plot).
     Deviation indicates how far the well has moved horizontally from the surface location.
     """)
@@ -99,86 +99,101 @@ def _render_trajectory_plots(well_profile, jpump_tvd: int) -> None:
     """Render the TVD vs MD and deviation plots."""
     st.subheader("Well Trajectory")
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    col1, col2 = st.columns(2)
 
-    # Plot 1: TVD vs MD
-    ax1.plot(
-        well_profile.md_ray, well_profile.vd_ray, "b-", linewidth=2, label="Well Path"
-    )
-    ax1.axhline(
-        y=jpump_tvd,
-        color="r",
-        linestyle="--",
-        linewidth=2,
-        label=f"Jetpump TVD ({jpump_tvd:.0f} ft)",
-    )
-    ax1.axvline(
-        x=well_profile.jetpump_md,
-        color="g",
-        linestyle="--",
-        linewidth=2,
-        label=f"Jetpump MD ({well_profile.jetpump_md:.0f} ft)",
-    )
-    ax1.scatter(
-        [well_profile.jetpump_md],
-        [jpump_tvd],
-        color="red",
-        s=100,
-        zorder=5,
-        marker="*",
-        label="Jetpump Location",
-    )
-    ax1.set_xlabel("Measured Depth (ft)", fontsize=12)
-    ax1.set_ylabel("True Vertical Depth (ft)", fontsize=12)
-    ax1.set_title("Well Profile: TVD vs MD", fontsize=14, fontweight="bold")
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-    ax1.invert_yaxis()
+    with col1:
+        fig1 = go.Figure()
+        fig1.add_trace(go.Scatter(
+            x=well_profile.md_ray.tolist(),
+            y=well_profile.vd_ray.tolist(),
+            mode="lines",
+            name="Well Path",
+            line=dict(color="blue", width=2),
+            hovertemplate="MD: %{x:.0f} ft<br>TVD: %{y:.0f} ft<extra></extra>",
+        ))
+        fig1.add_hline(
+            y=jpump_tvd,
+            line=dict(color="red", dash="dash", width=2),
+            annotation_text=f"Jetpump TVD ({jpump_tvd:.0f} ft)",
+            annotation_position="top left",
+        )
+        fig1.add_vline(
+            x=well_profile.jetpump_md,
+            line=dict(color="green", dash="dash", width=2),
+            annotation_text=f"Jetpump MD ({well_profile.jetpump_md:.0f} ft)",
+            annotation_position="top right",
+        )
+        fig1.add_trace(go.Scatter(
+            x=[well_profile.jetpump_md],
+            y=[jpump_tvd],
+            mode="markers",
+            name="Jetpump Location",
+            marker=dict(color="red", size=14, symbol="star"),
+            hovertemplate="Jetpump<br>MD: %{x:.0f} ft<br>TVD: %{y:.0f} ft<extra></extra>",
+        ))
+        fig1.update_layout(
+            title=dict(text="Well Profile: TVD vs MD", font=dict(size=14)),
+            xaxis_title="Measured Depth (ft)",
+            yaxis_title="True Vertical Depth (ft)",
+            yaxis=dict(autorange="reversed"),
+            height=500,
+        )
+        st.plotly_chart(fig1, use_container_width=True)
 
-    # Plot 2: Deviation (MD - TVD) vs Depth
-    deviation = [
-        well_profile.md_ray[i] - well_profile.vd_ray[i]
-        for i in range(len(well_profile.md_ray))
-    ]
-    ax2.plot(deviation, well_profile.vd_ray, "g-", linewidth=2)
-    ax2.axhline(
-        y=jpump_tvd,
-        color="r",
-        linestyle="--",
-        linewidth=2,
-        label=f"Jetpump TVD ({jpump_tvd:.0f} ft)",
-    )
-    ax2.set_xlabel("Horizontal Deviation (ft)", fontsize=12)
-    ax2.set_ylabel("True Vertical Depth (ft)", fontsize=12)
-    ax2.set_title("Well Deviation Profile", fontsize=14, fontweight="bold")
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-    ax2.invert_yaxis()
-
-    plt.tight_layout()
-    st.pyplot(fig)
-    plt.close(fig)
+    with col2:
+        deviation = [
+            well_profile.md_ray[i] - well_profile.vd_ray[i]
+            for i in range(len(well_profile.md_ray))
+        ]
+        fig2 = go.Figure()
+        fig2.add_trace(go.Scatter(
+            x=deviation,
+            y=well_profile.vd_ray.tolist(),
+            mode="lines",
+            name="Deviation",
+            line=dict(color="green", width=2),
+            hovertemplate="Deviation: %{x:.0f} ft<br>TVD: %{y:.0f} ft<extra></extra>",
+        ))
+        fig2.add_hline(
+            y=jpump_tvd,
+            line=dict(color="red", dash="dash", width=2),
+            annotation_text=f"Jetpump TVD ({jpump_tvd:.0f} ft)",
+            annotation_position="top left",
+        )
+        fig2.update_layout(
+            title=dict(text="Well Deviation Profile", font=dict(size=14)),
+            xaxis_title="Horizontal Deviation (ft)",
+            yaxis_title="True Vertical Depth (ft)",
+            yaxis=dict(autorange="reversed"),
+            height=500,
+        )
+        st.plotly_chart(fig2, use_container_width=True)
 
 
 def _render_inclination_plot(survey_data, well_profile) -> None:
     """Render the inclination vs measured depth plot."""
     st.subheader("Well Inclination Profile")
 
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(survey_data["meas_depth"], survey_data["inclination"], "b-", linewidth=2)
-    ax.axvline(
-        x=well_profile.jetpump_md,
-        color="r",
-        linestyle="--",
-        linewidth=2,
-        label=f"Jetpump MD ({well_profile.jetpump_md:.0f} ft)",
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=survey_data["inclination"].tolist(),
+        y=survey_data["meas_depth"].tolist(),
+        mode="lines",
+        name="Inclination",
+        line=dict(color="blue", width=2),
+        hovertemplate="Inclination: %{x:.0f}°<br>MD: %{y:.0f} ft<extra></extra>",
+    ))
+    fig.add_hline(
+        y=well_profile.jetpump_md,
+        line=dict(color="red", dash="dash", width=2),
+        annotation_text=f"Jetpump MD ({well_profile.jetpump_md:.0f} ft)",
+        annotation_position="top left",
     )
-    ax.set_xlabel("Measured Depth (ft)", fontsize=12)
-    ax.set_ylabel("Inclination (degrees)", fontsize=12)
-    ax.set_title("Well Inclination vs Measured Depth", fontsize=14, fontweight="bold")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    st.pyplot(fig)
-    plt.close(fig)
+    fig.update_layout(
+        title=dict(text="Well Inclination vs Measured Depth", font=dict(size=14)),
+        xaxis_title="Inclination (degrees)",
+        yaxis_title="Measured Depth (ft)",
+        yaxis=dict(autorange="reversed"),
+        height=1000,
+    )
+    st.plotly_chart(fig, use_container_width=True)

@@ -1,8 +1,0 @@
-# app.yaml
-command: ["streamlit", "run", "woffl/gui/app.py"]
-
-resources:
-  - name: sql-warehouse
-    sql_warehouse:
-      id: 698745db7da46ba3
-      permission: CAN_USE
