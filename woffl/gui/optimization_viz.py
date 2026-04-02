@@ -377,10 +377,11 @@ def create_ipr_comparison_pdf(
             qwf = well_config.qwf
             pwf = well_config.pwf
 
-            # Vogel IPR curve
+            # Vogel IPR curve (convert total liquid to oil rate)
+            wc = well_config.form_wc
             qmax = qwf / (1 - 0.2 * (pwf / pres) - 0.8 * (pwf / pres) ** 2)
             pressures = np.linspace(0, pres, 200)
-            oil_rates = qmax * (
+            oil_rates = qmax * (1 - wc) * (
                 1 - 0.2 * (pressures / pres) - 0.8 * (pressures / pres) ** 2
             )
 

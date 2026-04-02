@@ -37,7 +37,7 @@ class WellConfig:
         form_gor (float): Gas-oil ratio, scf/bbl
         field_model (str): Field PVT model ("Schrader" or "Kuparuk")
         surf_pres (float): Surface pressure, psi
-        qwf (float): Well flow rate for IPR, bbl/day
+        qwf (float): Total liquid flow rate for IPR fitting, bbl/day
         pwf (float): Flowing bottom hole pressure for IPR, psi
         use_survey (bool): Whether to use survey data if available
     """
@@ -705,7 +705,7 @@ def load_wells_from_csv(
                 ),
                 "surf_pres": float(base_config.get("surf_pres", 210)),
                 "qwf": float(
-                    base_config.get("qwf_bopd") or base_config.get("qwf", 750)
+                    base_config.get("qwf_blpd") or base_config.get("qwf_bopd") or base_config.get("qwf", 750)
                 ),
                 "pwf": float(base_config.get("pwf", 500)),
             }
@@ -740,7 +740,7 @@ def create_well_template_csv() -> str:
     """
     template = (
         "Well,res_pres,form_temp,JP_TVD,JP_MD,out_dia,thick,"
-        "casing_od,casing_thick,form_wc,form_gor,field_model,surf_pres,qwf_bopd,pwf,comments\n"
+        "casing_od,casing_thick,form_wc,form_gor,field_model,surf_pres,qwf_blpd,pwf,comments\n"
         "MPB-28,,,,,,,,,,,,,,,Auto-populated from jp_chars.csv\n"
         "MPB-30,,,,,,,,,,,,,,,Auto-populated from jp_chars.csv\n"
         "MPE-35,,,,,,,,,,,,,,,Auto-populated from jp_chars.csv\n"

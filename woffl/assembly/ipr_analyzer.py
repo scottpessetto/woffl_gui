@@ -436,7 +436,7 @@ def export_optimization_template(
             "form_gor": coeff_row.get("fgor", 250),
             "field_model": field_model,
             "surf_pres": 210,
-            "qwf_bopd": coeff_row["qwf"],
+            "qwf_blpd": coeff_row["qwf"],
             "pwf": coeff_row["pwf"],
             "comments": f"IPR from well tests ({coeff_row['num_tests']} tests)",
         }

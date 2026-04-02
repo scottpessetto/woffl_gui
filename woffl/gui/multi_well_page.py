@@ -926,13 +926,13 @@ def _render_databricks_loader(max_rp_schrader, max_rp_kuparuk, resp_modifier):
             # Show loaded wells
             with st.expander(f"Wells Loaded ({len(wells)})"):
                 summary_df = template_df[
-                    ["Well", "res_pres", "form_wc", "qwf_bopd", "pwf", "field_model"]
+                    ["Well", "res_pres", "form_wc", "qwf_blpd", "pwf", "field_model"]
                 ].copy()
                 summary_df.columns = [
                     "Well",
                     "Res Pres (psi)",
                     "WC",
-                    "Qwf (BPD)",
+                    "Qwf (BLPD)",
                     "Pwf (psi)",
                     "Field",
                 ]
