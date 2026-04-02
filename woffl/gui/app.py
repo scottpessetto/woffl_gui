@@ -61,7 +61,7 @@ def main():
         initial_sidebar_state="expanded",
     )
 
-    st.title("WOFFL Jetpump Simulator")
+    st.title("WOFFL Haus")
     st.caption("*Built on Kaelin Ellis's WOFFL Jet Pump Model*")
 
     # Global JP history — fetch from Databricks, fall back to bundled Excel
@@ -112,7 +112,7 @@ def main():
                         st.warning(f"Could not fetch well tests: {e}")
                         st.session_state["all_well_tests_df"] = None
 
-    modes = ["Single Well Analysis", "Multi-Well Optimization", "Well Test Analysis"]
+    modes = ["Single Well Analysis", "Multi-Well Optimization", "Well Test Analysis", "Well Database"]
     if st.session_state.get("_scotts_tools", False):
         modes.append("Scott's Tools")
 
@@ -128,7 +128,12 @@ def main():
         ),
     )
 
-    if app_mode == "Well Test Analysis":
+    if app_mode == "Well Database":
+        from woffl.gui.well_database_page import run_well_database_page
+
+        run_well_database_page()
+
+    elif app_mode == "Well Test Analysis":
         from woffl.gui.well_test_page import run_well_test_analysis_page
 
         run_well_test_analysis_page()

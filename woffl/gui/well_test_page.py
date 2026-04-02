@@ -200,10 +200,17 @@ def _run_restls_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
     # Fetch well names (cached) to build pad list
     try:
         with st.spinner("Fetching well list from Databricks..."):
-            all_well_names = _cached_mpu_well_names()
+            db_well_names = _cached_mpu_well_names()
     except Exception as e:
         st.error(f"Could not fetch well names from Databricks: {e}")
         return
+
+    # Filter to only JP wells (those in jp_chars.csv) — ESP wells lack JP TVDs
+    from woffl.assembly.well_test_client import _normalize_well_name
+    from woffl.gui.utils import load_well_characteristics
+
+    jp_wells = set(load_well_characteristics()["Well"].tolist())
+    all_well_names = [w for w in db_well_names if _normalize_well_name(w) in jp_wells]
 
     if not all_well_names:
         st.warning(
@@ -233,7 +240,7 @@ def _run_restls_path(max_rp_schrader, max_rp_kuparuk, resp_modifier):
     # Date range pickers
     col_start, col_end = st.columns(2)
     with col_start:
-        default_start = date.today() - timedelta(days=730)
+        default_start = date.today() - timedelta(days=90)
         start_date = st.date_input(
             "Start Date", value=default_start, key="db_start_date"
         )

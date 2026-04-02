@@ -448,6 +448,39 @@ def create_ipr_comparison_pdf(
                     zorder=3,
                 )
 
+            # Warning: same JP size but model disagrees with actual
+            proposed_jp = f"{r.recommended_nozzle}{r.recommended_throat}"
+            if (
+                current_jp == proposed_jp
+                and actual_oil is not None
+                and current_bhp is not None
+            ):
+                oil_diff = abs(opt_oil - actual_oil)
+                bhp_diff = abs(opt_bhp - current_bhp)
+                if oil_diff > 50 or bhp_diff > 50:
+                    warn_lines = [f"Same JP ({current_jp}) — model vs actual mismatch:"]
+                    warn_lines.append(
+                        f"Oil: {opt_oil:.0f} vs {actual_oil:.0f} BOPD ({opt_oil - actual_oil:+.0f})"
+                    )
+                    warn_lines.append(
+                        f"Suction: {opt_bhp:.0f} vs {current_bhp:.0f} psi ({opt_bhp - current_bhp:+.0f})"
+                    )
+                    ax.text(
+                        0.02,
+                        0.02,
+                        "\n".join(warn_lines),
+                        transform=ax.transAxes,
+                        fontsize=8,
+                        color="#b00000",
+                        verticalalignment="bottom",
+                        bbox=dict(
+                            boxstyle="round,pad=0.4",
+                            facecolor="#fff3f3",
+                            edgecolor="#d62728",
+                            alpha=0.9,
+                        ),
+                    )
+
             ax.set_xlabel("Oil Rate (BOPD)", fontsize=12)
             ax.set_ylabel("Bottomhole Pressure (psi)", fontsize=12)
             ax.set_title(
