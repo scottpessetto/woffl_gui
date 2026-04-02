@@ -612,13 +612,13 @@ def load_jp_chars(jp_chars_path: Optional[str] = None) -> dict:
         return {}
 
 
-def load_wells_from_csv(
-    csv_path: str, jp_chars_path: Optional[str] = None
+def load_wells_from_dataframe(
+    input_df: pd.DataFrame, jp_chars_path: Optional[str] = None
 ) -> list[WellConfig]:
-    """Load well configurations from CSV with fallback to jp_chars database
+    """Load well configurations from a DataFrame with fallback to jp_chars database.
 
     Args:
-        csv_path: Path to CSV file with well configurations
+        input_df: DataFrame with well configurations (must have 'Well' column)
         jp_chars_path: Path to jp_chars.csv database (auto-detected if None)
 
     Returns:
@@ -626,17 +626,13 @@ def load_wells_from_csv(
 
     Raises:
         ValueError: If required fields are missing or invalid
-        FileNotFoundError: If CSV file not found
     """
     # Load jp_chars database
     jp_chars_dict = load_jp_chars(jp_chars_path)
 
-    # Read input CSV
-    input_df = pd.read_csv(csv_path)
-
     # Validate required column
     if "Well" not in input_df.columns:
-        raise ValueError("CSV must have 'Well' column")
+        raise ValueError("DataFrame must have 'Well' column")
 
     well_configs = []
     errors = []
@@ -655,7 +651,7 @@ def load_wells_from_csv(
             else:
                 base_config = {}
 
-            # Override with CSV values (if provided and not NaN)
+            # Override with DataFrame values (if provided and not NaN)
             for col in input_df.columns:
                 if col != "Well" and col != "comments" and pd.notna(row[col]):
                     base_config[col] = row[col]
@@ -664,10 +660,12 @@ def load_wells_from_csv(
             # Check for required fields first
             if "res_pres" not in base_config:
                 raise ValueError(
-                    f"res_pres is required but not found in database or CSV"
+                    f"res_pres is required but not found in database or DataFrame"
                 )
             if "JP_TVD" not in base_config and "jpump_tvd" not in base_config:
-                raise ValueError(f"JP_TVD is required but not found in database or CSV")
+                raise ValueError(
+                    f"JP_TVD is required but not found in database or DataFrame"
+                )
 
             config_params = {
                 "well_name": well_name,
@@ -705,7 +703,9 @@ def load_wells_from_csv(
                 ),
                 "surf_pres": float(base_config.get("surf_pres", 210)),
                 "qwf": float(
-                    base_config.get("qwf_blpd") or base_config.get("qwf_bopd") or base_config.get("qwf", 750)
+                    base_config.get("qwf_blpd")
+                    or base_config.get("qwf_bopd")
+                    or base_config.get("qwf", 750)
                 ),
                 "pwf": float(base_config.get("pwf", 500)),
             }
@@ -727,9 +727,29 @@ def load_wells_from_csv(
         raise ValueError("Errors loading well configurations:\n" + "\n".join(errors))
 
     if not well_configs:
-        raise ValueError("No valid well configurations found in CSV")
+        raise ValueError("No valid well configurations found")
 
     return well_configs
+
+
+def load_wells_from_csv(
+    csv_path: str, jp_chars_path: Optional[str] = None
+) -> list[WellConfig]:
+    """Load well configurations from CSV with fallback to jp_chars database.
+
+    Args:
+        csv_path: Path to CSV file with well configurations
+        jp_chars_path: Path to jp_chars.csv database (auto-detected if None)
+
+    Returns:
+        List of WellConfig objects
+
+    Raises:
+        ValueError: If required fields are missing or invalid
+        FileNotFoundError: If CSV file not found
+    """
+    input_df = pd.read_csv(csv_path)
+    return load_wells_from_dataframe(input_df, jp_chars_path)
 
 
 def create_well_template_csv() -> str:

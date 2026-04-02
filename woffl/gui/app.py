@@ -112,7 +112,11 @@ def main():
                         st.warning(f"Could not fetch well tests: {e}")
                         st.session_state["all_well_tests_df"] = None
 
-    modes = ["Single Well Analysis", "Multi-Well Optimization", "Well Test Analysis", "Well Database"]
+    modes = [
+        "Single Well Analysis",
+        "Optimization Workflow",
+        "Well Database",
+    ]
     if st.session_state.get("_scotts_tools", False):
         modes.append("Scott's Tools")
 
@@ -123,25 +127,20 @@ def main():
         horizontal=True,
         help=(
             "Single Well: Analyze one well in detail. "
-            "Multi-Well: Optimize pump sizing across multiple wells. "
-            "Well Test: Generate Vogel IPR from well tests + Databricks BHP data."
+            "Optimization: Select wells → Review IPR → Optimize → Results. "
+            "Well Database: View jp_chars.csv."
         ),
     )
 
-    if app_mode == "Well Database":
+    if app_mode == "Optimization Workflow":
+        from woffl.gui.workflow_page import run_workflow_page
+
+        run_workflow_page()
+
+    elif app_mode == "Well Database":
         from woffl.gui.well_database_page import run_well_database_page
 
         run_well_database_page()
-
-    elif app_mode == "Well Test Analysis":
-        from woffl.gui.well_test_page import run_well_test_analysis_page
-
-        run_well_test_analysis_page()
-
-    elif app_mode == "Multi-Well Optimization":
-        from woffl.gui.multi_well_page import run_multi_well_optimization_page
-
-        run_multi_well_optimization_page()
 
     elif app_mode == "Scott's Tools":
         from woffl.gui.scotts_tools_page import run_scotts_tools_page
