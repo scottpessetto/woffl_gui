@@ -591,16 +591,28 @@ def _load_well_profile(
 
 
 def load_jp_chars(jp_chars_path: Optional[str] = None) -> dict:
-    """Load jet pump characteristics database
+    """Load jet pump characteristics database.
+
+    Primary source: Databricks mpu.wells.vw_prop_mech + vw_prop_resvr (with
+    JP_TVD computed from local deviation surveys). Falls back to jp_chars.csv
+    if Databricks is unreachable or jp_chars_path is explicitly provided.
 
     Args:
-        jp_chars_path: Path to jp_chars.csv (auto-detected if None)
+        jp_chars_path: If provided, skip Databricks and read this CSV directly.
 
     Returns:
-        Dictionary mapping well name to characteristics
+        Dictionary mapping well name to characteristics.
     """
     if jp_chars_path is None:
-        # Auto-detect path relative to this file
+        try:
+            from woffl.assembly.databricks_client import fetch_well_props_enriched
+
+            df, _ = fetch_well_props_enriched()
+            if not df.empty:
+                return df.set_index("Well").to_dict("index")
+        except Exception as e:
+            print(f"Warning: Databricks well-props fetch failed ({e}); falling back to jp_chars.csv")
+
         current_dir = os.path.dirname(os.path.abspath(__file__))
         jp_chars_path = os.path.join(current_dir, "..", "jp_data", "jp_chars.csv")
 

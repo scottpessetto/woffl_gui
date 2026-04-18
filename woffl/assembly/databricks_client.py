@@ -6,13 +6,16 @@ Centralized Databricks connectivity module that works in two environments:
   (bricks_host, bricks_http, bricks_token)
 """
 
+import math
 import os
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 DEFAULT_WAREHOUSE_ID = "698745db7da46ba3"
+SCHRADER_TVD_CUTOFF = 5500.0
 
 
 def _is_deployed() -> bool:
@@ -128,6 +131,162 @@ def fetch_jp_history() -> pd.DataFrame:
         df["Well Name"] = df["Well Name"].astype(str).str.strip()
 
     return df
+
+
+WELL_PROPS_QUERY = """\
+SELECT
+    m.well_name,
+    m.tubing_out_dia,
+    m.tubing_inn_dia,
+    m.tubing_absruff,
+    m.casing_out_dia,
+    m.casing_inn_dia,
+    m.casing_absruff,
+    m.jpump_md,
+    m.jpfric_nozzle,
+    m.jpfric_throat,
+    m.jpfric_diffuser,
+    m.jpfric_entry,
+    r.form_oil_api,
+    r.form_gas_sg,
+    r.form_wat_sg,
+    r.resvr_bubb,
+    r.resvr_press,
+    r.resvr_temp
+FROM mpu.wells.vw_prop_mech m
+LEFT JOIN mpu.wells.vw_prop_resvr r USING (enthid)
+ORDER BY m.well_name
+"""
+
+
+def fetch_well_props() -> pd.DataFrame:
+    """Fetch combined mechanical + reservoir well properties from Databricks.
+
+    Joins mpu.wells.vw_prop_mech and mpu.wells.vw_prop_resvr on enthid.
+    Returns a DataFrame in jp_chars-compatible schema (Well, out_dia, thick,
+    JP_MD, res_pres, form_temp) plus extended PVT fields (oil_api, gas_sg,
+    wat_sg, bubble_point) and casing dims.
+
+    Well names are normalized from Databricks format ("B-028") to GUI format
+    ("MPB-28") via the existing well_test_client._normalize_well_name.
+    """
+    from woffl.assembly.well_test_client import _normalize_well_name
+
+    df = execute_query(WELL_PROPS_QUERY)
+    if df.empty:
+        return df
+
+    df["Well"] = df["well_name"].astype(str).str.strip().map(_normalize_well_name)
+    df["out_dia"] = df["tubing_out_dia"]
+    df["thick"] = (df["tubing_out_dia"] - df["tubing_inn_dia"]) / 2.0
+    df["JP_MD"] = df["jpump_md"]
+    df["res_pres"] = df["resvr_press"]
+    df["form_temp"] = df["resvr_temp"]
+    df["oil_api"] = df["form_oil_api"]
+    df["gas_sg"] = df["form_gas_sg"]
+    df["wat_sg"] = df["form_wat_sg"]
+    df["bubble_point"] = df["resvr_bubb"]
+
+    return df
+
+
+def _survey_dir() -> Path:
+    return Path(__file__).resolve().parent.parent / "jp_data" / "well_surveys"
+
+
+def _load_survey(well_name: str) -> Optional[pd.DataFrame]:
+    path = _survey_dir() / f"{well_name} Deviation Survey.csv"
+    if not path.exists():
+        return None
+    try:
+        return pd.read_csv(path)
+    except Exception:
+        return None
+
+
+def _interp_tvd(survey: Optional[pd.DataFrame], jp_md: float) -> Optional[float]:
+    if survey is None or survey.empty:
+        return None
+    if "meas_depth" not in survey.columns or "tvd_depth" not in survey.columns:
+        return None
+    s = survey.dropna(subset=["meas_depth", "tvd_depth"]).sort_values("meas_depth")
+    if s.empty:
+        return None
+    return float(np.interp(jp_md, s["meas_depth"], s["tvd_depth"]))
+
+
+def _pad_prefix(well: str) -> str:
+    return well.split("-", 1)[0] if "-" in well else well
+
+
+def enrich_with_tvd(
+    df: pd.DataFrame,
+) -> Tuple[pd.DataFrame, List[str]]:
+    """Add JP_TVD, tvd_estimated, and is_sch columns to a well-props DataFrame.
+
+    JP_TVD is computed by interpolating the local deviation survey for each well
+    using JP_MD. Wells without a survey CSV get an estimated JP_TVD based on the
+    pad-average TVD/MD ratio (or a global ratio if the pad has no surveys at all).
+
+    Args:
+        df: DataFrame from fetch_well_props() (must have Well, JP_MD columns)
+
+    Returns:
+        (enriched DataFrame, list of well names with estimated TVD)
+    """
+    jp_tvd: list[float | None] = []
+    estimated: list[bool] = []
+    pad_ratios: dict[str, list[float]] = {}
+
+    for _, row in df.iterrows():
+        well = row["Well"]
+        jp_md = row["JP_MD"]
+        if not isinstance(jp_md, (int, float)) or math.isnan(jp_md):
+            jp_tvd.append(None)
+            estimated.append(False)
+            continue
+        survey = _load_survey(well)
+        tvd = _interp_tvd(survey, jp_md)
+        if tvd is not None and jp_md > 0:
+            pad_ratios.setdefault(_pad_prefix(well), []).append(tvd / jp_md)
+        jp_tvd.append(tvd)
+        estimated.append(False)
+
+    all_ratios = [r for vals in pad_ratios.values() for r in vals]
+    global_ratio = (sum(all_ratios) / len(all_ratios)) if all_ratios else 0.92
+
+    missing: list[str] = []
+    for i, (_, row) in enumerate(df.iterrows()):
+        if jp_tvd[i] is not None:
+            continue
+        well = row["Well"]
+        jp_md = row["JP_MD"]
+        if not isinstance(jp_md, (int, float)) or math.isnan(jp_md):
+            continue
+        ratios = pad_ratios.get(_pad_prefix(well), [])
+        ratio = (sum(ratios) / len(ratios)) if ratios else global_ratio
+        jp_tvd[i] = jp_md * ratio
+        estimated[i] = True
+        missing.append(well)
+
+    df = df.copy()
+    df["JP_TVD"] = pd.Series(jp_tvd, index=df.index)
+    df["tvd_estimated"] = pd.Series(estimated, index=df.index)
+    df["is_sch"] = df["JP_TVD"].fillna(0) < SCHRADER_TVD_CUTOFF
+    return df, missing
+
+
+def fetch_well_props_enriched() -> Tuple[pd.DataFrame, List[str]]:
+    """Fetch well properties from Databricks and add JP_TVD + is_sch.
+
+    Returns:
+        (DataFrame with all jp_chars-compatible columns, list of wells with
+         estimated TVD)
+    """
+    df = fetch_well_props()
+    if df.empty:
+        return df, []
+    return enrich_with_tvd(df)
 
 
 def load_tag_dict(custom_source=None) -> Dict[str, Tuple[str, str, str]]:

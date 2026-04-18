@@ -444,7 +444,6 @@ def render_sidebar() -> tuple[bool, SimulationParams]:
     """Render the complete sidebar and collect all parameters."""
     with st.sidebar:
         run_button = st.button("Run Simulation")
-        st.sidebar.header("Parameters")
 
         # Well selection
         selected_well, well_data = _render_well_selection()

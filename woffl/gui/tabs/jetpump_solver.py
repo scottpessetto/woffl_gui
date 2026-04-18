@@ -93,6 +93,12 @@ def render_tab(
     _render_input_summary(params)
 
     st.subheader("Jetpump Solver Results")
+
+    # Surface any persisted message from a prior auto-recovery (e.g. GOR reset)
+    msg = st.session_state.pop("_solver_gor_reset_msg", None)
+    if msg:
+        st.warning(msg)
+
     _render_pump_identity_banner(params)
 
     # Clear stale calibration if well changed
@@ -101,19 +107,42 @@ def render_tab(
         st.session_state.pop("sw_calibration_result", None)
 
     with st.spinner("Running jetpump solver..."):
-        solver_results = run_jetpump_solver(
-            params.surf_pres,
-            params.form_temp,
-            params.rho_pf,
-            params.ppf_surf,
-            jetpump,
-            wellbore,
-            well_profile,
-            inflow,
-            res_mix,
-            field_model=params.field_model,
-            jpump_direction=params.jpump_direction,
-        )
+        try:
+            solver_results = run_jetpump_solver(
+                params.surf_pres,
+                params.form_temp,
+                params.rho_pf,
+                params.ppf_surf,
+                jetpump,
+                wellbore,
+                well_profile,
+                inflow,
+                res_mix,
+                field_model=params.field_model,
+                jpump_direction=params.jpump_direction,
+            )
+        except IndexError:
+            # Throat-entry iteration produced no valid points — typically caused
+            # by an unrealistically low GOR for the well's PVT. Bump GOR to 100
+            # and force the MvA override so a re-run uses sidebar GOR instead
+            # of the (likely too-low) test GOR.
+            #
+            # Streamlit forbids writing to a widget's state key after the widget
+            # has rendered (and the sidebar already rendered above the tabs).
+            # So we set the logical key and DELETE the widget key — the
+            # _number_input helper will re-initialize the widget from the
+            # logical key on the next run.
+            st.session_state["form_gor"] = 100
+            st.session_state.pop("form_gor_input", None)
+            st.session_state["mva_override_gor"] = True
+            st.session_state["_solver_gor_reset_msg"] = (
+                f"Solver failed to converge for {params.selected_well} at "
+                f"GOR={params.form_gor} scf/bbl (throat-entry iteration produced "
+                "no valid points). GOR has been reset to **100 scf/bbl** and the "
+                "'Override GOR from well test' box has been checked. "
+                "Click **Run Simulation** to retry."
+            )
+            st.rerun()
 
     if solver_results:
         psu, sonic_status, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = solver_results
@@ -296,7 +325,7 @@ def _render_model_vs_actual(params: SimulationParams, wellbore, well_profile) ->
 
     override_gor = st.checkbox(
         "Override GOR from well test",
-        value=False,
+        value=st.session_state.get("mva_override_gor", False),
         help=f"Test GOR: {test_gor} scf/bbl. Check to use sidebar value ({params.form_gor}) instead.",
         key="mva_override_gor",
     )

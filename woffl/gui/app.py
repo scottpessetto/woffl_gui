@@ -82,35 +82,34 @@ def main():
                         st.warning(f"Could not load JP history: {e}")
 
         if "jp_history_df" in st.session_state:
-            source = st.session_state.get("jp_history_source", "")
-            st.caption(
-                f"JP History: {len(st.session_state['jp_history_df'])} records ({source})"
-            )
-
-        jp_file = st.file_uploader(
-            "Upload JP History override (xlsx)",
-            type=["xlsx"],
-            key="jp_history_upload",
-            help="Upload an Excel file to override the Databricks data for this session.",
-        )
-        if jp_file:
-            st.session_state["jp_history_df"] = parse_jp_history(jp_file)
-            st.session_state["jp_history_source"] = "Excel (uploaded)"
-            st.success(
-                f"Using uploaded JP History ({len(st.session_state['jp_history_df'])} records)"
-            )
-
-        if "jp_history_df" in st.session_state:
             # Pre-fetch all well tests once (cached 24h for all users)
             if "all_well_tests_df" not in st.session_state:
                 with st.spinner("Fetching recent well tests from Databricks..."):
                     try:
                         st.session_state["all_well_tests_df"] = _cached_all_well_tests()
-                        n = len(st.session_state["all_well_tests_df"])
-                        st.caption(f"Loaded {n} well test records")
                     except Exception as e:
                         st.warning(f"Could not fetch well tests: {e}")
                         st.session_state["all_well_tests_df"] = None
+
+        # Pre-fetch well properties once so the missing-survey warning surfaces
+        # globally rather than only when a page happens to load it.
+        from woffl.gui.utils import load_well_characteristics
+
+        try:
+            load_well_characteristics()
+        except Exception as e:
+            st.warning(f"Could not load well properties: {e}")
+
+        missing = st.session_state.get("wells_missing_surveys") or []
+        if missing:
+            st.warning(
+                f"{len(missing)} well(s) missing deviation surveys — JP_TVD estimated "
+                f"via pad-average TVD/MD ratio. Run "
+                f"`python -m woffl.jp_data.check_missing_surveys` then "
+                f"`pull_surveys.py` to fix."
+            )
+            with st.expander("Wells with estimated JP_TVD"):
+                st.write(", ".join(missing))
 
     modes = [
         "Single Well Analysis",
@@ -128,7 +127,7 @@ def main():
         help=(
             "Single Well: Analyze one well in detail. "
             "Optimization: Select wells → Review IPR → Optimize → Results. "
-            "Well Database: View jp_chars.csv."
+            "Well Database: View live well properties from Databricks."
         ),
     )
 

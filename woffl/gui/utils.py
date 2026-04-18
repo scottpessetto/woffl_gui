@@ -573,30 +573,45 @@ def run_power_fluid_range_batch(
 
 
 # Well Data Management Functions
-@st.cache_data
-def load_well_characteristics():
-    """Load and cache jp_chars.csv data.
+def _jp_chars_csv_path() -> str:
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "jp_data", "jp_chars.csv"
+    )
 
-    Returns:
-        pandas.DataFrame: Well characteristics data
+
+@st.cache_data(ttl=3600, show_spinner="Loading well properties from Databricks…")
+def load_well_characteristics() -> pd.DataFrame:
+    """Load well characteristics from Databricks, with CSV fallback.
+
+    Wraps the library helper fetch_well_props_enriched() (which joins
+    vw_prop_mech + vw_prop_resvr and computes JP_TVD from local deviation
+    surveys). Falls back to jp_chars.csv if Databricks is unreachable.
+
+    Wells with estimated JP_TVD (no local survey) are flagged in
+    st.session_state["wells_missing_surveys"] for the app-level warning.
+
+    Cache: process-wide via @st.cache_data, TTL 1 hour. On Databricks Apps
+    (single Streamlit process per container) this is shared across all users.
     """
-    try:
-        # Get the path to the jp_chars.csv file
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        jp_data_dir = os.path.join(current_dir, "..", "jp_data")
-        csv_path = os.path.join(jp_data_dir, "jp_chars.csv")
+    from woffl.assembly.databricks_client import fetch_well_props_enriched
 
-        # Load the CSV file
-        well_chars = pd.read_csv(csv_path)
-        return well_chars
-    except FileNotFoundError:
-        st.error(
-            "Could not find jp_chars.csv file. Please ensure the file exists in the jp_data directory."
-        )
-        return pd.DataFrame()
+    try:
+        df, missing = fetch_well_props_enriched()
+        if df.empty:
+            raise RuntimeError("vw_prop_mech returned no rows")
     except Exception as e:
-        st.error(f"Error loading well characteristics: {str(e)}")
-        return pd.DataFrame()
+        st.warning(
+            f"Databricks unavailable ({e}); falling back to jp_chars.csv. "
+            "Properties may be stale."
+        )
+        try:
+            return pd.read_csv(_jp_chars_csv_path())
+        except Exception as csv_err:
+            st.error(f"Both Databricks and jp_chars.csv failed: {csv_err}")
+            return pd.DataFrame()
+
+    st.session_state["wells_missing_surveys"] = missing
+    return df
 
 
 def get_available_wells():

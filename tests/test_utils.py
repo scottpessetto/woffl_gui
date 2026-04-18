@@ -824,11 +824,13 @@ class TestGetWellData:
     def test_mpb28_values(self):
         data = get_well_data("MPB-28")
         if data is None:
-            pytest.skip("jp_chars.csv not loaded")
+            pytest.skip("MPB-28 not available from data source")
         assert data["Well"] == "MPB-28"
         assert data["out_dia"] == pytest.approx(4.5)
         assert data["res_pres"] == pytest.approx(1900.0)
-        assert data["form_temp"] == pytest.approx(70)
+        # form_temp comes from vw_prop_resvr.resvr_temp (89.5) when Databricks
+        # is reachable, or from jp_chars.csv (70.0) on CSV fallback.
+        assert data["form_temp"] in (pytest.approx(70.0), pytest.approx(89.5))
 
     def test_unknown_well_returns_none(self):
         data = get_well_data("NONEXISTENT-999")
