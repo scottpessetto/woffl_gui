@@ -115,7 +115,11 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
 
         # Auto-populate sidebar values
         _set_param("form_wc", round(float(coeff_row["form_wc"]), 2))
-        _set_param("form_gor", int(coeff_row["fgor"]))
+        # Floor GOR against any per-well minimum recorded by a prior solver
+        # auto-recovery (see _trigger_gor_reset in utils.py).
+        floor_map = st.session_state.get("_well_min_gor", {})
+        gor_floor = floor_map.get(selected_well, 0)
+        _set_param("form_gor", max(int(coeff_row["fgor"]), gor_floor))
         _set_param("qwf", int(coeff_row["qwf"] * (1 - coeff_row["form_wc"])))
         _set_param("pwf", int(coeff_row["pwf"]))
         _set_param("res_pres", int(coeff_row["ResP"]))

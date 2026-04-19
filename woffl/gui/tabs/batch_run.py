@@ -694,6 +694,11 @@ def render_tab(
     """
     st.subheader("Batch Pump Analysis")
 
+    # Surface any persisted message from a prior auto-recovery (e.g. GOR reset)
+    msg = st.session_state.pop("_solver_gor_reset_msg", None)
+    if msg:
+        st.warning(msg)
+
     if not params.nozzle_batch_options or not params.throat_batch_options:
         st.warning(
             "Please select at least one nozzle size and one throat ratio for batch analysis."

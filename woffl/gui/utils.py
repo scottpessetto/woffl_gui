@@ -31,6 +31,42 @@ def is_valid_number(val) -> bool:
     return not (isinstance(val, float) and math.isnan(val))
 
 
+GOR_AUTO_RECOVERY_VALUE = 250
+
+
+def _trigger_gor_reset(well_name: str, current_gor, reason: str) -> None:
+    """Auto-recover from a solver failure caused by too-low GOR.
+
+    Sets sidebar form_gor to GOR_AUTO_RECOVERY_VALUE, checks the MvA override,
+    records a per-well GOR floor so the next well-selection cycle won't
+    repopulate this well below the recovery value, queues a warning to display
+    on the next render, then triggers a rerun.
+
+    Streamlit forbids writing to a widget's state key after the widget rendered
+    (the sidebar already rendered above the tabs). So we set the logical key
+    and DELETE the widget key — the _number_input helper re-initializes the
+    widget from the logical key on the next run.
+    """
+    st.session_state["form_gor"] = GOR_AUTO_RECOVERY_VALUE
+    st.session_state.pop("form_gor_input", None)
+    st.session_state["mva_override_gor"] = True
+
+    # Remember per-well GOR floor — survives well-switches within the session
+    # so we don't keep tripping the same failure for the same well.
+    floor_map = st.session_state.setdefault("_well_min_gor", {})
+    floor_map[well_name] = max(
+        floor_map.get(well_name, 0), GOR_AUTO_RECOVERY_VALUE
+    )
+
+    st.session_state["_solver_gor_reset_msg"] = (
+        f"Solver failed to converge for {well_name} at GOR={current_gor} scf/bbl "
+        f"({reason}). GOR has been reset to **{GOR_AUTO_RECOVERY_VALUE} scf/bbl** "
+        f"and the 'Override GOR from well test' box has been checked. "
+        f"This floor is now remembered for {well_name} for the rest of the session."
+    )
+    st.rerun()
+
+
 def create_jetpump(nozzle_no, area_ratio, ken, kth, kdi):
     """Create a JetPump object with the given parameters."""
     return JetPump(
@@ -464,6 +500,22 @@ def run_batch_pump(
         return batch_pump
     except (ValueError, RuntimeError, TypeError) as e:
         error_msg = str(e)
+        # Too few converged pump configurations to fit the 3-param exp curve —
+        # almost always caused by too-low GOR for the well's PVT. Auto-recover
+        # by bumping GOR and re-running.
+        if "must not exceed the number of data points" in error_msg:
+            current_gor = st.session_state.get("form_gor", "?")
+            wellname = st.session_state.get("selected_well", "this well")
+            _trigger_gor_reset(
+                wellname,
+                current_gor,
+                reason=(
+                    "only "
+                    + error_msg.split("data points=")[-1].rstrip(".")
+                    + " of N pump configurations converged — "
+                    + "not enough to fit the 3-parameter response curve"
+                ),
+            )
         if "Optimal parameters not found" in error_msg:
             st.error(
                 "Could not fit curve to the data. Try selecting more nozzle sizes and throat ratios."

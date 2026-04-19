@@ -11,7 +11,7 @@ and modeled vs actual metrics.
 import streamlit as st
 
 from woffl.gui.params import SimulationParams
-from woffl.gui.utils import is_valid_number, run_jetpump_solver
+from woffl.gui.utils import _trigger_gor_reset, is_valid_number, run_jetpump_solver
 
 
 def _render_input_summary(params: SimulationParams) -> None:
@@ -123,7 +123,7 @@ def render_tab(
             )
         except IndexError:
             # Throat-entry iteration produced no valid points — typically caused
-            # by an unrealistically low GOR for the well's PVT. Bump GOR to 100
+            # by an unrealistically low GOR for the well's PVT. Bump GOR to 250
             # and force the MvA override so a re-run uses sidebar GOR instead
             # of the (likely too-low) test GOR.
             #
@@ -132,17 +132,11 @@ def render_tab(
             # So we set the logical key and DELETE the widget key — the
             # _number_input helper will re-initialize the widget from the
             # logical key on the next run.
-            st.session_state["form_gor"] = 100
-            st.session_state.pop("form_gor_input", None)
-            st.session_state["mva_override_gor"] = True
-            st.session_state["_solver_gor_reset_msg"] = (
-                f"Solver failed to converge for {params.selected_well} at "
-                f"GOR={params.form_gor} scf/bbl (throat-entry iteration produced "
-                "no valid points). GOR has been reset to **100 scf/bbl** and the "
-                "'Override GOR from well test' box has been checked. "
-                "Click **Run Simulation** to retry."
+            _trigger_gor_reset(
+                params.selected_well,
+                params.form_gor,
+                reason="throat-entry iteration produced no valid points",
             )
-            st.rerun()
 
     if solver_results:
         psu, sonic_status, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = solver_results
