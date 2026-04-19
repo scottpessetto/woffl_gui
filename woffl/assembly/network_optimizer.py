@@ -40,6 +40,10 @@ class WellConfig:
         qwf (float): Total liquid flow rate for IPR fitting, bbl/day
         pwf (float): Flowing bottom hole pressure for IPR, psi
         use_survey (bool): Whether to use survey data if available
+        oil_api (Optional[float]): Oil API gravity override (uses field_model preset when None)
+        gas_sg (Optional[float]): Gas specific gravity override
+        wat_sg (Optional[float]): Water specific gravity override
+        bubble_point (Optional[float]): Bubble point pressure override, psig
     """
 
     well_name: str
@@ -58,6 +62,10 @@ class WellConfig:
     qwf: float = 750.0
     pwf: float = 500.0
     use_survey: bool = True
+    oil_api: Optional[float] = None
+    gas_sg: Optional[float] = None
+    wat_sg: Optional[float] = None
+    bubble_point: Optional[float] = None
 
     def __post_init__(self):
         """Validate configuration on initialization"""
@@ -265,8 +273,16 @@ class NetworkOptimizer:
         oil_qwf = well.qwf * (1 - well.form_wc)
         inflow = InFlow(qwf=oil_qwf, pwf=well.pwf, pres=well.res_pres)
 
-        # Create reservoir mix and power fluid using shared PVT factory
-        oil, water, gas = create_pvt_components(well.field_model)
+        # Create reservoir mix and power fluid using shared PVT factory.
+        # Per-well PVT overrides (from Databricks vw_prop_resvr) replace the
+        # field_model preset values when present.
+        oil, water, gas = create_pvt_components(
+            field_model=well.field_model,
+            oil_api=well.oil_api,
+            gas_sg=well.gas_sg,
+            wat_sg=well.wat_sg,
+            bubble_point=well.bubble_point,
+        )
         res_mix = ResMix(
             wc=well.form_wc, fgor=well.form_gor, oil=oil, wat=water, gas=gas
         )
@@ -720,6 +736,28 @@ def load_wells_from_dataframe(
                     or base_config.get("qwf", 750)
                 ),
                 "pwf": float(base_config.get("pwf", 500)),
+                # PVT overrides from Databricks vw_prop_resvr (None falls back
+                # to field_model preset in create_pvt_components)
+                "oil_api": (
+                    float(base_config["oil_api"])
+                    if base_config.get("oil_api") is not None
+                    else None
+                ),
+                "gas_sg": (
+                    float(base_config["gas_sg"])
+                    if base_config.get("gas_sg") is not None
+                    else None
+                ),
+                "wat_sg": (
+                    float(base_config["wat_sg"])
+                    if base_config.get("wat_sg") is not None
+                    else None
+                ),
+                "bubble_point": (
+                    float(base_config["bubble_point"])
+                    if base_config.get("bubble_point") is not None
+                    else None
+                ),
             }
 
             # Create WellConfig (validation happens in __post_init__)

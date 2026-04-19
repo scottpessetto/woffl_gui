@@ -73,6 +73,16 @@ def _update_well_parameters_from_data(
             0 if well_data.get("is_sch", True) else 1
         )
 
+        # PVT overrides from Databricks vw_prop_resvr (None when unavailable)
+        if well_data.get("oil_api") is not None:
+            _set_param("oil_api", float(well_data["oil_api"]))
+        if well_data.get("gas_sg") is not None:
+            _set_param("gas_sg", float(well_data["gas_sg"]))
+        if well_data.get("wat_sg") is not None:
+            _set_param("wat_sg", float(well_data["wat_sg"]))
+        if well_data.get("bubble_point") is not None:
+            _set_param("bubble_point", float(well_data["bubble_point"]))
+
         _auto_populate_from_ipr(selected_well)
         st.session_state.last_selected_well_all = selected_well
 
@@ -321,7 +331,9 @@ def _render_pipe_params(well_data: dict | None) -> tuple[float, float, float, fl
     return tubing_od, tubing_thickness, casing_od, casing_thickness
 
 
-def _render_formation_params(well_data: dict | None) -> tuple[float, int, int]:
+def _render_formation_params(
+    well_data: dict | None,
+) -> tuple[float, int, int, float | None, float | None, float | None, float | None]:
     """Render formation parameter widgets."""
     st.subheader("Formation Parameters")
     auto_help = "Auto-populated from well data" if well_data else None
@@ -338,7 +350,36 @@ def _render_formation_params(well_data: dict | None) -> tuple[float, int, int]:
         "Formation Temperature (form_temp, °F)", "form_temp", 70,
         min_value=32, max_value=350, step=1, help=auto_help,
     )
-    return form_wc, form_gor, form_temp
+
+    # PVT overrides — collapsed by default; values fall through to None when
+    # missing so create_pvt_components uses the field_model preset.
+    has_pvt = bool(well_data and well_data.get("oil_api") is not None)
+    expanded = bool(has_pvt)
+    with st.expander("PVT Overrides", expanded=False):
+        st.caption(
+            "Per-well values from Databricks vw_prop_resvr override the field-model "
+            "presets (Schrader: 22 API, 1750 Pb, 0.65 gas SG, 1.02 wat SG)."
+            if has_pvt
+            else "No per-well PVT data — using field-model preset."
+        )
+        oil_api = _number_input(
+            "Oil API", "oil_api", 22.0,
+            min_value=11.0, max_value=39.0, step=0.1, format="%.1f",
+        )
+        bubble_point = _number_input(
+            "Bubble Point (psig)", "bubble_point", 1750.0,
+            min_value=1001.0, max_value=2999.0, step=10.0, format="%.0f",
+        )
+        gas_sg = _number_input(
+            "Gas Specific Gravity", "gas_sg", 0.65,
+            min_value=0.51, max_value=1.19, step=0.01, format="%.2f",
+        )
+        wat_sg = _number_input(
+            "Water Specific Gravity", "wat_sg", 1.02,
+            min_value=0.51, max_value=1.49, step=0.01, format="%.2f",
+        )
+
+    return form_wc, form_gor, form_temp, oil_api, gas_sg, wat_sg, bubble_point
 
 
 def _render_well_params(well_data: dict | None) -> tuple[int, int, float, int]:
@@ -477,7 +518,15 @@ def render_sidebar() -> tuple[bool, SimulationParams]:
         tubing_od, tubing_thickness, casing_od, casing_thickness = _render_pipe_params(
             well_data
         )
-        form_wc, form_gor, form_temp = _render_formation_params(well_data)
+        (
+            form_wc,
+            form_gor,
+            form_temp,
+            oil_api,
+            gas_sg,
+            wat_sg,
+            bubble_point,
+        ) = _render_formation_params(well_data)
         qwf, pwf, pres = _render_inflow_params(well_data)
         nozzle_batch_options, throat_batch_options, water_type = _render_batch_params()
         power_fluid_min, power_fluid_max, power_fluid_step = (
@@ -499,6 +548,10 @@ def render_sidebar() -> tuple[bool, SimulationParams]:
         form_gor=form_gor,
         form_temp=form_temp,
         field_model=field_model,
+        oil_api=oil_api,
+        gas_sg=gas_sg,
+        wat_sg=wat_sg,
+        bubble_point=bubble_point,
         surf_pres=surf_pres,
         jpump_tvd=jpump_tvd,
         rho_pf=rho_pf,

@@ -74,35 +74,71 @@ def create_jetpump(nozzle_no, area_ratio, ken, kth, kdi):
     )
 
 
-def create_pvt_components(field_model=None):
+def create_pvt_components(
+    field_model=None,
+    oil_api=None,
+    gas_sg=None,
+    wat_sg=None,
+    bubble_point=None,
+):
     """Create PVT components (oil, water, gas) for the given field model.
 
     This is the single source of truth for Schrader/Kuparuk PVT model selection.
     Used by both create_reservoir_mix() and network_optimizer._create_well_objects().
 
     Args:
-        field_model (str, optional): "Schrader" or "Kuparuk" (case-insensitive).
-            Defaults to "schrader" if None or unrecognized.
+        field_model: "Schrader" or "Kuparuk" (case-insensitive). Provides defaults
+            for any oil_api/gas_sg/wat_sg/bubble_point not explicitly supplied.
+        oil_api, gas_sg, wat_sg, bubble_point: Optional per-well overrides
+            (e.g., from Databricks vw_prop_resvr). When provided, these replace
+            the field_model preset values.
 
     Returns:
         tuple: (BlackOil, FormWater, FormGas) instances
     """
     if field_model is None:
         field_model = "schrader"
-
     field_model = field_model.lower()
 
-    if field_model == "schrader":
-        return BlackOil.schrader(), FormWater.schrader(), FormGas.schrader()
-    elif field_model == "kuparuk":
-        return BlackOil.kuparuk(), FormWater.kuparuk(), FormGas.kuparuk()
+    if field_model == "kuparuk":
+        oil_default = BlackOil.kuparuk()
+        wat_default = FormWater.kuparuk()
+        gas_default = FormGas.kuparuk()
     else:
-        return BlackOil.schrader(), FormWater.schrader(), FormGas.schrader()
+        oil_default = BlackOil.schrader()
+        wat_default = FormWater.schrader()
+        gas_default = FormGas.schrader()
+
+    final_api = oil_api if oil_api is not None else oil_default.oil_api
+    final_pbp = bubble_point if bubble_point is not None else oil_default.pbp
+    final_oil_sg = gas_sg if gas_sg is not None else oil_default.gas_sg
+    final_gas_sg = gas_sg if gas_sg is not None else gas_default.gas_sg
+    final_wat_sg = wat_sg if wat_sg is not None else wat_default.wat_sg
+
+    oil = BlackOil(oil_api=final_api, bubblepoint=final_pbp, gas_sg=final_oil_sg)
+    water = FormWater(wat_sg=final_wat_sg)
+    gas = FormGas(gas_sg=final_gas_sg)
+    return oil, water, gas
 
 
-def create_reservoir_mix(wc, gor, temp, field_model=None):
+def create_reservoir_mix(
+    wc,
+    gor,
+    temp,
+    field_model=None,
+    oil_api=None,
+    gas_sg=None,
+    wat_sg=None,
+    bubble_point=None,
+):
     """Create a ResMix object with the given parameters."""
-    oil, water, gas = create_pvt_components(field_model)
+    oil, water, gas = create_pvt_components(
+        field_model=field_model,
+        oil_api=oil_api,
+        gas_sg=gas_sg,
+        wat_sg=wat_sg,
+        bubble_point=bubble_point,
+    )
     return ResMix(wc=wc, fgor=gor, oil=oil, wat=water, gas=gas)
 
 

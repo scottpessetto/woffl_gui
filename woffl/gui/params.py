@@ -72,6 +72,12 @@ class SimulationParams:
     form_temp: int = 70
     field_model: str = "Schrader"
 
+    # PVT overrides (None = use field_model preset)
+    oil_api: Optional[float] = None
+    gas_sg: Optional[float] = None
+    wat_sg: Optional[float] = None
+    bubble_point: Optional[float] = None
+
     # Well parameters
     surf_pres: int = 210
     jpump_tvd: int = 4065

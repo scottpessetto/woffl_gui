@@ -49,7 +49,14 @@ def run_single_well_page(params: SimulationParams) -> None:
         )
         inflow = create_inflow(params.qwf, params.pwf, params.pres)
         res_mix = create_reservoir_mix(
-            params.form_wc, params.form_gor, params.form_temp, params.field_model
+            params.form_wc,
+            params.form_gor,
+            params.form_temp,
+            params.field_model,
+            oil_api=params.oil_api,
+            gas_sg=params.gas_sg,
+            wat_sg=params.wat_sg,
+            bubble_point=params.bubble_point,
         )
 
         # Use survey data for well profile if a specific well is selected
