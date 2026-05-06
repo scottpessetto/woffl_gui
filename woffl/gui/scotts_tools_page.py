@@ -1004,6 +1004,14 @@ def _render_well_sort_tab() -> None:
                     "TotalGas": st.column_config.NumberColumn(
                         "Total Gas (MCFD)", format="%.0f"
                     ),
+                    "EspHz": st.column_config.NumberColumn(
+                        "ESP Hz", format="%.1f",
+                        help="ESP frequency from displayed test (blank for non-ESP wells)",
+                    ),
+                    "EspAmps": st.column_config.NumberColumn(
+                        "ESP Amps", format="%.0f",
+                        help="ESP motor amps from displayed test (blank for non-ESP wells)",
+                    ),
                     "Oil_2moAvg": st.column_config.NumberColumn(
                         "Oil 2mo avg", format="%.0f"
                     ),
@@ -1035,7 +1043,7 @@ def _render_well_sort_tab() -> None:
                 },
             )
 
-            csv = online_df.to_csv(index=False).encode("utf-8")
+            csv = online_df.to_csv(index=False, float_format="%.2f").encode("utf-8")
             st.download_button(
                 "Download Online CSV",
                 data=csv,
@@ -1066,6 +1074,14 @@ def _render_well_sort_tab() -> None:
             "LiftGas": st.column_config.NumberColumn("Lift Gas (MCFD)", format="%.0f"),
             "TotalWater": st.column_config.NumberColumn("Total Wat (BWPD)", format="%.0f"),
             "TotalGas": st.column_config.NumberColumn("Total Gas (MCFD)", format="%.0f"),
+            "EspHz": st.column_config.NumberColumn(
+                "ESP Hz", format="%.1f",
+                help="ESP frequency from last test (blank for non-ESP wells)",
+            ),
+            "EspAmps": st.column_config.NumberColumn(
+                "ESP Amps", format="%.0f",
+                help="ESP motor amps from last test (blank for non-ESP wells)",
+            ),
             "WC": st.column_config.NumberColumn("WC (%)", format="%.1f"),
             "TotalWC": st.column_config.NumberColumn("Total WC (%)", format="%.1f"),
             "GOR": st.column_config.NumberColumn("GOR", format="%.0f"),
@@ -1104,7 +1120,7 @@ def _render_well_sort_tab() -> None:
         )
         st.download_button(
             f"Download {label} CSV",
-            data=df.to_csv(index=False).encode("utf-8"),
+            data=df.to_csv(index=False, float_format="%.2f").encode("utf-8"),
             file_name=f"well_sort_{key}.csv",
             mime="text/csv",
             key=f"well_sort_dl_{key}",
