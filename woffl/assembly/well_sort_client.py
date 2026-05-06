@@ -183,7 +183,7 @@ tag_map AS (
 latest AS (
     SELECT Tag, Value, MeasureTime,
         ROW_NUMBER() OVER (PARTITION BY Tag ORDER BY MeasureTime DESC) AS rn
-    FROM historian.mpu.measurements_silver
+    FROM reporting.historian.vw_mpu_measurements
     WHERE MeasureDate >= DATE_SUB(current_date(), 2)
       AND (
         Tag IN (SELECT prod_tag FROM tag_map)
