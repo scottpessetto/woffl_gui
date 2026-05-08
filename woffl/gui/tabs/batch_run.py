@@ -720,6 +720,9 @@ def render_tab(
             wellname=f"{params.field_model} Well",
             field_model=params.field_model,
             jpump_direction=params.jpump_direction,
+            ken=params.ken,
+            kth=params.kth,
+            kdi=params.kdi,
         )
 
     if not batch_pump:

@@ -485,6 +485,10 @@ def run_batch_pump(
     wellname="Test Well",
     field_model=None,
     jpump_direction="reverse",
+    ken=0.03,
+    kth=0.3,
+    kdi=0.4,
+    knz=0.01,
 ):
     """Run a batch pump simulation with multiple nozzle and throat combinations.
 
@@ -511,7 +515,9 @@ def run_batch_pump(
     prop_pf = prop_pf.condition(0, 60)
 
     # Create a list of jet pumps with all combinations of nozzles and throats
-    jp_list = BatchPump.jetpump_list(nozzle_options, throat_options)
+    jp_list = BatchPump.jetpump_list(
+        nozzle_options, throat_options, knz=knz, ken=ken, kth=kth, kdi=kdi
+    )
 
     # Create a BatchPump object
     batch_pump = BatchPump(
@@ -582,6 +588,10 @@ def run_power_fluid_range_batch(
     wellname="Test Well",
     field_model=None,
     jpump_direction="reverse",
+    ken=0.03,
+    kth=0.3,
+    kdi=0.4,
+    knz=0.01,
 ):
     """Run a comprehensive batch pump simulation across a range of power fluid pressures.
 
@@ -614,7 +624,9 @@ def run_power_fluid_range_batch(
     )
 
     # Create a list of jet pumps with all combinations of nozzles and throats
-    jp_list = BatchPump.jetpump_list(nozzle_options, throat_options)
+    jp_list = BatchPump.jetpump_list(
+        nozzle_options, throat_options, knz=knz, ken=ken, kth=kth, kdi=kdi
+    )
 
     all_results = []
     total_combinations = len(pressure_range) * len(jp_list)

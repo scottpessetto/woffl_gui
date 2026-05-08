@@ -10,8 +10,15 @@ and modeled vs actual metrics.
 
 import streamlit as st
 
+from woffl.geometry.jetpump import JetPump
+from woffl.gui.fric_calibration import calibrate_friction_coefs
 from woffl.gui.params import SimulationParams
-from woffl.gui.utils import _trigger_gor_reset, is_valid_number, run_jetpump_solver
+from woffl.gui.utils import (
+    _trigger_gor_reset,
+    create_pvt_components,
+    is_valid_number,
+    run_jetpump_solver,
+)
 
 
 def _render_input_summary(params: SimulationParams) -> None:
@@ -105,6 +112,43 @@ def render_tab(
     _cal = st.session_state.get("sw_calibration_result")
     if _cal and _cal.well_name != params.selected_well:
         st.session_state.pop("sw_calibration_result", None)
+
+    # Optional: apply friction-coef calibration computed in Model vs Actual.
+    # When checked, the top-panel solver runs with the calibrated kth/kdi
+    # instead of the sidebar values. The rate-scalar calibration below can
+    # layer on top.
+    fric_cal_map = st.session_state.get("sw_fric_calibration", {})
+    fric_cal = fric_cal_map.get(params.selected_well)
+    if (
+        fric_cal is not None
+        and fric_cal.converged
+        and params.selected_well != "Custom"
+    ):
+        use_fric_cal = st.checkbox(
+            f"Use friction-coef calibration "
+            f"(ken={fric_cal.best_ken:.3f}, kth={fric_cal.best_kth:.3f}, "
+            f"kdi={fric_cal.best_kdi:.3f})",
+            value=False,
+            key="sw_apply_fric_cal",
+            help=(
+                "Override sidebar ken/kth/kdi with the BHP-calibrated values "
+                "from the Model vs Actual section below. knz is unchanged."
+            ),
+        )
+        if use_fric_cal:
+            jetpump = JetPump(
+                nozzle_no=params.nozzle_no,
+                area_ratio=params.area_ratio,
+                knz=jetpump.knz,
+                ken=fric_cal.best_ken,
+                kth=fric_cal.best_kth,
+                kdi=fric_cal.best_kdi,
+            )
+            st.caption(
+                f"Solver running with calibrated ken={fric_cal.best_ken:.3f}, "
+                f"kth={fric_cal.best_kth:.3f}, kdi={fric_cal.best_kdi:.3f} "
+                "(sidebar values overridden)"
+            )
 
     with st.spinner("Running jetpump solver..."):
         try:
@@ -201,6 +245,167 @@ def render_tab(
 
     # Model vs Actual comparison (requires JP history + non-Custom well)
     _render_model_vs_actual(params, wellbore, well_profile)
+
+
+def _push_fric_to_sidebar_cb(ken: float, kth: float, kdi: float) -> None:
+    """on_click callback for the 'Push to sidebar' button.
+
+    Streamlit allows widget-key mutation inside on_click handlers (they run
+    before the next render), but NOT in plain ``if button:`` blocks (which
+    hit the post-render write protection). Both logical and widget keys are
+    set so the number_input picks up the new value on the next render
+    regardless of internal state caching.
+    """
+    st.session_state["ken"] = float(ken)
+    st.session_state["kth"] = float(kth)
+    st.session_state["kdi"] = float(kdi)
+    st.session_state["ken_input"] = float(ken)
+    st.session_state["kth_input"] = float(kth)
+    st.session_state["kdi_input"] = float(kdi)
+    # Top-panel "Use friction-coef calibration" checkbox is redundant once
+    # the sidebar matches the calibration. Clear it.
+    st.session_state.pop("sw_apply_fric_cal", None)
+    st.session_state["_pushed_fric_msg"] = (
+        f"Sidebar updated: ken={ken:.3f}, kth={kth:.3f}, kdi={kdi:.3f}"
+    )
+
+
+def _render_fric_calibration_section(
+    params: SimulationParams,
+    wellbore,
+    well_profile,
+    ipr_inflow,
+    ipr_res_mix,
+    nozzle: str,
+    throat: str,
+    actual_bhp,
+    model_surf_pres: float,
+) -> None:
+    """Render the Friction-Coef Calibration UI inside Model vs Actual.
+
+    Sweeps kth and kdi to drive modeled BHP toward the latest test's actual
+    BHP. Result stored in ``st.session_state["sw_fric_calibration"][well]``
+    so the top jetpump-solver panel can offer to apply it.
+    """
+    st.markdown("#### Friction-Coef Calibration (BHP-target)")
+
+    if not is_valid_number(actual_bhp):
+        st.caption(
+            "Cannot calibrate — most recent test has no measured BHP. "
+            "Friction-coef calibration requires an actual BHP to target."
+        )
+        return
+
+    st.caption(
+        f"Sweeps ken, kth, and kdi via Nelder-Mead to drive modeled BHP "
+        f"toward actual ({actual_bhp:.0f} psi). knz is held fixed at 0.01. "
+        f"ken seed is the sidebar value ({params.ken:.3f})."
+    )
+
+    run_cal = st.button(
+        "Run calibration",
+        type="secondary",
+        key="sw_run_fric_cal",
+    )
+
+    if run_cal:
+        _, water_obj, _ = create_pvt_components(params.field_model)
+        prop_pf = water_obj.condition(0, 60)
+
+        with st.spinner("Calibrating (Nelder-Mead)..."):
+            try:
+                result = calibrate_friction_coefs(
+                    well_name=params.selected_well,
+                    target_bhp=float(actual_bhp),
+                    pwh=float(model_surf_pres),
+                    tsu=float(params.form_temp),
+                    ppf_surf=float(params.ppf_surf),
+                    nozzle=nozzle,
+                    throat=throat,
+                    knz=0.01,
+                    ken=float(params.ken),
+                    wellbore=wellbore,
+                    wellprof=well_profile,
+                    ipr_su=ipr_inflow,
+                    prop_su=ipr_res_mix,
+                    prop_pf=prop_pf,
+                    jpump_direction=params.jpump_direction,
+                )
+            except Exception as e:
+                st.error(f"Calibration failed: {e}")
+                return
+
+        cal_state = st.session_state.setdefault("sw_fric_calibration", {})
+        cal_state[params.selected_well] = result
+
+    # Display result if available
+    cal_state = st.session_state.get("sw_fric_calibration", {})
+    result = cal_state.get(params.selected_well)
+    if result is None:
+        return
+
+    if not result.converged:
+        st.warning(
+            "Calibration did not converge — the optimizer could not find a "
+            "(kth, kdi) combination that produced a successful solve. "
+            "Consider checking the IPR or solver inputs."
+        )
+        return
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Cal ken", f"{result.best_ken:.3f}")
+    c2.metric("Cal kth", f"{result.best_kth:.3f}")
+    c3.metric("Cal kdi", f"{result.best_kdi:.3f}")
+    c4.metric(
+        "Modeled BHP",
+        f"{result.best_modeled_bhp:.0f} psi",
+        delta=f"{result.bhp_error:+.0f}",
+    )
+    c5.metric("Modeled Oil", f"{result.best_oil:.0f} BOPD")
+
+    iter_str = f", {result.iterations} iters" if result.iterations is not None else ""
+    starts_str = (
+        f", {result.starts_tried} seed" + ("s" if result.starts_tried != 1 else "")
+        if hasattr(result, "starts_tried") else ""
+    )
+    flags = []
+    if getattr(result, "bounded", False):
+        flags.append("**bounded** (optimum at search edge — try varying ken)")
+    if getattr(result, "sonic", False):
+        flags.append("**sonic** (BHP choke-pinned by throat geometry)")
+    flags_str = " · " + ", ".join(flags) if flags else ""
+
+    quality_color = {"good": "green", "fair": "orange", "poor": "red"}.get(
+        getattr(result, "match_quality", "unknown"), "gray"
+    )
+    st.markdown(
+        f"Actual BHP: **{result.target_bhp:.0f}** psi · "
+        f"Match: :{quality_color}[**{getattr(result, 'match_quality', 'unknown').upper()}**] "
+        f"({iter_str}{starts_str}){flags_str}"
+    )
+    st.caption(
+        "Apply via the checkbox at the top of this tab, or push to the sidebar "
+        "so the values propagate to Batch Run / PF Range tabs as well."
+    )
+
+    push_col, _spacer = st.columns([1, 2])
+    with push_col:
+        st.button(
+            f"Push ken={result.best_ken:.3f}, kth={result.best_kth:.3f}, "
+            f"kdi={result.best_kdi:.3f} to sidebar",
+            key="sw_push_fric_to_sidebar",
+            help=(
+                "Updates the sidebar ken, kth, and kdi number inputs to the "
+                "calibrated values. Affects every tab that reads from "
+                "sidebar (Batch Run, Power Fluid Range, etc.). knz is unchanged."
+            ),
+            on_click=_push_fric_to_sidebar_cb,
+            args=(result.best_ken, result.best_kth, result.best_kdi),
+        )
+
+    pushed_msg = st.session_state.pop("_pushed_fric_msg", None)
+    if pushed_msg:
+        st.success(pushed_msg)
 
 
 def _get_well_tests(well_name: str):
@@ -446,6 +651,20 @@ def _render_model_vs_actual(params: SimulationParams, wellbore, well_profile) ->
                 st.markdown(f"**Quality:** :{grade_color}[{grade.upper()}]")
         else:
             st.session_state.pop("sw_calibration_result", None)
+
+        # Friction-coef calibration (BHP-target). Stored in session_state for
+        # the top jetpump-solver panel to apply via checkbox.
+        _render_fric_calibration_section(
+            params=params,
+            wellbore=wellbore,
+            well_profile=well_profile,
+            ipr_inflow=ipr_inflow,
+            ipr_res_mix=ipr_res_mix,
+            nozzle=nozzle,
+            throat=throat,
+            actual_bhp=actual_bhp,
+            model_surf_pres=model_surf_pres,
+        )
     else:
         st.session_state.pop("sw_calibration_result", None)
         st.warning("Model could not solve with the current JP and IPR-derived inflow.")

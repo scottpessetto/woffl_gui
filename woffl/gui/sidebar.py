@@ -51,6 +51,37 @@ def _clear_ipr_state() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _populate_pump_from_history(selected_well: str) -> None:
+    """Auto-populate sidebar nozzle/throat from current installed pump.
+
+    Looks up JP history (loaded at app startup into ``jp_history_df``) for
+    the selected well's most recent installed pump and writes it into the
+    sidebar's nozzle/throat session-state keys via ``_set_param``. Silently
+    no-ops when JP history is missing or the well has no current pump.
+    """
+    jp_hist = st.session_state.get("jp_history_df")
+    if jp_hist is None:
+        return
+
+    from woffl.assembly.jp_history import get_current_pump
+
+    current_pump = get_current_pump(jp_hist, selected_well)
+    if current_pump is None:
+        return
+
+    nozzle = current_pump.get("nozzle_no")
+    throat = current_pump.get("throat_ratio")
+    if not nozzle or not throat:
+        return
+
+    nozzle_str = str(nozzle).strip()
+    throat_str = str(throat).strip().upper()
+    if nozzle_str in NOZZLE_OPTIONS:
+        _set_param("nozzle_no", nozzle_str)
+    if throat_str in THROAT_OPTIONS:
+        _set_param("area_ratio", throat_str)
+
+
 def _update_well_parameters_from_data(
     well_data: dict | None, selected_well: str
 ) -> None:
@@ -83,6 +114,7 @@ def _update_well_parameters_from_data(
         if well_data.get("bubble_point") is not None:
             _set_param("bubble_point", float(well_data["bubble_point"]))
 
+        _populate_pump_from_history(selected_well)
         _auto_populate_from_ipr(selected_well)
         st.session_state.last_selected_well_all = selected_well
 
@@ -268,41 +300,35 @@ def _render_jetpump_params() -> tuple[str, str, float, float, float, str]:
     )
     st.session_state.area_ratio = area_ratio
 
-    if "ken" not in st.session_state:
-        st.session_state.ken = 0.03
-    ken = st.slider(
+    ken = _number_input(
         "Nozzle Loss Coefficient (ken)",
-        0.01,
-        0.10,
-        st.session_state.ken,
-        0.01,
-        key="ken_input",
+        key="ken",
+        default=0.03,
+        min_value=0.001,
+        max_value=0.20,
+        step=0.005,
+        format="%.3f",
     )
-    st.session_state.ken = ken
 
-    if "kth" not in st.session_state:
-        st.session_state.kth = 0.3
-    kth = st.slider(
+    kth = _number_input(
         "Throat Loss Coefficient (kth)",
-        0.1,
-        0.5,
-        st.session_state.kth,
-        0.1,
-        key="kth_input",
+        key="kth",
+        default=0.3,
+        min_value=0.05,
+        max_value=1.0,
+        step=0.005,
+        format="%.3f",
     )
-    st.session_state.kth = kth
 
-    if "kdi" not in st.session_state:
-        st.session_state.kdi = 0.4
-    kdi = st.slider(
+    kdi = _number_input(
         "Diffuser Loss Coefficient (kdi)",
-        0.1,
-        0.5,
-        st.session_state.kdi,
-        0.1,
-        key="kdi_input",
+        key="kdi",
+        default=0.4,
+        min_value=0.05,
+        max_value=1.0,
+        step=0.005,
+        format="%.3f",
     )
-    st.session_state.kdi = kdi
 
     return nozzle_no, area_ratio, ken, kth, kdi, jpump_direction.lower()
 
