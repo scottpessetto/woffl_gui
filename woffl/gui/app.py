@@ -142,7 +142,7 @@ def main():
         run_well_database_page()
 
     elif app_mode == "Scott's Tools":
-        from woffl.gui.scotts_tools_page import run_scotts_tools_page
+        from woffl.gui.scotts_tools import run_scotts_tools_page
 
         run_scotts_tools_page()
 

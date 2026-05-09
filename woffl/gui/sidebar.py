@@ -196,10 +196,18 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
 
 
 def _on_well_change() -> None:
-    """Callback function when well selection changes."""
-    st.session_state.selected_well = st.session_state.well_selector
+    """Callback function when well selection changes.
+
+    Auto-activates the simulation for any non-Custom well so the user sees
+    results immediately without scrolling back up to click Run. Custom mode
+    still requires the explicit Run button (sidebar values aren't yet set).
+    """
+    new_well = st.session_state.well_selector
+    st.session_state.selected_well = new_well
     if hasattr(st.session_state, "well_data"):
         del st.session_state.well_data
+    if new_well != "Custom":
+        st.session_state.sw_sim_active = True
 
 
 def _render_well_selection() -> tuple[str, dict | None]:
@@ -265,9 +273,9 @@ def _render_well_selection() -> tuple[str, dict | None]:
     return selected_well, well_data
 
 
-def _render_jetpump_params() -> tuple[str, str, float, float, float, str]:
-    """Render jetpump parameter widgets."""
-    st.subheader("Jetpump Parameters")
+def _render_jetpump_params() -> tuple[str, str, str]:
+    """Render the always-visible pump selection (direction, nozzle, throat)."""
+    st.subheader("Pump")
 
     if "jpump_direction" not in st.session_state:
         st.session_state.jpump_direction = "Reverse"
@@ -280,26 +288,33 @@ def _render_jetpump_params() -> tuple[str, str, float, float, float, str]:
     )
     st.session_state.jpump_direction = jpump_direction
 
-    if "nozzle_no" not in st.session_state:
-        st.session_state.nozzle_no = "12"
-    nozzle_no = st.selectbox(
-        "Nozzle Size",
-        NOZZLE_OPTIONS,
-        index=NOZZLE_OPTIONS.index(st.session_state.nozzle_no),
-        key="nozzle_no_input",
-    )
-    st.session_state.nozzle_no = nozzle_no
+    col1, col2 = st.columns(2)
+    with col1:
+        if "nozzle_no" not in st.session_state:
+            st.session_state.nozzle_no = "12"
+        nozzle_no = st.selectbox(
+            "Nozzle",
+            NOZZLE_OPTIONS,
+            index=NOZZLE_OPTIONS.index(st.session_state.nozzle_no),
+            key="nozzle_no_input",
+        )
+        st.session_state.nozzle_no = nozzle_no
+    with col2:
+        if "area_ratio" not in st.session_state:
+            st.session_state.area_ratio = "B"
+        area_ratio = st.selectbox(
+            "Throat",
+            THROAT_OPTIONS,
+            index=THROAT_OPTIONS.index(st.session_state.area_ratio),
+            key="area_ratio_input",
+        )
+        st.session_state.area_ratio = area_ratio
 
-    if "area_ratio" not in st.session_state:
-        st.session_state.area_ratio = "B"
-    area_ratio = st.selectbox(
-        "Area Ratio (Throat Size)",
-        THROAT_OPTIONS,
-        index=THROAT_OPTIONS.index(st.session_state.area_ratio),
-        key="area_ratio_input",
-    )
-    st.session_state.area_ratio = area_ratio
+    return nozzle_no, area_ratio, jpump_direction.lower()
 
+
+def _render_loss_coefs() -> tuple[float, float, float]:
+    """Render the friction loss coefficients (advanced)."""
     ken = _number_input(
         "Nozzle Loss Coefficient (ken)",
         key="ken",
@@ -309,7 +324,6 @@ def _render_jetpump_params() -> tuple[str, str, float, float, float, str]:
         step=0.005,
         format="%.3f",
     )
-
     kth = _number_input(
         "Throat Loss Coefficient (kth)",
         key="kth",
@@ -319,7 +333,6 @@ def _render_jetpump_params() -> tuple[str, str, float, float, float, str]:
         step=0.005,
         format="%.3f",
     )
-
     kdi = _number_input(
         "Diffuser Loss Coefficient (kdi)",
         key="kdi",
@@ -329,13 +342,11 @@ def _render_jetpump_params() -> tuple[str, str, float, float, float, str]:
         step=0.005,
         format="%.3f",
     )
-
-    return nozzle_no, area_ratio, ken, kth, kdi, jpump_direction.lower()
+    return ken, kth, kdi
 
 
 def _render_pipe_params(well_data: dict | None) -> tuple[float, float, float, float]:
     """Render pipe parameter widgets."""
-    st.subheader("Pipe Parameters")
     auto_help = "Auto-populated from well data" if well_data else None
 
     tubing_od = _number_input(
@@ -357,70 +368,88 @@ def _render_pipe_params(well_data: dict | None) -> tuple[float, float, float, fl
     return tubing_od, tubing_thickness, casing_od, casing_thickness
 
 
-def _render_formation_params(
+def _render_formation_inflow(
     well_data: dict | None,
-) -> tuple[float, int, int, float | None, float | None, float | None, float | None]:
-    """Render formation parameter widgets."""
-    st.subheader("Formation Parameters")
+) -> tuple[float, int, int, int, int, int]:
+    """Render the core inflow + formation widgets (the values most often edited)."""
     auto_help = "Auto-populated from well data" if well_data else None
+    ipr_help = (
+        "Auto-populated from recent well tests (IPR analysis)" if well_data else None
+    )
 
+    qwf = _number_input(
+        "Oil Rate at FBHP (qwf, BOPD)", "qwf", 750,
+        min_value=100, max_value=6000, step=10, help=ipr_help,
+    )
+    pwf = _number_input(
+        "Flowing BHP @ qwf (pwf, psi)", "pwf", 500,
+        min_value=100, max_value=2500, step=10, help=ipr_help,
+    )
+    pres = _number_input(
+        "Reservoir Pressure (psi)", "res_pres", 1700,
+        min_value=400, max_value=5000, step=10, help=ipr_help,
+    )
     form_wc = _number_input(
-        "Water Cut (form_wc)", "form_wc", 0.50,
-        min_value=0.0, max_value=1.0, step=0.01, format="%.2f",
+        "Water Cut", "form_wc", 0.50,
+        min_value=0.0, max_value=1.0, step=0.01, format="%.2f", help=ipr_help,
     )
     form_gor = _number_input(
-        "Gas-Oil Ratio (form_gor)", "form_gor", 250,
-        min_value=20, max_value=10000, step=25,
+        "Gas-Oil Ratio (scf/bbl)", "form_gor", 250,
+        min_value=20, max_value=10000, step=25, help=ipr_help,
     )
     form_temp = _number_input(
-        "Formation Temperature (form_temp, °F)", "form_temp", 70,
+        "Formation Temperature (°F)", "form_temp", 70,
         min_value=32, max_value=350, step=1, help=auto_help,
     )
+    return form_wc, form_gor, form_temp, qwf, pwf, pres
 
-    # PVT overrides — collapsed by default; values fall through to None when
-    # missing so create_pvt_components uses the field_model preset.
+
+def _render_pvt_overrides(
+    well_data: dict | None,
+) -> tuple[float | None, float | None, float | None, float | None]:
+    """Render PVT override widgets (advanced — fall through to field-model preset)."""
     has_pvt = bool(well_data and well_data.get("oil_api") is not None)
-    expanded = bool(has_pvt)
-    with st.expander("PVT Overrides", expanded=False):
-        st.caption(
-            "Per-well values from Databricks vw_prop_resvr override the field-model "
-            "presets (Schrader: 22 API, 1750 Pb, 0.65 gas SG, 1.02 wat SG)."
-            if has_pvt
-            else "No per-well PVT data — using field-model preset."
-        )
-        oil_api = _number_input(
-            "Oil API", "oil_api", 22.0,
-            min_value=11.0, max_value=39.0, step=0.1, format="%.1f",
-        )
-        bubble_point = _number_input(
-            "Bubble Point (psig)", "bubble_point", 1750.0,
-            min_value=1001.0, max_value=2999.0, step=10.0, format="%.0f",
-        )
-        gas_sg = _number_input(
-            "Gas Specific Gravity", "gas_sg", 0.65,
-            min_value=0.51, max_value=1.19, step=0.01, format="%.2f",
-        )
-        wat_sg = _number_input(
-            "Water Specific Gravity", "wat_sg", 1.02,
-            min_value=0.51, max_value=1.49, step=0.01, format="%.2f",
-        )
-
-    return form_wc, form_gor, form_temp, oil_api, gas_sg, wat_sg, bubble_point
+    st.caption(
+        "Per-well values from Databricks vw_prop_resvr override the field-model "
+        "presets (Schrader: 22 API, 1750 Pb, 0.65 gas SG, 1.02 wat SG)."
+        if has_pvt
+        else "No per-well PVT data — using field-model preset."
+    )
+    oil_api = _number_input(
+        "Oil API", "oil_api", 22.0,
+        min_value=11.0, max_value=39.0, step=0.1, format="%.1f",
+    )
+    bubble_point = _number_input(
+        "Bubble Point (psig)", "bubble_point", 1750.0,
+        min_value=1001.0, max_value=2999.0, step=10.0, format="%.0f",
+    )
+    gas_sg = _number_input(
+        "Gas Specific Gravity", "gas_sg", 0.65,
+        min_value=0.51, max_value=1.19, step=0.01, format="%.2f",
+    )
+    wat_sg = _number_input(
+        "Water Specific Gravity", "wat_sg", 1.02,
+        min_value=0.51, max_value=1.49, step=0.01, format="%.2f",
+    )
+    return oil_api, gas_sg, wat_sg, bubble_point
 
 
-def _render_well_params(well_data: dict | None) -> tuple[int, int, float, int]:
-    """Render well parameter widgets."""
-    st.subheader("Well Parameters")
-    auto_help = "Auto-populated from well data" if well_data else None
-
+def _render_pressures() -> tuple[int, int]:
+    """Render the two always-visible pressure knobs (PF + surface)."""
     ppf_surf = _number_input(
         "Power Fluid Surface Pressure (psi)", "ppf_surf", 3168,
         min_value=1500, max_value=4000, step=10,
     )
     surf_pres = _number_input(
-        "Surface Pressure (psi)", "surf_pres", 210,
+        "Wellhead Surface Pressure (psi)", "surf_pres", 210,
         min_value=10, max_value=600, step=10,
     )
+    return surf_pres, ppf_surf
+
+
+def _render_geometry(well_data: dict | None) -> tuple[int, float]:
+    """Render geometry widgets that mostly auto-populate (TVD + PF density)."""
+    auto_help = "Auto-populated from well data" if well_data else None
     jpump_tvd = _number_input(
         "Jetpump TVD (feet)", "jpump_tvd", 4065,
         min_value=2500, max_value=8000, step=10, help=auto_help,
@@ -429,80 +458,44 @@ def _render_well_params(well_data: dict | None) -> tuple[int, int, float, int]:
         "Power Fluid Density (lbm/ft³)", "rho_pf", 62.4,
         min_value=50.0, max_value=70.0, step=0.1,
     )
-    return surf_pres, jpump_tvd, rho_pf, ppf_surf
-
-
-def _render_inflow_params(well_data: dict | None) -> tuple[int, int, int]:
-    """Render inflow parameter widgets."""
-    st.subheader("Inflow Parameters")
-    auto_help = "Auto-populated from well data" if well_data else None
-
-    qwf = _number_input(
-        "Oil Rate at FBHP (qwf, BOPD)", "qwf", 750,
-        min_value=100, max_value=6000, step=10,
-    )
-    pwf = _number_input(
-        "Flowing Bottom Hole Pressure @ qwf (pwf, psi)", "pwf", 500,
-        min_value=100, max_value=2500, step=10,
-    )
-    pres = _number_input(
-        "Reservoir Pressure (pres, psi)", "res_pres", 1700,
-        min_value=400, max_value=5000, step=10, help=auto_help,
-    )
-    return qwf, pwf, pres
+    return jpump_tvd, rho_pf
 
 
 def _render_batch_params() -> tuple[list[str], list[str], str]:
-    """Render batch run parameter widgets."""
-    st.subheader("Batch Run Parameters")
+    """Render batch-run parameters (only used by the Batch Run view)."""
+    st.caption("Used by the Batch Run view")
     nozzle_batch_options = st.multiselect(
         "Nozzle Sizes to Test",
         options=NOZZLE_OPTIONS,
         default=["9", "10", "11", "12", "13", "14", "15"],
     )
-
     throat_batch_options = st.multiselect(
         "Throat Ratios to Test", options=THROAT_OPTIONS, default=["A", "B", "C", "D"]
     )
-
     water_type = st.radio(
         "Water Type for Analysis",
         options=["lift", "total"],
         index=1,
         help="'Lift' shows power fluid water, 'Total' shows power fluid + formation water",
     )
-
     return nozzle_batch_options, throat_batch_options, water_type
 
 
 def _render_power_fluid_range_params() -> tuple[int, int, int]:
-    """Render power fluid range analysis parameter widgets."""
-    st.subheader("Power Fluid Range Analysis")
+    """Render PF-range parameters (only used by the Power Fluid Range view)."""
+    st.caption("Used by the Power Fluid Range view")
     power_fluid_min = st.number_input(
         "Min Power Fluid Pressure (psi)",
-        min_value=1000,
-        max_value=5000,
-        value=1800,
-        step=100,
-        help="Minimum power fluid pressure for range analysis",
+        min_value=1000, max_value=5000, value=1800, step=100,
     )
     power_fluid_max = st.number_input(
         "Max Power Fluid Pressure (psi)",
-        min_value=1000,
-        max_value=5000,
-        value=3600,
-        step=100,
-        help="Maximum power fluid pressure for range analysis",
+        min_value=1000, max_value=5000, value=3600, step=100,
     )
     power_fluid_step = st.number_input(
-        "Power Fluid Pressure Step (psi)",
-        min_value=50,
-        max_value=500,
-        value=200,
-        step=50,
-        help="Step size for power fluid pressure range",
+        "Pressure Step (psi)",
+        min_value=50, max_value=500, value=200, step=50,
     )
-
     return power_fluid_min, power_fluid_max, power_fluid_step
 
 
@@ -512,52 +505,93 @@ def _render_power_fluid_range_params() -> tuple[int, int, int]:
 
 
 def render_sidebar() -> tuple[bool, SimulationParams]:
-    """Render the complete sidebar and collect all parameters."""
+    """Render the complete sidebar and collect all parameters.
+
+    Inputs are grouped from most-edited (top) to least-edited (Advanced expander):
+      1. Well selection — auto-runs the simulation on change
+      2. Field model + Pump (always visible)
+      3. Pressures — the main "what-if" knobs
+      4. Inflow & Formation (expanded by default)
+      5. Geometry (collapsed; auto-populated)
+      6. Advanced — loss coefs, PVT overrides, batch ranges, PF range (collapsed)
+    """
     with st.sidebar:
-        run_button = st.button("Run Simulation")
-
-        # Well selection
-        selected_well, well_data = _render_well_selection()
-
-        # Marginal watercut
-        marginal_watercut = _number_input(
-            "Field Marginal Watercut", "marginal_watercut", 0.94,
-            min_value=0.0, max_value=1.0, step=0.01, format="%.2f",
-            help="Economic threshold for water handling in the field",
+        run_button = st.button(
+            "Re-run Simulation",
+            help=(
+                "Selecting a well runs automatically. Use this for Custom mode "
+                "or to force a re-run after editing inputs."
+            ),
+            use_container_width=True,
         )
 
+        # Well selection — auto-run hooks fire from its on_change
+        selected_well, well_data = _render_well_selection()
+
         # Field model
-        st.subheader("Field Model")
         if "field_model_index" not in st.session_state:
             st.session_state.field_model_index = 0
         field_model = st.radio(
-            "Select Field Model:",
+            "Field Model",
             options=["Schrader", "Kuparuk"],
             index=st.session_state.field_model_index,
+            horizontal=True,
             key="field_model_radio",
         )
         st.session_state.field_model_index = ["Schrader", "Kuparuk"].index(field_model)
 
-        # Collect all parameter groups
-        surf_pres, jpump_tvd, rho_pf, ppf_surf = _render_well_params(well_data)
-        nozzle_no, area_ratio, ken, kth, kdi, jpump_direction = _render_jetpump_params()
-        tubing_od, tubing_thickness, casing_od, casing_thickness = _render_pipe_params(
-            well_data
-        )
-        (
-            form_wc,
-            form_gor,
-            form_temp,
-            oil_api,
-            gas_sg,
-            wat_sg,
-            bubble_point,
-        ) = _render_formation_params(well_data)
-        qwf, pwf, pres = _render_inflow_params(well_data)
-        nozzle_batch_options, throat_batch_options, water_type = _render_batch_params()
-        power_fluid_min, power_fluid_max, power_fluid_step = (
-            _render_power_fluid_range_params()
-        )
+        # Pump selection — direction, nozzle, throat
+        nozzle_no, area_ratio, jpump_direction = _render_jetpump_params()
+
+        # Pressures — most-tweaked sidebar values
+        st.subheader("Pressures")
+        surf_pres, ppf_surf = _render_pressures()
+
+        # Inflow & Formation — auto-populated from IPR but commonly reviewed
+        with st.expander("Inflow & Formation", expanded=True):
+            (
+                form_wc,
+                form_gor,
+                form_temp,
+                qwf,
+                pwf,
+                pres,
+            ) = _render_formation_inflow(well_data)
+
+        # Geometry — auto-populated, rarely edited
+        with st.expander("Geometry", expanded=False):
+            jpump_tvd, rho_pf = _render_geometry(well_data)
+            (
+                tubing_od,
+                tubing_thickness,
+                casing_od,
+                casing_thickness,
+            ) = _render_pipe_params(well_data)
+
+        # Advanced — loss coefficients, PVT, marginal WC, view-specific knobs
+        with st.expander("Advanced", expanded=False):
+            st.markdown("**Loss Coefficients**")
+            ken, kth, kdi = _render_loss_coefs()
+
+            st.markdown("**PVT Overrides**")
+            oil_api, gas_sg, wat_sg, bubble_point = _render_pvt_overrides(well_data)
+
+            st.markdown("**Field**")
+            marginal_watercut = _number_input(
+                "Marginal Watercut", "marginal_watercut", 0.94,
+                min_value=0.0, max_value=1.0, step=0.01, format="%.2f",
+                help="Economic threshold for water handling in the field",
+            )
+
+            st.markdown("**Batch Run**")
+            nozzle_batch_options, throat_batch_options, water_type = (
+                _render_batch_params()
+            )
+
+            st.markdown("**Power Fluid Range**")
+            power_fluid_min, power_fluid_max, power_fluid_step = (
+                _render_power_fluid_range_params()
+            )
 
     params = SimulationParams(
         nozzle_no=nozzle_no,

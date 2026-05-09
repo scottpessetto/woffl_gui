@@ -67,6 +67,458 @@ def _trigger_gor_reset(well_name: str, current_gor, reason: str) -> None:
     st.rerun()
 
 
+# BHP-match thresholds used by render_bhp_calibration_warning. Tuned to match
+# the existing oil-rate quality grading on CalibrationResult (good <15%).
+# Both absolute and percentage thresholds catch a real model mismatch:
+#   - absolute trips first on low-pressure wells
+#   - percentage trips first on high-pressure wells
+_BHP_BAD_ABS_PSI = 100
+_BHP_BAD_PCT = 15.0
+
+# PF-rate-match thresholds. Two tiers: MODERATE shows a soft yellow info
+# (calibration still allowed), SEVERE shows a red flag and gates calibration
+# until the user acknowledges via the quickfix.
+#
+# Rationale: a perfectly tuned PF pressure is rarely achievable in practice
+# (test values are noisy, operating PF drifts). Early versions blocked
+# calibration on >100 BWPD / >15% which made the iterative cal-fix loop
+# noisy. Once the user has interacted with the quickfix once for a well,
+# we trust them and downgrade to the soft tier even at severe deltas.
+_PF_BAD_ABS_BWPD = 100
+_PF_BAD_PCT = 15.0
+_PF_SEVERE_ABS_BWPD = 250
+_PF_SEVERE_PCT = 25.0
+
+
+def _pf_is_acknowledged(well_name: str | None) -> bool:
+    """True once the user has interacted with the PF quickfix for this well."""
+    if not well_name:
+        return False
+    return well_name in st.session_state.get("_pf_ack_wells", set())
+
+
+def _ack_pf(well_name: str | None) -> None:
+    """Mark that the user has interacted with the PF quickfix for this well.
+
+    Called from the quickfix on_change callback and the Auto-match button.
+    Persists for the rest of the session — once the user has shown they
+    know about the mismatch, stop nagging them with red flags.
+    """
+    if not well_name:
+        return
+    st.session_state.setdefault("_pf_ack_wells", set()).add(well_name)
+
+
+def render_bhp_calibration_warning(
+    modeled_bhp, actual_bhp, *, on_solver_view: bool = False
+) -> bool:
+    """Render a red flag recommending Friction-Coef Calibration when BHP match is bad.
+
+    Returns True when a warning was rendered, False otherwise (so callers can
+    suppress duplicate hint text immediately afterward). Silently no-ops when
+    either value is missing — calibration only makes sense with both sides.
+
+    A "bad" match is |delta| > 100 psi OR > 15% of actual. Below that the
+    physics calibration would just be fitting noise.
+
+    Pass ``on_solver_view=True`` from the Solver view so the action text reads
+    "scroll down to Friction-Coef Calibration" instead of "switch to the
+    Solver view" — telling a user already on Solver to switch to Solver is
+    confusing.
+    """
+    if not is_valid_number(modeled_bhp) or not is_valid_number(actual_bhp):
+        return False
+    abs_delta = abs(modeled_bhp - actual_bhp)
+    pct_delta = (abs_delta / actual_bhp * 100) if actual_bhp > 0 else 0.0
+    if abs_delta <= _BHP_BAD_ABS_PSI and pct_delta <= _BHP_BAD_PCT:
+        return False
+
+    direction = "above" if modeled_bhp > actual_bhp else "below"
+    if on_solver_view:
+        action = (
+            "Scroll down to **Model vs Actual → Friction-Coef Calibration** "
+            "to fit ken/kth/kdi against the measured BHP."
+        )
+    else:
+        action = (
+            "Switch to the **Solver** view and run *Friction-Coef Calibration* "
+            "(in the Model vs Actual section) to fit ken/kth/kdi against the "
+            "measured BHP."
+        )
+    st.error(
+        f"🚩 **BHP match is poor** — modeled suction pressure is "
+        f"{abs_delta:.0f} psi ({pct_delta:.1f}%) {direction} the measured BHP "
+        f"of {actual_bhp:.0f} psi. {action}"
+    )
+    return True
+
+
+def render_pf_mismatch_warning(
+    modeled_pf,
+    actual_pf,
+    ppf_surf,
+    *,
+    test_date_str: str | None = None,
+    well_name: str | None = None,
+) -> tuple[bool, bool]:
+    """Render a tiered PF mismatch warning. Returns ``(warning_shown, blocked)``.
+
+    Three states based on severity + per-well acknowledgment:
+      - **No warning** when |delta| ≤ moderate threshold → returns (False, False)
+      - **Soft yellow info** when moderate-but-not-severe, OR when severe
+        but the user has already acknowledged via the quickfix this session.
+        Calibration is allowed → returns (True, False).
+      - **Red error + gate** only when SEVERE and not yet acknowledged →
+        returns (True, True). This is the only path that gates the cal button.
+
+    The intent is to flag the issue once and then get out of the user's way.
+    Iterating on PF + calibration becomes painful when a fresh red flag
+    appears every time the modeled PF drifts >100 BWPD off the test value.
+    Callers render the quickfix widget whenever ``warning_shown`` is True so
+    the user can fine-tune from either tier.
+    """
+    if not is_valid_number(modeled_pf) or not is_valid_number(actual_pf):
+        return False, False
+    abs_delta = abs(modeled_pf - actual_pf)
+    pct_delta = (abs_delta / actual_pf * 100) if actual_pf > 0 else 0.0
+    if abs_delta <= _PF_BAD_ABS_BWPD and pct_delta <= _PF_BAD_PCT:
+        return False, False
+
+    is_severe = abs_delta > _PF_SEVERE_ABS_BWPD or pct_delta > _PF_SEVERE_PCT
+    acknowledged = _pf_is_acknowledged(well_name)
+    block = is_severe and not acknowledged
+
+    direction = "above" if modeled_pf > actual_pf else "below"
+    test_clause = (
+        f" The matching well test was on **{test_date_str}** — look up the "
+        f"actual PF surface pressure operating that day."
+        if test_date_str
+        else ""
+    )
+
+    if block:
+        st.error(
+            f"🚩 **PF rate mismatch — fix this before calibrating BHP** — "
+            f"modeled PF rate is {abs_delta:.0f} BWPD ({pct_delta:.1f}%) "
+            f"{direction} the measured actual ({actual_pf:.0f} BWPD). The "
+            f"sidebar **Power Fluid Surface Pressure** ({ppf_surf} psi) "
+            f"probably doesn't match the operating value.{test_clause} Adjust "
+            "it until this delta is small, then run BHP calibration."
+        )
+    else:
+        # Soft yellow info — small, easy to scan past once the user knows.
+        st.info(
+            f"ℹ️ PF rate is {abs_delta:.0f} BWPD ({pct_delta:.1f}%) "
+            f"{direction} the test actual ({actual_pf:.0f} BWPD). "
+            "Calibration is allowed but accuracy will suffer if PF is "
+            "materially wrong — fine-tune via the quickfix below if needed."
+        )
+
+    return True, block
+
+
+def build_calibration_inputs(params, wellbore, well_profile) -> dict | None:
+    """Build the IPR-derived simulation inputs for calibration / PF-search.
+
+    Single source of truth for "given a selected well, what inputs do we feed
+    the solver to compare against the most recent test." Used by both the
+    BHP friction-cal executor and the PF auto-match solver — they need the
+    exact same pump identity (current installed JP), inflow (IPR-derived),
+    and surface-pressure choice (test value if present, else sidebar).
+
+    Honors the override flags set in the Model vs Actual section:
+      - mva_override_res_p → use sidebar reservoir pressure instead of IPR
+      - mva_override_gor   → use sidebar GOR instead of test GOR
+
+    Returns None when prerequisites are missing (Custom mode, no JP history,
+    fewer than 2 well tests, etc.). Callers must handle None.
+    """
+    from woffl.assembly.ipr_analyzer import (
+        compute_vogel_coefficients,
+        estimate_reservoir_pressure,
+    )
+    from woffl.assembly.jp_history import get_current_pump
+
+    if params.selected_well == "Custom":
+        return None
+
+    jp_hist = st.session_state.get("jp_history_df")
+    if jp_hist is None:
+        return None
+    current_pump = get_current_pump(jp_hist, params.selected_well)
+    if current_pump is None:
+        return None
+    nozzle = current_pump.get("nozzle_no")
+    throat = current_pump.get("throat_ratio")
+    if not nozzle or not throat:
+        return None
+
+    all_tests = st.session_state.get("all_well_tests_df")
+    if all_tests is None or all_tests.empty:
+        return None
+    well_tests = all_tests[all_tests["well"] == params.selected_well]
+    if len(well_tests) < 2:
+        return None
+
+    try:
+        merged = estimate_reservoir_pressure(well_tests)
+        vogel = compute_vogel_coefficients(merged)
+    except Exception:
+        return None
+
+    well_coeffs = vogel[vogel["Well"] == params.selected_well]
+    if well_coeffs.empty:
+        return None
+    coeff_row = well_coeffs.iloc[0]
+
+    recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
+
+    override_res_p = bool(st.session_state.get("mva_override_res_p", False))
+    model_res_p = float(params.pres) if override_res_p else float(coeff_row["ResP"])
+
+    test_gor = recent.get("fgor")
+    test_gor = int(test_gor) if is_valid_number(test_gor) else None
+    override_gor = bool(st.session_state.get("mva_override_gor", False))
+    model_gor = (
+        params.form_gor if (override_gor or test_gor is None) else test_gor
+    )
+
+    test_whp = recent.get("whp")
+    model_surf_pres = (
+        float(test_whp) if is_valid_number(test_whp) else float(params.surf_pres)
+    )
+
+    oil_qwf = coeff_row["qwf"] * (1 - coeff_row["form_wc"])
+    ipr_inflow = create_inflow(oil_qwf, coeff_row["pwf"], model_res_p)
+    ipr_res_mix = create_reservoir_mix(
+        coeff_row["form_wc"], model_gor, params.form_temp, params.field_model
+    )
+
+    test_date = recent.get("WtDate")
+    test_date_str = (
+        test_date.strftime("%Y-%m-%d") if hasattr(test_date, "strftime") else None
+    )
+
+    actual_bhp = recent.get("BHP")
+    actual_pf = recent.get("lift_wat")
+
+    return {
+        "nozzle": str(nozzle),
+        "throat": str(throat),
+        "model_surf_pres": model_surf_pres,
+        "ipr_inflow": ipr_inflow,
+        "ipr_res_mix": ipr_res_mix,
+        "actual_bhp": float(actual_bhp) if is_valid_number(actual_bhp) else None,
+        "actual_pf": float(actual_pf) if is_valid_number(actual_pf) else None,
+        "test_date_str": test_date_str,
+    }
+
+
+_PF_QUICKFIX_KEY = "_pf_quickfix_box"
+
+
+def _on_pf_quickfix_change() -> None:
+    """on_change callback for the quickfix number input.
+
+    Sets the logical sidebar key (``ppf_surf``) and POPs the sidebar widget
+    key (``ppf_surf_input``). The sidebar's _number_input helper re-initializes
+    the widget key from the logical key on the next render — see CLAUDE.md
+    gotcha about writing to widget keys after a widget has already rendered
+    in the same run.
+
+    Also marks the PF mismatch as acknowledged for the current well so the
+    next render downgrades the warning from red to yellow info. Reads the
+    current well from a session_state hint set right before render.
+    """
+    try:
+        new_val = int(st.session_state[_PF_QUICKFIX_KEY])
+    except (KeyError, ValueError, TypeError):
+        return
+    st.session_state["ppf_surf"] = new_val
+    st.session_state.pop("ppf_surf_input", None)
+    _ack_pf(st.session_state.get("_pf_quickfix_well"))
+
+
+def _solve_pf_for_actual_lift(
+    target_lift_wat: float,
+    params,
+    wellbore,
+    well_profile,
+    inputs: dict,
+) -> tuple[int | None, float | None, str | None]:
+    """Brent-search for the ppf_surf that produces target_lift_wat from the installed pump.
+
+    Uses the installed pump (from JP history) and IPR-derived inflow — the
+    same context calibration uses. Each evaluation runs the full jetpump
+    solver once; brentq typically converges in ~10 evaluations, so a few
+    seconds total.
+
+    Returns (solved_ppf, achieved_lift, error_message). On no-bracket or
+    solver failure, ppf is None and error_message explains why.
+    """
+    from scipy.optimize import brentq
+
+    pump = create_jetpump(
+        inputs["nozzle"], inputs["throat"], params.ken, params.kth, params.kdi
+    )
+
+    def lift_at(ppf: float) -> float:
+        result = run_jetpump_solver(
+            inputs["model_surf_pres"],
+            float(params.form_temp),
+            float(params.rho_pf),
+            float(ppf),
+            pump,
+            wellbore,
+            well_profile,
+            inputs["ipr_inflow"],
+            inputs["ipr_res_mix"],
+            field_model=params.field_model,
+            jpump_direction=params.jpump_direction,
+        )
+        if result is None:
+            return float("nan")
+        _psu, _sonic, _qoil, _fwat, qnz, _mach = result
+        return float(qnz)
+
+    lo, hi = 1500.0, 4000.0
+    f_lo = lift_at(lo) - target_lift_wat
+    f_hi = lift_at(hi) - target_lift_wat
+    import math
+
+    if math.isnan(f_lo) or math.isnan(f_hi):
+        return None, None, (
+            "Solver failed at one of the search bounds (1500 / 4000 psi). "
+            "The installed pump may not solve at extreme PF pressures."
+        )
+    if f_lo * f_hi > 0:
+        if f_lo > 0:
+            return None, None, (
+                f"Even at the minimum 1500 psi, the modeled lift "
+                f"({f_lo + target_lift_wat:.0f} BWPD) exceeds target "
+                f"({target_lift_wat:.0f} BWPD). The installed pump can't "
+                "operate that low — check pump or test data."
+            )
+        return None, None, (
+            f"Even at the maximum 4000 psi, the modeled lift "
+            f"({f_hi + target_lift_wat:.0f} BWPD) is below target "
+            f"({target_lift_wat:.0f} BWPD). The installed pump can't reach "
+            "the actual rate within range."
+        )
+
+    try:
+        solved = brentq(
+            lambda ppf: lift_at(ppf) - target_lift_wat,
+            lo, hi, xtol=10, maxiter=30,
+        )
+    except Exception as e:
+        return None, None, f"Auto-match search failed: {e}"
+
+    achieved = lift_at(solved)
+    return int(round(solved)), float(achieved), None
+
+
+def render_pf_quickfix_widget(
+    params, wellbore, well_profile, *, target_lift_wat: float | None
+) -> None:
+    """Inline PF-pressure quickfix rendered below a PF mismatch warning.
+
+    Two affordances side-by-side:
+      1. **Number input** — typing a value updates sidebar ppf_surf via
+         on_change; Streamlit reruns and the simulation re-evaluates.
+      2. **Auto-match button** — solves for the ppf_surf that produces the
+         most recent test's measured lift_wat.
+
+    The widget value is synced to current ``params.ppf_surf`` before render
+    so external sidebar changes reflect here too. Skipped silently when the
+    target lift isn't available (Auto-match would have nothing to match).
+    """
+    inputs = build_calibration_inputs(params, wellbore, well_profile)
+    if inputs is None:
+        return  # No JP/test context — quickfix wouldn't help anyway
+
+    # Stash the current well so the on_change callback can mark it acked.
+    # (on_change runs without arguments, so it has to read context from
+    # session_state.)
+    st.session_state["_pf_quickfix_well"] = params.selected_well
+
+    # Sync widget value to current sidebar value before render
+    if st.session_state.get(_PF_QUICKFIX_KEY) != int(params.ppf_surf):
+        st.session_state[_PF_QUICKFIX_KEY] = int(params.ppf_surf)
+
+    # Show any auto-match status from the previous render
+    msg = st.session_state.pop("_pf_automatch_msg", None)
+    err = st.session_state.pop("_pf_automatch_err", None)
+    if msg:
+        st.success(msg)
+    if err:
+        st.warning(err)
+
+    col_input, col_auto, col_status = st.columns([2, 1, 3])
+    with col_input:
+        st.number_input(
+            "Quickfix: actual PF surface pressure (psi)",
+            min_value=1500, max_value=4000, step=10,
+            key=_PF_QUICKFIX_KEY,
+            on_change=_on_pf_quickfix_change,
+            help=(
+                "Updates the sidebar Power Fluid Surface Pressure. The "
+                "simulation re-runs immediately and the lockout disappears "
+                "once the modeled PF rate matches the test."
+            ),
+        )
+
+    with col_auto:
+        # Vertical alignment hack — caption above the button to push it down
+        st.caption(" ")
+        auto_clicked = st.button(
+            "Auto-match",
+            key="_pf_automatch_btn",
+            help=(
+                "Solve for the PF pressure that produces the test's actual "
+                "lift water rate. Runs ~10 solver evaluations."
+            ),
+            disabled=target_lift_wat is None,
+            use_container_width=True,
+        )
+
+    with col_status:
+        st.caption(" ")
+        if target_lift_wat is None:
+            st.caption("Auto-match unavailable — test has no measured PF rate.")
+        else:
+            st.caption(
+                f"Target: {target_lift_wat:.0f} BWPD "
+                f"(from {inputs['test_date_str'] or 'most recent test'})"
+            )
+
+    if auto_clicked and target_lift_wat is not None:
+        # User has engaged with PF — downgrade future warnings even if the
+        # solve fails (they've shown they know about the mismatch).
+        _ack_pf(params.selected_well)
+        with st.spinner("Searching for matching PF pressure..."):
+            solved, achieved, error = _solve_pf_for_actual_lift(
+                target_lift_wat, params, wellbore, well_profile, inputs
+            )
+        if solved is None:
+            st.session_state["_pf_automatch_err"] = error or "Auto-match failed."
+        else:
+            # Sidebar + quickfix widgets already rendered this run, so writing
+            # to their session_state keys would raise. Set the logical key and
+            # POP the widget keys; both widgets re-initialize from the logical
+            # key on the next render (see CLAUDE.md gotcha).
+            st.session_state["ppf_surf"] = solved
+            st.session_state.pop("ppf_surf_input", None)
+            st.session_state.pop(_PF_QUICKFIX_KEY, None)
+            delta = achieved - target_lift_wat
+            st.session_state["_pf_automatch_msg"] = (
+                f"Auto-matched **PF = {solved} psi** → modeled lift "
+                f"{achieved:.0f} BWPD vs target {target_lift_wat:.0f} "
+                f"({delta:+.0f} BWPD)."
+            )
+        st.rerun()
+
+
 def create_jetpump(nozzle_no, area_ratio, ken, kth, kdi):
     """Create a JetPump object with the given parameters."""
     return JetPump(

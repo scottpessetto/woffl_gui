@@ -12,7 +12,14 @@ from plotly.subplots import make_subplots
 
 from woffl.gui.components.dataframe_display import display_results_table
 from woffl.gui.params import SimulationParams
-from woffl.gui.utils import run_power_fluid_range_batch
+from woffl.gui.utils import (
+    build_calibration_inputs,
+    is_valid_number,
+    render_bhp_calibration_warning,
+    render_pf_mismatch_warning,
+    render_pf_quickfix_widget,
+    run_power_fluid_range_batch,
+)
 
 # Qualitative palette that stays legible on white
 _PALETTE = [
@@ -252,6 +259,84 @@ def _render_best_performers(successful_df: pd.DataFrame) -> None:
         st.metric("Sonic Flow", "Yes" if bool(overall_best["sonic_status"]) else "No")
 
 
+def _render_calibration_flags_for_installed_pump(
+    successful_df: pd.DataFrame,
+    params: SimulationParams,
+    wellbore,
+    well_profile,
+) -> None:
+    """Surface PF + BHP calibration flags for the installed pump.
+
+    PF Range sweeps PF pressure across many pumps, but the only meaningful
+    "vs actual" comparison is for the **currently installed pump** at the
+    PF pressure closest to the sidebar value (the user's operating point).
+    Same flag hierarchy as Solver + Batch Run: PF mismatch is foundational,
+    BHP flag only meaningful once PF is right.
+    """
+    if params.selected_well == "Custom":
+        return
+
+    jp_hist = st.session_state.get("jp_history_df")
+    if jp_hist is None:
+        return
+
+    from woffl.assembly.jp_history import get_current_pump
+
+    current_pump = get_current_pump(jp_hist, params.selected_well)
+    if current_pump is None:
+        return
+    nozzle = current_pump.get("nozzle_no")
+    throat = current_pump.get("throat_ratio")
+    if not nozzle or not throat:
+        return
+
+    # Find installed pump's row at the PF pressure closest to sidebar
+    pump_rows = successful_df[
+        (successful_df["nozzle"] == nozzle) & (successful_df["throat"] == throat)
+    ]
+    if pump_rows.empty:
+        return  # Installed pump wasn't in this sweep
+    closest_idx = (pump_rows["power_fluid_pressure"] - params.ppf_surf).abs().idxmin()
+    modeled_bhp = pump_rows.loc[closest_idx, "psu_solv"]
+    modeled_pf = pump_rows.loc[closest_idx, "lift_wat"]
+
+    # Actuals from latest well test
+    all_tests = st.session_state.get("all_well_tests_df")
+    if all_tests is None or all_tests.empty:
+        return
+    well_tests = all_tests[all_tests["well"] == params.selected_well]
+    if well_tests.empty:
+        return
+    recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
+    actual_bhp = recent.get("BHP") if "BHP" in well_tests.columns else None
+    actual_pf = recent.get("lift_wat") if "lift_wat" in well_tests.columns else None
+
+    # PF mismatch first — fix this before trusting any BHP comparison
+    cal_inputs = build_calibration_inputs(params, wellbore, well_profile)
+    test_date_str = cal_inputs["test_date_str"] if cal_inputs else None
+
+    pf_blocked = False
+    if is_valid_number(actual_pf):
+        pf_warning_shown, pf_blocked = render_pf_mismatch_warning(
+            float(modeled_pf),
+            float(actual_pf),
+            params.ppf_surf,
+            test_date_str=test_date_str,
+            well_name=params.selected_well,
+        )
+        if pf_warning_shown:
+            render_pf_quickfix_widget(
+                params,
+                wellbore,
+                well_profile,
+                target_lift_wat=float(actual_pf),
+            )
+
+    # BHP flag only meaningful once PF is right
+    if not pf_blocked and is_valid_number(actual_bhp):
+        render_bhp_calibration_warning(float(modeled_bhp), float(actual_bhp))
+
+
 def render_tab(
     params: SimulationParams, wellbore, well_profile, inflow, res_mix
 ) -> None:
@@ -357,6 +442,12 @@ def render_tab(
         )
         success_pct = len(successful_df) / len(comprehensive_df) * 100
         st.metric("Success Rate", f"{success_pct:.1f}%")
+
+    # PF + BHP calibration flags for the installed pump at the sidebar's PF
+    # pressure. Same flag hierarchy as Solver and Batch Run.
+    _render_calibration_flags_for_installed_pump(
+        successful_df, params, wellbore, well_profile
+    )
 
     # Visualization tabs
     viz_tab1, viz_tab2, viz_tab3 = st.tabs(

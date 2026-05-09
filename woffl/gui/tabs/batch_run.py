@@ -4,10 +4,6 @@ Renders the batch run analysis including performance graphs, derivative plots,
 data tables, and jet pump recommender results.
 """
 
-import os
-import tempfile
-
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -19,9 +15,13 @@ from woffl.geometry.jetpump import JetPump
 from woffl.gui.components.dataframe_display import display_results_table
 from woffl.gui.params import SimulationParams
 from woffl.gui.utils import (
+    build_calibration_inputs,
     highlight_recommended_pump,
     is_valid_number,
     recommend_jetpump,
+    render_bhp_calibration_warning,
+    render_pf_mismatch_warning,
+    render_pf_quickfix_widget,
     run_batch_pump,
 )
 
@@ -228,42 +228,6 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
     - **Gold star**: Recommended jet pump based on marginal watercut threshold
     - **Labels**: Show nozzle size + throat ratio (e.g., "12B" = nozzle 12, throat B)
     - **Hover** over any point for detailed metrics
-    """)
-
-
-def _render_derivative_graph(batch_pump, params: SimulationParams) -> None:
-    """Render the derivative graph sub-tab."""
-    water = params.water_type if params.water_type is not None else "lift"
-    st.subheader(f"Marginal Oil-Water Ratio ({water.capitalize()} Water)")
-
-    has_curve_fit = hasattr(batch_pump, "coeff_totl") and hasattr(
-        batch_pump, "coeff_lift"
-    )
-
-    if has_curve_fit:
-        try:
-            with tempfile.TemporaryDirectory() as tmpdirname:
-                fig_path = os.path.join(tmpdirname, "derv_plot.png")
-                batch_pump.plot_derv(water=water, fig_path=fig_path)
-                st.image(fig_path)
-        except Exception as e:
-            st.error(f"Error generating derivative plot: {str(e)}")
-            st.info(
-                "The derivative plot requires at least two semi-finalist jet pumps "
-                "to calculate the marginal oil-water ratio."
-            )
-    else:
-        st.warning("Curve fitting failed, so the derivative plot cannot be generated.")
-        st.info(
-            "Try selecting more nozzle sizes and throat ratios to improve curve fitting. "
-            "At least two semi-finalist jet pumps are required."
-        )
-
-    st.markdown("""
-    **Graph Explanation:**
-    - **Points**: Marginal oil-water ratio for each semi-finalist jet pump
-    - **Line**: Analytical derivative of the exponential curve fit
-    - **Marginal Oil-Water Ratio**: Additional oil production per additional barrel of water
     """)
 
 
@@ -477,15 +441,33 @@ def _compute_batch_calibration(
     )
 
 
-def _render_model_vs_actual(batch_pump, params: SimulationParams) -> None:
-    """Render Model vs Actual comparison and calibration for the batch run.
+def _render_batch_hero_strip(
+    batch_pump, params: SimulationParams, wellbore, well_profile
+) -> bool:
+    """Hero metric strip — same shape as the Solver view.
 
-    Compares the currently installed pump's batch result to the most recent well test.
-    Stores calibration in session state for optional application to all batch results.
+    Renders the installed pump's batch row alongside the most recent well
+    test, with vs-actual deltas on Oil, Power Fluid, and Suction Pressure.
+    Doubles as the discoverability hook for the friction-coef calibration
+    in the Solver view: when the deltas are large, the hint underneath
+    points the user there.
+
+    Side effect: stores the CalibrationResult in session_state so the
+    "Apply calibration factor" toggle below the hero can use it. (We
+    deliberately compute calibration here even when the user can't see
+    the full breakdown, so the toggle behaves the same as before.)
+
+    Returns True when PF rate mismatch is large enough that the rate-scalar
+    calibration would encode a PF-pressure error rather than a real model
+    correction — the caller disables the toggle in that case.
     """
     cal = _compute_batch_calibration(batch_pump, params)
     if cal is None:
-        return
+        # No JP history / no actuals — show a minimal hero from the sidebar pump
+        _render_batch_hero_no_actuals(batch_pump, params)
+        return False
+
+    st.session_state["batch_calibration_result"] = cal
 
     from woffl.assembly.jp_history import get_current_pump
 
@@ -497,61 +479,116 @@ def _render_model_vs_actual(batch_pump, params: SimulationParams) -> None:
         else "N/A"
     )
 
-    st.divider()
-    st.subheader("Model vs Actual Comparison")
-    st.info(
-        f"Comparing batch result for the **current installed pump** "
-        f"({cal.current_nozzle}{cal.current_throat}, set {date_str}) "
-        f"to the most recent well test for **{params.selected_well}**."
+    # Pull formation water for the installed pump from the batch DF
+    # (CalibrationResult only carries oil/pf/bhp).
+    match = batch_pump.df[
+        (batch_pump.df["nozzle"] == cal.current_nozzle)
+        & (batch_pump.df["throat"] == cal.current_throat)
+    ]
+    model_form_wat = (
+        float(match.iloc[0]["form_wat"]) if not match.empty else None
     )
 
-    # Side-by-side metrics
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Modeled Oil Rate", f"{cal.model_oil:.0f} BOPD")
-    with col2:
-        st.metric("Actual Oil Rate", f"{cal.actual_oil:.0f} BOPD")
-    with col3:
-        st.metric("Delta", f"{cal.model_oil - cal.actual_oil:+.0f} BOPD")
+    st.caption(
+        f"Showing the **current installed pump** "
+        f"({cal.current_nozzle}{cal.current_throat}, set {date_str}). "
+        f"Deltas compare modeled values to the most recent well test for "
+        f"**{params.selected_well}**."
+    )
 
-    if cal.actual_bhp is not None and cal.model_bhp is not None:
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Modeled BHP (suction)", f"{cal.model_bhp:.0f} psi")
-        with col2:
-            st.metric("Actual BHP", f"{cal.actual_bhp:.0f} psi")
-        with col3:
-            st.metric("Delta", f"{cal.model_bhp - cal.actual_bhp:+.0f} psi")
+    def _delta(modeled: float, actual: float | None, suffix: str) -> str | None:
+        if actual is None:
+            return None
+        return f"{modeled - actual:+,.0f} {suffix}"
 
-    if cal.model_pf is not None and cal.actual_pf is not None:
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Modeled PF Rate", f"{cal.model_pf:.0f} BWPD")
-        with col2:
-            st.metric("Actual PF Rate", f"{cal.actual_pf:.0f} BWPD")
-        with col3:
-            st.metric("Delta", f"{cal.model_pf - cal.actual_pf:+.0f} BWPD")
+    h1, h2, h3, h4 = st.columns(4)
+    with h1:
+        d = _delta(cal.model_oil, cal.actual_oil, "vs actual")
+        st.metric(
+            "Oil Rate", f"{cal.model_oil:,.0f} BOPD",
+            delta=d, delta_color="off" if d is None else "normal",
+        )
+    with h2:
+        st.metric(
+            "Formation Water",
+            f"{model_form_wat:,.0f} BWPD" if model_form_wat is not None else "—",
+        )
+    with h3:
+        d = _delta(cal.model_pf, cal.actual_pf, "vs actual")
+        st.metric(
+            "Power Fluid", f"{cal.model_pf:,.0f} BWPD",
+            delta=d, delta_color="off" if d is None else "normal",
+        )
+    with h4:
+        d = _delta(cal.model_bhp, cal.actual_bhp, "vs actual")
+        st.metric(
+            "Suction Pressure", f"{cal.model_bhp:,.0f} psig",
+            delta=d, delta_color="off" if d is None else "normal",
+        )
 
-        if abs(cal.model_pf - cal.actual_pf) > 100:
-            st.warning(
-                f"Modeled PF rate differs from actual by {abs(cal.model_pf - cal.actual_pf):.0f} BWPD. "
-                "Check that the **Power Fluid Pressure** in the sidebar matches the actual PF pressure for this well."
+    # PF mismatch is the foundational check. If the sidebar PF pressure
+    # doesn't match operating conditions, both the rate-scalar calibration
+    # (here) and the BHP friction-cal (Solver) will encode the pressure
+    # error rather than capturing a real model correction.
+    cal_inputs = build_calibration_inputs(params, wellbore, well_profile)
+    test_date_str = cal_inputs["test_date_str"] if cal_inputs else None
+    pf_warning_shown, pf_blocked = render_pf_mismatch_warning(
+        cal.model_pf,
+        cal.actual_pf,
+        params.ppf_surf,
+        test_date_str=test_date_str,
+        well_name=params.selected_well,
+    )
+    if pf_warning_shown:
+        render_pf_quickfix_widget(
+            params, wellbore, well_profile, target_lift_wat=cal.actual_pf
+        )
+
+    # BHP red flag (only meaningful once PF is right). Falls back to the
+    # softer one-line summary when the BHP match is acceptable.
+    if not pf_blocked:
+        bhp_warned = render_bhp_calibration_warning(cal.model_bhp, cal.actual_bhp)
+        if not bhp_warned:
+            grade = cal.quality_grade
+            grade_color = {"good": "green", "fair": "orange", "poor": "red"}[grade]
+            st.markdown(
+                f"Oil error: **{cal.oil_error_pct:.1f}%** · "
+                f"Quality: :{grade_color}[**{grade.upper()}**]  ·  "
+                "Switch to the **Solver** view to fit ken/kth/kdi via "
+                "*Friction-Coef Calibration* and drive the BHP delta toward zero."
             )
 
-    # Calibration summary
-    st.markdown("#### Model Calibration")
-    grade = cal.quality_grade
-    grade_color = {"good": "green", "fair": "orange", "poor": "red"}[grade]
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Calibration Factor", f"{cal.calibration_factor:.3f}")
-    with c2:
-        st.metric("Oil Error", f"{cal.oil_error_pct:.1f}%")
-    with c3:
-        st.markdown(f"**Quality:** :{grade_color}[{grade.upper()}]")
+    return pf_blocked
 
-    # Store for use in calibrated batch results
-    st.session_state["batch_calibration_result"] = cal
+
+def _render_batch_hero_no_actuals(batch_pump, params: SimulationParams) -> None:
+    """Hero strip variant for Custom mode / wells without test data.
+
+    Shows the sidebar-selected pump's batch row with no deltas.
+    """
+    sb_nozzle = params.nozzle_no
+    sb_throat = params.area_ratio
+    match = batch_pump.df[
+        (batch_pump.df["nozzle"] == sb_nozzle)
+        & (batch_pump.df["throat"] == sb_throat)
+    ]
+    if match.empty or pd.isna(match.iloc[0].get("qoil_std")):
+        return  # Nothing to show — sidebar pump wasn't in the batch grid
+    row = match.iloc[0]
+
+    st.caption(
+        f"Showing the **sidebar pump** ({sb_nozzle}{sb_throat}). "
+        "No well-test actuals available for vs-actual deltas."
+    )
+    h1, h2, h3, h4 = st.columns(4)
+    with h1:
+        st.metric("Oil Rate", f"{row['qoil_std']:,.0f} BOPD")
+    with h2:
+        st.metric("Formation Water", f"{row['form_wat']:,.0f} BWPD")
+    with h3:
+        st.metric("Power Fluid", f"{row['lift_wat']:,.0f} BWPD")
+    with h4:
+        st.metric("Suction Pressure", f"{row['psu_solv']:,.0f} psig")
 
 
 def _render_nelder_mead_section(batch_pump, params: SimulationParams) -> None:
@@ -728,24 +765,40 @@ def render_tab(
     if not batch_pump:
         return
 
-    # Model vs Actual + calibration (before tabs so factor is available)
-    _render_model_vs_actual(batch_pump, params)
+    # Hero strip — installed-pump batch row vs latest actuals.
+    # Computes + stashes the calibration as a side effect so the toggle below
+    # can use it. Returns True when PF rate mismatch is too large to trust
+    # the rate-scalar calibration.
+    pf_blocked = _render_batch_hero_strip(
+        batch_pump, params, wellbore, well_profile
+    )
 
-    # Calibration toggle
+    # Calibration toggle — applies the factor to ALL batch rows so the
+    # Performance Graph / Data Table reflect the calibration. Disabled
+    # while PF is mismatched (matches the gating on the Solver view's
+    # Run BHP Cal button).
     cal = st.session_state.get("batch_calibration_result")
-    apply_cal = False
     if cal and cal.well_name == params.selected_well:
+        cal_help = (
+            "Disabled while PF rate mismatch is too large — fix the sidebar "
+            "Power Fluid Surface Pressure first."
+            if pf_blocked
+            else (
+                f"Scales all oil and formation water rates by {cal.calibration_factor:.3f} "
+                f"(derived from {cal.current_nozzle}{cal.current_throat} model vs actual)."
+            )
+        )
         apply_cal = st.checkbox(
             f"Apply calibration factor ({cal.calibration_factor:.2f}) to all batch results",
             value=False,
             key="batch_apply_calibration",
-            help=(
-                f"Scales all oil and formation water rates by {cal.calibration_factor:.3f} "
-                f"(derived from {cal.current_nozzle}{cal.current_throat} model vs actual)."
-            ),
+            disabled=pf_blocked,
+            help=cal_help,
         )
-        if apply_cal:
-            # Scale oil and formation water by calibration factor
+        # Streamlit preserves the underlying session_state value when a
+        # checkbox is disabled — explicitly suppress the calibration when
+        # PF is blocked so a stale-checked box doesn't slip through.
+        if apply_cal and not pf_blocked:
             batch_pump.df["qoil_std_raw"] = batch_pump.df["qoil_std"]
             batch_pump.df["form_wat_raw"] = batch_pump.df["form_wat"]
             batch_pump.df["qoil_std"] = (
@@ -757,10 +810,9 @@ def render_tab(
             batch_pump.df["totl_wat"] = (
                 batch_pump.df["form_wat"] + batch_pump.df["lift_wat"]
             )
-
-            # Re-run process_results to recompute semi-finalists, marginal ratios,
-            # and curve fits from calibrated data. Oil scales uniformly but total water
-            # does not (lift water is unchanged), so the recommendation may shift to a
+            # Recompute semi-finalists, marginal ratios, curve fits from
+            # calibrated data. Oil scales uniformly but total water does not
+            # (lift water is unchanged), so the recommendation may shift to a
             # smaller pump when the model over-predicts.
             batch_pump.df.drop(
                 columns=["semi", "motwr", "molwr"], errors="ignore", inplace=True
@@ -770,7 +822,6 @@ def render_tab(
             except ValueError:
                 st.warning("No semi-finalist pumps found after applying calibration.")
                 return
-
             st.caption(
                 f"Showing **calibrated** results (factor {cal.calibration_factor:.3f} "
                 f"from {cal.current_nozzle}{cal.current_throat}). "
@@ -778,18 +829,14 @@ def render_tab(
                 "have been recomputed from calibrated rates."
             )
 
-    batch_tab1, batch_tab2, batch_tab3 = st.tabs(
-        ["Performance Graph", "Derivative Graph", "Data Table"]
-    )
+    st.divider()
 
-    with batch_tab1:
-        _render_performance_graph(batch_pump, params)
+    # Performance Graph — promoted to top-line, no longer in a sub-tab
+    _render_performance_graph(batch_pump, params)
 
-    with batch_tab2:
-        _render_derivative_graph(batch_pump, params)
-
-    with batch_tab3:
-        _render_data_table(batch_pump, params)
+    # Data table below the headline graph
+    st.divider()
+    _render_data_table(batch_pump, params)
 
     # Nelder-Mead continuous optimization
     _render_nelder_mead_section(batch_pump, params)
