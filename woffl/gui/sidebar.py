@@ -120,74 +120,122 @@ def _update_well_parameters_from_data(
 
 
 def _auto_populate_from_ipr(selected_well: str) -> None:
-    """Auto-populate sidebar inflow/formation params from well test IPR data.
+    """Auto-populate sidebar inflow/formation params from well test data.
 
-    Runs IPR analysis (estimate_reservoir_pressure + compute_vogel_coefficients)
-    for the selected well and sets sidebar session state keys accordingly.
+    Two paths depending on test count:
+      - **2+ tests** → run Vogel IPR analysis; populate sidebar from the
+        averaged coefficients + most-recent test's surface pressure.
+      - **1 test** → no Vogel fit possible. Populate sidebar directly from
+        the single test's measured (oil, BHP, WC, GOR, WHP). Reservoir
+        pressure stays at the vw_prop_resvr default already set by
+        ``_update_well_parameters_from_data``. Lets new wells with one
+        recorded test (e.g. H-31) still seed sensible solver inputs.
+
     Only called once per well selection (inside the is_new_well guard).
     """
+    import math
+
+    def _is_finite(v) -> bool:
+        return v is not None and not (isinstance(v, float) and math.isnan(v))
+
     all_tests = st.session_state.get("all_well_tests_df")
     if all_tests is None or all_tests.empty:
         _clear_ipr_state()
         return
 
     well_tests = all_tests[all_tests["well"] == selected_well].copy()
-    if well_tests.empty or len(well_tests) < 2:
+    if well_tests.empty:
         _clear_ipr_state()
         return
 
-    try:
-        from woffl.assembly.ipr_analyzer import (
-            compute_vogel_coefficients,
-            estimate_reservoir_pressure,
-        )
+    floor_map = st.session_state.get("_well_min_gor", {})
+    gor_floor = floor_map.get(selected_well, 0)
 
-        merged_with_rp = estimate_reservoir_pressure(well_tests)
-        vogel_coeffs = compute_vogel_coefficients(merged_with_rp)
+    if len(well_tests) >= 2:
+        try:
+            from woffl.assembly.ipr_analyzer import (
+                compute_vogel_coefficients,
+                estimate_reservoir_pressure,
+            )
 
-        well_coeffs = vogel_coeffs[vogel_coeffs["Well"] == selected_well]
-        if well_coeffs.empty:
+            merged_with_rp = estimate_reservoir_pressure(well_tests)
+            vogel_coeffs = compute_vogel_coefficients(merged_with_rp)
+
+            well_coeffs = vogel_coeffs[vogel_coeffs["Well"] == selected_well]
+            if well_coeffs.empty:
+                _clear_ipr_state()
+                return
+
+            coeff_row = well_coeffs.iloc[0]
+
+            # Cache Vogel coefficients for use by jetpump solver tab
+            st.session_state["sw_vogel_coeffs"] = coeff_row.to_dict()
+
+            _set_param("form_wc", round(float(coeff_row["form_wc"]), 2))
+            _set_param(
+                "form_gor", max(int(coeff_row["fgor"]), gor_floor)
+            )
+            _set_param("qwf", int(coeff_row["qwf"] * (1 - coeff_row["form_wc"])))
+            _set_param("pwf", int(coeff_row["pwf"]))
+            _set_param("res_pres", int(coeff_row["ResP"]))
+
+            recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
+            whp = recent.get("whp")
+            if _is_finite(whp):
+                _set_param("surf_pres", int(whp))
+
+            num_tests = int(coeff_row["num_tests"])
+            most_recent = coeff_row["most_recent_date"]
+            date_str = (
+                most_recent.strftime("%Y-%m-%d")
+                if hasattr(most_recent, "strftime")
+                else str(most_recent)
+            )
+            st.session_state["sw_ipr_info"] = (
+                f"IPR values loaded from {num_tests} well tests "
+                f"(most recent: {date_str})"
+            )
+            return
+
+        except Exception:
             _clear_ipr_state()
             return
 
-        coeff_row = well_coeffs.iloc[0]
+    # 1-test path: seed sidebar directly from the single test row. WC formula
+    # mirrors compute_vogel_coefficients (water / total), since WtTotalFluid
+    # is the formation total (oil + water, excluding power fluid).
+    _clear_ipr_state()
+    recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
 
-        # Cache Vogel coefficients for use by jetpump solver tab
-        st.session_state["sw_vogel_coeffs"] = coeff_row.to_dict()
+    oil = recent.get("WtOilVol")
+    water = recent.get("WtWaterVol")
+    total = recent.get("WtTotalFluid")
+    bhp = recent.get("BHP")
+    fgor = recent.get("fgor")
+    whp = recent.get("whp")
 
-        # Auto-populate sidebar values
-        _set_param("form_wc", round(float(coeff_row["form_wc"]), 2))
-        # Floor GOR against any per-well minimum recorded by a prior solver
-        # auto-recovery (see _trigger_gor_reset in utils.py).
-        floor_map = st.session_state.get("_well_min_gor", {})
-        gor_floor = floor_map.get(selected_well, 0)
-        _set_param("form_gor", max(int(coeff_row["fgor"]), gor_floor))
-        _set_param("qwf", int(coeff_row["qwf"] * (1 - coeff_row["form_wc"])))
-        _set_param("pwf", int(coeff_row["pwf"]))
-        _set_param("res_pres", int(coeff_row["ResP"]))
+    if _is_finite(water) and _is_finite(total) and float(total) > 0:
+        wc = max(0.0, min(1.0, float(water) / float(total)))
+        _set_param("form_wc", round(wc, 2))
+    if _is_finite(oil):
+        _set_param("qwf", int(float(oil)))
+    if _is_finite(bhp):
+        _set_param("pwf", int(float(bhp)))
+    if _is_finite(fgor):
+        _set_param("form_gor", max(int(float(fgor)), gor_floor))
+    if _is_finite(whp):
+        _set_param("surf_pres", int(float(whp)))
 
-        # Auto-populate surface pressure from most recent test
-        import math
-
-        recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
-        whp = recent.get("whp")
-        if whp is not None and not (isinstance(whp, float) and math.isnan(whp)):
-            _set_param("surf_pres", int(whp))
-
-        # Store info message for display in the Well Information expander
-        num_tests = int(coeff_row["num_tests"])
-        most_recent = coeff_row["most_recent_date"]
-        date_str = (
-            most_recent.strftime("%Y-%m-%d")
-            if hasattr(most_recent, "strftime")
-            else str(most_recent)
-        )
-        st.session_state["sw_ipr_info"] = (
-            f"IPR values loaded from {num_tests} well tests (most recent: {date_str})"
-        )
-
-    except Exception:
-        _clear_ipr_state()
+    test_date = recent.get("WtDate")
+    date_str = (
+        test_date.strftime("%Y-%m-%d")
+        if hasattr(test_date, "strftime")
+        else str(test_date)
+    )
+    st.session_state["sw_ipr_info"] = (
+        f"Sidebar seeded from 1 well test (most recent: {date_str}) — "
+        "Vogel IPR fit unavailable until a second test is recorded."
+    )
 
 
 # ---------------------------------------------------------------------------

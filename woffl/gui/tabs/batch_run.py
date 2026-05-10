@@ -21,7 +21,6 @@ from woffl.gui.utils import (
     recommend_jetpump,
     render_bhp_calibration_warning,
     render_pf_mismatch_warning,
-    render_pf_quickfix_widget,
     run_batch_pump,
 )
 
@@ -529,20 +528,18 @@ def _render_batch_hero_strip(
     # PF mismatch is the foundational check. If the sidebar PF pressure
     # doesn't match operating conditions, both the rate-scalar calibration
     # (here) and the BHP friction-cal (Solver) will encode the pressure
-    # error rather than capturing a real model correction.
+    # error rather than capturing a real model correction. The warning still
+    # gates the calibration toggle below; the PF quickfix lives on the
+    # Solver tab where users iterate on PF pressure tuning.
     cal_inputs = build_calibration_inputs(params, wellbore, well_profile)
     test_date_str = cal_inputs["test_date_str"] if cal_inputs else None
-    pf_warning_shown, pf_blocked = render_pf_mismatch_warning(
+    _pf_warning_shown, pf_blocked = render_pf_mismatch_warning(
         cal.model_pf,
         cal.actual_pf,
         params.ppf_surf,
         test_date_str=test_date_str,
         well_name=params.selected_well,
     )
-    if pf_warning_shown:
-        render_pf_quickfix_widget(
-            params, wellbore, well_profile, target_lift_wat=cal.actual_pf
-        )
 
     # BHP red flag (only meaningful once PF is right). Falls back to the
     # softer one-line summary when the BHP match is acceptable.
@@ -559,6 +556,67 @@ def _render_batch_hero_strip(
             )
 
     return pf_blocked
+
+
+_MARG_WC_QUICKFIX_KEY = "_batch_marg_wc_box"
+
+
+def _on_batch_marg_wc_change() -> None:
+    """on_change callback for the inline Marginal WC quickfix.
+
+    Same widget-key dance as ``_on_pf_quickfix_change`` in utils.py — write
+    the logical sidebar key (``marginal_watercut``) and pop the sidebar
+    widget key (``marginal_watercut_input``) so the sidebar's _number_input
+    helper re-initializes from the logical key on the next render. Avoids
+    Streamlit's "cannot set widget state after render" error.
+    """
+    try:
+        new_val = float(st.session_state[_MARG_WC_QUICKFIX_KEY])
+    except (KeyError, ValueError, TypeError):
+        return
+    st.session_state["marginal_watercut"] = new_val
+    st.session_state.pop("marginal_watercut_input", None)
+
+
+def _render_marg_wc_quickfix(params: SimulationParams) -> None:
+    """Inline Marginal Watercut quick-entry rendered above the performance graph.
+
+    Mirrors the PF quickfix pattern (utils.render_pf_quickfix_widget) so users
+    can tune the recommendation threshold without scrolling back to the sidebar.
+    The recommended-pump gold star and the recommender table both pick up the
+    new value on the next rerun.
+
+    Field-marginal-WC convention: this is the watercut the *worst well online*
+    is producing at — pumps whose marginal WC sits below this still pay for
+    their water handling, anything above stops being economic. POPS pads with
+    headroom on water handling can be set to 1.00 to lift everything.
+    """
+    if st.session_state.get(_MARG_WC_QUICKFIX_KEY) != float(params.marginal_watercut):
+        st.session_state[_MARG_WC_QUICKFIX_KEY] = float(params.marginal_watercut)
+
+    col_input, col_status = st.columns([2, 4])
+    with col_input:
+        st.number_input(
+            "Field Marginal Watercut",
+            min_value=0.00,
+            max_value=1.00,
+            step=0.01,
+            format="%.2f",
+            key=_MARG_WC_QUICKFIX_KEY,
+            on_change=_on_batch_marg_wc_change,
+            help=(
+                "Worst well online — for POPS pads put to 100% if room on "
+                "pump for water handling. Updates the sidebar Marginal "
+                "Watercut; the recommended pump (gold star) refreshes "
+                "immediately."
+            ),
+        )
+    with col_status:
+        st.caption(" ")
+        st.caption(
+            f"Recommendation threshold: pumps with marginal WC ≤ "
+            f"**{float(params.marginal_watercut):.2f}** qualify."
+        )
 
 
 def _render_batch_hero_no_actuals(batch_pump, params: SimulationParams) -> None:
@@ -828,6 +886,11 @@ def render_tab(
                 "Semi-finalists, marginal ratios, curve fit, and recommendation "
                 "have been recomputed from calibrated rates."
             )
+
+    # Inline marginal-WC quickfix — drives the recommended-pump gold star.
+    # Sits right above the chart so the user can iterate on the threshold
+    # without scrolling back to the sidebar Advanced section.
+    _render_marg_wc_quickfix(params)
 
     st.divider()
 

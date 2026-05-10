@@ -230,8 +230,16 @@ def build_calibration_inputs(params, wellbore, well_profile) -> dict | None:
       - mva_override_res_p → use sidebar reservoir pressure instead of IPR
       - mva_override_gor   → use sidebar GOR instead of test GOR
 
+    Two test-count branches:
+      - **2+ tests** → fit Vogel coefficients and use the IPR-derived
+        (qwf, pwf, ResP) triple as the operating point.
+      - **1 test** → no Vogel fit possible. Anchor the inflow with the
+        single test's oil rate + BHP and complete the curve with the
+        sidebar's reservoir pressure. Lets calibration run for new
+        wells with only one historical test (e.g. H-31).
+
     Returns None when prerequisites are missing (Custom mode, no JP history,
-    fewer than 2 well tests, etc.). Callers must handle None.
+    no well tests, etc.). Callers must handle None.
     """
     from woffl.assembly.ipr_analyzer import (
         compute_vogel_coefficients,
@@ -257,24 +265,45 @@ def build_calibration_inputs(params, wellbore, well_profile) -> dict | None:
     if all_tests is None or all_tests.empty:
         return None
     well_tests = all_tests[all_tests["well"] == params.selected_well]
-    if len(well_tests) < 2:
+    if len(well_tests) < 1:
         return None
-
-    try:
-        merged = estimate_reservoir_pressure(well_tests)
-        vogel = compute_vogel_coefficients(merged)
-    except Exception:
-        return None
-
-    well_coeffs = vogel[vogel["Well"] == params.selected_well]
-    if well_coeffs.empty:
-        return None
-    coeff_row = well_coeffs.iloc[0]
 
     recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
 
+    coeff_row = None
+    if len(well_tests) >= 2:
+        try:
+            merged = estimate_reservoir_pressure(well_tests)
+            vogel = compute_vogel_coefficients(merged)
+            well_coeffs = vogel[vogel["Well"] == params.selected_well]
+            if not well_coeffs.empty:
+                coeff_row = well_coeffs.iloc[0]
+        except Exception:
+            coeff_row = None
+
     override_res_p = bool(st.session_state.get("mva_override_res_p", False))
-    model_res_p = float(params.pres) if override_res_p else float(coeff_row["ResP"])
+
+    if coeff_row is not None:
+        model_res_p = (
+            float(params.pres) if override_res_p else float(coeff_row["ResP"])
+        )
+        oil_qwf = float(coeff_row["qwf"]) * (1 - float(coeff_row["form_wc"]))
+        pwf_for_inflow = float(coeff_row["pwf"])
+        wc_for_resmix = float(coeff_row["form_wc"])
+    else:
+        # 1-test (or Vogel-fit-failed) fallback: anchor IPR on the single test
+        # point + sidebar ResP. WC pulls from sidebar since there's no Vogel-
+        # averaged value available.
+        model_res_p = float(params.pres)
+        actual_oil = recent.get("WtOilVol")
+        actual_bhp_val = recent.get("BHP")
+        if is_valid_number(actual_oil) and is_valid_number(actual_bhp_val):
+            oil_qwf = float(actual_oil)
+            pwf_for_inflow = float(actual_bhp_val)
+        else:
+            oil_qwf = float(params.qwf)
+            pwf_for_inflow = float(params.pwf)
+        wc_for_resmix = float(params.form_wc)
 
     test_gor = recent.get("fgor")
     test_gor = int(test_gor) if is_valid_number(test_gor) else None
@@ -288,10 +317,9 @@ def build_calibration_inputs(params, wellbore, well_profile) -> dict | None:
         float(test_whp) if is_valid_number(test_whp) else float(params.surf_pres)
     )
 
-    oil_qwf = coeff_row["qwf"] * (1 - coeff_row["form_wc"])
-    ipr_inflow = create_inflow(oil_qwf, coeff_row["pwf"], model_res_p)
+    ipr_inflow = create_inflow(oil_qwf, pwf_for_inflow, model_res_p)
     ipr_res_mix = create_reservoir_mix(
-        coeff_row["form_wc"], model_gor, params.form_temp, params.field_model
+        wc_for_resmix, model_gor, params.form_temp, params.field_model
     )
 
     test_date = recent.get("WtDate")

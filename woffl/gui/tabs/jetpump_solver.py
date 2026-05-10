@@ -404,7 +404,7 @@ def _can_run_fric_cal(params: SimulationParams) -> bool:
         return False
 
     tests = _get_well_tests(params.selected_well)
-    if tests is None or len(tests) < 2:
+    if tests is None or len(tests) < 1:
         return False
     recent = tests.sort_values("WtDate", ascending=False).iloc[0]
     return is_valid_number(recent.get("BHP"))
@@ -701,10 +701,14 @@ def _render_model_vs_actual(params: SimulationParams, wellbore, well_profile) ->
     """Render the Model vs Actual comparison section.
 
     Only shown when JP history is uploaded and a non-Custom well is selected.
+    Renders the IPR chart for any test count (0 / 1 / 2+); the comparison
+    table + calibration sections require at least 1 test.
     """
     jp_hist = st.session_state.get("jp_history_df")
     if jp_hist is None or params.selected_well == "Custom":
         return
+
+    import pandas as pd
 
     from woffl.assembly.ipr_analyzer import (
         compute_vogel_coefficients,
@@ -712,6 +716,7 @@ def _render_model_vs_actual(params: SimulationParams, wellbore, well_profile) ->
         generate_ipr_curves,
     )
     from woffl.assembly.jp_history import get_current_pump
+    from woffl.flow.inflow import InFlow
     from woffl.gui.ipr_viz import create_ipr_plotly
     from woffl.gui.utils import create_inflow, create_jetpump, create_reservoir_mix
 
@@ -740,61 +745,153 @@ def _render_model_vs_actual(params: SimulationParams, wellbore, well_profile) ->
 
     # 2. Get well tests from pre-fetched cache
     test_df = _get_well_tests(params.selected_well)
-    if test_df is None or len(test_df) < 2:
-        st.info(
-            f"Not enough recent test data for {params.selected_well} (need 2+ tests with BHP)."
+    n_tests = 0 if test_df is None or test_df.empty else len(test_df)
+
+    # 3. Try Vogel fit (≥2 tests). With 0 or 1 tests we fall through to a
+    # single-point synthetic IPR anchored on sidebar ResP — chart still
+    # renders so the user can see the model's expected operating envelope.
+    coeff_row = None
+    merged_with_rp = None
+    vogel_coeffs = None
+    if n_tests >= 2:
+        try:
+            merged_with_rp = estimate_reservoir_pressure(test_df)
+            vogel_coeffs = compute_vogel_coefficients(merged_with_rp)
+        except Exception as e:
+            st.warning(
+                f"Vogel IPR fit failed ({e}); falling back to a single-point "
+                "IPR with sidebar reservoir pressure."
+            )
+            vogel_coeffs = None
+
+        if vogel_coeffs is not None:
+            well_coeffs = vogel_coeffs[vogel_coeffs["Well"] == params.selected_well]
+            if not well_coeffs.empty:
+                coeff_row = well_coeffs.iloc[0]
+
+    # 4. Resolve the IPR anchor (qwf, pwf, ResP) and the points to overlay.
+    if coeff_row is not None:
+        ipr_res_p = coeff_row["ResP"]
+        override_res_p = st.checkbox(
+            "Override Reservoir Pressure from IPR analysis",
+            value=False,
+            help=f"IPR analysis ResP: {ipr_res_p:.0f} psi. Check to use sidebar value ({params.pres}) instead.",
+            key="mva_override_res_p",
         )
-        return
+        model_res_p = params.pres if override_res_p else ipr_res_p
+        st.caption(
+            f"Using Reservoir Pressure: **{model_res_p:.0f}** psi "
+            f"({'sidebar' if override_res_p else 'IPR analysis'})"
+        )
 
-    # 3. Estimate reservoir pressure + compute Vogel coefficients
-    try:
-        merged_with_rp = estimate_reservoir_pressure(test_df)
-        vogel_coeffs = compute_vogel_coefficients(merged_with_rp)
-    except Exception as e:
-        st.warning(f"IPR analysis failed: {e}")
-        return
-
-    well_coeffs = vogel_coeffs[vogel_coeffs["Well"] == params.selected_well]
-    if well_coeffs.empty:
-        st.warning("Could not compute Vogel coefficients for this well.")
-        return
-
-    coeff_row = well_coeffs.iloc[0]
-
-    # Reservoir pressure override (same pattern as GOR override below)
-    ipr_res_p = coeff_row["ResP"]
-    override_res_p = st.checkbox(
-        "Override Reservoir Pressure from IPR analysis",
-        value=False,
-        help=f"IPR analysis ResP: {ipr_res_p:.0f} psi. Check to use sidebar value ({params.pres}) instead.",
-        key="mva_override_res_p",
-    )
-    model_res_p = params.pres if override_res_p else ipr_res_p
-    st.caption(
-        f"Using Reservoir Pressure: **{model_res_p:.0f}** psi "
-        f"({'sidebar' if override_res_p else 'IPR analysis'})"
-    )
-
-    # 4. Generate IPR curves and display chart with test points
-    if override_res_p:
-        vogel_coeffs_plot = vogel_coeffs.copy()
-        vogel_coeffs_plot.loc[
-            vogel_coeffs_plot["Well"] == params.selected_well, "ResP"
-        ] = model_res_p
-        ipr_data = generate_ipr_curves(vogel_coeffs_plot)
+        if override_res_p:
+            vogel_coeffs_plot = vogel_coeffs.copy()
+            vogel_coeffs_plot.loc[
+                vogel_coeffs_plot["Well"] == params.selected_well, "ResP"
+            ] = model_res_p
+            ipr_data = generate_ipr_curves(vogel_coeffs_plot)
+        else:
+            ipr_data = generate_ipr_curves(vogel_coeffs)
+        plot_points = merged_with_rp
     else:
-        ipr_data = generate_ipr_curves(vogel_coeffs)
+        # 0-test, 1-test, or Vogel-failed path. Clear any stale override flag
+        # from a previously-selected multi-test well; the override only makes
+        # sense when there's an IPR-derived ResP to override.
+        st.session_state.pop("mva_override_res_p", None)
+        model_res_p = float(params.pres)
+
+        anchor_src = None
+        if n_tests >= 1:
+            recent = test_df.sort_values("WtDate", ascending=False).iloc[0]
+            total = recent.get("WtTotalFluid")
+            bhp = recent.get("BHP")
+            if is_valid_number(total) and is_valid_number(bhp):
+                anchor_qwf = float(total)
+                anchor_pwf = float(bhp)
+                anchor_src = "well test"
+
+        if anchor_src is None:
+            # 0-test fallback (or 1-test missing total/BHP). Sidebar qwf is the
+            # OIL rate; convert to total liquid for the chart's x-axis (BPD)
+            # using sidebar form_wc. Falls back to oil rate when WC ≈ 1.
+            wc = float(params.form_wc)
+            if 0.0 <= wc < 1.0:
+                anchor_qwf = float(params.qwf) / max(1e-6, 1.0 - wc)
+            else:
+                anchor_qwf = float(params.qwf)
+            anchor_pwf = float(params.pwf)
+            anchor_src = "sidebar"
+
+        # Guard against degenerate sidebar values (pwf >= ResP would make
+        # Vogel divide by zero / go negative; non-positive flow is meaningless).
+        ipr_data = {}
+        if (
+            anchor_qwf > 0
+            and 0 <= anchor_pwf < model_res_p
+            and model_res_p > 0
+        ):
+            try:
+                synth_qmax = InFlow.vogel_qmax(
+                    anchor_qwf, anchor_pwf, model_res_p
+                )
+                synth_coeffs = pd.DataFrame(
+                    [
+                        {
+                            "Well": params.selected_well,
+                            "ResP": model_res_p,
+                            "qwf": anchor_qwf,
+                            "pwf": anchor_pwf,
+                            "QMax_recent": synth_qmax,
+                        }
+                    ]
+                )
+                ipr_data = generate_ipr_curves(synth_coeffs)
+            except Exception as e:
+                st.warning(
+                    f"Could not build IPR curve from anchor "
+                    f"(qwf={anchor_qwf:.0f}, pwf={anchor_pwf:.0f}, "
+                    f"ResP={model_res_p:.0f}): {e}"
+                )
+        plot_points = test_df if test_df is not None else pd.DataFrame()
+
+        st.caption(
+            f"Using Reservoir Pressure: **{model_res_p:.0f}** psi (sidebar) · "
+            f"IPR anchor: {anchor_src} (qwf={anchor_qwf:.0f} BPD, "
+            f"pwf={anchor_pwf:.0f} psi)"
+        )
+        if n_tests == 0:
+            st.info(
+                f"No well tests for {params.selected_well} — chart shows the "
+                "IPR curve from sidebar values only. No actuals available, "
+                "so the modeled-vs-actual comparison and calibration are "
+                "unavailable for this well."
+            )
+        elif n_tests == 1:
+            st.info(
+                f"Only 1 well test for {params.selected_well} — Vogel fit "
+                "needs 2+ tests, so the chart anchors on this single point + "
+                "sidebar reservoir pressure."
+            )
+
+    # 5. Always render the IPR chart (Vogel-fit or synthetic).
     if params.selected_well in ipr_data:
+        plot_data = (
+            plot_points if plot_points is not None else pd.DataFrame()
+        )
         fig = create_ipr_plotly(
             params.selected_well,
             ipr_data[params.selected_well],
-            merged_with_rp,
+            plot_data,
             form_wc=params.form_wc,
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    # 5. Run model with current JP + IPR-derived inflow
-    # Use most recent test GOR by default, with sidebar override option
+    # 6. Modeled vs Actual + calibration sections need at least 1 test.
+    if n_tests == 0:
+        return
+
+    # 7. Run model with current JP + IPR-derived inflow.
+    # Use most recent test GOR by default, with sidebar override option.
     recent_test = test_df.sort_values("WtDate", ascending=False).iloc[0]
     test_gor = recent_test.get("fgor", None)
     test_gor = int(test_gor) if is_valid_number(test_gor) else None
@@ -818,10 +915,25 @@ def _render_model_vs_actual(params: SimulationParams, wellbore, well_profile) ->
         f"Using Surface Pressure: **{model_surf_pres:.0f}** psi ({'well test' if test_whp is not None else 'sidebar'})"
     )
 
-    oil_qwf = coeff_row["qwf"] * (1 - coeff_row["form_wc"])
-    ipr_inflow = create_inflow(oil_qwf, coeff_row["pwf"], model_res_p)
+    if coeff_row is not None:
+        oil_qwf = coeff_row["qwf"] * (1 - coeff_row["form_wc"])
+        pwf_for_inflow = coeff_row["pwf"]
+        wc_for_resmix = coeff_row["form_wc"]
+    else:
+        # Single-test fallback — same logic as build_calibration_inputs.
+        actual_oil_anchor = recent_test.get("WtOilVol")
+        actual_bhp_anchor = recent_test.get("BHP")
+        if is_valid_number(actual_oil_anchor) and is_valid_number(actual_bhp_anchor):
+            oil_qwf = float(actual_oil_anchor)
+            pwf_for_inflow = float(actual_bhp_anchor)
+        else:
+            oil_qwf = float(params.qwf)
+            pwf_for_inflow = float(params.pwf)
+        wc_for_resmix = float(params.form_wc)
+
+    ipr_inflow = create_inflow(oil_qwf, pwf_for_inflow, model_res_p)
     ipr_res_mix = create_reservoir_mix(
-        coeff_row["form_wc"], model_gor, params.form_temp, params.field_model
+        wc_for_resmix, model_gor, params.form_temp, params.field_model
     )
     current_jp = create_jetpump(nozzle, throat, params.ken, params.kth, params.kdi)
 
