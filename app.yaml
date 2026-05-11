@@ -1,6 +1,13 @@
 # app.yaml
 command: ["streamlit", "run", "woffl/gui/app.py"]
 
+env:
+  # ProcessPool cap for Scott's Tools (JP Fric Trend, JP Wash-Out).
+  # Matches Databricks Apps medium compute (2 vCPU). Bump only if the
+  # deployment tier changes.
+  - name: WOFFL_MAX_WORKERS
+    value: "2"
+
 resources:
   - name: sql-warehouse
     sql_warehouse:

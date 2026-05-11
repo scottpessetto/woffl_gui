@@ -4,10 +4,29 @@ Name normalization, well-test fetchers, jp_chars helpers, and well-config
 builders used by the PF Scenario and JP Friction Calibration tabs.
 """
 
+import os
 import re
 
 import pandas as pd
 import streamlit as st
+
+
+# ── parallelism budget ─────────────────────────────────────────────────────
+
+def worker_ceiling() -> int:
+    """Max ProcessPool workers permitted in the current environment.
+
+    Reads the ``WOFFL_MAX_WORKERS`` env var (default 1 — Databricks Apps
+    safe), parses defensively, and clamps by ``os.cpu_count()``. Returns at
+    least 1. Tabs that expose a worker slider use this as the upper bound,
+    so the Databricks deployment is auto-pinned to single-threaded.
+    """
+    raw = os.environ.get("WOFFL_MAX_WORKERS", "1")
+    try:
+        env_max = max(1, int(raw))
+    except (TypeError, ValueError):
+        env_max = 1
+    return max(1, min(env_max, os.cpu_count() or 1))
 
 from woffl.assembly.network_optimizer import WellConfig, _load_well_profile
 from woffl.flow.inflow import InFlow

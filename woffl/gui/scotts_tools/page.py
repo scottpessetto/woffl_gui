@@ -5,7 +5,14 @@ Routes the four sub-tabs to their respective render functions.
 
 import streamlit as st
 
-from . import jp_calibration, pad_watercut, pf_scenario, well_sort
+from . import (
+    jp_calibration,
+    jp_fric_trend,
+    jp_washout,
+    pad_watercut,
+    pf_scenario,
+    well_sort,
+)
 
 
 def run_scotts_tools_page():
@@ -16,6 +23,8 @@ def run_scotts_tools_page():
     tab_labels = [
         "PF Scenario Analysis",
         "JP Friction Calibration",
+        "JP Fric Trend",
+        "JP Wash-Out",
         "Well Sort",
         "Pad Water Cut",
     ]
@@ -28,7 +37,13 @@ def run_scotts_tools_page():
         jp_calibration.render_tab()
 
     with tabs[2]:
-        well_sort.render_tab()
+        jp_fric_trend.render_tab()
 
     with tabs[3]:
+        jp_washout.render_tab()
+
+    with tabs[4]:
+        well_sort.render_tab()
+
+    with tabs[5]:
         pad_watercut.render_tab()

@@ -63,10 +63,28 @@ def get_current_pump(jp_hist: pd.DataFrame, well_name: str) -> dict | None:
     tubing = latest.get("Tubing Diameter")
     date_set = latest.get("Date Set")
 
+    # Nozzle number must be coercible to int — JetPump expects "1"-"20". A
+    # non-numeric value (e.g. 'G') means the row isn't really a jet-pump
+    # install (legacy ESP/wireline data sometimes sits in this column);
+    # return None so callers skip the well.
+    nozzle_str = None
+    if pd.notna(nozzle):
+        try:
+            nozzle_str = str(int(nozzle))
+        except (TypeError, ValueError):
+            nozzle_str = None
+
+    tubing_val = None
+    if pd.notna(tubing):
+        try:
+            tubing_val = float(tubing)
+        except (TypeError, ValueError):
+            tubing_val = None
+
     return {
-        "nozzle_no": str(int(nozzle)) if pd.notna(nozzle) else None,
+        "nozzle_no": nozzle_str,
         "throat_ratio": str(throat).strip() if pd.notna(throat) else None,
-        "tubing_od": float(tubing) if pd.notna(tubing) else None,
+        "tubing_od": tubing_val,
         "date_set": date_set,
     }
 
