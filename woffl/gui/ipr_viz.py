@@ -108,7 +108,14 @@ def create_ipr_plotly(
                             color=well_test_data["days_since"],
                             colorscale="Viridis",
                             showscale=True,
-                            colorbar=dict(title="Days Ago", thickness=15),
+                            colorbar=dict(
+                                # side="right" rotates the title 90° so it
+                                # runs vertically alongside the colorbar
+                                # instead of stacking on top and colliding
+                                # with the y-axis "Bottom Hole Pressure" label.
+                                title=dict(text="Days Ago", side="right"),
+                                thickness=15,
+                            ),
                             line=dict(width=1, color="black"),
                         ),
                         text=hover_text,

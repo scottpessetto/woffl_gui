@@ -11,7 +11,12 @@ import pandas as pd
 import streamlit as st
 
 from woffl.assembly.jp_history import get_current_pump
-from woffl.gui.utils import load_well_characteristics
+from woffl.gui.utils import (
+    PAD_PF_DEFAULTS,
+    PAD_PF_FALLBACK,
+    default_pad_pf as _default_pad_pf,
+    load_well_characteristics,
+)
 
 from ._common import (
     build_well_config,
@@ -23,28 +28,8 @@ from ._common import (
     pad_from_mp_name,
 )
 
-
-# Pad-level default PF pressures (psi). These reflect known pad operating
-# conditions: C/E/H/I/M/S run at 3400, B/G/J at 2200 (booster pads), F at
-# 2800. Pad K has no jet pumps so it won't appear in the calibration list.
-PAD_PF_DEFAULTS: dict[str, int] = {
-    "B": 2200,
-    "C": 3400,
-    "E": 3400,
-    "F": 2800,
-    "G": 2200,
-    "H": 3400,
-    "I": 3400,
-    "J": 2200,
-    "M": 3400,
-    "S": 3400,
-}
-PAD_PF_FALLBACK = 3400
-
-
-def _default_pad_pf(pad: str) -> int:
-    """Default PF pressure (psi) for a given pad."""
-    return PAD_PF_DEFAULTS.get(pad, PAD_PF_FALLBACK)
+# PAD_PF_DEFAULTS / PAD_PF_FALLBACK / _default_pad_pf are now imported above
+# from woffl.gui.utils — single source of truth shared with sidebar.py.
 
 
 def _denormalize_for_db(well_name: str) -> str:

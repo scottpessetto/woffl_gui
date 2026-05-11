@@ -180,18 +180,12 @@ def run_single_well_page(params: SimulationParams) -> None:
     selected view. Switching views triggers a fresh render (and only that
     view's compute), so the headline Solver result stays snappy.
     """
-    jetpump, wellbore, inflow, res_mix, wp, survey_present = _build_simulation_objects(
+    jetpump, wellbore, inflow, res_mix, wp, _survey_present = _build_simulation_objects(
         params
     )
 
-    if params.selected_well != "Custom":
-        if survey_present:
-            st.caption(f"✅ Using actual survey data for {params.selected_well}")
-        else:
-            st.caption(
-                f"⚠️ Using default profile for {params.selected_well} "
-                "(survey data not available)"
-            )
+    # Survey-presence indicator lives in the Well Profile view (where it's
+    # actionable) rather than as a header banner that repeats on every tab.
 
     # Filter out JP History when the well has none
     available_views = [

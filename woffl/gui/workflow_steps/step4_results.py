@@ -286,15 +286,85 @@ def _render_pf_sensitivity(optimizer):
     opt_method = st.session_state.get("uw_opt_method", "milp")
     original_rate = st.session_state.get("uw_total_pf", 30000)
     original_pressure = st.session_state.get("uw_pf_pressure", 3168)
-    rate_min = st.session_state.get("uw_pf_rate_min", max(1000, original_rate - 6000))
-    rate_max = st.session_state.get("uw_pf_rate_max", min(60000, original_rate + 6000))
-    rate_step = st.session_state.get("uw_pf_rate_step", 2000)
-    press_min = st.session_state.get("uw_pf_press_min", max(1000, original_pressure - 500))
-    press_max = st.session_state.get("uw_pf_press_max", min(5000, original_pressure + 500))
-    press_step = st.session_state.get("uw_pf_press_step", 100)
+
+    # Range inputs live inline next to the Run button so the sweep
+    # parameters and the trigger are next to each other.
+    rate_cols = st.columns(3)
+    with rate_cols[0]:
+        rate_min = st.number_input(
+            "PF Rate Min (BWPD)",
+            min_value=1000,
+            max_value=60000,
+            value=int(
+                st.session_state.get(
+                    "uw_pf_rate_min", max(1000, original_rate - 6000)
+                )
+            ),
+            step=1000,
+            key="uw_pf_rate_min",
+        )
+    with rate_cols[1]:
+        rate_max = st.number_input(
+            "PF Rate Max (BWPD)",
+            min_value=1000,
+            max_value=60000,
+            value=int(
+                st.session_state.get(
+                    "uw_pf_rate_max", min(60000, original_rate + 6000)
+                )
+            ),
+            step=1000,
+            key="uw_pf_rate_max",
+        )
+    with rate_cols[2]:
+        rate_step = st.number_input(
+            "PF Rate Step (BWPD)",
+            min_value=500,
+            max_value=10000,
+            value=int(st.session_state.get("uw_pf_rate_step", 2000)),
+            step=500,
+            key="uw_pf_rate_step",
+        )
+
+    press_cols = st.columns(3)
+    with press_cols[0]:
+        press_min = st.number_input(
+            "PF Pressure Min (psi)",
+            min_value=1000,
+            max_value=5000,
+            value=int(
+                st.session_state.get(
+                    "uw_pf_press_min", max(1000, original_pressure - 500)
+                )
+            ),
+            step=100,
+            key="uw_pf_press_min",
+        )
+    with press_cols[1]:
+        press_max = st.number_input(
+            "PF Pressure Max (psi)",
+            min_value=1000,
+            max_value=5000,
+            value=int(
+                st.session_state.get(
+                    "uw_pf_press_max", min(5000, original_pressure + 500)
+                )
+            ),
+            step=100,
+            key="uw_pf_press_max",
+        )
+    with press_cols[2]:
+        press_step = st.number_input(
+            "PF Pressure Step (psi)",
+            min_value=50,
+            max_value=500,
+            value=int(st.session_state.get("uw_pf_press_step", 100)),
+            step=50,
+            key="uw_pf_press_step",
+        )
 
     if rate_min >= rate_max or press_min >= press_max:
-        st.warning("Check PF sensitivity range settings in the sidebar.")
+        st.warning("PF Sensitivity: min must be less than max for both rate and pressure.")
         return
 
     rate_range = list(range(int(rate_min), int(rate_max) + int(rate_step), int(rate_step)))

@@ -34,6 +34,38 @@ def is_valid_number(val) -> bool:
 GOR_AUTO_RECOVERY_VALUE = 250
 
 
+# Pad-level default PF surface pressures (psi). C/E/H/I/M/S run at 3400,
+# B/G/J at 2200 (booster pads), F at 2800. Pad K has no jet pumps.
+# Wired into the sidebar's well auto-populate so MPB/MPG/MPF wells stop
+# loading with the Schrader-pad default and triggering false PF mismatch
+# warnings on the Solver / Batch tabs.
+PAD_PF_DEFAULTS: dict[str, int] = {
+    "B": 2200,
+    "C": 3400,
+    "E": 3400,
+    "F": 2800,
+    "G": 2200,
+    "H": 3400,
+    "I": 3400,
+    "J": 2200,
+    "M": 3400,
+    "S": 3400,
+}
+PAD_PF_FALLBACK = 3400
+
+
+def default_pad_pf(pad: str) -> int:
+    """Default PF surface pressure (psi) for a given pad letter."""
+    return PAD_PF_DEFAULTS.get(pad, PAD_PF_FALLBACK)
+
+
+def pad_from_mp_name(mp_name: str) -> str:
+    """MPB-30 → B, MPI-15 → I. Returns the input unchanged for unknown formats."""
+    if not mp_name or "-" not in mp_name:
+        return ""
+    return mp_name.replace("MP", "").split("-")[0]
+
+
 def _trigger_gor_reset(well_name: str, current_gor, reason: str) -> None:
     """Auto-recover from a solver failure caused by too-low GOR.
 

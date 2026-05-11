@@ -15,6 +15,12 @@ def _cached_shut_in_history() -> pd.DataFrame:
     return fetch_current_shut_in_history()
 
 
+@st.cache_data(ttl=3600, show_spinner="Loading 30-day shut-in history...")
+def _cached_recent_shut_in_history(days: int = 60) -> pd.DataFrame:
+    from woffl.assembly.well_sort_client import fetch_recent_shut_in_history
+    return fetch_recent_shut_in_history(days=days)
+
+
 @st.cache_data(ttl=3600, show_spinner="Loading well tests from Databricks...")
 def _cached_recent_tests(days: int) -> pd.DataFrame:
     from woffl.assembly.well_sort_client import fetch_recent_tests
@@ -67,6 +73,7 @@ def render_tab() -> None:
     with ctrl1:
         if st.button("Refresh data", help="Clear cache and re-query Databricks"):
             _cached_shut_in_history.clear()
+            _cached_recent_shut_in_history.clear()
             _cached_recent_tests.clear()
             _cached_producers.clear()
             _cached_producer_catalog.clear()
@@ -171,10 +178,11 @@ def render_tab() -> None:
         key="well_sort_dl_bench",
     )
 
-    sub_online, sub_off, sub_ltsi = st.tabs(
+    sub_online, sub_off, sub_ltsi, sub_changes = st.tabs(
         [f"Online ({len(online_df)})",
          f"Offline ({len(offline_df)})",
-         f"LTSI ({len(ltsi_df)})"]
+         f"LTSI ({len(ltsi_df)})",
+         "30-Day Changes"]
     )
 
     with sub_online:
@@ -359,6 +367,18 @@ def render_tab() -> None:
             "XVTime": st.column_config.DatetimeColumn("XV Time", format="MM-DD HH:mm"),
         }
 
+    _shut_col_order = [
+        "Well", "Pad", "Reservoir", "LiftType",
+        "ShutInSince", "CurrentCode", "CurrentReason", "Notes", "DownHours",
+        "Oil", "Water", "Gas",
+        "LastOnlineDate", "LastTestDate",
+        "WC", "TotalWC", "GOR", "TotalGOR",
+        "LiftWater", "LiftGas", "TotalWater", "TotalGas",
+        "EspHz", "EspAmps",
+        "NearAvgOil", "NearAvgWater", "NearAvgGas", "NTestsNear",
+        "ProdXV", "PFXV", "XVTime", "PopsPad",
+    ]
+
     def _render_shut_section(df: pd.DataFrame, label: str, key: str):
         if df.empty:
             st.info(f"No {label} wells.")
@@ -367,6 +387,9 @@ def render_tab() -> None:
         for c in ("WC", "TotalWC"):
             if c in disp.columns:
                 disp[c] = disp[c] * 100
+        ordered = [c for c in _shut_col_order if c in disp.columns]
+        extras = [c for c in disp.columns if c not in ordered]
+        disp = disp[ordered + extras]
         st.dataframe(
             disp, use_container_width=True, hide_index=True,
             column_config=_shut_columns_config(),
@@ -384,3 +407,80 @@ def render_tab() -> None:
 
     with sub_ltsi:
         _render_shut_section(ltsi_df, "LTSI", "ltsi")
+
+    with sub_changes:
+        from woffl.assembly.well_sort_client import (
+            NOTABLE_DOWN_HOURS, compute_recent_down_events,
+        )
+        th_col, _ = st.columns([1, 3])
+        with th_col:
+            threshold = st.slider(
+                "Min hrs/day to count as 'down'", 1, 24,
+                int(NOTABLE_DOWN_HOURS),
+                key="well_sort_down_threshold",
+                help="A day counts as a down day when its total down_hours "
+                "meets this threshold. Lower captures partial-day events "
+                "(e.g. a 12-hr jet pump changeout); higher restricts to "
+                "near-full-day shut-ins.",
+            )
+        st.caption(
+            f"One row per shut-in event (consecutive days with ≥ {threshold} "
+            "down hrs) overlapping the last 30 days. Ongoing events float "
+            "to the top, then sorted by Days descending. A single 12-hr "
+            "changeout shows as a 1-day event."
+        )
+        recent_hist = _cached_recent_shut_in_history(60)
+        events_df = compute_recent_down_events(
+            recent_hist, producers, catalog_df=catalog,
+            window_days=30, down_hours_threshold=float(threshold),
+        )
+        if events_df.empty:
+            st.info("No shut-in events in the last 30 days.")
+        else:
+            ongoing = int(events_df["Ongoing"].sum())
+            one_day = int((events_df["Days"] == 1).sum())
+            n_wells = events_df["Well"].nunique()
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Events", len(events_df))
+            c2.metric("Still down", ongoing)
+            c3.metric("1-day events", one_day)
+            c4.metric("Wells affected", n_wells)
+
+            st.dataframe(
+                events_df, use_container_width=True, hide_index=True,
+                column_config={
+                    "Well": st.column_config.TextColumn("Well", pinned="left"),
+                    "Pad": st.column_config.TextColumn("Pad"),
+                    "Reservoir": st.column_config.TextColumn("Reservoir"),
+                    "Started": st.column_config.DateColumn("Started"),
+                    "Ended": st.column_config.DateColumn(
+                        "Ended", help="Blank when the event is still ongoing",
+                    ),
+                    "Days": st.column_config.NumberColumn(
+                        "Days", format="%.0f",
+                        help="Consecutive days at or above the threshold",
+                    ),
+                    "MaxHrs": st.column_config.NumberColumn(
+                        "Max Hrs", format="%.1f",
+                        help="Peak single-day down_hours in this event",
+                    ),
+                    "TotalHrs": st.column_config.NumberColumn(
+                        "Total Hrs", format="%.1f",
+                        help="Sum of down_hours across the event",
+                    ),
+                    "Code": st.column_config.TextColumn("Code"),
+                    "Reason": st.column_config.TextColumn("Reason"),
+                    "Notes": st.column_config.TextColumn("Notes"),
+                    "Ongoing": st.column_config.CheckboxColumn(
+                        "Ongoing?",
+                        help="Event extends to the latest log date",
+                    ),
+                },
+            )
+            st.download_button(
+                "Download 30-Day Events CSV",
+                data=events_df.to_csv(index=False).encode("utf-8"),
+                file_name="well_sort_30day_events.csv",
+                mime="text/csv",
+                key="well_sort_dl_changes",
+            )

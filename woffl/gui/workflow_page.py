@@ -2,8 +2,6 @@
 
 import streamlit as st
 
-from woffl.gui.params import NOZZLE_OPTIONS, THROAT_OPTIONS
-
 # Step labels
 STEPS = {
     1: "Select Wells",
@@ -64,168 +62,20 @@ def _render_step_indicator(current_step: int, max_reached: int):
 
 
 def _render_sidebar():
-    """Render unified sidebar with IPR and optimization parameters."""
+    """Render the (now minimal) workflow sidebar.
+
+    Per-step config — IPR knobs, power fluid constraints, algorithm choice,
+    pump-option multiselects, PF sensitivity ranges — moved into the steps
+    themselves so the controls sit next to the actions they affect. The
+    sidebar is now just app-wide cache management.
+    """
     with st.sidebar:
-        st.header("Workflow Parameters")
-
-        # IPR Parameters
-        st.subheader("IPR Parameters")
-        max_rp_schrader = st.number_input(
-            "Max Res Pressure — Schrader (psi)",
-            min_value=800,
-            max_value=3000,
-            value=1800,
-            step=50,
-            key="uw_max_rp_sch",
-        )
-        max_rp_kuparuk = st.number_input(
-            "Max Res Pressure — Kuparuk (psi)",
-            min_value=1500,
-            max_value=5000,
-            value=3000,
-            step=50,
-            key="uw_max_rp_kup",
-        )
-        resp_modifier = st.number_input(
-            "Res Pres Modifier (psi)",
-            min_value=0,
-            max_value=500,
-            value=0,
-            step=10,
-            key="uw_resp_mod",
-            help="Offset added to estimated reservoir pressure",
+        st.header("Workflow")
+        st.caption(
+            "Step-specific parameters live inline within each step's main "
+            "panel."
         )
 
-        # Power Fluid Settings
-        st.subheader("Power Fluid Constraint")
-        total_pf = st.number_input(
-            "Total Available Power Fluid (bbl/day)",
-            min_value=0,
-            value=30000,
-            step=500,
-            key="uw_total_pf",
-        )
-        pf_pressure = st.number_input(
-            "Power Fluid Pressure (psi)",
-            min_value=1000,
-            max_value=5000,
-            value=3168,
-            step=100,
-            key="uw_pf_pressure",
-        )
-        rho_pf = st.number_input(
-            "Power Fluid Density (lbm/ft\u00b3)",
-            min_value=50.0,
-            max_value=70.0,
-            value=62.4,
-            step=0.1,
-            key="uw_rho_pf",
-        )
-
-        # Optimization Settings
-        st.subheader("Optimization Settings")
-        opt_method = st.selectbox(
-            "Algorithm",
-            ["milp", "mckp"],
-            index=0,
-            key="uw_opt_method",
-            help="MILP: Optimal via scipy linear programming. MCKP: Multi-choice knapsack via OR-Tools CP-SAT.",
-        )
-        marginal_wc = st.number_input(
-            "Marginal Watercut Threshold",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.94,
-            step=0.01,
-            format="%.2f",
-            key="uw_marginal_wc",
-        )
-
-        has_jp_history = "jp_history_df" in st.session_state
-        use_calibration = st.checkbox(
-            "Apply Model Calibration",
-            value=True,
-            key="uw_use_calibration",
-            help="Scale predictions using model-vs-actual on current pump configs",
-            disabled=not has_jp_history,
-        )
-
-        # Pump Options
-        st.subheader("Pump Options to Test")
-        nozzle_opts = st.multiselect(
-            "Nozzle Sizes",
-            NOZZLE_OPTIONS,
-            default=["8", "9", "10", "11", "12", "13", "14"],
-            key="uw_nozzle_opts",
-        )
-        throat_opts = st.multiselect(
-            "Throat Ratios",
-            THROAT_OPTIONS,
-            default=["X", "A", "B", "C", "D"],
-            key="uw_throat_opts",
-        )
-
-        # Power Fluid Sensitivity
-        st.subheader("Power Fluid Sensitivity")
-        run_pf_sensitivity = st.checkbox(
-            "Run PF Sensitivity",
-            value=False,
-            key="uw_run_pf_sensitivity",
-            help="Sweep PF rate and pressure to map field oil production surface",
-        )
-        if run_pf_sensitivity:
-            st.caption("Rate Range")
-            st.number_input(
-                "PF Rate Min (BWPD)",
-                min_value=1000,
-                max_value=60000,
-                value=max(1000, total_pf - 6000),
-                step=1000,
-                key="uw_pf_rate_min",
-            )
-            st.number_input(
-                "PF Rate Max (BWPD)",
-                min_value=1000,
-                max_value=60000,
-                value=min(60000, total_pf + 6000),
-                step=1000,
-                key="uw_pf_rate_max",
-            )
-            st.number_input(
-                "PF Rate Step (BWPD)",
-                min_value=500,
-                max_value=10000,
-                value=2000,
-                step=500,
-                key="uw_pf_rate_step",
-            )
-            st.caption("Pressure Range")
-            st.number_input(
-                "PF Pressure Min (psi)",
-                min_value=1000,
-                max_value=5000,
-                value=max(1000, pf_pressure - 500),
-                step=100,
-                key="uw_pf_press_min",
-            )
-            st.number_input(
-                "PF Pressure Max (psi)",
-                min_value=1000,
-                max_value=5000,
-                value=min(5000, pf_pressure + 500),
-                step=100,
-                key="uw_pf_press_max",
-            )
-            st.number_input(
-                "PF Pressure Step (psi)",
-                min_value=50,
-                max_value=500,
-                value=100,
-                step=50,
-                key="uw_pf_press_step",
-            )
-
-        # Cache management
         st.divider()
         st.subheader("Data Cache")
         force_refresh = st.checkbox(
@@ -235,7 +85,7 @@ def _render_sidebar():
             help="Clear cached data and re-query Databricks",
         )
         if force_refresh:
-            from woffl.gui.well_test_page import (
+            from woffl.gui.well_test_cache import (
                 _cached_bhp_query,
                 _cached_mpu_well_names,
                 _cached_well_test_query,

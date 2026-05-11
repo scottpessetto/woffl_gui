@@ -18,7 +18,21 @@ def render_tab(params: SimulationParams, well_profile) -> None:
         params: Simulation parameters from sidebar
         well_profile: WellProfile object
     """
-    st.subheader("Well Profile Visualization")
+    st.subheader(
+        "Well Profile Visualization",
+        help=(
+            "- **TVD vs MD plot** — well path from surface to total depth.\n"
+            "- **Deviation plot** — horizontal offset from vertical at each "
+            "depth.\n"
+            "- **Inclination plot** — angle from vertical "
+            "(0° vertical, 90° horizontal).\n"
+            "- **Red star** marks the jetpump location; dashed lines mark "
+            "jetpump MD and TVD.\n\n"
+            "A vertical well would show MD = TVD (45° line on the first "
+            "plot). Deviation indicates how far the well has moved "
+            "horizontally from the surface location."
+        ),
+    )
 
     selected_well = params.selected_well
     jpump_tvd = params.jpump_tvd
@@ -80,19 +94,6 @@ def render_tab(params: SimulationParams, well_profile) -> None:
         and "inclination" in survey_data.columns
     ):
         _render_inclination_plot(survey_data, well_profile)
-
-    # Explanation
-    st.markdown("""
-    **Well Profile Explanation:**
-    - **TVD vs MD Plot**: Shows the well's path from surface to total depth
-    - **Deviation Plot**: Shows horizontal offset from vertical at each depth
-    - **Inclination Plot**: Shows well angle from vertical (0° = vertical, 90° = horizontal)
-    - **Red star**: Jetpump location
-    - **Dashed lines**: Jetpump MD and TVD reference lines
-
-    A vertical well would show MD = TVD (45° line on first plot).
-    Deviation indicates how far the well has moved horizontally from the surface location.
-    """)
 
 
 def _render_trajectory_plots(well_profile, jpump_tvd: int) -> None:

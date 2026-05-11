@@ -349,7 +349,19 @@ def render_tab(
         inflow: InFlow object
         res_mix: ResMix object
     """
-    st.subheader("Power Fluid Range Analysis")
+    st.subheader(
+        "Power Fluid Range Analysis",
+        help=(
+            "Tests every selected nozzle/throat combination across the "
+            "configured PF pressure range.\n\n"
+            "- **Performance vs Pressure** — oil and total water vs PF "
+            "pressure for each combination.\n"
+            "- **Comprehensive Data** — full results table for every "
+            "successful combo.\n"
+            "- **Best Performers** — highest-oil pump at each pressure "
+            "point, plus the overall winner."
+        ),
+    )
 
     if not params.nozzle_batch_options or not params.throat_batch_options:
         st.warning(
@@ -462,11 +474,3 @@ def render_tab(
 
     with viz_tab3:
         _render_best_performers(successful_df)
-
-    st.markdown("""
-        **Analysis Explanation:**
-        - This comprehensive analysis tests all selected nozzle and throat combinations across the specified power fluid pressure range
-        - **Performance vs Pressure**: Shows how oil and water rates change with power fluid pressure for each pump configuration
-        - **Comprehensive Data**: Complete results table with all successful combinations
-        - **Best Performers**: Shows the highest oil-producing pump at each pressure point and identifies the overall best performer
-        """)

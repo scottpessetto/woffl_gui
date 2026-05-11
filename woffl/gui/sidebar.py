@@ -114,6 +114,17 @@ def _update_well_parameters_from_data(
         if well_data.get("bubble_point") is not None:
             _set_param("bubble_point", float(well_data["bubble_point"]))
 
+        # Pad-aware PF surface pressure default. B/G/J wells run on booster
+        # pads at ~2200 psi; F is ~2800; the rest run on Schrader at ~3400.
+        # Without this the GUI defaulted everyone to 3168 and triggered a
+        # PF-mismatch warning on the Solver tab for every non-Schrader well.
+        # Future-proof: replace with vw_power_fluid_header once populated.
+        from woffl.gui.utils import default_pad_pf, pad_from_mp_name
+
+        pad = pad_from_mp_name(selected_well)
+        if pad:
+            _set_param("ppf_surf", default_pad_pf(pad))
+
         _populate_pump_from_history(selected_well)
         _auto_populate_from_ipr(selected_well)
         st.session_state.last_selected_well_all = selected_well

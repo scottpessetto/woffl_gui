@@ -15,6 +15,7 @@ from woffl.assembly.network_optimizer import (
 )
 from woffl.assembly.optimization_algorithms import optimize
 from woffl.gui.optimization_viz import create_calibration_chart
+from woffl.gui.params import NOZZLE_OPTIONS, THROAT_OPTIONS
 from woffl.gui.utils import is_valid_number
 from woffl.gui.workflow_page import _clear_downstream
 
@@ -101,25 +102,103 @@ def render_step3():
             )
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-    # --- Settings summary ---
-    total_pf = st.session_state.get("uw_total_pf", 30000)
-    pf_pressure = st.session_state.get("uw_pf_pressure", 3168)
-    rho_pf = st.session_state.get("uw_rho_pf", 62.4)
-    opt_method = st.session_state.get("uw_opt_method", "milp")
-    marginal_wc = st.session_state.get("uw_marginal_wc", 0.94)
-    use_calibration = st.session_state.get("uw_use_calibration", True)
-    nozzle_opts = st.session_state.get(
-        "uw_nozzle_opts", ["8", "9", "10", "11", "12", "13", "14"]
-    )
-    throat_opts = st.session_state.get("uw_throat_opts", ["X", "A", "B", "C", "D"])
+    # --- Inline configuration ---
+    # All optimization knobs live here so the user sees what's about to run.
+    # Defaults are seeded into session_state on first paint so the Run button
+    # below can read them without a separate fallback.
+    st.markdown("### Configuration")
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("PF Budget", f"{total_pf:,.0f} BWPD")
-    col2.metric("PF Pressure", f"{pf_pressure:,.0f} psi")
-    col3.metric("Algorithm", opt_method.upper())
+    pf_col1, pf_col2, pf_col3 = st.columns(3)
+    with pf_col1:
+        total_pf = st.number_input(
+            "Total PF (bbl/day)",
+            min_value=0,
+            value=int(st.session_state.get("uw_total_pf", 30000)),
+            step=500,
+            key="uw_total_pf",
+            help="Total power fluid available across all wells.",
+        )
+    with pf_col2:
+        pf_pressure = st.number_input(
+            "PF Pressure (psi)",
+            min_value=1000,
+            max_value=5000,
+            value=int(st.session_state.get("uw_pf_pressure", 3168)),
+            step=100,
+            key="uw_pf_pressure",
+        )
+    with pf_col3:
+        rho_pf = st.number_input(
+            "PF Density (lbm/ft³)",
+            min_value=50.0,
+            max_value=70.0,
+            value=float(st.session_state.get("uw_rho_pf", 62.4)),
+            step=0.1,
+            key="uw_rho_pf",
+        )
+
+    algo_col1, algo_col2, algo_col3 = st.columns(3)
+    with algo_col1:
+        opt_method = st.selectbox(
+            "Algorithm",
+            ["milp", "mckp"],
+            index=0,
+            key="uw_opt_method",
+            help=(
+                "MILP: Optimal via scipy linear programming. "
+                "MCKP: Multi-choice knapsack via OR-Tools CP-SAT."
+            ),
+        )
+    with algo_col2:
+        marginal_wc = st.number_input(
+            "Marginal Watercut",
+            min_value=0.0,
+            max_value=1.0,
+            value=float(st.session_state.get("uw_marginal_wc", 0.94)),
+            step=0.01,
+            format="%.2f",
+            key="uw_marginal_wc",
+            help=(
+                "Worst well online — for POPS pads put to 100% if room "
+                "on pump for water handling. Threshold for which wells "
+                "qualify in the recommendation."
+            ),
+        )
+    with algo_col3:
+        has_jp_history = "jp_history_df" in st.session_state
+        use_calibration = st.checkbox(
+            "Apply Calibration",
+            value=bool(st.session_state.get("uw_use_calibration", True)),
+            key="uw_use_calibration",
+            help=(
+                "Scale predictions using model-vs-actual on current pump "
+                "configs. Disabled when no JP history is loaded."
+            ),
+            disabled=not has_jp_history,
+        )
+
+    with st.expander("Pump Options to Test", expanded=False):
+        nozzle_opts = st.multiselect(
+            "Nozzle Sizes",
+            NOZZLE_OPTIONS,
+            default=st.session_state.get(
+                "uw_nozzle_opts", ["8", "9", "10", "11", "12", "13", "14"]
+            ),
+            key="uw_nozzle_opts",
+        )
+        throat_opts = st.multiselect(
+            "Throat Ratios",
+            THROAT_OPTIONS,
+            default=st.session_state.get(
+                "uw_throat_opts", ["X", "A", "B", "C", "D"]
+            ),
+            key="uw_throat_opts",
+        )
 
     if not nozzle_opts or not throat_opts:
-        st.warning("Select at least one nozzle size and one throat ratio in the sidebar.")
+        st.warning(
+            "Select at least one nozzle size and one throat ratio above."
+        )
         return
 
     # --- Run optimization ---

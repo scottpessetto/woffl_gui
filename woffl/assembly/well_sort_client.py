@@ -31,6 +31,7 @@ import pandas as pd
 from woffl.assembly.databricks_client import execute_query
 
 FULL_DAY_HOURS_THRESHOLD = 20.0
+NOTABLE_DOWN_HOURS = 8.0  # default "down day" threshold for the events view
 TESTS_WINDOW_DAYS = 120
 OUTLIER_PCT = 0.25
 TRAILING_AVG_DAYS = 60
@@ -106,6 +107,29 @@ WELL_HEADER_QUERY = """\
 SELECT well_name
 FROM mpu.wells.vw_well_header
 WHERE field = 'MPU'
+"""
+
+# All daily shut-in rows across every producer for the last N days. Unlike
+# CURRENT_SHUT_IN_QUERY, this is NOT filtered to currently-shut-in wells —
+# we need both directions (came-on AND came-off) to find transitions.
+RECENT_SHUT_IN_QUERY = """\
+WITH producers AS (
+    SELECT enthid
+    FROM mpu.wells.vw_well_header
+    WHERE field = 'MPU' AND well_type = 'prod'
+)
+SELECT
+    s.well_name,
+    s.dtdate,
+    SUM(CAST(s.down_hours AS DOUBLE)) AS hrs,
+    FIRST(s.down_code) AS down_code,
+    FIRST(s.down_reason) AS down_reason,
+    FIRST(s.down_notes) AS down_notes
+FROM mpu.wells.vw_shut_in s
+JOIN producers p ON s.dthid = p.enthid
+WHERE s.dtdate >= DATE_SUB(current_date(), {days})
+GROUP BY s.well_name, s.dtdate
+ORDER BY s.well_name, s.dtdate
 """
 
 MPU_PRODUCERS_QUERY = """\
@@ -228,6 +252,24 @@ def fetch_current_shut_in_history() -> pd.DataFrame:
     down_reason, down_notes. One row per well per day in the last 365 days.
     """
     df = execute_query(CURRENT_SHUT_IN_QUERY)
+    if df.empty:
+        return df
+    df = df.rename(columns={"well_name": "well"})
+    df["well"] = df["well"].apply(_normalize_well_name)
+    df["dtdate"] = pd.to_datetime(df["dtdate"])
+    df["hrs"] = pd.to_numeric(df["hrs"], errors="coerce")
+    return df
+
+
+def fetch_recent_shut_in_history(days: int = 60) -> pd.DataFrame:
+    """All daily shut-in rows for all producers in the last `days` days.
+
+    Used by compute_recent_down_events; includes wells that came back online
+    (not just currently-shut-in ones). Default 60 covers a 30-day window plus
+    a 30-day lookback so an ongoing event that started up to 30 days before
+    the window still has the correct Started date.
+    """
+    df = execute_query(RECENT_SHUT_IN_QUERY.format(days=int(days)))
     if df.empty:
         return df
     df = df.rename(columns={"well_name": "well"})
@@ -750,6 +792,91 @@ def build_shut_in_table(
         rows.append(row)
 
     return pd.DataFrame(rows).sort_values("ShutInSince", ascending=False).reset_index(drop=True)
+
+
+# ── recent down events ─────────────────────────────────────────────────────
+
+def compute_recent_down_events(
+    history_df: pd.DataFrame,
+    producers: list[str],   # kept for signature symmetry; not currently used
+    catalog_df: pd.DataFrame | None = None,
+    window_days: int = 30,
+    down_hours_threshold: float = NOTABLE_DOWN_HOURS,
+) -> pd.DataFrame:
+    """One row per shut-in event overlapping the last `window_days` days.
+
+    A "down day" is any vw_shut_in row with SUM(down_hours) >=
+    down_hours_threshold (default 8 hrs — captures partial-day events like a
+    jet pump changeout). An "event" is a run of consecutive down days. An
+    event is kept if it ENDED inside the window OR is still Ongoing.
+
+    For each event:
+      - Started: first down day of the run.
+      - Ended: last down day, OR pd.NaT if the event is still Ongoing.
+      - Days: count of consecutive down days.
+      - MaxHrs: peak day's down_hours.
+      - TotalHrs: sum of down_hours across the event.
+      - Code/Reason/Notes: taken from the first day of the event (initial cause).
+      - Ongoing: True when the event extends to the latest log date.
+
+    LTSI caveat: an event that started before the query window (default
+    fetch is 60 days) gets a Started date clipped to the earliest day in
+    the data. Wells that have been down for years will look like they
+    started ~60 days ago. Use the LTSI tab for those.
+    """
+    cols = ["Well", "Pad", "Reservoir", "Started", "Ended", "Days",
+            "MaxHrs", "TotalHrs", "Code", "Reason", "Notes", "Ongoing"]
+
+    if history_df is None or history_df.empty:
+        return pd.DataFrame(columns=cols)
+
+    today = pd.Timestamp.now().normalize()
+    window_start = today - pd.Timedelta(days=window_days)
+
+    cat_map: dict[str, dict] = (
+        catalog_df.set_index("well").to_dict("index")
+        if catalog_df is not None and not catalog_df.empty else {}
+    )
+
+    max_date = history_df["dtdate"].max()
+    events: list[dict] = []
+
+    for well, grp in history_df.groupby("well"):
+        grp = grp.sort_values("dtdate").reset_index(drop=True)
+        down = grp[grp["hrs"] >= down_hours_threshold].reset_index(drop=True)
+        if down.empty:
+            continue
+        # Each non-1-day gap in the date sequence starts a new event.
+        gap = (down["dtdate"].diff() != pd.Timedelta(days=1)).cumsum()
+        for _, ev in down.groupby(gap):
+            started = ev["dtdate"].min()
+            ended = ev["dtdate"].max()
+            ongoing = ended == max_date
+            if not ongoing and ended < window_start:
+                continue  # event finished before window — out of scope
+            cat = cat_map.get(well, {})
+            first = ev.iloc[0]
+            events.append({
+                "Well": well,
+                "Pad": cat.get("well_pad"),
+                "Reservoir": cat.get("reservoir"),
+                "Started": started,
+                "Ended": pd.NaT if ongoing else ended,
+                "Days": int(len(ev)),
+                "MaxHrs": float(ev["hrs"].max()),
+                "TotalHrs": float(ev["hrs"].sum()),
+                "Code": first["down_code"],
+                "Reason": first["down_reason"],
+                "Notes": first["down_notes"],
+                "Ongoing": bool(ongoing),
+            })
+
+    if not events:
+        return pd.DataFrame(columns=cols)
+    return (pd.DataFrame(events, columns=cols)
+              .sort_values(["Ongoing", "Days", "Started"],
+                           ascending=[False, False, False])
+              .reset_index(drop=True))
 
 
 # ── bench helpers ──────────────────────────────────────────────────────────

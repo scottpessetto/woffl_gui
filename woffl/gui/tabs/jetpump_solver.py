@@ -10,7 +10,6 @@ and modeled vs actual metrics.
 
 import streamlit as st
 
-from woffl.geometry.jetpump import JetPump
 from woffl.gui.fric_calibration import calibrate_friction_coefs
 from woffl.gui.params import SimulationParams
 from woffl.gui.utils import (
@@ -88,103 +87,6 @@ def _render_pump_identity_banner(params: SimulationParams) -> None:
         )
 
 
-def _render_calibration_overrides(params: SimulationParams, jetpump):
-    """Render the unified Calibration Overrides section.
-
-    Two distinct calibrations can be applied to the Solver run, and historically
-    each was a separate checkbox scattered around the page. They confused new
-    users because the names ("friction-coef cal", "rate-scalar cal") give no
-    clue about what they do or how they differ. This helper presents both in
-    one place with a short plain-language explainer:
-
-    - **Friction-coef** — sweeps ken/kth/kdi to drive *modeled BHP* toward
-      *measured BHP*. Fixes a physical model mismatch. Applied **before** the
-      solver (mutates the JetPump object).
-    - **Rate-scalar** — multiplies modeled rates by a constant factor so
-      modeled oil matches actual oil from the most recent test. Patches over
-      residual error after friction-cal. Applied **after** the solver
-      (display-only; results shown below the hero metrics).
-
-    Returns the (possibly mutated) JetPump object so the caller can use it
-    in the solver run.
-    """
-    if params.selected_well == "Custom":
-        return jetpump
-
-    fric_cal = (
-        st.session_state.get("sw_fric_calibration", {}).get(params.selected_well)
-    )
-    rate_cal = st.session_state.get("sw_calibration_result")
-    fric_available = fric_cal is not None and fric_cal.converged
-    rate_available = rate_cal is not None
-
-    if not fric_available and not rate_available:
-        return jetpump
-
-    use_fric = bool(st.session_state.get("sw_apply_fric_cal", False))
-    use_rate = bool(st.session_state.get("sw_apply_calibration", False))
-    expanded = use_fric or use_rate
-
-    label = "Calibration Overrides"
-    if use_fric and use_rate:
-        label += "  ·  ⚠️ both applied"
-    elif use_fric or use_rate:
-        label += "  ·  ✓ active"
-
-    with st.expander(label, expanded=expanded):
-        st.caption(
-            "Two ways to align the model with the well's last test. "
-            "Both are optional. Run them from the Model vs Actual section "
-            "below first, then come back and toggle here."
-        )
-
-        if fric_available:
-            st.checkbox(
-                f"**Physics calibration** — use ken={fric_cal.best_ken:.3f}, "
-                f"kth={fric_cal.best_kth:.3f}, kdi={fric_cal.best_kdi:.3f}",
-                value=False,
-                key="sw_apply_fric_cal",
-                help=(
-                    "Replaces sidebar friction coefficients with values fit to "
-                    "drive modeled BHP toward the well's measured BHP. Recomputes "
-                    "the solver from scratch — affects every metric."
-                ),
-            )
-        if rate_available:
-            st.checkbox(
-                f"**Rate-scalar calibration** — multiply modeled rates by "
-                f"{rate_cal.calibration_factor:.2f}",
-                value=False,
-                key="sw_apply_calibration",
-                help=(
-                    "After the solver runs, scales modeled oil and water by a "
-                    "constant so modeled oil matches actual oil from the most "
-                    "recent test. Display-only — does not change BHP or PF rate."
-                ),
-            )
-
-        # Refresh after rendering
-        use_fric = bool(st.session_state.get("sw_apply_fric_cal", False))
-        use_rate = bool(st.session_state.get("sw_apply_calibration", False))
-        if use_fric and use_rate:
-            st.warning(
-                "Both calibrations are applied. The rate-scalar was fit against "
-                "the *uncalibrated* model, so applying it on top of the physics "
-                "calibration double-corrects. Prefer one or the other."
-            )
-
-    if use_fric:
-        jetpump = JetPump(
-            nozzle_no=params.nozzle_no,
-            area_ratio=params.area_ratio,
-            knz=jetpump.knz,
-            ken=fric_cal.best_ken,
-            kth=fric_cal.best_kth,
-            kdi=fric_cal.best_kdi,
-        )
-    return jetpump
-
-
 def render_tab(
     params: SimulationParams, jetpump, wellbore, well_profile, inflow, res_mix
 ) -> None:
@@ -213,8 +115,6 @@ def render_tab(
     _cal = st.session_state.get("sw_calibration_result")
     if _cal and _cal.well_name != params.selected_well:
         st.session_state.pop("sw_calibration_result", None)
-
-    jetpump = _render_calibration_overrides(params, jetpump)
 
     with st.spinner("Running jetpump solver..."):
         try:
@@ -339,39 +239,19 @@ def render_tab(
             else:
                 st.caption("Stable subsonic flow at the throat.")
 
-        # Show calibrated predictions when the rate-scalar checkbox is enabled
-        # in the Calibration Overrides section above.
+        # Rate-scalar applied banner \u2014 full toggle + calibrated predictions
+        # live next to the Calibration Factor metric in Model vs Actual below.
         _cal = st.session_state.get("sw_calibration_result")
         if (
             _cal
             and params.selected_well != "Custom"
             and st.session_state.get("sw_apply_calibration", False)
         ):
-            cal_oil = qoil_std * _cal.calibration_factor
-            cal_water = fwat_bwpd * _cal.calibration_factor
-            st.markdown("**Calibrated predictions** (rate-scalar applied):")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.metric(
-                    "Calibrated Oil",
-                    f"{cal_oil:,.0f} BOPD",
-                    delta=f"{cal_oil - qoil_std:+.0f}",
-                )
-            with c2:
-                st.metric(
-                    "Calibrated Water",
-                    f"{cal_water:,.0f} BWPD",
-                    delta=f"{cal_water - fwat_bwpd:+.0f}",
-                )
-            if (
-                params.nozzle_no != _cal.current_nozzle
-                or params.area_ratio != _cal.current_throat
-            ):
-                st.caption(
-                    f"Factor derived from installed pump "
-                    f"({_cal.current_nozzle}{_cal.current_throat}) \u2014 applying "
-                    "to a different pump is an approximation."
-                )
+            st.caption(
+                f"Rate-scalar calibration **applied** "
+                f"(factor {_cal.calibration_factor:.2f}). Calibrated rates "
+                f"shown in *Model vs Actual* below."
+            )
     else:
         st.warning(
             "The solver could not find a solution with the current parameters. "
@@ -456,6 +336,22 @@ def _execute_fric_cal(
 
     cal_state = st.session_state.setdefault("sw_fric_calibration", {})
     cal_state[params.selected_well] = result
+
+    # Auto-push to sidebar so a successful calibration takes effect on the
+    # next rerun without a second click. Widget keys (ken_input/…) are
+    # popped — the sidebar's _number_input helper re-initializes them from
+    # the logical keys on the next render. Writing widget keys directly
+    # would raise after the sidebar already rendered this run.
+    st.session_state["ken"] = float(result.best_ken)
+    st.session_state["kth"] = float(result.best_kth)
+    st.session_state["kdi"] = float(result.best_kdi)
+    st.session_state.pop("ken_input", None)
+    st.session_state.pop("kth_input", None)
+    st.session_state.pop("kdi_input", None)
+    st.session_state["_pushed_fric_msg"] = (
+        f"Calibrated and applied: ken={result.best_ken:.3f}, "
+        f"kth={result.best_kth:.3f}, kdi={result.best_kdi:.3f}"
+    )
     return True, None
 
 
@@ -468,19 +364,20 @@ def _render_fric_cal_action_bar(
 ) -> None:
     """Compact calibration action bar rendered right below the hero strip.
 
-    Two buttons (Run + Push) plus a one-line status of the last result.
-    Pulls the user toward calibration when the BHP red flag is showing —
-    the buttons live where the eyes already are. Detailed result metrics
-    stay down in Model vs Actual; this strip is just the action surface.
+    Single Run button + one-line status. Pulls the user toward calibration
+    when the BHP red flag is showing — the button lives where the eyes
+    already are. On success, the fitted ken/kth/kdi are automatically
+    pushed to the sidebar so the next rerun uses them everywhere
+    (Solver / Batch Run / PF Range). Detailed result metrics stay down
+    in Model vs Actual; this strip is just the action surface.
 
     When ``pf_blocked`` is True, the Run button is disabled — calibrating
-    against a wrong PF pressure produces useless friction coefs. Push
-    still works so a previously-good result remains applicable.
+    against a wrong PF pressure produces useless friction coefs.
     """
     if not _can_run_fric_cal(params):
         return
 
-    # Surface success message from a Push-to-sidebar click on the prior render
+    # Surface success message from the prior render's calibration push.
     pushed_msg = st.session_state.pop("_pushed_fric_msg", None)
     if pushed_msg:
         st.success(pushed_msg)
@@ -489,7 +386,7 @@ def _render_fric_cal_action_bar(
     result = cal_state.get(params.selected_well)
     has_result = result is not None and getattr(result, "converged", False)
 
-    col_run, col_push, col_status = st.columns([1.2, 2.5, 3])
+    col_run, col_status = st.columns([1.5, 4.5])
 
     with col_run:
         run_label = "Re-run BHP Cal" if has_result else "Run BHP Calibration"
@@ -503,24 +400,12 @@ def _render_fric_cal_action_bar(
                 "Disabled while PF rate mismatch is too large — fix the "
                 "sidebar Power Fluid Surface Pressure first."
                 if pf_blocked
-                else None
+                else (
+                    "Fits ken/kth/kdi to drive modeled BHP toward measured "
+                    "BHP, then applies them to the sidebar in one click."
+                )
             ),
         )
-
-    with col_push:
-        if has_result:
-            st.button(
-                f"Push to sidebar: ken={result.best_ken:.3f}, "
-                f"kth={result.best_kth:.3f}, kdi={result.best_kdi:.3f}",
-                key="sw_push_fric_to_sidebar_top",
-                help=(
-                    "Replace sidebar ken/kth/kdi with calibrated values. "
-                    "Affects Batch Run / PF Range as well."
-                ),
-                on_click=_push_fric_to_sidebar_cb,
-                args=(result.best_ken, result.best_kth, result.best_kdi),
-                use_container_width=True,
-            )
 
     with col_status:
         if pf_blocked:
@@ -535,12 +420,14 @@ def _render_fric_cal_action_bar(
             st.markdown(
                 f"Last cal — match: :{color}[**{quality.upper()}**] · "
                 f"BHP error {result.bhp_error:+.0f} psi · "
+                f"applied: ken={result.best_ken:.3f}, "
+                f"kth={result.best_kth:.3f}, kdi={result.best_kdi:.3f} · "
                 f"see *Model vs Actual* below for details."
             )
         else:
             st.caption(
-                "Fits ken/kth/kdi to drive modeled BHP toward measured BHP. "
-                "Detailed breakdown appears in *Model vs Actual* below."
+                "Fits ken/kth/kdi to drive modeled BHP toward measured BHP, "
+                "then auto-applies to the sidebar."
             )
 
     if run_clicked:
@@ -550,29 +437,6 @@ def _render_fric_cal_action_bar(
             st.error(err)
         else:
             st.rerun()
-
-
-def _push_fric_to_sidebar_cb(ken: float, kth: float, kdi: float) -> None:
-    """on_click callback for the 'Push to sidebar' button.
-
-    Streamlit allows widget-key mutation inside on_click handlers (they run
-    before the next render), but NOT in plain ``if button:`` blocks (which
-    hit the post-render write protection). Both logical and widget keys are
-    set so the number_input picks up the new value on the next render
-    regardless of internal state caching.
-    """
-    st.session_state["ken"] = float(ken)
-    st.session_state["kth"] = float(kth)
-    st.session_state["kdi"] = float(kdi)
-    st.session_state["ken_input"] = float(ken)
-    st.session_state["kth_input"] = float(kth)
-    st.session_state["kdi_input"] = float(kdi)
-    # Top-panel "Use friction-coef calibration" checkbox is redundant once
-    # the sidebar matches the calibration. Clear it.
-    st.session_state.pop("sw_apply_fric_cal", None)
-    st.session_state["_pushed_fric_msg"] = (
-        f"Sidebar updated: ken={ken:.3f}, kth={kth:.3f}, kdi={kdi:.3f}"
-    )
 
 
 def _render_fric_calibration_section(
@@ -1041,8 +905,53 @@ def _render_model_vs_actual(params: SimulationParams, wellbore, well_profile) ->
                 st.metric("Oil Error", f"{cal_result.oil_error_pct:.1f}%")
             with c3:
                 st.markdown(f"**Quality:** :{grade_color}[{grade.upper()}]")
+
+            # Rate-scalar apply toggle lives next to the metric it's derived
+            # from. Toggling it scales the modeled rates everywhere else by
+            # this factor (display-only — does not change BHP or PF rate).
+            st.checkbox(
+                f"Apply rate-scalar calibration (×{cal_result.calibration_factor:.2f})",
+                value=False,
+                key="sw_apply_calibration",
+                help=(
+                    "After the solver runs, scales modeled oil and water by a "
+                    "constant so modeled oil matches actual oil from the most "
+                    "recent test. Display-only — does not change BHP or PF "
+                    "rate. Stacking this on top of the BHP friction "
+                    "calibration double-corrects; prefer one or the other."
+                ),
+            )
+
+            if st.session_state.get("sw_apply_calibration", False):
+                cal_oil = cal_result.model_oil * cal_result.calibration_factor
+                oil_delta_vs_actual = cal_oil - cal_result.actual_oil
+                cc1, cc2 = st.columns(2)
+                with cc1:
+                    st.metric(
+                        "Calibrated Oil",
+                        f"{cal_oil:,.0f} BOPD",
+                        delta=f"{oil_delta_vs_actual:+.0f} vs actual",
+                        delta_color="off",
+                        help="Modeled oil × calibration factor.",
+                    )
+                with cc2:
+                    st.metric(
+                        "Actual Oil",
+                        f"{cal_result.actual_oil:,.0f} BOPD",
+                    )
+
+                if (
+                    params.nozzle_no != cal_result.current_nozzle
+                    or params.area_ratio != cal_result.current_throat
+                ):
+                    st.caption(
+                        f"Factor derived from installed pump "
+                        f"({cal_result.current_nozzle}{cal_result.current_throat}) "
+                        "— applying to a different pump is an approximation."
+                    )
         else:
             st.session_state.pop("sw_calibration_result", None)
+            st.session_state.pop("sw_apply_calibration", None)
 
         # Friction-coef calibration (BHP-target). Stored in session_state for
         # the top jetpump-solver panel to apply via checkbox.

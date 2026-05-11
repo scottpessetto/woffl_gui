@@ -28,7 +28,23 @@ from woffl.gui.utils import (
 def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
     """Render the performance graph sub-tab using interactive Plotly."""
     water = params.water_type if params.water_type is not None else "lift"
-    st.subheader(f"Jet Pump Performance ({water.capitalize()} Water)")
+    st.subheader(
+        f"Jet Pump Performance ({water.capitalize()} Water)",
+        help=(
+            "**Graph Legend:**\n\n"
+            "- **Red diamonds**: Semi-finalist jet pumps (no other pump "
+            "produces more oil with less water)\n"
+            "- **Blue circles**: Eliminated jet pumps (another pump "
+            "produces more oil with less water)\n"
+            "- **Red dashed line**: Exponential curve fit of the "
+            "semi-finalist pumps\n"
+            "- **Gold star**: Recommended jet pump based on marginal "
+            "watercut threshold\n"
+            "- **Labels**: Show nozzle size + throat ratio "
+            "(e.g., \"12B\" = nozzle 12, throat B)\n"
+            "- **Hover** over any point for detailed metrics"
+        ),
+    )
 
     has_curve_fit = hasattr(batch_pump, "coeff_totl") and hasattr(
         batch_pump, "coeff_lift"
@@ -218,16 +234,6 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
         st.info(
             "Could not generate the performance plot. Try selecting different nozzle sizes and throat ratios."
         )
-
-    st.markdown("""
-    **Graph Explanation:**
-    - **Red diamonds**: Semi-finalist jet pumps (no other pump produces more oil with less water)
-    - **Blue circles**: Eliminated jet pumps (another pump produces more oil with less water)
-    - **Red dashed line**: Exponential curve fit of the semi-finalist pumps
-    - **Gold star**: Recommended jet pump based on marginal watercut threshold
-    - **Labels**: Show nozzle size + throat ratio (e.g., "12B" = nozzle 12, throat B)
-    - **Hover** over any point for detailed metrics
-    """)
 
 
 def _render_data_table(batch_pump, params: SimulationParams) -> None:

@@ -32,7 +32,10 @@ def _render_databricks_path():
     """Pad selection + date range → load well tests from Databricks."""
     from woffl.assembly.well_test_client import _normalize_well_name
     from woffl.gui.utils import load_well_characteristics
-    from woffl.gui.well_test_page import _cached_mpu_well_names, _cached_well_test_query
+    from woffl.gui.well_test_cache import (
+        _cached_mpu_well_names,
+        _cached_well_test_query,
+    )
 
     # Fetch well names and filter to JP wells
     try:
@@ -120,20 +123,17 @@ def _render_databricks_path():
             st.error(f"Error querying Databricks: {str(e)}")
             st.exception(e)
 
-    # Show summary if data already loaded
+    # Summary banner when data is already loaded — the step indicator at
+    # the top of the workflow already provides forward navigation, so we
+    # don't need a second "Proceed" button here.
     if "uw_well_test_df" in st.session_state and not st.session_state.get(
         "uw_csv_shortcut", False
     ):
         df = st.session_state["uw_well_test_df"]
         st.success(
-            f"Well tests loaded: {len(df)} tests for {df['well'].nunique()} wells"
+            f"Well tests loaded: {len(df)} tests for {df['well'].nunique()} wells. "
+            "Click **Step 2** above to continue."
         )
-        if st.button("Proceed to Review IPR →", key="uw_step1_proceed"):
-            st.session_state["uw_current_step"] = 2
-            st.session_state["uw_max_step_reached"] = max(
-                st.session_state.get("uw_max_step_reached", 1), 2
-            )
-            st.rerun()
 
 
 def _render_csv_upload_path():

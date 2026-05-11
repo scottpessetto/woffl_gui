@@ -94,6 +94,46 @@ def _render_ipr_review():
             f"{', '.join(dropped_wells)}"
         )
 
+    # IPR settings (live inline so the user can re-run with different
+    # caps/offsets without hopping back to a sidebar). Editing any of these
+    # widgets and clicking the re-run button below clears the Vogel cache.
+    with st.expander("IPR Settings", expanded=False):
+        st.number_input(
+            "Max Res Pressure — Schrader (psi)",
+            min_value=800,
+            max_value=3000,
+            value=1800,
+            step=50,
+            key="uw_max_rp_sch",
+            help="Cap on estimated reservoir pressure for Schrader-field wells.",
+        )
+        st.number_input(
+            "Max Res Pressure — Kuparuk (psi)",
+            min_value=1500,
+            max_value=5000,
+            value=3000,
+            step=50,
+            key="uw_max_rp_kup",
+            help="Cap on estimated reservoir pressure for Kuparuk-field wells.",
+        )
+        st.number_input(
+            "Res Pres Modifier (psi)",
+            min_value=0,
+            max_value=500,
+            value=0,
+            step=10,
+            key="uw_resp_mod",
+            help="Constant offset added to estimated reservoir pressure.",
+        )
+        if st.button(
+            "Re-run IPR Analysis",
+            key="uw_rerun_ipr",
+            help="Discard the cached Vogel fit and re-run with the values above.",
+        ):
+            for k in ("uw_vogel_coeffs", "uw_ipr_curves", "uw_merged_with_rp"):
+                st.session_state.pop(k, None)
+            st.rerun()
+
     # Run IPR analysis if not already done
     if "uw_vogel_coeffs" not in st.session_state:
         max_rp_sch = st.session_state.get("uw_max_rp_sch", 1800)

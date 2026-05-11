@@ -33,9 +33,11 @@ def normalize_short_name(name: str) -> str:
     return name
 
 
-def pad_from_mp_name(mp_name: str) -> str:
-    """MPB-30 -> B, MPI-15 -> I."""
-    return mp_name.replace("MP", "").split("-")[0]
+# Re-exported from woffl.gui.utils so existing scotts_tools call sites keep
+# working without import churn. The canonical definition lives in utils.py
+# alongside PAD_PF_DEFAULTS, where the sidebar's well auto-populate also
+# imports from.
+from woffl.gui.utils import pad_from_mp_name  # noqa: E402, F401
 
 
 # ── IPR from well tests ────────────────────────────────────────────────────
