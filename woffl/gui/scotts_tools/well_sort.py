@@ -1,8 +1,9 @@
 """Well Sort tab.
 
 Online vs Shut-In classification + outlier flagging across MPU producers.
-Uses live ProdXV status to rescue just-restarted wells from the lagging
-shut-in log.
+Live ProdXV status overrides the daily shut-in log symmetrically: a closed
+XV forces shut-in (catches just-shut wells), an open XV rescues a logged-
+shut well back to online (catches just-restarted wells).
 """
 
 import pandas as pd
@@ -63,9 +64,9 @@ def render_tab() -> None:
 
     st.header("Well Sort")
     st.caption(
-        "Online = not in vw_shut_in, OR in vw_shut_in but live ProdXV = open "
-        "(daily log lags restarts up to 24 h). Wells absent from the log stay "
-        "online regardless of XV — handles flowback edge cases like H-31. "
+        "Online = ProdXV open AND not in vw_shut_in (or in the log but XV "
+        "shows open — log lags up to 24 h either way). ProdXV closed forces "
+        "shut-in even when the well isn't yet in the log. "
         "Outlier = |test − 2-mo avg| > 25% on oil or water."
     )
 

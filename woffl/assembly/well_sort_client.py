@@ -443,24 +443,30 @@ def classify_wells(
 ) -> tuple[set[str], set[str]]:
     """Split producers into (online_wells, shut_in_wells).
 
-    Rules (asymmetric — XV can only rescue wells OUT of the shut-in list):
-    - Not in vw_shut_in -> online. XV is ignored here; edge cases like
-      temporary flowback (H-31) would otherwise get misclassified.
-    - In vw_shut_in + ProdXV = 1 (trust_xv=True) -> online ("just restarted";
-      the daily log is stale).
-    - In vw_shut_in + ProdXV != 1 -> shut-in.
+    XV is symmetric: a closed prod XV forces shut-in, an open prod XV can
+    rescue a logged-shut well to online. Missing XV readings fall back to
+    the daily log. Flowback wells have their prod XV open, so this rule
+    handles them correctly.
+
+    Rules (trust_xv=True):
+    - ProdXV = 0 -> shut-in (overrides the log; catches just-shut wells the
+      daily log hasn't caught up to yet).
+    - In vw_shut_in + ProdXV = 1 -> online (log lags a restart).
+    - In vw_shut_in + ProdXV missing -> shut-in (no live signal; trust log).
+    - Not in vw_shut_in + ProdXV != 0 -> online.
     """
     shut_log = set(shut_in_df["well"].unique()) if not shut_in_df.empty else set()
     xv_map = _xv_lookup(xv_df) if trust_xv else {}
 
     online, shut = set(), set()
     for well in producers:
-        if well not in shut_log:
-            online.add(well)
-            continue
         x = xv_map.get(well)
         prod = x.get("prod_value") if x else None
-        if prod == 1:
+        if prod == 0:
+            shut.add(well)
+        elif well not in shut_log:
+            online.add(well)
+        elif prod == 1:
             online.add(well)  # log lags a restart
         else:
             shut.add(well)
@@ -729,24 +735,30 @@ def build_shut_in_table(
                 "NearAvgGas": np.nan, "NTestsNear": np.nan,
             }
 
-        # Under the current classify_wells rules, every shut-in well is in
-        # vw_shut_in. Skip defensively if that ever isn't the case.
+        # XV-only shut-ins (ProdXV=0 but absent from vw_shut_in) have no log
+        # rows yet. Emit a row with NaT/NaN log-derived fields so they show up.
         if grp.empty:
-            continue
+            streak_start = pd.NaT
+            last_online = pd.NaT
+            current = pd.Series({
+                "down_code": None, "down_reason": None,
+                "down_notes": "Detected via ProdXV (not yet in daily log)",
+                "hrs": np.nan,
+            })
+        else:
+            streak_start = max_date
+            expected = max_date
+            for _, r in grp.iterrows():
+                if r["dtdate"] == expected and r["hrs"] >= FULL_DAY_HOURS_THRESHOLD:
+                    streak_start = r["dtdate"]
+                    expected = expected - pd.Timedelta(days=1)
+                else:
+                    break
 
-        streak_start = max_date
-        expected = max_date
-        for _, r in grp.iterrows():
-            if r["dtdate"] == expected and r["hrs"] >= FULL_DAY_HOURS_THRESHOLD:
-                streak_start = r["dtdate"]
-                expected = expected - pd.Timedelta(days=1)
-            else:
-                break
+            online_mask = grp["hrs"] < FULL_DAY_HOURS_THRESHOLD
+            last_online = grp.loc[online_mask, "dtdate"].max() if online_mask.any() else pd.NaT
 
-        online_mask = grp["hrs"] < FULL_DAY_HOURS_THRESHOLD
-        last_online = grp.loc[online_mask, "dtdate"].max() if online_mask.any() else pd.NaT
-
-        current = grp.iloc[0]
+            current = grp.iloc[0]
 
         # Prefer the all-time-latest test (for LTSI wells shut in > 180 days).
         if last is not None and pd.notna(last.get("last_date")):
