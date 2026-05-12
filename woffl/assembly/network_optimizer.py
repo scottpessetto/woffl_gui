@@ -44,6 +44,15 @@ class WellConfig:
         gas_sg (Optional[float]): Gas specific gravity override
         wat_sg (Optional[float]): Water specific gravity override
         bubble_point (Optional[float]): Bubble point pressure override, psig
+        ppf_surf_well (Optional[float]): Per-well calibrated PF surface pressure (psi).
+            When set, overrides the field-level PowerFluidConstraint.pressure for
+            this well's batch simulation. Populated by the pre-calibration step
+            (Scott's Tools-style PF cal that matches modeled qnz to observed lift_wat).
+        knz_well, ken_well, kth_well, kdi_well (Optional[float]): Per-well calibrated
+            jet-pump friction coefficients (nozzle / entrance / throat / diffuser).
+            When set, override the library defaults baked into BatchPump.jetpump_list
+            for this well only. All four default to None so existing CSV-loaded
+            configs and the manual-config path keep working unchanged.
     """
 
     well_name: str
@@ -66,6 +75,12 @@ class WellConfig:
     gas_sg: Optional[float] = None
     wat_sg: Optional[float] = None
     bubble_point: Optional[float] = None
+    # Per-well calibration overrides (set by the pre-calibration step).
+    ppf_surf_well: Optional[float] = None
+    knz_well: Optional[float] = None
+    ken_well: Optional[float] = None
+    kth_well: Optional[float] = None
+    kdi_well: Optional[float] = None
 
     def __post_init__(self):
         """Validate configuration on initialization"""
@@ -312,14 +327,34 @@ class NetworkOptimizer:
                 self._create_well_objects(well)
             )
 
-            # Create jet pump list
-            jp_list = BatchPump.jetpump_list(self.nozzle_options, self.throat_options)
+            # Per-well calibration overrides (set by the pre-calibration step
+            # in the workflow). When unset, fall back to the field-level PF
+            # pressure and BatchPump's library default friction coefs.
+            ppf_for_well = (
+                well.ppf_surf_well
+                if well.ppf_surf_well is not None
+                else self.power_fluid.pressure
+            )
+            jp_kwargs = {}
+            if well.knz_well is not None:
+                jp_kwargs["knz"] = well.knz_well
+            if well.ken_well is not None:
+                jp_kwargs["ken"] = well.ken_well
+            if well.kth_well is not None:
+                jp_kwargs["kth"] = well.kth_well
+            if well.kdi_well is not None:
+                jp_kwargs["kdi"] = well.kdi_well
+
+            # Create jet pump list with (possibly overridden) friction coefs
+            jp_list = BatchPump.jetpump_list(
+                self.nozzle_options, self.throat_options, **jp_kwargs
+            )
 
             # Create and run BatchPump
             batch_pump = BatchPump(
                 pwh=well.surf_pres,
                 tsu=well.form_temp,
-                ppf_surf=self.power_fluid.pressure,
+                ppf_surf=ppf_for_well,
                 wellbore=wellbore,
                 wellprof=well_profile,
                 ipr_su=inflow,

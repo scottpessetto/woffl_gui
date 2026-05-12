@@ -172,49 +172,58 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
             merged_with_rp = estimate_reservoir_pressure(well_tests)
             vogel_coeffs = compute_vogel_coefficients(merged_with_rp)
 
-            well_coeffs = vogel_coeffs[vogel_coeffs["Well"] == selected_well]
-            if well_coeffs.empty:
-                _clear_ipr_state()
+            vogel_usable = (
+                vogel_coeffs is not None
+                and not vogel_coeffs.empty
+                and "Well" in vogel_coeffs.columns
+            )
+            well_coeffs = (
+                vogel_coeffs[vogel_coeffs["Well"] == selected_well]
+                if vogel_usable else None
+            )
+            if well_coeffs is not None and not well_coeffs.empty:
+                coeff_row = well_coeffs.iloc[0]
+                st.session_state["sw_vogel_coeffs"] = coeff_row.to_dict()
+
+                _set_param("form_wc", round(float(coeff_row["form_wc"]), 2))
+                _set_param(
+                    "form_gor", max(int(coeff_row["fgor"]), gor_floor)
+                )
+                _set_param("qwf", int(coeff_row["qwf"] * (1 - coeff_row["form_wc"])))
+                _set_param("pwf", int(coeff_row["pwf"]))
+                _set_param("res_pres", int(coeff_row["ResP"]))
+
+                recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
+                whp = recent.get("whp")
+                if _is_finite(whp):
+                    _set_param("surf_pres", int(whp))
+
+                num_tests = int(coeff_row["num_tests"])
+                most_recent = coeff_row["most_recent_date"]
+                date_str = (
+                    most_recent.strftime("%Y-%m-%d")
+                    if hasattr(most_recent, "strftime")
+                    else str(most_recent)
+                )
+                st.session_state["sw_ipr_info"] = (
+                    f"IPR values loaded from {num_tests} well tests "
+                    f"(most recent: {date_str})"
+                )
                 return
-
-            coeff_row = well_coeffs.iloc[0]
-
-            # Cache Vogel coefficients for use by jetpump solver tab
-            st.session_state["sw_vogel_coeffs"] = coeff_row.to_dict()
-
-            _set_param("form_wc", round(float(coeff_row["form_wc"]), 2))
-            _set_param(
-                "form_gor", max(int(coeff_row["fgor"]), gor_floor)
-            )
-            _set_param("qwf", int(coeff_row["qwf"] * (1 - coeff_row["form_wc"])))
-            _set_param("pwf", int(coeff_row["pwf"]))
-            _set_param("res_pres", int(coeff_row["ResP"]))
-
-            recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
-            whp = recent.get("whp")
-            if _is_finite(whp):
-                _set_param("surf_pres", int(whp))
-
-            num_tests = int(coeff_row["num_tests"])
-            most_recent = coeff_row["most_recent_date"]
-            date_str = (
-                most_recent.strftime("%Y-%m-%d")
-                if hasattr(most_recent, "strftime")
-                else str(most_recent)
-            )
-            st.session_state["sw_ipr_info"] = (
-                f"IPR values loaded from {num_tests} well tests "
-                f"(most recent: {date_str})"
-            )
-            return
-
+            # Vogel returned empty (typically: every test row lacks BHP, e.g.
+            # S-pad wells with no coincident gauge). Fall through to the
+            # direct-from-test seed path below so the sidebar still picks up
+            # WC/GOR/oil/WHP from the latest test — the engineer can then
+            # manually tune pwf/res_pres against the modeled-vs-actual gap.
         except Exception:
-            _clear_ipr_state()
-            return
+            # Vogel exploded — fall through to direct-from-test seed too.
+            pass
 
-    # 1-test path: seed sidebar directly from the single test row. WC formula
-    # mirrors compute_vogel_coefficients (water / total), since WtTotalFluid
-    # is the formation total (oil + water, excluding power fluid).
+    # Direct-from-test seed path: runs when there's 1 test, or when 2+ tests
+    # exist but Vogel couldn't fit (most often because no test has BHP). The
+    # `_is_finite(bhp)` guard at the pwf line means no-BHP wells skip pwf
+    # cleanly; the engineer keeps the sidebar's prior pwf/res_pres and tunes
+    # against the oil-rate-mismatch flag in the hero strip.
     _clear_ipr_state()
     recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
 

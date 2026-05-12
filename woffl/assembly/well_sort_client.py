@@ -902,6 +902,65 @@ def split_offline_ltsi(
     )
 
 
+def compute_field_marginal_wc(
+    online_df: pd.DataFrame,
+    pops_pads: set[str] | list[str],
+    pops_overrides: dict[str, bool] | None = None,
+) -> dict | None:
+    """MAX of POPS-aware per-well WC across the online producers.
+
+    Per-well effective WC formulas — what the central facility sees, given
+    that POPS pads separate their lift water on-pad:
+
+      POPS pad well:     wc = form_water / (form_water + oil)
+      Non-POPS pad well: wc = (form_water + lift_water) /
+                              (form_water + lift_water + oil)
+
+    Returns a dict with the maximum value and the well that set it, so the
+    caller can show "Auto: 0.962 from MPB-30 (B pad, non-POPS)". A POPS
+    override dict (well_name -> bool) takes precedence over the pad lookup
+    for individual wells, matching the Well Sort tab's behavior.
+
+    Returns None when no online well has a positive denominator (no
+    contributing oil+water).
+    """
+    if online_df is None or online_df.empty:
+        return None
+
+    df = online_df.copy()
+    pops_set = set(pops_pads or ())
+    overrides = pops_overrides or {}
+
+    pad_is_pops = df["Pad"].isin(pops_set)
+    is_pops = pad_is_pops.copy()
+    for well_name, forced in overrides.items():
+        is_pops.loc[df["Well"] == well_name] = bool(forced)
+
+    oil = pd.to_numeric(df.get("Oil"), errors="coerce").fillna(0.0)
+    form_water = pd.to_numeric(df.get("Water"), errors="coerce").fillna(0.0)
+    lift_water = pd.to_numeric(df.get("LiftWater"), errors="coerce").fillna(0.0)
+
+    pops_denom = (form_water + oil).where(lambda s: s > 0)
+    pops_wc = form_water / pops_denom
+
+    non_pops_denom = (form_water + lift_water + oil).where(lambda s: s > 0)
+    non_pops_wc = (form_water + lift_water) / non_pops_denom
+
+    df["_marginal_wc"] = pops_wc.where(is_pops, non_pops_wc)
+
+    valid = df.dropna(subset=["_marginal_wc"])
+    if valid.empty:
+        return None
+
+    top = valid.loc[valid["_marginal_wc"].idxmax()]
+    return {
+        "wc": float(top["_marginal_wc"]),
+        "well": str(top["Well"]),
+        "pad": str(top.get("Pad") or ""),
+        "is_pops": bool(is_pops.loc[top.name]),
+    }
+
+
 def apply_pops_pad(
     df: pd.DataFrame,
     pads_with_separation: set[str],

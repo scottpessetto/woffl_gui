@@ -20,6 +20,58 @@ from woffl.gui.utils import is_valid_number
 from woffl.gui.workflow_page import _clear_downstream
 
 
+_DEFAULT_POPS_PADS = ("E", "F", "H", "I", "M", "S")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _auto_marginal_wc(pops_tuple: tuple[str, ...],
+                       overrides_tuple: tuple[str, ...]) -> dict | None:
+    """Compute the field marginal WC from current Well-Sort data, cached 5 min.
+
+    Hash key is the POPS list + per-well overrides so the cached value
+    invalidates correctly when the user changes the POPS settings on the
+    Well Sort tab. Returns None on any data-fetch failure so the caller
+    can fall back to the existing 0.94 default.
+    """
+    try:
+        from woffl.assembly.well_sort_client import (
+            build_online_table,
+            classify_wells,
+            compute_field_marginal_wc,
+            fetch_current_shut_in_history,
+            fetch_mpu_producers,
+            fetch_producer_catalog,
+            fetch_recent_tests,
+            fetch_xv_status,
+        )
+        producers = fetch_mpu_producers()
+        if not producers:
+            return None
+        shut_in = fetch_current_shut_in_history()
+        tests = fetch_recent_tests(days=180)
+        catalog = fetch_producer_catalog()
+        xv = fetch_xv_status()
+        online_set, _ = classify_wells(
+            producers, shut_in, xv_df=xv, trust_xv=True,
+        )
+        online_df = build_online_table(
+            tests, shut_in, producers, mode="allocated",
+            xv_df=xv, online_wells=online_set, catalog_df=catalog,
+        )
+        return compute_field_marginal_wc(
+            online_df,
+            set(pops_tuple),
+            pops_overrides={w: True for w in overrides_tuple},
+        )
+    except Exception:
+        return None
+
+
+def _on_marginal_wc_change() -> None:
+    """Mark marginal_watercut as user-touched so the auto-fill stops firing."""
+    st.session_state["uw_marginal_wc_touched"] = True
+
+
 def _build_actual_maps(opt_wells: list[str], test_df) -> tuple[dict, dict, dict]:
     """Build actual oil/PF/BHP maps from well test data."""
     actual_oil_map = {}
@@ -137,6 +189,19 @@ def render_step3():
             key="uw_rho_pf",
         )
 
+    # Auto-fill marginal_watercut from Well Sort data (POPS-aware MAX of
+    # online wells). Must run BEFORE the number_input widget — Streamlit
+    # forbids writing to a widget's key after the widget renders.
+    pops_pads = tuple(sorted(
+        st.session_state.get("well_sort_pops_pads", _DEFAULT_POPS_PADS) or ()
+    ))
+    pops_overrides = tuple(sorted(
+        st.session_state.get("well_sort_pops_force_true", []) or ()
+    ))
+    auto = _auto_marginal_wc(pops_pads, pops_overrides)
+    if auto and not st.session_state.get("uw_marginal_wc_touched", False):
+        st.session_state["uw_marginal_wc"] = float(auto["wc"])
+
     algo_col1, algo_col2, algo_col3 = st.columns(3)
     with algo_col1:
         opt_method = st.selectbox(
@@ -158,12 +223,30 @@ def render_step3():
             step=0.01,
             format="%.2f",
             key="uw_marginal_wc",
+            on_change=_on_marginal_wc_change,
             help=(
                 "Worst well online — for POPS pads put to 100% if room "
                 "on pump for water handling. Threshold for which wells "
                 "qualify in the recommendation."
             ),
         )
+        if auto:
+            tag = "POPS" if auto["is_pops"] else "non-POPS"
+            st.caption(
+                f"Auto: {auto['wc']:.3f} from {auto['well']} "
+                f"({auto['pad']} pad, {tag})"
+            )
+            if st.session_state.get("uw_marginal_wc_touched", False):
+                if st.button(
+                    "Re-auto-fill from Well Sort",
+                    key="uw_marginal_wc_reauto",
+                    help="Discards your manual edit and refills from Well Sort.",
+                ):
+                    st.session_state.pop("uw_marginal_wc_touched", None)
+                    st.session_state["uw_marginal_wc"] = float(auto["wc"])
+                    st.rerun()
+        else:
+            st.caption("Auto-fill unavailable — using default 0.94.")
     with algo_col3:
         has_jp_history = "jp_history_df" in st.session_state
         use_calibration = st.checkbox(

@@ -158,30 +158,74 @@ def render_tab(
         # Actual can pull toward zero.
         actuals = _latest_actuals(params.selected_well)
 
+        # When the well has tests but no BHP-bearing test in the cache, the
+        # sidebar's qwf/pwf/res_pres never got auto-populated from a Vogel
+        # fit — so the modeled values below are driven by whatever defaults
+        # are sitting in the sidebar, NOT calibrated to this well. Surface
+        # that prominently so the user doesn't read "Suction Pressure"
+        # as the well's actual operating BHP. When the oil delta is also
+        # large, flag the specific value the engineer should tune toward.
+        has_any_actual = any(v is not None for v in actuals.values())
+        if (
+            has_any_actual
+            and actuals.get("bhp") is None
+            and params.selected_well != "Custom"
+        ):
+            actual_oil = actuals.get("oil")
+            oil_msg = ""
+            if actual_oil is not None and actual_oil > 0:
+                pct = (qoil_std - actual_oil) / actual_oil * 100
+                if abs(pct) > 25:
+                    direction = "higher" if pct > 0 else "lower"
+                    oil_msg = (
+                        f" **Modeled oil rate ({qoil_std:,.0f} BOPD) is "
+                        f"{abs(pct):.0f}% {direction} than the latest test "
+                        f"({actual_oil:,.0f} BOPD)** — tune sidebar Form WC, "
+                        "Reservoir Pressure, or flowing BHP (pwf) until "
+                        "the modeled oil rate aligns. That's the calibration "
+                        "path for wells without a gauge."
+                    )
+            st.warning(
+                f"**No BHP gauge data for {params.selected_well} in the "
+                "test-window cache.** Modeled values below reflect the "
+                "sidebar's reservoir/IPR inputs, not a Vogel fit to this "
+                "well. Treat the hero metrics as a sidebar-driven "
+                "what-if; the suction-pressure number in particular is "
+                "not an estimate of the well's actual BHP." + oil_msg
+            )
+
         def _delta(modeled: float, actual: float | None, suffix: str) -> str | None:
             if actual is None:
                 return None
             return f"{modeled - actual:+,.0f} {suffix}"
 
+        def _label(base: str, actual) -> str:
+            """Append '(modeled)' to a hero-strip label when no actual exists,
+            so the user doesn't mistake a sidebar-driven prediction for a
+            measured value."""
+            return base if actual is not None else f"{base} (modeled)"
+
         h1, h2, h3, h4 = st.columns(4)
         with h1:
             d = _delta(qoil_std, actuals["oil"], "vs actual")
             st.metric(
-                "Oil Rate", f"{qoil_std:,.0f} BOPD",
+                _label("Oil Rate", actuals["oil"]), f"{qoil_std:,.0f} BOPD",
                 delta=d, delta_color="off" if d is None else "normal",
             )
         with h2:
-            st.metric("Formation Water", f"{fwat_bwpd:,.0f} BWPD")
+            # Formation Water has no actuals counterpart (we don't track it
+            # in actuals dict), so it's always modeled — label accordingly.
+            st.metric("Formation Water (modeled)", f"{fwat_bwpd:,.0f} BWPD")
         with h3:
             d = _delta(qnz_bwpd, actuals["pf"], "vs actual")
             st.metric(
-                "Power Fluid", f"{qnz_bwpd:,.0f} BWPD",
+                _label("Power Fluid", actuals["pf"]), f"{qnz_bwpd:,.0f} BWPD",
                 delta=d, delta_color="off" if d is None else "normal",
             )
         with h4:
             d = _delta(psu, actuals["bhp"], "vs actual")
             st.metric(
-                "Suction Pressure", f"{psu:,.0f} psig",
+                _label("Suction Pressure", actuals["bhp"]), f"{psu:,.0f} psig",
                 delta=d, delta_color="off" if d is None else "normal",
             )
 
@@ -220,9 +264,13 @@ def render_tab(
         # Compact calibration action bar — buttons live here so they're
         # visible without scrolling. Run is disabled while PF mismatch is
         # blocking; the Push button stays available so a prior result can
-        # still be applied.
+        # still be applied. Also disabled when the latest test has no
+        # measured BHP (the calibration objective is BHP-match — without
+        # an actual, there's nothing to fit toward).
         _render_fric_cal_action_bar(
-            params, wellbore, well_profile, pf_blocked=pf_blocked
+            params, wellbore, well_profile,
+            pf_blocked=pf_blocked,
+            bhp_missing=(actuals["bhp"] is None),
         )
 
         # Secondary diagnostics
@@ -361,6 +409,7 @@ def _render_fric_cal_action_bar(
     well_profile,
     *,
     pf_blocked: bool = False,
+    bhp_missing: bool = False,
 ) -> None:
     """Compact calibration action bar rendered right below the hero strip.
 
@@ -371,8 +420,11 @@ def _render_fric_cal_action_bar(
     (Solver / Batch Run / PF Range). Detailed result metrics stay down
     in Model vs Actual; this strip is just the action surface.
 
-    When ``pf_blocked`` is True, the Run button is disabled — calibrating
-    against a wrong PF pressure produces useless friction coefs.
+    Disabled when:
+      - ``pf_blocked`` — calibrating against a wrong PF pressure produces
+        useless friction coefs.
+      - ``bhp_missing`` — the BHP-match objective has no target. Common
+        for S-pad wells whose recent tests lack a coincident gauge.
     """
     if not _can_run_fric_cal(params):
         return
@@ -388,6 +440,24 @@ def _render_fric_cal_action_bar(
 
     col_run, col_status = st.columns([1.5, 4.5])
 
+    disabled = pf_blocked or bhp_missing
+    if bhp_missing:
+        disable_help = (
+            "Disabled — most recent test has no measured BHP. Friction-coef "
+            "calibration fits ken/kth/kdi to drive modeled BHP toward "
+            "measured BHP, and needs a measured value to target."
+        )
+    elif pf_blocked:
+        disable_help = (
+            "Disabled while PF rate mismatch is too large — fix the "
+            "sidebar Power Fluid Surface Pressure first."
+        )
+    else:
+        disable_help = (
+            "Fits ken/kth/kdi to drive modeled BHP toward measured "
+            "BHP, then applies them to the sidebar in one click."
+        )
+
     with col_run:
         run_label = "Re-run BHP Cal" if has_result else "Run BHP Calibration"
         run_clicked = st.button(
@@ -395,20 +465,17 @@ def _render_fric_cal_action_bar(
             type="primary",
             key="sw_run_fric_cal_top",
             use_container_width=True,
-            disabled=pf_blocked,
-            help=(
-                "Disabled while PF rate mismatch is too large — fix the "
-                "sidebar Power Fluid Surface Pressure first."
-                if pf_blocked
-                else (
-                    "Fits ken/kth/kdi to drive modeled BHP toward measured "
-                    "BHP, then applies them to the sidebar in one click."
-                )
-            ),
+            disabled=disabled,
+            help=disable_help,
         )
 
     with col_status:
-        if pf_blocked:
+        if bhp_missing:
+            st.caption(
+                "⚠️ No measured BHP for this well — calibration needs a "
+                "gauge reading to target."
+            )
+        elif pf_blocked:
             st.caption(
                 "⚠️ Calibration blocked — fix the PF rate mismatch above first."
             )
@@ -628,7 +695,14 @@ def _render_model_vs_actual(params: SimulationParams, wellbore, well_profile) ->
             )
             vogel_coeffs = None
 
-        if vogel_coeffs is not None:
+        # Vogel may return an empty DataFrame when every test row for this
+        # well is missing BHP (e.g. S-pad wells whose recent tests have no
+        # coincident gauge). Fall through to the no-IPR path in that case.
+        if (
+            vogel_coeffs is not None
+            and not vogel_coeffs.empty
+            and "Well" in vogel_coeffs.columns
+        ):
             well_coeffs = vogel_coeffs[vogel_coeffs["Well"] == params.selected_well]
             if not well_coeffs.empty:
                 coeff_row = well_coeffs.iloc[0]

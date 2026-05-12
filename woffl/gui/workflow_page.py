@@ -2,17 +2,23 @@
 
 import streamlit as st
 
-# Step labels
+# Step labels. Key 2.5 is the optional pre-calibration step inserted
+# between IPR review and Configure & Run. Using a float key avoids
+# renumbering downstream step state.
 STEPS = {
     1: "Select Wells",
     2: "Review IPR",
+    2.5: "Pre-Calibrate",
     3: "Configure & Run",
     4: "Results",
 }
 
 
-def _clear_downstream(from_step: int):
-    """Clear all uw_ session state keys for steps >= from_step."""
+def _clear_downstream(from_step):
+    """Clear all uw_ session state keys for steps >= from_step.
+
+    Accepts ints or 2.5 to match the STEPS dict.
+    """
     step_keys = {
         2: [
             "uw_vogel_coeffs",
@@ -21,6 +27,10 @@ def _clear_downstream(from_step: int):
             "uw_excluded_wells",
             "uw_template_df",
             "uw_well_configs",
+        ],
+        2.5: [
+            "uw_precal_results",
+            "uw_precal_skipped",
         ],
         3: [
             "uw_optimizer",
@@ -33,23 +43,30 @@ def _clear_downstream(from_step: int):
         ],
         4: [],
     }
-    for step in range(from_step, 5):
-        for key in step_keys.get(step, []):
-            st.session_state.pop(key, None)
+    # Sort numerically; sorted([1, 2, 2.5, 3, 4]) handles mixed ints/floats.
+    for step in sorted(step_keys):
+        if step >= from_step:
+            for key in step_keys.get(step, []):
+                st.session_state.pop(key, None)
 
 
-def _render_step_indicator(current_step: int, max_reached: int):
-    """Render a horizontal step indicator."""
+def _render_step_indicator(current_step, max_reached):
+    """Render a horizontal step indicator.
+
+    Labels are rendered by 1-based position in STEPS so the user sees
+    "Step 1...Step 5" even though internal keys are 1, 2, 2.5, 3, 4.
+    """
     cols = st.columns(len(STEPS))
     for i, (step_num, label) in enumerate(STEPS.items()):
+        display_idx = i + 1  # 1-based UI label
         with cols[i]:
             if step_num == current_step:
                 st.markdown(
-                    f"**:blue[Step {step_num}: {label}]**"
+                    f"**:blue[Step {display_idx}: {label}]**"
                 )
             elif step_num <= max_reached:
                 if st.button(
-                    f"Step {step_num}: {label}",
+                    f"Step {display_idx}: {label}",
                     key=f"uw_nav_{step_num}",
                     use_container_width=True,
                 ):
@@ -57,7 +74,7 @@ def _render_step_indicator(current_step: int, max_reached: int):
                     st.rerun()
             else:
                 st.markdown(
-                    f":gray[Step {step_num}: {label}]"
+                    f":gray[Step {display_idx}: {label}]"
                 )
 
 
@@ -125,6 +142,10 @@ def run_workflow_page():
         from woffl.gui.workflow_steps.step2_review_ipr import render_step2
 
         render_step2()
+    elif current_step == 2.5:
+        from woffl.gui.workflow_steps.step2_5_precalibrate import render_step2_5
+
+        render_step2_5()
     elif current_step == 3:
         from woffl.gui.workflow_steps.step3_configure_optimize import render_step3
 

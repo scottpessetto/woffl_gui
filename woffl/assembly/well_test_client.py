@@ -181,8 +181,12 @@ def fetch_milne_well_tests(
     # Track wells before dropping incomplete rows
     all_wells = set(df["well"].unique()) if "well" in df.columns else set()
 
-    # Drop rows without BHP or fluid rate (required for IPR analysis)
-    required = ["well", "WtDate", "BHP", "WtTotalFluid"]
+    # Drop rows missing well/date/fluid rate. BHP is intentionally kept as a
+    # nullable column so tests without a coincident BHP gauge measurement
+    # still appear in the test history (they just can't drive Vogel IPR).
+    # Downstream consumers that require BHP (compute_vogel_coefficients,
+    # Model vs Actual, etc.) filter BHP themselves.
+    required = ["well", "WtDate", "WtTotalFluid"]
     existing_required = [c for c in required if c in df.columns]
     df = df.dropna(subset=existing_required)
 

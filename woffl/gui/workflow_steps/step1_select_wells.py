@@ -11,6 +11,17 @@ from woffl.assembly.well_test_client import (
 )
 from woffl.gui.workflow_page import _clear_downstream
 
+# Same default as well_sort.py. Read live from Well Sort's session_state when
+# the user has visited that tab — keeps the POPS list as a single source of
+# truth across the app.
+_DEFAULT_POPS_PADS = ("E", "F", "H", "I", "M", "S")
+
+
+def _get_pops_pads() -> set[str]:
+    """Active POPS-pad set: Well Sort's session_state if present, else default."""
+    raw = st.session_state.get("well_sort_pops_pads", _DEFAULT_POPS_PADS)
+    return set(raw or ())
+
 
 def render_step1():
     st.subheader("Step 1: Select Wells")
@@ -54,8 +65,33 @@ def _render_databricks_path():
 
     all_pads = get_pad_names(all_well_names)
 
-    # Pad selection
+    # Quick-select buttons. We mutate the pad-checkbox session_state keys
+    # BEFORE the widgets render below; Streamlit forbids writing to a
+    # widget key after the widget exists, so the rerun puts the new values
+    # into the freshly-rendered checkboxes.
     st.write("### Select Pads")
+    qs_cols = st.columns([1.4, 1.4, 1.4, 4])
+    pops_set = _get_pops_pads()
+    with qs_cols[0]:
+        if st.button(
+            "Select Non-POPS pads",
+            help=f"Sets pads not in {sorted(pops_set)} (POPS list from Well Sort). "
+            "Adjust the POPS list on the Well Sort tab if needed.",
+        ):
+            for pad in all_pads:
+                st.session_state[f"uw_pad_{pad}"] = pad not in pops_set
+            st.rerun()
+    with qs_cols[1]:
+        if st.button("Select all pads"):
+            for pad in all_pads:
+                st.session_state[f"uw_pad_{pad}"] = True
+            st.rerun()
+    with qs_cols[2]:
+        if st.button("Clear pad selection"):
+            for pad in all_pads:
+                st.session_state[f"uw_pad_{pad}"] = False
+            st.rerun()
+
     pad_cols = st.columns(min(len(all_pads), 6))
     selected_pads = []
     for i, pad in enumerate(all_pads):
@@ -73,6 +109,22 @@ def _render_databricks_path():
         return
 
     filtered_well_names = filter_wells_by_pad(all_well_names, selected_pads)
+
+    # Per-well exclude list — lets the user trim individual wells out of the
+    # selected pads before pulling tests. Useful when the non-POPS quick-select
+    # pulls in a well or two you don't want in this optimization run.
+    excluded = st.multiselect(
+        "Wells to exclude (optional)",
+        options=sorted(filtered_well_names),
+        default=st.session_state.get("uw_well_exclude", []),
+        key="uw_well_exclude",
+        help="Drop specific wells from the selected pads before loading tests.",
+    )
+    if excluded:
+        filtered_well_names = [w for w in filtered_well_names if w not in excluded]
+        if not filtered_well_names:
+            st.info("All wells excluded — pick fewer exclusions.")
+            return
 
     # Date range
     col_start, col_end = st.columns(2)

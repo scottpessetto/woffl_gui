@@ -1,7 +1,10 @@
 """Step 2: Review IPR — run Vogel analysis, review fits, exclude wells, download CSV."""
 
+import base64
+
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as st_components
 
 from woffl.assembly.ipr_analyzer import (
     compute_vogel_coefficients,
@@ -17,6 +20,24 @@ from woffl.gui.ipr_viz import (
 )
 from woffl.gui.utils import load_well_characteristics
 from woffl.gui.workflow_page import _clear_downstream
+
+
+def _trigger_browser_download(data: bytes, filename: str, mime: str) -> None:
+    """Inject a hidden <a download> + auto-click JS so the browser downloads
+    without a second user click.
+
+    Streamlit's ``st.download_button`` requires a user click to trigger;
+    when we already had the user click a "Generate" button, this helper
+    fires the download directly from the rerun that follows. Used in
+    place of the Generate → Download two-step pattern.
+    """
+    b64 = base64.b64encode(data).decode()
+    st_components.html(
+        f'<a id="auto_dl_{filename}" href="data:{mime};base64,{b64}" '
+        f'download="{filename}" style="display:none"></a>'
+        f'<script>document.getElementById("auto_dl_{filename}").click();</script>',
+        height=0,
+    )
 
 
 def render_step2():
@@ -68,14 +89,14 @@ def _render_csv_review():
         )
 
     if st.button(
-        "Proceed to Optimization →",
+        "Proceed to Pre-Calibration →",
         type="primary",
         use_container_width=True,
         key="uw_step2_csv_proceed",
     ):
-        st.session_state["uw_current_step"] = 3
+        st.session_state["uw_current_step"] = 2.5
         st.session_state["uw_max_step_reached"] = max(
-            st.session_state.get("uw_max_step_reached", 2), 3
+            st.session_state.get("uw_max_step_reached", 2), 2.5
         )
         st.rerun()
 
@@ -90,7 +111,7 @@ def _render_ipr_review():
     dropped_wells = st.session_state.get("uw_dropped_wells", [])
     if dropped_wells:
         st.warning(
-            f"{len(dropped_wells)} wells dropped (no BHP or fluid rate): "
+            f"{len(dropped_wells)} wells dropped (no fluid-rate test in window): "
             f"{', '.join(dropped_wells)}"
         )
 
@@ -264,9 +285,9 @@ def _render_ipr_review():
         st.session_state["uw_excluded_wells"] = set(
             edited[~edited["Include"]]["Well"].tolist()
         )
-        st.session_state["uw_current_step"] = 3
+        st.session_state["uw_current_step"] = 2.5
         st.session_state["uw_max_step_reached"] = max(
-            st.session_state.get("uw_max_step_reached", 2), 3
+            st.session_state.get("uw_max_step_reached", 2), 2.5
         )
         st.rerun()
 
@@ -307,28 +328,20 @@ def _render_ipr_curves(ipr_curves, merged_data, vogel_coeffs):
             c3.metric("Test BHP", f"{row['pwf']:.0f} psi")
             c4.metric("# Tests", int(row["num_tests"]))
 
-    # Export all IPR curves
+    # Export all IPR curves — single-click: build the file then auto-trigger
+    # the browser download via a hidden anchor + JS, skipping the separate
+    # download-button step.
     st.write("---")
     exp_col1, exp_col2 = st.columns(2)
     with exp_col1:
-        if st.button("Generate Grid PNG", use_container_width=True, key="uw_gen_png"):
+        if st.button("Download Grid PNG", use_container_width=True, key="uw_gen_png"):
             with st.spinner(f"Rendering {len(wells)} wells..."):
                 png_bytes = create_ipr_grid_png(ipr_curves, merged_data, dpi=200)
-            st.download_button(
-                label="Download Grid PNG",
-                data=png_bytes,
-                file_name="vogel_ipr_grid.png",
-                mime="image/png",
-                use_container_width=True,
-            )
+            _trigger_browser_download(png_bytes, "vogel_ipr_grid.png", "image/png")
     with exp_col2:
-        if st.button("Generate PDF", use_container_width=True, key="uw_gen_pdf"):
+        if st.button("Download PDF", use_container_width=True, key="uw_gen_pdf"):
             with st.spinner(f"Generating PDF for {len(wells)} wells..."):
                 pdf_bytes = create_ipr_pdf(ipr_curves, merged_data)
-            st.download_button(
-                label="Download IPR Curves PDF",
-                data=pdf_bytes,
-                file_name="vogel_ipr_curves.pdf",
-                mime="application/pdf",
-                use_container_width=True,
+            _trigger_browser_download(
+                pdf_bytes, "vogel_ipr_curves.pdf", "application/pdf"
             )

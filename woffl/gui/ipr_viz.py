@@ -67,8 +67,14 @@ def create_ipr_plotly(
             )
         )
 
-    # Test data scatter points
-    well_test_data = merged_data[merged_data["well"] == well_name].copy()
+    # Test data scatter points — callers may pass an empty DataFrame for
+    # wells without any tests in the lookback window (e.g. infrequently-
+    # tested wells on the single-well page's 3-month cache). Guard the
+    # 'well' column access so the IPR curve still renders without scatter.
+    if not merged_data.empty and "well" in merged_data.columns:
+        well_test_data = merged_data[merged_data["well"] == well_name].copy()
+    else:
+        well_test_data = pd.DataFrame()
     if (
         not well_test_data.empty
         and "BHP" in well_test_data.columns
@@ -254,8 +260,11 @@ def create_ipr_grid_plotly(
             col=col,
         )
 
-        # Test data scatter
-        well_test_data = df[df["well"] == well].copy()
+        # Test data scatter — guard against an empty/no-column df
+        if not df.empty and "well" in df.columns:
+            well_test_data = df[df["well"] == well].copy()
+        else:
+            well_test_data = pd.DataFrame()
         if (
             not well_test_data.empty
             and "BHP" in well_test_data.columns
@@ -366,8 +375,11 @@ def create_ipr_pdf(
                 label="Vogel IPR",
             )
 
-            # Test data scatter
-            well_test_data = df[df["well"] == well].copy()
+            # Test data scatter — guard against an empty/no-column df
+            if not df.empty and "well" in df.columns:
+                well_test_data = df[df["well"] == well].copy()
+            else:
+                well_test_data = pd.DataFrame()
             if not well_test_data.empty and "BHP" in well_test_data.columns:
                 well_test_data = well_test_data.dropna(subset=["BHP", "WtTotalFluid"])
                 if not well_test_data.empty:
@@ -499,8 +511,11 @@ def create_ipr_grid_png(
             label="Vogel IPR",
         )
 
-        # Test data scatter
-        well_test_data = df[df["well"] == well].copy()
+        # Test data scatter — guard against an empty/no-column df
+        if not df.empty and "well" in df.columns:
+            well_test_data = df[df["well"] == well].copy()
+        else:
+            well_test_data = pd.DataFrame()
         if not well_test_data.empty and "BHP" in well_test_data.columns:
             well_test_data = well_test_data.dropna(subset=["BHP", "WtTotalFluid"])
             if not well_test_data.empty:
