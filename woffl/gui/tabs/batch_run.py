@@ -59,6 +59,10 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
         water_col = "form_wat" if water == "formation" else "totl_wat"
         water_label = "Formation Water" if water == "formation" else "Total Water"
 
+        # Max x for the axis. Computed up front so the curve-fit branch and
+        # the axis-range config below both have it without re-computation.
+        max_water_data = float(df[water_col].max()) if not df.empty else 0.0
+
         fig = go.Figure()
 
         # Eliminated points (non-semi-finalists)
@@ -140,13 +144,23 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
                 )
             )
 
-        # Curve fit line
+        # Curve fit line. We track the x where the *un-clipped* curve crosses
+        # zero so the x-axis can start near the curve's origin — saves the
+        # plot from wasting the left third on the (clipped) negative tail.
+        x_curve_zero = 0.0  # default: keep the x-axis floored at 0
         if has_curve_fit:
             coeff = batch_pump.coeff_form if water == "formation" else batch_pump.coeff_totl
             a, b, c = coeff
-            max_water = df[water_col].max()
-            fit_water = np.linspace(0, max_water, 200)
-            fit_oil = np.array([exp_model(w, a, b, c) for w in fit_water])
+            fit_water = np.linspace(0, max_water_data, 200)
+            # exp_model can dip below zero for some fit coefs at low water rates;
+            # clip so the rendered curve never shows a negative oil rate.
+            fit_oil_raw = np.array([exp_model(w, a, b, c) for w in fit_water])
+            fit_oil = np.clip(fit_oil_raw, 0.0, None)
+            # Smallest x where the raw (un-clipped) curve becomes positive
+            # — that's the visual origin we want at the left of the plot.
+            positive_mask = fit_oil_raw > 0
+            if positive_mask.any():
+                x_curve_zero = float(fit_water[int(np.argmax(positive_mask))])
             fig.add_trace(
                 go.Scatter(
                     x=fit_water,
@@ -190,15 +204,24 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
         except Exception:
             pass
 
-        # Formation water varies in a narrow band across pumps (it's
-        # mostly set by the reservoir IPR, not the pump). Anchoring the
-        # x-axis at zero squashes all the points into a vertical sliver.
-        # For "formation" let Plotly auto-fit the x-axis to the data;
-        # "total" keeps the zero anchor so PF water reads naturally.
+        # Formation water varies in a narrow band across pumps (it's mostly
+        # set by the reservoir IPR, not the pump). Anchoring the x-axis at
+        # zero squashes all the points into a vertical sliver. For
+        # "formation" let Plotly auto-fit the x-axis to the data.
+        #
+        # For "total" we use an EXPLICIT numeric range from the curve's
+        # zero crossing to a little past the max data point. Plotly's
+        # `range=[lo, None]` syntax falls back to autorange when one end
+        # is None, so the curve's negative tail crept back into view —
+        # forcing both ends with concrete numbers is what actually clips it.
         if water == "formation":
             xaxis_cfg = dict(autorange=True, gridcolor="lightgray")
         else:
-            xaxis_cfg = dict(range=[0, None], gridcolor="lightgray")
+            x_axis_upper = max(max_water_data * 1.05, x_curve_zero + 1.0)
+            xaxis_cfg = dict(
+                range=[x_curve_zero, x_axis_upper],
+                gridcolor="lightgray",
+            )
 
         fig.update_layout(
             title=dict(
@@ -208,7 +231,12 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
             xaxis_title=f"{water.capitalize()} Water Rate (BWPD)",
             yaxis_title="Produced Oil Rate (BOPD)",
             xaxis=xaxis_cfg,
-            yaxis=dict(range=[0, None], gridcolor="lightgray"),
+            # rangemode="nonnegative" forces the y-axis range into [0, ∞).
+            # range=[0, None] doesn't always honor the zero floor when the
+            # data (or curve fit) dips negative; rangemode is the canonical
+            # Plotly way to clip the visible range without picking an
+            # explicit upper bound.
+            yaxis=dict(rangemode="nonnegative", gridcolor="lightgray"),
             plot_bgcolor="white",
             hovermode="closest",
             height=550,
