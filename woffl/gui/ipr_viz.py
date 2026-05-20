@@ -59,6 +59,7 @@ def create_ipr_plotly(
     merged_data: pd.DataFrame,
     form_wc: Optional[float] = None,
     jp_history: Optional[pd.DataFrame] = None,
+    show_jp_labels: bool = False,
 ) -> "go.Figure":
     """Create an interactive Plotly IPR plot for a single well.
 
@@ -123,6 +124,7 @@ def create_ipr_plotly(
                     current_date - well_test_data["date"]
                 ).dt.days
                 hover_text = []
+                pump_labels: list[str] = []
                 for _, row in well_test_data.iterrows():
                     oil_str = ""
                     if "WtOilVol" in well_test_data.columns and pd.notna(
@@ -132,6 +134,7 @@ def create_ipr_plotly(
                     pump_label = _pump_label_at_date(
                         jp_history, well_name, row.get("date")
                     )
+                    pump_labels.append(pump_label or "")
                     pump_str = (
                         f"Pump: {pump_label}<br>" if pump_label else ""
                     )
@@ -143,31 +146,61 @@ def create_ipr_plotly(
                         f"Date: {row['date'].strftime('%Y-%m-%d')}<br>"
                         f"Days ago: {row['days_since']}"
                     )
-                fig.add_trace(
-                    go.Scatter(
-                        x=well_test_data["WtTotalFluid"],
-                        y=well_test_data["BHP"],
-                        mode="markers",
-                        name="Test Data",
-                        marker=dict(
-                            size=10,
-                            color=well_test_data["days_since"],
-                            colorscale="Viridis",
-                            showscale=True,
-                            colorbar=dict(
-                                # side="right" rotates the title 90° so it
-                                # runs vertically alongside the colorbar
-                                # instead of stacking on top and colliding
-                                # with the y-axis "Bottom Hole Pressure" label.
-                                title=dict(text="Days Ago", side="right"),
-                                thickness=15,
+
+                # When the user opts in, render the JP label INSIDE the marker
+                # (mode="markers+text", text at middle-center, marker enlarged
+                # to hold ~3 chars). Otherwise stick with plain colored dots.
+                if show_jp_labels and any(pump_labels):
+                    fig.add_trace(
+                        go.Scatter(
+                            x=well_test_data["WtTotalFluid"],
+                            y=well_test_data["BHP"],
+                            mode="markers+text",
+                            name="Test Data",
+                            text=pump_labels,
+                            textposition="middle center",
+                            textfont=dict(size=10, color="white"),
+                            marker=dict(
+                                size=28,
+                                color=well_test_data["days_since"],
+                                colorscale="Viridis",
+                                showscale=True,
+                                colorbar=dict(
+                                    title=dict(text="Days Ago", side="right"),
+                                    thickness=15,
+                                ),
+                                line=dict(width=1, color="black"),
                             ),
-                            line=dict(width=1, color="black"),
-                        ),
-                        text=hover_text,
-                        hoverinfo="text",
+                            customdata=hover_text,
+                            hovertemplate="%{customdata}<extra></extra>",
+                        )
                     )
-                )
+                else:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=well_test_data["WtTotalFluid"],
+                            y=well_test_data["BHP"],
+                            mode="markers",
+                            name="Test Data",
+                            marker=dict(
+                                size=10,
+                                color=well_test_data["days_since"],
+                                colorscale="Viridis",
+                                showscale=True,
+                                colorbar=dict(
+                                    # side="right" rotates the title 90° so it
+                                    # runs vertically alongside the colorbar
+                                    # instead of stacking on top and colliding
+                                    # with the y-axis "Bottom Hole Pressure" label.
+                                    title=dict(text="Days Ago", side="right"),
+                                    thickness=15,
+                                ),
+                                line=dict(width=1, color="black"),
+                            ),
+                            text=hover_text,
+                            hoverinfo="text",
+                        )
+                    )
             else:
                 fig.add_trace(
                     go.Scatter(

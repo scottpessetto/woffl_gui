@@ -892,7 +892,6 @@ def _render_model_vs_actual(
     from woffl.gui.utils import create_inflow, create_jetpump, create_reservoir_mix
 
     st.divider()
-    st.subheader("Model vs Actual Comparison")
 
     # Pump-at-test-date when a test is selected; fall back to current pump
     # otherwise (preserves existing behaviour when there's no test data).
@@ -925,17 +924,6 @@ def _render_model_vs_actual(
         if pump_info.get("date_set") is not None
         else "N/A"
     )
-    if test_date is not None:
-        st.info(
-            f"Model vs Actual uses the pump installed at the time of the "
-            f"**selected test ({test_date.strftime('%Y-%m-%d')})**: "
-            f"Nozzle {nozzle}, Throat {throat} (set {install_date_str})."
-        )
-    else:
-        st.info(
-            f"Model vs Actual uses the CURRENT INSTALLED pump: "
-            f"Nozzle {nozzle}, Throat {throat} (set {install_date_str})."
-        )
 
     # 2. Get well tests from pre-fetched cache
     test_df = _get_well_tests(params.selected_well)
@@ -971,19 +959,75 @@ def _render_model_vs_actual(
                 coeff_row = well_coeffs.iloc[0]
 
     # 4. Resolve the IPR anchor (qwf, pwf, ResP) and the points to overlay.
+    # Compute test_gor / test_whp HERE (was: later, after the chart) so the
+    # GOR override checkbox can sit next to the ResP override in a single
+    # st.columns(2) row at the top of this section. Both checkboxes render
+    # before the chart so the user sees them above the picture they affect.
+    recent_test = None
+    test_gor: int | None = None
+    test_whp: float | None = None
+    if n_tests >= 1:
+        if selected_test_row is not None:
+            recent_test = selected_test_row
+        else:
+            recent_test = test_df.sort_values("WtDate", ascending=False).iloc[0]
+        _g = recent_test.get("fgor", None)
+        test_gor = int(_g) if is_valid_number(_g) else None
+        _w = recent_test.get("whp", None)
+        test_whp = float(_w) if is_valid_number(_w) else None
+
+    # Side-by-side overrides. Each column is independent: ResP only renders
+    # when Vogel produced a coeff_row; GOR only renders when the selected
+    # test has an fgor value. Captions stack below each column.
+    if coeff_row is not None or test_gor is not None:
+        col_resp, col_gor = st.columns(2)
+        with col_resp:
+            if coeff_row is not None:
+                ipr_res_p = coeff_row["ResP"]
+                override_res_p = st.checkbox(
+                    "Override Reservoir Pressure from IPR analysis",
+                    value=False,
+                    help=(
+                        f"IPR analysis ResP: {ipr_res_p:.0f} psi. Check to "
+                        f"use sidebar value ({params.pres}) instead."
+                    ),
+                    key="mva_override_res_p",
+                )
+                model_res_p_local = (
+                    params.pres if override_res_p else ipr_res_p
+                )
+                st.caption(
+                    f"Using Reservoir Pressure: **{model_res_p_local:.0f}** "
+                    f"psi ({'sidebar' if override_res_p else 'IPR analysis'})"
+                )
+            else:
+                override_res_p = False
+                model_res_p_local = float(params.pres)
+
+        with col_gor:
+            if test_gor is not None:
+                override_gor = st.checkbox(
+                    "Override GOR from well test",
+                    value=st.session_state.get("mva_override_gor", False),
+                    help=(
+                        f"Test GOR: {test_gor} scf/bbl. Check to use "
+                        f"sidebar value ({params.form_gor}) instead."
+                    ),
+                    key="mva_override_gor",
+                )
+                model_gor = (
+                    params.form_gor if override_gor else test_gor
+                )
+                st.caption(
+                    f"Using GOR: **{model_gor}** scf/bbl "
+                    f"({'sidebar' if override_gor else 'well test'})"
+                )
+            else:
+                override_gor = False
+                model_gor = params.form_gor
+
     if coeff_row is not None:
-        ipr_res_p = coeff_row["ResP"]
-        override_res_p = st.checkbox(
-            "Override Reservoir Pressure from IPR analysis",
-            value=False,
-            help=f"IPR analysis ResP: {ipr_res_p:.0f} psi. Check to use sidebar value ({params.pres}) instead.",
-            key="mva_override_res_p",
-        )
-        model_res_p = params.pres if override_res_p else ipr_res_p
-        st.caption(
-            f"Using Reservoir Pressure: **{model_res_p:.0f}** psi "
-            f"({'sidebar' if override_res_p else 'IPR analysis'})"
-        )
+        model_res_p = model_res_p_local
 
         if override_res_p:
             vogel_coeffs_plot = vogel_coeffs.copy()
@@ -1080,6 +1124,20 @@ def _render_model_vs_actual(
                 "sidebar reservoir pressure."
             )
 
+    # JP-label toggle for the IPR scatter — sits just above the chart so
+    # the checkbox is next to the picture it affects. Default off (plain
+    # colored dots; the colorbar still encodes Days Ago).
+    show_jp_labels = st.checkbox(
+        "Show JP label inside each test point",
+        value=False,
+        key=f"mva_show_jp_labels_{params.selected_well}",
+        help=(
+            "Replace each test point's dot with the pump installed at that "
+            "test's date (e.g. \"12B\"), drawn inside an enlarged colored "
+            "marker. Useful for seeing pump changes alongside the IPR shape."
+        ),
+    )
+
     # 5. Always render the IPR chart (Vogel-fit or synthetic).
     if params.selected_well in ipr_data:
         plot_data = (
@@ -1091,6 +1149,7 @@ def _render_model_vs_actual(
             plot_data,
             form_wc=params.form_wc,
             jp_history=jp_hist,
+            show_jp_labels=show_jp_labels,
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -1099,28 +1158,12 @@ def _render_model_vs_actual(
         return
 
     # 7. Run model with current JP + IPR-derived inflow.
-    # `recent_test` is the SELECTED test from the picker (defaults to most
-    # recent); this drives the comparison GOR/WHP and the metrics below.
-    if selected_test_row is not None:
-        recent_test = selected_test_row
-    else:
-        recent_test = test_df.sort_values("WtDate", ascending=False).iloc[0]
-    test_gor = recent_test.get("fgor", None)
-    test_gor = int(test_gor) if is_valid_number(test_gor) else None
-
-    test_whp = recent_test.get("whp", None)
-    test_whp = float(test_whp) if is_valid_number(test_whp) else None
-
-    override_gor = st.checkbox(
-        "Override GOR from well test",
-        value=st.session_state.get("mva_override_gor", False),
-        help=f"Test GOR: {test_gor} scf/bbl. Check to use sidebar value ({params.form_gor}) instead.",
-        key="mva_override_gor",
-    )
-    model_gor = params.form_gor if override_gor or test_gor is None else test_gor
-    st.caption(
-        f"Using GOR: **{model_gor}** scf/bbl ({'sidebar' if override_gor or test_gor is None else 'well test'})"
-    )
+    # `recent_test`, `test_gor`, `test_whp`, and `model_gor` were all
+    # computed earlier (next to the override checkboxes at the top of this
+    # section). When test_gor is None we fall back to sidebar GOR — same as
+    # the prior behaviour, just expressed up front.
+    if test_gor is None:
+        model_gor = params.form_gor
 
     model_surf_pres = test_whp if test_whp is not None else params.surf_pres
     st.caption(
@@ -1169,7 +1212,31 @@ def _render_model_vs_actual(
     actual_pf = recent_test.get("lift_wat", None)
     actual_whp = recent_test.get("whp", None)
 
-    st.markdown("#### Modeled vs Actual (Most Recent Test)")
+    # Heading reflects the SELECTED test's date (test picker default = most
+    # recent). Falls back to a generic label if the test row has no WtDate.
+    if recent_test is not None and pd.notna(recent_test.get("WtDate")):
+        _test_date_label = (
+            f"{recent_test.get('WtDate').strftime('%Y-%m-%d')} Test"
+        )
+    else:
+        _test_date_label = "Most Recent Test"
+    st.markdown(f"#### Modeled vs Actual ({_test_date_label})")
+
+    # Pump-at-test-date callout sits BELOW the dynamic heading so the user
+    # reads "Modeled vs Actual (2026-05-10)" → "uses 13C installed at that
+    # date" → the actual comparison metrics. (Was previously rendered at the
+    # very top of the MvA section, before the IPR chart.)
+    if test_date is not None:
+        st.info(
+            f"Model vs Actual uses the pump installed at the time of the "
+            f"**selected test ({test_date.strftime('%Y-%m-%d')})**: "
+            f"Nozzle {nozzle}, Throat {throat} (set {install_date_str})."
+        )
+    else:
+        st.info(
+            f"Model vs Actual uses the CURRENT INSTALLED pump: "
+            f"Nozzle {nozzle}, Throat {throat} (set {install_date_str})."
+        )
 
     if model_results:
         _psu, _sonic, modeled_oil, _fwat, modeled_pf, _mach = model_results

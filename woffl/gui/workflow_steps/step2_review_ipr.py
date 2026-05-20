@@ -316,7 +316,7 @@ def _render_ipr_curves(
 
     wells = sorted(ipr_curves.keys())
 
-    col_sel, col_nav = st.columns([3, 1])
+    col_sel, col_nav, col_lbl = st.columns([3, 1, 2])
     with col_sel:
         selected_well = st.selectbox(
             "Select Well:",
@@ -326,6 +326,17 @@ def _render_ipr_curves(
     with col_nav:
         st.write("")
         st.write(f"**{wells.index(selected_well) + 1}** of **{len(wells)}** wells")
+    with col_lbl:
+        st.write("")
+        show_jp_labels = st.checkbox(
+            "Show JP labels on points",
+            value=False,
+            key=f"uw_ipr_show_jp_labels{key_suffix}",
+            help=(
+                "Render each test point as the pump installed at that "
+                "test's date (e.g. \"12B\") inside an enlarged colored marker."
+            ),
+        )
 
     if selected_well and selected_well in ipr_curves:
         fig = create_ipr_plotly(
@@ -333,6 +344,7 @@ def _render_ipr_curves(
             ipr_curves[selected_well],
             merged_data,
             jp_history=st.session_state.get("jp_history_df"),
+            show_jp_labels=show_jp_labels,
         )
         st.plotly_chart(fig, use_container_width=True)
 
