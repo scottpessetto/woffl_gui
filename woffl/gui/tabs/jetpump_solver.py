@@ -25,35 +25,96 @@ from woffl.gui.utils import (
 )
 
 
-def _render_pump_identity_banner(params: SimulationParams) -> None:
-    """Show banner indicating whether sidebar pump matches the installed pump."""
+def _render_pump_identity_banner(
+    params: SimulationParams,
+    *,
+    effective_pump: tuple[str, str] | None = None,
+    selected_test_date=None,
+    fallback_reason: str | None = None,
+) -> None:
+    """Show what pump the solver is modeling vs what's in the well today.
+
+    ``effective_pump`` is whatever the solver is actually using on this run.
+    When a test is selected, this is the pump installed at that test's
+    date (looked up via :func:`_pump_at_test_date`). Otherwise it falls
+    back to the sidebar pump (``params.nozzle_no``/``area_ratio``).
+
+    ``selected_test_date`` makes the banner clarify the test context
+    ("Modeling X to match the YYYY-MM-DD test \u2014 current pump \u2026").
+
+    ``fallback_reason`` flags the rare case where a test was selected but
+    no JP install record qualifies \u2014 we fall back to the current pump and
+    explain why.
+    """
+    import pandas as pd
+
+    if effective_pump is not None:
+        model_n, model_t = effective_pump
+    else:
+        model_n, model_t = params.nozzle_no, params.area_ratio
+
     jp_hist = st.session_state.get("jp_history_df")
     if jp_hist is None or params.selected_well == "Custom":
-        st.info(f"Modeling: Nozzle {params.nozzle_no}, Throat {params.area_ratio}")
+        st.info(f"Modeling: Nozzle {model_n}, Throat {model_t}")
         return
 
     from woffl.assembly.jp_history import get_current_pump
 
     current_pump = get_current_pump(jp_hist, params.selected_well)
     if current_pump is None:
-        st.info(f"Modeling: Nozzle {params.nozzle_no}, Throat {params.area_ratio}")
+        st.info(f"Modeling: Nozzle {model_n}, Throat {model_t}")
         return
 
-    nozzle = current_pump["nozzle_no"]
-    throat = current_pump["throat_ratio"]
-    date_set = current_pump["date_set"]
-    date_str = date_set.strftime("%Y-%m-%d") if date_set is not None else "N/A"
+    cur_n = current_pump["nozzle_no"]
+    cur_t = current_pump["throat_ratio"]
+    cur_date_str = (
+        current_pump["date_set"].strftime("%Y-%m-%d")
+        if current_pump.get("date_set") is not None
+        else "N/A"
+    )
 
-    if params.nozzle_no == nozzle and params.area_ratio == throat:
+    test_str = None
+    if selected_test_date is not None and pd.notna(selected_test_date):
+        test_str = selected_test_date.strftime("%Y-%m-%d")
+
+    matches_current = (model_n == cur_n and model_t == cur_t)
+
+    # Caveat path: the test selected has no qualifying JP install record,
+    # so we fell back to the current pump.
+    if fallback_reason:
+        st.warning(
+            f"Modeling **{model_n}{model_t}** (current pump in well). "
+            f"{fallback_reason}"
+        )
+        return
+
+    # Test-aware framing \u2014 "Modeling X to match the YYYY-MM-DD test".
+    if test_str:
+        if matches_current:
+            st.success(
+                f"Modeling **{model_n}{model_t}** to match the "
+                f"**{test_str}** test \u2014 matches the current installed pump "
+                f"(set {cur_date_str})."
+            )
+        else:
+            st.info(
+                f"Modeling **{model_n}{model_t}** to match the "
+                f"**{test_str}** test. Current pump in well: "
+                f"**{cur_n}{cur_t}** (set {cur_date_str})."
+            )
+        return
+
+    # No test selected \u2014 original sidebar-vs-current framing.
+    if matches_current:
         st.success(
-            f"Modeling: Nozzle {params.nozzle_no}, Throat {params.area_ratio} "
-            f"\u2014 Matches current installed pump ({nozzle}{throat}, set {date_str})"
+            f"Modeling: Nozzle {model_n}, Throat {model_t} "
+            f"\u2014 Matches current installed pump ({cur_n}{cur_t}, set {cur_date_str})"
         )
     else:
         st.warning(
-            f"Current installed pump is {nozzle}{throat}. "
+            f"Current installed pump is {cur_n}{cur_t}. "
             f"You are modeling a different configuration "
-            f"(Nozzle {params.nozzle_no}, Throat {params.area_ratio})."
+            f"(Nozzle {model_n}, Throat {model_t})."
         )
 
 
@@ -70,16 +131,79 @@ def render_tab(
         inflow: InFlow object
         res_mix: ResMix object
     """
-    render_input_summary(params)
+    import pandas as pd
 
-    st.subheader("Jetpump Solver Results")
+    render_input_summary(params)
 
     # Surface any persisted message from a prior auto-recovery (e.g. GOR reset)
     msg = st.session_state.pop("_solver_gor_reset_msg", None)
     if msg:
         st.warning(msg)
 
-    _render_pump_identity_banner(params)
+    # Test picker FIRST — its selection determines which pump the solver
+    # uses on this run (pump-at-test-date overrides sidebar when a test is
+    # selected). Default = most recent test; matches the pre-picker
+    # behaviour.
+    test_df = _get_well_tests(params.selected_well)
+    selected_test_row = _render_test_picker(params.selected_well, test_df)
+
+    # Resolve the EFFECTIVE pump for the solver. When a test is selected we
+    # look up the JP install on/before that test's date — the test's PF rate
+    # and BHP only make sense vs the pump that was actually in the well at
+    # the time. When no JP record qualifies (or no test is selected), we
+    # fall back to the sidebar/current pump.
+    jp_hist_for_pump = st.session_state.get("jp_history_df")
+    test_date_for_pump = None
+    fallback_reason = None
+    effective_nozzle = params.nozzle_no
+    effective_throat = params.area_ratio
+
+    if selected_test_row is not None and jp_hist_for_pump is not None:
+        td_raw = selected_test_row.get("WtDate")
+        if pd.notna(td_raw):
+            test_date_for_pump = td_raw
+            pump_at_test = _pump_at_test_date(
+                jp_hist_for_pump, params.selected_well, td_raw
+            )
+            if pump_at_test and pump_at_test.get("nozzle_no") and pump_at_test.get(
+                "throat_ratio"
+            ):
+                effective_nozzle = pump_at_test["nozzle_no"]
+                effective_throat = pump_at_test["throat_ratio"]
+            else:
+                fallback_reason = (
+                    f"No JP install record on or before "
+                    f"{td_raw.strftime('%Y-%m-%d')} — using the current "
+                    "pump for the model. Modeled vs actual will be misleading "
+                    "if the pump differed at the test's date."
+                )
+
+    _render_pump_identity_banner(
+        params,
+        effective_pump=(effective_nozzle, effective_throat),
+        selected_test_date=test_date_for_pump,
+        fallback_reason=fallback_reason,
+    )
+
+    # Build the effective JetPump. When it matches the sidebar's pump
+    # (no test override) we reuse the one passed in to avoid the extra
+    # construction; when it differs we build a new one with the same
+    # friction coefs.
+    if (effective_nozzle, effective_throat) == (
+        params.nozzle_no,
+        params.area_ratio,
+    ):
+        effective_jetpump = jetpump
+    else:
+        from woffl.gui.utils import create_jetpump as _make_jp
+
+        effective_jetpump = _make_jp(
+            effective_nozzle,
+            effective_throat,
+            params.ken,
+            params.kth,
+            params.kdi,
+        )
 
     # Clear stale calibration if well changed
     _cal = st.session_state.get("sw_calibration_result")
@@ -93,7 +217,7 @@ def render_tab(
                 params.form_temp,
                 params.rho_pf,
                 params.ppf_surf,
-                jetpump,
+                effective_jetpump,
                 wellbore,
                 well_profile,
                 inflow,
@@ -122,11 +246,11 @@ def render_tab(
         psu, sonic_status, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = solver_results
 
         # Hero strip — the four numbers a user actually came here to see.
-        # Each modeled value is shown alongside its delta vs. the most recent
-        # test (when available). The deltas double as a visual nudge that
-        # these are the values the friction-coef calibration in Model vs
-        # Actual can pull toward zero.
-        actuals = _latest_actuals(params.selected_well)
+        # Each modeled value is shown alongside its delta vs the SELECTED test
+        # (the test picker above; defaults to most recent). The deltas double
+        # as a visual nudge that these are the values the friction-coef
+        # calibration in Model vs Actual can pull toward zero.
+        actuals = _actuals_from_test(selected_test_row)
 
         # When the well has tests but no BHP-bearing test in the cache, the
         # sidebar's qwf/pwf/res_pres never got auto-populated from a Vogel
@@ -277,7 +401,9 @@ def render_tab(
         )
 
     # Model vs Actual comparison (requires JP history + non-Custom well)
-    _render_model_vs_actual(params, wellbore, well_profile)
+    _render_model_vs_actual(
+        params, wellbore, well_profile, selected_test_row=selected_test_row
+    )
 
 
 def _can_run_fric_cal(params: SimulationParams) -> bool:
@@ -569,13 +695,9 @@ def _get_well_tests(well_name: str):
 
 
 def _latest_actuals(well_name: str) -> dict[str, float | None]:
-    """Most recent test values used by the Solver hero strip.
-
-    Pulls allocated oil rate, measured BHP (suction), and PF rate from the
-    most recent well test in the pre-fetched session cache. Returns None for
-    any field the test row is missing. Surfaces these *up-front* in the hero
-    so users immediately see where the model agrees vs. disagrees with reality
-    — and which knobs (friction coefs in Model vs Actual) can pull each value.
+    """Most recent test values — kept for back-compat. New code should use
+    :func:`_actuals_from_test` with a specific test row instead, so the test
+    picker on the Solver tab can target any test (not just the latest).
     """
     blank = {"oil": None, "bhp": None, "pf": None}
     if well_name == "Custom":
@@ -584,11 +706,22 @@ def _latest_actuals(well_name: str) -> dict[str, float | None]:
     if tests is None or tests.empty:
         return blank
     recent = tests.sort_values("WtDate", ascending=False).iloc[0]
+    return _actuals_from_test(recent)
+
+
+def _actuals_from_test(test_row) -> dict[str, float | None]:
+    """Extract Oil / BHP / PF actuals from a single well-test row.
+
+    Generalises :func:`_latest_actuals` to any test, not just the most recent.
+    Returns all-None when ``test_row`` is None (e.g. no tests available or a
+    Custom well).
+    """
+    blank = {"oil": None, "bhp": None, "pf": None}
+    if test_row is None:
+        return blank
 
     def _get(col: str) -> float | None:
-        if col not in tests.columns:
-            return None
-        v = recent.get(col)
+        v = test_row.get(col)
         return float(v) if is_valid_number(v) else None
 
     return {
@@ -598,12 +731,149 @@ def _latest_actuals(well_name: str) -> dict[str, float | None]:
     }
 
 
-def _render_model_vs_actual(params: SimulationParams, wellbore, well_profile) -> None:
+def _pump_at_test_date(jp_hist, well_name: str, test_date):
+    """Return the pump installed on or before ``test_date`` for the given well.
+
+    Mirrors ``get_current_pump`` but with a date filter, so the Model vs Actual
+    section can model with the pump that was *actually* in the well at the time
+    of the selected test rather than the current installation.
+
+    Returns a dict (same shape as ``get_current_pump``) or None when no install
+    record qualifies.
+    """
+    import pandas as pd
+
+    if jp_hist is None or test_date is None:
+        return None
+    if isinstance(test_date, float) and pd.isna(test_date):
+        return None
+
+    well_df = jp_hist[jp_hist["Well Name"] == well_name].copy()
+    if well_df.empty:
+        return None
+    well_df = well_df.dropna(subset=["Date Set"])
+    well_df = well_df[well_df["Date Set"] <= pd.Timestamp(test_date)]
+    if well_df.empty:
+        return None
+
+    latest = well_df.sort_values("Date Set", ascending=False).iloc[0]
+    nozzle = latest.get("Nozzle Number")
+    throat = latest.get("Throat Ratio")
+    tubing = latest.get("Tubing Diameter")
+    date_set = latest.get("Date Set")
+
+    nozzle_str = None
+    if pd.notna(nozzle):
+        try:
+            nozzle_str = str(int(nozzle))
+        except (TypeError, ValueError):
+            nozzle_str = None
+
+    tubing_val = None
+    if pd.notna(tubing):
+        try:
+            tubing_val = float(tubing)
+        except (TypeError, ValueError):
+            tubing_val = None
+
+    return {
+        "nozzle_no": nozzle_str,
+        "throat_ratio": str(throat).strip() if pd.notna(throat) else None,
+        "tubing_od": tubing_val,
+        "date_set": date_set,
+    }
+
+
+def _render_test_picker(well_name: str, test_df):
+    """Selectbox listing the well's tests (date-desc); returns the picked row.
+
+    Default = most recent test, so behaviour matches the pre-picker version
+    when the user doesn't interact. The picker drives:
+      * the hero-strip vs-actual deltas (Oil / PF / BHP),
+      * the Model vs Actual section's modeled pump (via :func:`_pump_at_test_date`)
+        and its comparison row.
+
+    Selection persists per-well via session_state, so switching wells doesn't
+    carry stale state. Returns None when no tests exist.
+    """
+    import pandas as pd
+
+    if test_df is None or test_df.empty:
+        return None
+
+    sorted_tests = test_df.sort_values(
+        "WtDate", ascending=False
+    ).reset_index(drop=True)
+
+    # Pump-at-test-date lookup needs JP history. Pull once, reuse per row.
+    jp_hist = st.session_state.get("jp_history_df")
+
+    def _fmt(row) -> str:
+        date = row.get("WtDate")
+        date_str = date.strftime("%Y-%m-%d") if pd.notna(date) else "N/A"
+        parts = [date_str]
+        # JP that was in the well at this test's date — same lookup the
+        # solver uses, so the option label matches what's about to be modeled.
+        if pd.notna(date) and jp_hist is not None:
+            pump = _pump_at_test_date(jp_hist, well_name, date)
+            if pump and pump.get("nozzle_no") and pump.get("throat_ratio"):
+                parts.append(f"{pump['nozzle_no']}{pump['throat_ratio']}")
+        oil = row.get("WtOilVol")
+        if is_valid_number(oil):
+            parts.append(f"Oil {float(oil):,.0f}")
+        bhp = row.get("BHP")
+        if is_valid_number(bhp):
+            parts.append(f"BHP {float(bhp):,.0f}")
+        pf = row.get("lift_wat")
+        if is_valid_number(pf):
+            parts.append(f"PF {float(pf):,.0f}")
+        return "  ·  ".join(parts)
+
+    options = [_fmt(row) for _, row in sorted_tests.iterrows()]
+    key = f"sw_test_picker_{well_name}"
+
+    # Clamp persisted selection to the current option list so a stale value
+    # from a prior session doesn't crash the selectbox if the test cache
+    # changed shape.
+    if st.session_state.get(key) not in options:
+        st.session_state.pop(key, None)
+
+    selected = st.selectbox(
+        "Test to compare against",
+        options=options,
+        index=0,
+        key=key,
+        help=(
+            "Pick a well test. The hero-strip vs-actual deltas, the Model vs "
+            "Actual comparison, and the pump used for that comparison (from "
+            "JP history at the test's date) all key off this selection. "
+            "Default = most recent test."
+        ),
+    )
+
+    idx = options.index(selected)
+    return sorted_tests.iloc[idx]
+
+
+def _render_model_vs_actual(
+    params: SimulationParams,
+    wellbore,
+    well_profile,
+    *,
+    selected_test_row=None,
+) -> None:
     """Render the Model vs Actual comparison section.
 
     Only shown when JP history is uploaded and a non-Custom well is selected.
     Renders the IPR chart for any test count (0 / 1 / 2+); the comparison
     table + calibration sections require at least 1 test.
+
+    ``selected_test_row`` (from the Solver tab's test picker, defaults to
+    the most recent test) drives two things:
+      * the pump used to model the comparison — :func:`_pump_at_test_date`
+        looks up the install on or before the selected test's date.
+      * the row that gets compared — the metrics show modeled vs **that
+        test's** Oil / BHP / PF, not the most recent test.
     """
     jp_hist = st.session_state.get("jp_history_df")
     if jp_hist is None or params.selected_well == "Custom":
@@ -624,25 +894,48 @@ def _render_model_vs_actual(params: SimulationParams, wellbore, well_profile) ->
     st.divider()
     st.subheader("Model vs Actual Comparison")
 
-    # 1. Look up current JP from history
-    current_pump = get_current_pump(jp_hist, params.selected_well)
-    if current_pump is None:
+    # Pump-at-test-date when a test is selected; fall back to current pump
+    # otherwise (preserves existing behaviour when there's no test data).
+    test_date = None
+    if selected_test_row is not None:
+        td = selected_test_row.get("WtDate")
+        if pd.notna(td):
+            test_date = td
+
+    pump_info = None
+    if test_date is not None:
+        pump_info = _pump_at_test_date(jp_hist, params.selected_well, test_date)
+    if pump_info is None:
+        pump_info = get_current_pump(jp_hist, params.selected_well)
+
+    if pump_info is None:
         st.info(f"No JP history for {params.selected_well}")
         return
 
-    nozzle = current_pump["nozzle_no"]
-    throat = current_pump["throat_ratio"]
+    nozzle = pump_info["nozzle_no"]
+    throat = pump_info["throat_ratio"]
     if not nozzle or not throat:
         st.warning(
             f"JP history for {params.selected_well} is missing nozzle or throat data."
         )
         return
 
-    st.info(
-        f"Model vs Actual uses the CURRENT INSTALLED pump: "
-        f"Nozzle {nozzle}, Throat {throat} "
-        f"(set {current_pump['date_set'].strftime('%Y-%m-%d') if current_pump['date_set'] is not None else 'N/A'})"
+    install_date_str = (
+        pump_info["date_set"].strftime("%Y-%m-%d")
+        if pump_info.get("date_set") is not None
+        else "N/A"
     )
+    if test_date is not None:
+        st.info(
+            f"Model vs Actual uses the pump installed at the time of the "
+            f"**selected test ({test_date.strftime('%Y-%m-%d')})**: "
+            f"Nozzle {nozzle}, Throat {throat} (set {install_date_str})."
+        )
+    else:
+        st.info(
+            f"Model vs Actual uses the CURRENT INSTALLED pump: "
+            f"Nozzle {nozzle}, Throat {throat} (set {install_date_str})."
+        )
 
     # 2. Get well tests from pre-fetched cache
     test_df = _get_well_tests(params.selected_well)
@@ -710,9 +1003,15 @@ def _render_model_vs_actual(params: SimulationParams, wellbore, well_profile) ->
 
         anchor_src = None
         if n_tests >= 1:
-            recent = test_df.sort_values("WtDate", ascending=False).iloc[0]
-            total = recent.get("WtTotalFluid")
-            bhp = recent.get("BHP")
+            # Anchor on the SELECTED test (picker default = most recent), so
+            # an older-test selection keeps the IPR-anchor + comparison row
+            # in sync with what the user picked.
+            if selected_test_row is not None:
+                anchor_row = selected_test_row
+            else:
+                anchor_row = test_df.sort_values("WtDate", ascending=False).iloc[0]
+            total = anchor_row.get("WtTotalFluid")
+            bhp = anchor_row.get("BHP")
             if is_valid_number(total) and is_valid_number(bhp):
                 anchor_qwf = float(total)
                 anchor_pwf = float(bhp)
@@ -799,8 +1098,12 @@ def _render_model_vs_actual(params: SimulationParams, wellbore, well_profile) ->
         return
 
     # 7. Run model with current JP + IPR-derived inflow.
-    # Use most recent test GOR by default, with sidebar override option.
-    recent_test = test_df.sort_values("WtDate", ascending=False).iloc[0]
+    # `recent_test` is the SELECTED test from the picker (defaults to most
+    # recent); this drives the comparison GOR/WHP and the metrics below.
+    if selected_test_row is not None:
+        recent_test = selected_test_row
+    else:
+        recent_test = test_df.sort_values("WtDate", ascending=False).iloc[0]
     test_gor = recent_test.get("fgor", None)
     test_gor = int(test_gor) if is_valid_number(test_gor) else None
 
