@@ -35,6 +35,59 @@ def _cached_jp_history():
     return fetch_jp_history()
 
 
+def _prefetch_well_sort_data() -> None:
+    """Fire-and-forget Databricks prefetch so the Marginal WC import button
+    on the Batch Run tab feels instant.
+
+    Spawns a daemon thread that warms the @st.cache_data caches behind the
+    Well Sort tab (shut-in history, recent tests, producer list, catalog,
+    XV status). When the user later clicks "Import from Well Sort" on Batch
+    Run, every fetcher hits warm cache and the marginal WC is computed
+    from pandas ops only.
+
+    Once per session, guarded via session_state so we don't spawn a new
+    thread on every rerun.
+    """
+    if st.session_state.get("_well_sort_prefetched"):
+        return
+    st.session_state["_well_sort_prefetched"] = True
+
+    def _worker() -> None:
+        # Import inside the worker so the module is loaded lazily — only
+        # when the prefetch actually runs.
+        from woffl.gui.scotts_tools.well_sort import (
+            _cached_producer_catalog,
+            _cached_producers,
+            _cached_recent_tests,
+            _cached_shut_in_history,
+            _cached_xv_status,
+        )
+
+        # Warm each cache independently; one fetch failure shouldn't stop
+        # the others (e.g. transient XV status flake shouldn't block tests).
+        for fn, args in (
+            (_cached_shut_in_history, ()),
+            (_cached_recent_tests, (180,)),
+            (_cached_producers, ()),
+            (_cached_producer_catalog, ()),
+            (_cached_xv_status, ()),
+        ):
+            try:
+                fn(*args)
+            except Exception:
+                pass
+
+    import threading
+
+    from streamlit.runtime.scriptrunner import add_script_run_ctx
+
+    thread = threading.Thread(
+        target=_worker, daemon=True, name="well-sort-prefetch"
+    )
+    add_script_run_ctx(thread)  # lets the thread call @st.cache_data fns cleanly
+    thread.start()
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def _cached_all_well_tests(months_back: int = 3):
     """Fetch recent well tests for all MPU wells in one query. Cached 24h."""
@@ -111,10 +164,16 @@ def main():
             with st.expander("Wells with estimated JP_TVD"):
                 st.write(", ".join(missing))
 
+    # Warm the Well Sort Databricks caches in a background thread so the
+    # Batch Run "Import marginal WC" button can pull instantly. Once per
+    # session — no-op on subsequent reruns.
+    _prefetch_well_sort_data()
+
     modes = [
         "Single Well Analysis",
         "Optimization Workflow",
         "Well Database",
+        "Well Sort",
     ]
     if st.session_state.get("_scotts_tools", False):
         modes.append("Scott's Tools")
@@ -127,7 +186,8 @@ def main():
         help=(
             "Single Well: Analyze one well in detail. "
             "Optimization: Select wells → Review IPR → Optimize → Results. "
-            "Well Database: View live well properties from Databricks."
+            "Well Database: View live well properties from Databricks. "
+            "Well Sort: Online/offline classification + marginal WC calculator."
         ),
     )
 
@@ -140,6 +200,11 @@ def main():
         from woffl.gui.well_database_page import run_well_database_page
 
         run_well_database_page()
+
+    elif app_mode == "Well Sort":
+        from woffl.gui.well_sort_page import run_well_sort_page
+
+        run_well_sort_page()
 
     elif app_mode == "Scott's Tools":
         from woffl.gui.scotts_tools import run_scotts_tools_page

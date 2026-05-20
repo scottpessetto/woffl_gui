@@ -1,6 +1,8 @@
 """Scott's Tools page orchestrator — hidden utilities behind the easter egg.
 
-Routes the four sub-tabs to their respective render functions.
+Routes the sub-tabs to their respective render functions. Well Sort is
+no longer here — it moved to the top-level navigation alongside the
+Marginal WC calculator.
 """
 
 import streamlit as st
@@ -11,7 +13,7 @@ from . import (
     jp_washout,
     pad_watercut,
     pf_scenario,
-    well_sort,
+    test_harness,
 )
 
 
@@ -25,8 +27,8 @@ def run_scotts_tools_page():
         "JP Friction Calibration",
         "JP Fric Trend",
         "JP Wash-Out",
-        "Well Sort",
         "Pad Water Cut",
+        "Test Harness",
     ]
     tabs = st.tabs(tab_labels)
 
@@ -43,7 +45,7 @@ def run_scotts_tools_page():
         jp_washout.render_tab()
 
     with tabs[4]:
-        well_sort.render_tab()
+        pad_watercut.render_tab()
 
     with tabs[5]:
-        pad_watercut.render_tab()
+        test_harness.render_tab()

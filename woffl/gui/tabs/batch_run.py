@@ -20,6 +20,7 @@ from woffl.gui.utils import (
     is_valid_number,
     recommend_jetpump,
     render_bhp_calibration_warning,
+    render_input_summary,
     render_pf_mismatch_warning,
     run_batch_pump,
 )
@@ -27,7 +28,7 @@ from woffl.gui.utils import (
 
 def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
     """Render the performance graph sub-tab using interactive Plotly."""
-    water = params.water_type if params.water_type is not None else "lift"
+    water = params.water_type if params.water_type is not None else "total"
     st.subheader(
         f"Jet Pump Performance ({water.capitalize()} Water)",
         help=(
@@ -46,16 +47,17 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
         ),
     )
 
-    has_curve_fit = hasattr(batch_pump, "coeff_totl") and hasattr(
-        batch_pump, "coeff_lift"
-    )
+    if water == "formation":
+        has_curve_fit = getattr(batch_pump, "coeff_form", None) is not None
+    else:
+        has_curve_fit = getattr(batch_pump, "coeff_totl", None) is not None
 
     try:
         df = batch_pump.df.copy()
         df = df[~df["qoil_std"].isna()]
 
-        water_col = "lift_wat" if water == "lift" else "totl_wat"
-        water_label = "Lift Water" if water == "lift" else "Total Water"
+        water_col = "form_wat" if water == "formation" else "totl_wat"
+        water_label = "Formation Water" if water == "formation" else "Total Water"
 
         fig = go.Figure()
 
@@ -140,7 +142,7 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
 
         # Curve fit line
         if has_curve_fit:
-            coeff = batch_pump.coeff_lift if water == "lift" else batch_pump.coeff_totl
+            coeff = batch_pump.coeff_form if water == "formation" else batch_pump.coeff_totl
             a, b, c = coeff
             max_water = df[water_col].max()
             fit_water = np.linspace(0, max_water, 200)
@@ -188,6 +190,16 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
         except Exception:
             pass
 
+        # Formation water varies in a narrow band across pumps (it's
+        # mostly set by the reservoir IPR, not the pump). Anchoring the
+        # x-axis at zero squashes all the points into a vertical sliver.
+        # For "formation" let Plotly auto-fit the x-axis to the data;
+        # "total" keeps the zero anchor so PF water reads naturally.
+        if water == "formation":
+            xaxis_cfg = dict(autorange=True, gridcolor="lightgray")
+        else:
+            xaxis_cfg = dict(range=[0, None], gridcolor="lightgray")
+
         fig.update_layout(
             title=dict(
                 text=f"<b>{batch_pump.wellname}</b> Jet Pump Performance",
@@ -195,7 +207,7 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
             ),
             xaxis_title=f"{water.capitalize()} Water Rate (BWPD)",
             yaxis_title="Produced Oil Rate (BOPD)",
-            xaxis=dict(range=[0, None], gridcolor="lightgray"),
+            xaxis=xaxis_cfg,
             yaxis=dict(range=[0, None], gridcolor="lightgray"),
             plot_bgcolor="white",
             hovermode="closest",
@@ -304,17 +316,19 @@ def _render_recommender_table(batch_pump, params: SimulationParams, water: str) 
 
     semi_df = semi_df.sort_values(by="qoil_std", ascending=True)
 
-    water_col = "lift_wat" if water == "lift" else "totl_wat"
-    marg_col = "molwr" if water == "lift" else "motwr"
+    water_col = "form_wat" if water == "formation" else "totl_wat"
+    marg_col = "mofwr" if water == "formation" else "motwr"
 
     # Convert marginal oil-water ratios to marginal watercuts
     semi_df["marginal_watercut"] = 1 / (1 + semi_df[marg_col])
 
     # Build display columns
-    water_label = "Lift Water (BWPD)" if water == "lift" else "Total Water (BWPD)"
+    water_label = (
+        "Formation Water (BWPD)" if water == "formation" else "Total Water (BWPD)"
+    )
     ratio_label = (
-        "Marginal Oil/Lift Water Ratio"
-        if water == "lift"
+        "Marginal Oil/Formation Water Ratio"
+        if water == "formation"
         else "Marginal Oil/Total Water Ratio"
     )
 
@@ -584,6 +598,43 @@ def _on_batch_marg_wc_change() -> None:
     st.session_state.pop("marginal_watercut_input", None)
 
 
+def _do_batch_marg_import() -> None:
+    """Compute the field-wide marginal WC and apply it to the sidebar.
+
+    Single-well batch can only use a field-wide marginal — per-POPS-pad
+    marginals depend on all the pad's wells together, so they don't drive
+    a single-well pump choice meaningfully. Use the Pad Optimization
+    workflow (Optimization Workflow → Scope: Pad) for that.
+    """
+    from woffl.gui.scotts_tools.well_sort import compute_field_marginal_wc
+
+    try:
+        threshold = float(st.session_state.get("marg_wc_threshold_pct", 2.0))
+        result = compute_field_marginal_wc(threshold_pct=threshold)
+        scope_descr = f"Field-wide ({threshold:.1f}% threshold)"
+    except Exception as e:
+        st.session_state["_batch_marg_import_err"] = (
+            f"Could not compute marginal WC: {e}"
+        )
+        return
+
+    if result is None:
+        st.session_state["_batch_marg_import_err"] = (
+            "Marginal WC unavailable — no online non-POPs wells with "
+            "valid TotalWC / TotalWater. Check the Well Sort tab."
+        )
+        return
+
+    new_wc = result["marginal_wc"]
+    st.session_state["marginal_watercut"] = new_wc
+    st.session_state.pop("marginal_watercut_input", None)
+    st.session_state.pop(_MARG_WC_QUICKFIX_KEY, None)
+    st.session_state["_batch_marg_import_msg"] = (
+        f"Imported {new_wc:.3f} marginal WC — {scope_descr}, "
+        f"set by {result['well']}."
+    )
+
+
 def _render_marg_wc_quickfix(params: SimulationParams) -> None:
     """Inline Marginal Watercut quick-entry rendered above the performance graph.
 
@@ -597,10 +648,19 @@ def _render_marg_wc_quickfix(params: SimulationParams) -> None:
     their water handling, anything above stops being economic. POPS pads with
     headroom on water handling can be set to 1.00 to lift everything.
     """
+    # Surface a success message from the previous-run Import click (the
+    # click triggers a rerun, so st.success has to live across renders).
+    import_msg = st.session_state.pop("_batch_marg_import_msg", None)
+    if import_msg:
+        st.success(import_msg)
+    import_err = st.session_state.pop("_batch_marg_import_err", None)
+    if import_err:
+        st.warning(import_err)
+
     if st.session_state.get(_MARG_WC_QUICKFIX_KEY) != float(params.marginal_watercut):
         st.session_state[_MARG_WC_QUICKFIX_KEY] = float(params.marginal_watercut)
 
-    col_input, col_status = st.columns([2, 4])
+    col_input, col_import, col_water, col_status = st.columns([2, 2, 2, 2.5])
     with col_input:
         st.number_input(
             "Field Marginal Watercut",
@@ -615,6 +675,46 @@ def _render_marg_wc_quickfix(params: SimulationParams) -> None:
                 "pump for water handling. Updates the sidebar Marginal "
                 "Watercut; the recommended pump (gold star) refreshes "
                 "immediately."
+            ),
+        )
+    with col_import:
+        # Single-well batch can only meaningfully consume a field-wide
+        # marginal WC. Per-POPS-pad marginals are built by all the pad's
+        # wells together — using one to drive a single-well pump pick is
+        # circular (changing this well's pump changes its contribution to
+        # the marginal). For POPS-pad pump selection, the user goes to the
+        # Pad Optimization workflow instead. Databricks fetchers behind
+        # the field-wide calc are pre-warmed at app load by
+        # _prefetch_well_sort_data, so the click hits cache.
+        st.caption(" ")  # vertical alignment with the number_input above
+        if st.button(
+            "📊 Import Calc'd Marginal WC",
+            key="batch_marg_import_btn",
+            use_container_width=True,
+            help=(
+                "Pulls today's **field-wide** marginal WC from the Well Sort "
+                "→ Marginal WC tab (cumulative-water threshold) and writes "
+                "it to the sidebar. For per-POPS-pad pump selection, use "
+                "**Optimization Workflow → Scope: Pad** — single-well batch "
+                "can't see pad-wide tradeoffs."
+            ),
+        ):
+            _do_batch_marg_import()
+            st.rerun()
+    with col_water:
+        # Water-type selector lives here (not the sidebar) so the graph
+        # axis + recommender ratio toggle right next to the threshold
+        # that drives the recommendation.
+        st.radio(
+            "Water Type",
+            options=["total", "formation"],
+            index=0 if params.water_type != "formation" else 1,
+            key="water_type",
+            horizontal=True,
+            help=(
+                "**Total** = formation + power-fluid water (surface handling). "
+                "**Formation** = reservoir-side water only. Drives the "
+                "performance graph axis and recommender marginal ratio."
             ),
         )
     with col_status:
@@ -781,6 +881,42 @@ def _render_nelder_mead_section(batch_pump, params: SimulationParams) -> None:
                     )
 
 
+def _augment_with_formation_marginals(batch_pump) -> None:
+    """Compute mofwr and coeff_form for the formation-water axis.
+
+    Mirrors what BatchPump.process_results does for motwr / molwr (and
+    coeff_totl / coeff_lift), but for formation water. Done GUI-side so
+    the library doesn't need a parallel change. Called after the batch
+    run completes, and again after the calibration toggle re-runs
+    process_results so mofwr stays in sync with the recomputed semi-
+    finalists.
+    """
+    from woffl.assembly.batchpump import batch_curve_fit, gradient_back
+
+    batch_pump.df = batch_pump.df.drop(columns=["mofwr"], errors="ignore")
+
+    semi_df = batch_pump.df[batch_pump.df["semi"]].copy()
+    if semi_df.empty:
+        batch_pump.df["mofwr"] = np.nan
+        batch_pump.coeff_form = None
+        return
+
+    semi_df = semi_df.sort_values(by="qoil_std", ascending=True)
+    qoil_semi = semi_df["qoil_std"].to_numpy()
+    fwat_semi = semi_df["form_wat"].to_numpy()
+
+    semi_df["mofwr"] = gradient_back(qoil_semi, fwat_semi)
+
+    batch_pump.df = batch_pump.df.merge(
+        semi_df[["mofwr"]], left_index=True, right_index=True, how="left"
+    )
+
+    try:
+        batch_pump.coeff_form = batch_curve_fit(qoil_semi, fwat_semi, origin=False)
+    except Exception:
+        batch_pump.coeff_form = None
+
+
 def render_tab(
     params: SimulationParams, wellbore, well_profile, inflow, res_mix
 ) -> None:
@@ -793,7 +929,7 @@ def render_tab(
         inflow: InFlow object
         res_mix: ResMix object
     """
-    st.subheader("Batch Pump Analysis")
+    render_input_summary(params)
 
     # Surface any persisted message from a prior auto-recovery (e.g. GOR reset)
     msg = st.session_state.pop("_solver_gor_reset_msg", None)
@@ -829,18 +965,38 @@ def render_tab(
     if not batch_pump:
         return
 
-    # Hero strip — installed-pump batch row vs latest actuals.
-    # Computes + stashes the calibration as a side effect so the toggle below
+    # Compute mofwr + coeff_form so the formation-water axis works without
+    # a library change. Done before any downstream consumer (graph, table,
+    # recommender) reads the dataframe.
+    _augment_with_formation_marginals(batch_pump)
+
+    # Inline marginal-WC quickfix — drives the recommended-pump gold star.
+    # Lives just below the Model Inputs expander so the user can iterate
+    # on the threshold without scrolling back to the sidebar.
+    _render_marg_wc_quickfix(params)
+
+    st.divider()
+
+    # Performance graph — headline of the batch tab.
+    _render_performance_graph(batch_pump, params)
+
+    st.divider()
+
+    # Hero strip — installed-pump batch row vs latest actuals. Lives below
+    # the graph because single-pump model-vs-actual context is the Solver
+    # tab's job; here it's secondary context for the recommendation table.
+    # Side effect: computes + stashes the calibration so the toggle below
     # can use it. Returns True when PF rate mismatch is too large to trust
     # the rate-scalar calibration.
     pf_blocked = _render_batch_hero_strip(
         batch_pump, params, wellbore, well_profile
     )
 
-    # Calibration toggle — applies the factor to ALL batch rows so the
-    # Performance Graph / Data Table reflect the calibration. Disabled
-    # while PF is mismatched (matches the gating on the Solver view's
-    # Run BHP Cal button).
+    # Calibration toggle — scales modeled oil and formation water by the
+    # installed-pump factor. The toggle sits below the performance graph,
+    # so the scaling affects the data table and recommender below it
+    # (not the graph above). Disabled while PF mismatch is too large to
+    # trust the rate-scalar approach.
     cal = st.session_state.get("batch_calibration_result")
     if cal and cal.well_name == params.selected_well:
         cal_help = (
@@ -848,12 +1004,13 @@ def render_tab(
             "Power Fluid Surface Pressure first."
             if pf_blocked
             else (
-                f"Scales all oil and formation water rates by {cal.calibration_factor:.3f} "
-                f"(derived from {cal.current_nozzle}{cal.current_throat} model vs actual)."
+                f"Scales oil and formation water rates by {cal.calibration_factor:.3f} "
+                f"(derived from {cal.current_nozzle}{cal.current_throat} model vs actual). "
+                "Affects the data table and recommender below."
             )
         )
         apply_cal = st.checkbox(
-            f"Apply calibration factor ({cal.calibration_factor:.2f}) to all batch results",
+            f"Apply calibration factor ({cal.calibration_factor:.2f}) to results below",
             value=False,
             key="batch_apply_calibration",
             disabled=pf_blocked,
@@ -879,32 +1036,26 @@ def render_tab(
             # (lift water is unchanged), so the recommendation may shift to a
             # smaller pump when the model over-predicts.
             batch_pump.df.drop(
-                columns=["semi", "motwr", "molwr"], errors="ignore", inplace=True
+                columns=["semi", "motwr", "molwr", "mofwr"], errors="ignore", inplace=True
             )
             try:
                 batch_pump.process_results()
             except ValueError:
                 st.warning("No semi-finalist pumps found after applying calibration.")
                 return
+            # Re-derive mofwr / coeff_form from the calibrated semi-finalists
+            # so the formation-water graph + recommender stay in sync.
+            _augment_with_formation_marginals(batch_pump)
             st.caption(
                 f"Showing **calibrated** results (factor {cal.calibration_factor:.3f} "
                 f"from {cal.current_nozzle}{cal.current_throat}). "
-                "Semi-finalists, marginal ratios, curve fit, and recommendation "
-                "have been recomputed from calibrated rates."
+                "Semi-finalists, marginal ratios, and recommendation in the "
+                "table below have been recomputed from calibrated rates."
             )
 
-    # Inline marginal-WC quickfix — drives the recommended-pump gold star.
-    # Sits right above the chart so the user can iterate on the threshold
-    # without scrolling back to the sidebar Advanced section.
-    _render_marg_wc_quickfix(params)
-
     st.divider()
 
-    # Performance Graph — promoted to top-line, no longer in a sub-tab
-    _render_performance_graph(batch_pump, params)
-
-    # Data table below the headline graph
-    st.divider()
+    # Data table + recommender (reflects calibration toggle above).
     _render_data_table(batch_pump, params)
 
     # Nelder-Mead continuous optimization

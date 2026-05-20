@@ -168,7 +168,9 @@ def _render_view(
     elif view_key == "profile":
         well_profile.render_tab(params, wp)
     elif view_key == "equivalents":
-        pump_equivalent.render_tab(params, jetpump)
+        # Equivalents tab has its own nozzle/throat selectors so it
+        # doesn't depend on the sidebar pump — no jetpump needed.
+        pump_equivalent.render_tab(params)
     elif view_key == "history":
         jp_history_tab.render_tab(params)
 

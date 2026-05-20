@@ -24,6 +24,42 @@ from woffl.pvt.formwat import FormWater
 from woffl.pvt.resmix import ResMix
 
 
+def render_input_summary(params) -> None:
+    """Render the collapsible Model Inputs expander.
+
+    Shared between the Solver tab and the Batch Run tab so the user can
+    see exactly what pump / well / formation inputs the solver and the
+    nozzle-throat sweep are using, without scrolling back to the sidebar.
+    """
+    ipr_info = st.session_state.get("sw_ipr_info")
+    label = f"Model Inputs (Nozzle {params.nozzle_no}, Throat {params.area_ratio})"
+
+    with st.expander(label, expanded=False):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown("**Pump**")
+            st.write(f"Nozzle: {params.nozzle_no}")
+            st.write(f"Throat: {params.area_ratio}")
+            st.write(f"ken: {params.ken}")
+            st.write(f"kth: {params.kth}")
+            st.write(f"kdi: {params.kdi}")
+        with col2:
+            st.markdown("**Well**")
+            st.write(f"PF Pressure: {params.ppf_surf} psi")
+            st.write(f"Surface Pressure: {params.surf_pres} psi")
+            st.write(f"PF Density: {params.rho_pf} lbm/ft³")
+            st.write(f"JP TVD: {params.jpump_tvd} ft")
+        with col3:
+            st.markdown("**Formation / IPR**")
+            st.write(f"Reservoir Pressure: {params.pres} psi")
+            st.write(f"Water Cut: {params.form_wc:.2f}")
+            st.write(f"GOR: {params.form_gor} scf/bbl")
+            st.write(f"Temperature: {params.form_temp} °F")
+            st.write(f"qwf: {params.qwf} BOPD / pwf: {params.pwf} psi")
+        if ipr_info:
+            st.caption(f"*{ipr_info}*")
+
+
 def is_valid_number(val) -> bool:
     """Check if a value is a valid (non-None, non-NaN) number."""
     if val is None:
@@ -834,11 +870,34 @@ def recommend_jetpump(batch_pump, marginal_watercut, water_type="lift"):
     if not hasattr(batch_pump, "df") or batch_pump.df.empty:
         raise ValueError("Batch pump has no results to analyze")
 
-    if not hasattr(batch_pump, "coeff_totl") or not hasattr(batch_pump, "coeff_lift"):
-        raise ValueError("Batch pump curve fitting has not been performed")
-
     # Validate water type
     water_type = _validate_water_type(water_type)
+
+    # Map water type to its column / marginal-ratio / curve-fit coefficient.
+    # "formation" uses the GUI-side mofwr / coeff_form computed by
+    # _augment_with_formation_marginals (not part of the library).
+    if water_type == "formation":
+        water_col = "form_wat"
+        marg_col = "mofwr"
+        coeff = getattr(batch_pump, "coeff_form", None)
+    elif water_type == "total":
+        water_col = "totl_wat"
+        marg_col = "motwr"
+        coeff = getattr(batch_pump, "coeff_totl", None)
+    else:  # "lift"
+        water_col = "lift_wat"
+        marg_col = "molwr"
+        coeff = getattr(batch_pump, "coeff_lift", None)
+
+    # coeff may be None when the curve fit didn't converge (often a degenerate
+    # case — single semi-finalist, or all water rates near-equal). The
+    # function still produces a usable recommendation by picking from the
+    # semi-finalists directly; the curve-fit step is only used to compute
+    # the theoretical optimal point for closest-match selection.
+    if marg_col not in batch_pump.df.columns:
+        raise ValueError(
+            f"Marginal column {marg_col!r} not found in batch results"
+        )
 
     # Get semi-finalist pumps
     semi_df = batch_pump.df[batch_pump.df["semi"]].copy()
@@ -847,11 +906,6 @@ def recommend_jetpump(batch_pump, marginal_watercut, water_type="lift"):
 
     # Sort by oil rate (which correlates with water rate for semi-finalists)
     semi_df = semi_df.sort_values(by="qoil_std", ascending=True)
-
-    # Get the appropriate coefficients and water rates
-    coeff = batch_pump.coeff_lift if water_type == "lift" else batch_pump.coeff_totl
-    water_col = "lift_wat" if water_type == "lift" else "totl_wat"
-    marg_col = "molwr" if water_type == "lift" else "motwr"
 
     # Get water rates and calculate marginal watercuts for semi-finalists
     water_rates = semi_df[water_col].values
@@ -878,6 +932,23 @@ def recommend_jetpump(batch_pump, marginal_watercut, water_type="lift"):
         }
         return recommendation
 
+    # First, filter to only those below threshold
+    valid_indices = np.where(below_threshold)[0]
+
+    # No curve-fit coefficients (e.g. single semi-finalist). Pick the
+    # highest-oil pump that still sits below the threshold.
+    if coeff is None:
+        valid_oil = [semi_df.iloc[idx]["qoil_std"] for idx in valid_indices]
+        best_idx = valid_indices[int(np.argmax(valid_oil))]
+        return {
+            "nozzle": semi_df.iloc[best_idx]["nozzle"],
+            "throat": semi_df.iloc[best_idx]["throat"],
+            "qoil_std": semi_df.iloc[best_idx]["qoil_std"],
+            "water_rate": semi_df.iloc[best_idx][water_col],
+            "marginal_ratio": marginal_watercuts[best_idx],
+            "recommendation_type": "optimal",
+        }
+
     # Find theoretical optimal water rate using curve fit
     # This is where the marginal watercut equals the threshold
     # We need to convert the watercut threshold to an oil-water ratio first
@@ -888,10 +959,6 @@ def recommend_jetpump(batch_pump, marginal_watercut, water_type="lift"):
     a, b, c = coeff
     optimal_water_rate = rev_exp_deriv(oil_water_ratio, b, c)
     optimal_oil_rate = exp_model(optimal_water_rate, a, b, c)
-
-    # Find the closest semi-finalist pump just below the threshold
-    # First, filter to only those below threshold
-    valid_indices = np.where(below_threshold)[0]
 
     # If we have the theoretical point, find the closest actual pump
     if valid_indices.size > 0:
@@ -929,15 +996,19 @@ def recommend_jetpump(batch_pump, marginal_watercut, water_type="lift"):
 def _validate_water_type(water_type):
     """Validate Type of Water String
 
-    Thin wrapper around the canonical validate_water() from batchpump.py.
-    Kept for backward compatibility with existing GUI code.
+    GUI-side validator that extends the library's validate_water() with
+    "formation" — the library only accepts "lift" / "total" / "totl"; the
+    GUI also offers the formation-only axis (mofwr / form_wat) which we
+    keep out of the library to avoid an upstream PR.
 
     Args:
-        water_type (str): "lift" or "total" depending on the desired analysis
+        water_type (str): "lift", "total", or "formation"
 
     Returns:
-        str: Properly formatted as either "lift" or "total"
+        str: One of "lift", "total", "formation".
     """
+    if water_type in {"formation", "form"}:
+        return "formation"
     return validate_water(water_type)
 
 

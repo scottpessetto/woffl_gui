@@ -20,6 +20,75 @@ from woffl.gui.optimization_viz import (
 )
 
 
+def _render_pad_summary(pad: str, results) -> None:
+    """Pad-mode summary panel: PF used vs limit, headroom, projected marginal WC.
+
+    Rendered above the field-wide tabs when Pad scope is active. The
+    "projected pad marginal WC" is computed from the OPTIMIZED pumps
+    (predicted_lift_water / (predicted_lift_water + predicted_oil_rate)),
+    so the engineer can read it as "if you install these pumps, here is
+    your new marginal WC".
+    """
+    from woffl.gui.scotts_tools.well_sort import PUMP_LIMIT_PRESETS
+
+    pad_limit = int(
+        st.session_state.get(
+            f"_pad_pump_limit_{pad}", PUMP_LIMIT_PRESETS.get(pad, 0)
+        )
+    )
+
+    total_pf_used = float(sum(r.allocated_power_fluid for r in results))
+    headroom = pad_limit - total_pf_used
+
+    # Projected pad marginal WC = max(PFWC) where PFWC = lift / (lift + oil)
+    pfwc_values: list[tuple[float, str]] = []
+    for r in results:
+        denom = r.predicted_lift_water + r.predicted_oil_rate
+        if denom > 0:
+            pfwc_values.append((r.predicted_lift_water / denom, r.well_name))
+    if pfwc_values:
+        marginal_pfwc, marginal_well = max(pfwc_values, key=lambda x: x[0])
+    else:
+        marginal_pfwc, marginal_well = None, None
+
+    st.markdown(f"### Pad Summary: {pad}-Pad")
+    cols = st.columns(4)
+    cols[0].metric("PF Pump Limit", f"{pad_limit:,} BWPD")
+    cols[1].metric(
+        "Projected Total PF",
+        f"{total_pf_used:,.0f} BWPD",
+        help="Sum of allocated PF across all optimized wells on the pad.",
+    )
+    if headroom >= 0:
+        cols[2].metric(
+            "Headroom",
+            f"{headroom:+,.0f} BWPD",
+            delta=f"{headroom:,.0f} BWPD PF available to allocate",
+            delta_color="normal",
+        )
+    else:
+        cols[2].metric(
+            "Headroom",
+            f"{headroom:+,.0f} BWPD",
+            delta=f"OVER by {abs(headroom):,.0f} BWPD",
+            delta_color="inverse",
+        )
+    if marginal_pfwc is not None:
+        cols[3].metric(
+            "Projected Marginal WC",
+            f"{marginal_pfwc:.3f}",
+            delta=f"set by {marginal_well}",
+            delta_color="off",
+            help=(
+                "Max PFWC across the pad's optimized pumps. "
+                "PFWC = LiftWater / (LiftWater + Oil)."
+            ),
+        )
+    else:
+        cols[3].metric("Projected Marginal WC", "—")
+    st.divider()
+
+
 def render_step4():
     st.subheader("Step 4: Results")
 
@@ -38,6 +107,15 @@ def render_step4():
     else:
         display_results = results
         cal_label = ""
+
+    # Pad-mode summary (only when Step 1 set Pad scope)
+    pad_scope = (
+        st.session_state.get("uw_pad_scope_pad")
+        if st.session_state.get("uw_scope") == "Pad"
+        else None
+    )
+    if pad_scope:
+        _render_pad_summary(pad_scope, display_results)
 
     metrics = optimizer.calculate_field_metrics(display_results)
 
@@ -189,7 +267,8 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None):
     else:
         cal_results = results
 
-    # Build comparison rows
+    # Build comparison rows. Values stay numeric so column_config can apply
+    # consistent formatting + tooltips on top.
     rows = []
     current_jp_map = {}
     for r, cr in zip(results, cal_results):
@@ -202,33 +281,126 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None):
         current_jp_map[well] = current_jp_str
 
         opt_jp_str = f"{r.recommended_nozzle}{r.recommended_throat}"
-        cal_oil = cr.predicted_oil_rate
+        opt_model_oil = float(r.predicted_oil_rate)
+        cal_oil = float(cr.predicted_oil_rate)
         actual = actual_oil_map.get(well)
         actual_pf = actual_pf_map.get(well)
+
+        # CalibrationResult.model_oil is the modeled oil for the CURRENT JP
+        # — exactly the right baseline to subtract from opt_model_oil to
+        # show the raw modeled uplift from switching pumps. Only available
+        # when calibration was applied.
+        current_model_oil = None
+        if calibration_results and well in calibration_results:
+            current_model_oil = float(calibration_results[well].model_oil)
 
         row = {
             "Well": well,
             "Current JP": current_jp_str,
-            "Actual Oil (BOPD)": f"{actual:.0f}" if actual is not None else "N/A",
-            "Actual PF (BWPD)": f"{actual_pf:.0f}" if actual_pf is not None else "N/A",
+            "Actual Oil": float(actual) if actual is not None else None,
+            "Actual PF": float(actual_pf) if actual_pf is not None else None,
+            "Current Model Oil": current_model_oil,
             "Optimized JP": opt_jp_str,
-            "Model Oil (BOPD)": f"{r.predicted_oil_rate:.0f}",
+            "Opt Model Oil": opt_model_oil,
+            "Δ Model": (
+                opt_model_oil - current_model_oil
+                if current_model_oil is not None
+                else None
+            ),
         }
         if calibration_results:
-            row["Cal Oil (BOPD)"] = f"{cal_oil:.0f}"
+            row["Cal Oil"] = cal_oil
             row["Cal Factor"] = (
-                f"{calibration_results[well].calibration_factor:.2f}"
+                float(calibration_results[well].calibration_factor)
                 if well in calibration_results
-                else "1.00"
+                else 1.0
             )
-        row["Opt PF (BWPD)"] = f"{r.allocated_power_fluid:.0f}"
-        row["Delta Oil (BOPD)"] = (
-            f"{cal_oil - actual:+.0f}" if actual is not None else "N/A"
+        row["Opt PF"] = float(r.allocated_power_fluid)
+        # "Δ Cal vs Actual" is the OLD "Delta Oil" — kept around because it
+        # answers "what's the projected lift vs today" — but renamed and
+        # given a tooltip so users know it assumes the calibration factor
+        # transfers across pump configs (often the source of confusion).
+        row["Δ Cal vs Actual"] = (
+            cal_oil - actual if actual is not None else None
         )
         rows.append(row)
 
     comp_df = pd.DataFrame(rows)
-    st.dataframe(comp_df, use_container_width=True, hide_index=True)
+    st.dataframe(
+        comp_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Well": st.column_config.TextColumn("Well", pinned="left"),
+            "Current JP": st.column_config.TextColumn(
+                "Current JP",
+                help="Pump installed today (from JP install history).",
+            ),
+            "Actual Oil": st.column_config.NumberColumn(
+                "Actual Oil (BOPD)", format="%.0f",
+                help="Observed oil rate from the latest qualifying well test.",
+            ),
+            "Actual PF": st.column_config.NumberColumn(
+                "Actual PF (BWPD)", format="%.0f",
+                help="Observed PF (lift water) rate from the latest test.",
+            ),
+            "Current Model Oil": st.column_config.NumberColumn(
+                "Current Model Oil (BOPD)", format="%.0f",
+                help=(
+                    "What the physics model predicts for the **current** "
+                    "installed pump. Compare to Actual Oil to see the "
+                    "model bias on this well."
+                ),
+            ),
+            "Optimized JP": st.column_config.TextColumn(
+                "Optimized JP",
+                help="Pump recommended by the optimizer (may equal Current).",
+            ),
+            "Opt Model Oil": st.column_config.NumberColumn(
+                "Opt Model Oil (BOPD)", format="%.0f",
+                help=(
+                    "Model-predicted oil rate at the optimizer's recommended pump."
+                ),
+            ),
+            "Δ Model": st.column_config.NumberColumn(
+                "Δ Model (BOPD)", format="%+.0f",
+                help=(
+                    "Opt Model Oil − Current Model Oil. The **raw modeled "
+                    "uplift** from switching to the recommended pump, "
+                    "independent of any calibration scaling. This is the "
+                    "honest 'what does the model think a pump swap buys you' "
+                    "number."
+                ),
+            ),
+            "Cal Oil": st.column_config.NumberColumn(
+                "Cal Oil (BOPD)", format="%.0f",
+                help=(
+                    "Opt Model Oil × calibration factor. **Caveat**: the "
+                    "factor was derived from the current pump's model vs "
+                    "actual, so applying it to a different pump assumes "
+                    "the model bias is the same for both configurations. "
+                    "Often a fair approximation, sometimes not."
+                ),
+            ),
+            "Cal Factor": st.column_config.NumberColumn(
+                "Cal Factor", format="%.2f",
+                help="actual_oil / current_model_oil. Clamped to 0.3–2.0.",
+            ),
+            "Opt PF": st.column_config.NumberColumn(
+                "Opt PF (BWPD)", format="%.0f",
+                help="PF allocated by the optimizer to this well.",
+            ),
+            "Δ Cal vs Actual": st.column_config.NumberColumn(
+                "Δ Cal vs Actual (BOPD)", format="%+.0f",
+                help=(
+                    "Cal Oil − Actual Oil. **Projected** lift over today's "
+                    "rate **assuming** the calibration factor transfers "
+                    "across pump configurations. See Δ Model for the "
+                    "calibration-free view."
+                ),
+            ),
+        },
+    )
 
     # Field totals
     total_actual_oil = sum(v for v in actual_oil_map.values())

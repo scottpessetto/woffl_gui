@@ -1,7 +1,13 @@
 """Tab: Pump Equivalent Lookup
 
-Given the selected National nozzle + throat combo, finds the closest
-equivalent nozzle/throat in Guiberson, Kobe, and Petrolift catalogs.
+Given a National nozzle + throat combo, finds the closest equivalent
+nozzle/throat in Guiberson, Kobe, and Petrolift catalogs.
+
+Selection is local to this tab (two selectboxes inline) so users can
+explore equivalents without disturbing the sidebar pump that drives
+the Solver / Batch Run views. The tab seeds its initial selection
+from the sidebar so the first view matches what the user is already
+analyzing.
 
 Matching algorithm (mirrors jetpump_equivalent_rev2.xlsx):
 1. Find the brand nozzle whose diameter is closest to the National nozzle.
@@ -17,7 +23,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from woffl.gui.params import SimulationParams
+from woffl.geometry.jetpump import JetPump
+from woffl.gui.params import NOZZLE_OPTIONS, THROAT_OPTIONS, SimulationParams
 
 _CATALOG_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "jetpump_dimensions.json"
 
@@ -77,19 +84,59 @@ def _find_equivalent(
     }
 
 
-def render_tab(params: SimulationParams, jetpump) -> None:
-    """Render the Pump Equivalent tab."""
+def render_tab(params: SimulationParams) -> None:
+    """Render the Pump Equivalent tab.
+
+    Uses two local selectboxes for nozzle + throat so the user can browse
+    equivalents without changing the sidebar pump (which would re-run the
+    Solver / Batch / PF Sensitivity views). First-time defaults are seeded
+    from the sidebar so the tab opens on the user's current setup.
+    """
     st.subheader("Cross-Brand Pump Equivalents")
     st.caption(
-        "Finds the closest nozzle and throat match for the selected National pump "
-        "across Guiberson, Kobe, and Petrolift catalogs."
+        "Finds the closest nozzle and throat match for a National pump "
+        "across Guiberson, Kobe, and Petrolift catalogs. The selection "
+        "below is local to this tab \u2014 it does **not** change the sidebar "
+        "or the other views."
+    )
+
+    # Seed the local selection from the sidebar on first visit so the tab
+    # opens on the user's current setup. After that, the widgets own their
+    # own session_state and the sidebar can drift independently.
+    if "pe_nozzle_no" not in st.session_state:
+        st.session_state["pe_nozzle_no"] = params.nozzle_no
+    if "pe_area_ratio" not in st.session_state:
+        st.session_state["pe_area_ratio"] = params.area_ratio
+
+    col_n, col_t = st.columns(2)
+    with col_n:
+        nozzle_no = st.selectbox(
+            "Nozzle",
+            options=NOZZLE_OPTIONS,
+            key="pe_nozzle_no",
+        )
+    with col_t:
+        area_ratio = st.selectbox(
+            "Throat",
+            options=THROAT_OPTIONS,
+            key="pe_area_ratio",
+        )
+
+    # Build a local JetPump just to get the National diameters. The
+    # friction coefficients are irrelevant here (no flow calculation
+    # happens on this tab), so any defaults are fine.
+    local_jp = JetPump(
+        nozzle_no=nozzle_no,
+        area_ratio=area_ratio,
+        ken=0.03,
+        kth=0.3,
+        kdi=0.4,
     )
 
     catalog = _load_catalog()
 
-    # National reference values from the JetPump object
-    nat_noz_dia = jetpump.dnz
-    nat_thr_dia = jetpump.dth
+    nat_noz_dia = local_jp.dnz
+    nat_thr_dia = local_jp.dth
     nat_noz_area = math.pi / 4 * nat_noz_dia**2
     nat_thr_area = math.pi / 4 * nat_thr_dia**2
     nat_ratio = nat_thr_dia / nat_noz_dia
@@ -98,8 +145,8 @@ def render_tab(params: SimulationParams, jetpump) -> None:
     rows = [
         {
             "Brand": "National (selected)",
-            "Nozzle": params.nozzle_no,
-            "Throat": params.area_ratio,
+            "Nozzle": nozzle_no,
+            "Throat": area_ratio,
             "Nozzle Dia (in)": nat_noz_dia,
             "Nozzle Area (in\u00b2)": nat_noz_area,
             "Throat Dia (in)": nat_thr_dia,
@@ -138,7 +185,7 @@ def render_tab(params: SimulationParams, jetpump) -> None:
     st.dataframe(fmt, use_container_width=True, hide_index=True)
 
     st.markdown(
-        f"**Reference:** National {params.nozzle_no}-{params.area_ratio} "
+        f"**Reference:** National {nozzle_no}-{area_ratio} "
         f"&mdash; nozzle {nat_noz_dia:.4f}\", throat {nat_thr_dia:.4f}\", "
         f"diameter ratio {nat_ratio:.3f}"
     )

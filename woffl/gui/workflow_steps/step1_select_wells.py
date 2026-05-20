@@ -16,11 +16,24 @@ from woffl.gui.workflow_page import _clear_downstream
 # truth across the app.
 _DEFAULT_POPS_PADS = ("E", "F", "H", "I", "M", "S")
 
+# Pads supported by the Phase 1 pad-scope optimization. These are the
+# PF-only POPs pads — their pad pump only handles lift water, which maps
+# directly to the existing PowerFluidConstraint in NetworkOptimizer. Full
+# POPs pads (E, F, M) need a TotalWaterConstraint we haven't built yet.
+_PAD_SCOPE_PADS = ["I", "H", "S"]
+
 
 def _get_pops_pads() -> set[str]:
     """Active POPS-pad set: Well Sort's session_state if present, else default."""
     raw = st.session_state.get("well_sort_pops_pads", _DEFAULT_POPS_PADS)
     return set(raw or ())
+
+
+def _active_pad_scope() -> str | None:
+    """Currently active pad-scope letter, or None when in Field-wide mode."""
+    if st.session_state.get("uw_scope") != "Pad":
+        return None
+    return st.session_state.get("uw_pad_scope_pad")
 
 
 def render_step1():
@@ -64,6 +77,66 @@ def _render_databricks_path():
         return
 
     all_pads = get_pad_names(all_well_names)
+
+    # --- Scope: Field-wide vs single pad ---------------------------------
+    # Pad scope locks the optimizer to one pad's wells and (in Step 3)
+    # pre-fills the PF constraint from that pad's pump limit. Phase 1
+    # only supports PF-only POPs pads (I, H, S) since those map cleanly
+    # to PowerFluidConstraint. Full POPs (E, F, M) need a separate
+    # constraint class — coming in Phase 2.
+    scope_col, pad_col = st.columns([1, 2])
+    with scope_col:
+        scope = st.radio(
+            "Scope",
+            options=["Field-wide", "Pad"],
+            horizontal=True,
+            key="uw_scope",
+            help=(
+                "**Field-wide** = optimize across multiple pads under "
+                "a total-PF cap. **Pad** = optimize all wells on a "
+                "single PF-only POPs pad subject to that pad's pump "
+                "capacity (Phase 1: I/H/S only)."
+            ),
+        )
+    with pad_col:
+        if scope == "Pad":
+            current_choice = st.session_state.get("uw_pad_scope_pad", _PAD_SCOPE_PADS[0])
+            available = [p for p in _PAD_SCOPE_PADS if p in all_pads]
+            if not available:
+                st.warning(
+                    "No PF-only POPs pads (I, H, S) found in the well list. "
+                    "Switch to Field-wide scope."
+                )
+                return
+            if current_choice not in available:
+                current_choice = available[0]
+            pad_choice = st.selectbox(
+                "Pad",
+                options=available,
+                index=available.index(current_choice),
+                key="uw_pad_scope_pad",
+                help=(
+                    "PF-only POPs pad. Each pad's PF pump only handles "
+                    "lift water; formation water passes through to central."
+                ),
+            )
+        else:
+            # Clear pad-mode tracking when the user switches back to
+            # Field-wide so re-entering pad mode triggers a fresh
+            # auto-tick on the next change.
+            st.session_state.pop("uw_pad_scope_pad", None)
+            st.session_state.pop("_uw_last_scope_pad", None)
+            pad_choice = None
+
+    # Auto-tick the pad's checkbox + clear others when pad mode is on and
+    # the user changes the dropdown. Runs BEFORE the checkbox grid below
+    # so the widget keys can be written safely.
+    if scope == "Pad" and pad_choice:
+        last_pad = st.session_state.get("_uw_last_scope_pad")
+        if last_pad != pad_choice:
+            for pad in all_pads:
+                st.session_state[f"uw_pad_{pad}"] = (pad == pad_choice)
+            st.session_state["_uw_last_scope_pad"] = pad_choice
 
     # Quick-select buttons. We mutate the pad-checkbox session_state keys
     # BEFORE the widgets render below; Streamlit forbids writing to a

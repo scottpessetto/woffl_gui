@@ -18,41 +18,11 @@ from woffl.gui.utils import (
     create_pvt_components,
     is_valid_number,
     render_bhp_calibration_warning,
+    render_input_summary,
     render_pf_mismatch_warning,
     render_pf_quickfix_widget,
     run_jetpump_solver,
 )
-
-
-def _render_input_summary(params: SimulationParams) -> None:
-    """Render collapsible input summary showing current model parameters."""
-    ipr_info = st.session_state.get("sw_ipr_info")
-    label = f"Model Inputs (Nozzle {params.nozzle_no}, Throat {params.area_ratio})"
-
-    with st.expander(label, expanded=False):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.markdown("**Pump**")
-            st.write(f"Nozzle: {params.nozzle_no}")
-            st.write(f"Throat: {params.area_ratio}")
-            st.write(f"ken: {params.ken}")
-            st.write(f"kth: {params.kth}")
-            st.write(f"kdi: {params.kdi}")
-        with col2:
-            st.markdown("**Well**")
-            st.write(f"PF Pressure: {params.ppf_surf} psi")
-            st.write(f"Surface Pressure: {params.surf_pres} psi")
-            st.write(f"PF Density: {params.rho_pf} lbm/ft\u00b3")
-            st.write(f"JP TVD: {params.jpump_tvd} ft")
-        with col3:
-            st.markdown("**Formation / IPR**")
-            st.write(f"Reservoir Pressure: {params.pres} psi")
-            st.write(f"Water Cut: {params.form_wc:.2f}")
-            st.write(f"GOR: {params.form_gor} scf/bbl")
-            st.write(f"Temperature: {params.form_temp} \u00b0F")
-            st.write(f"qwf: {params.qwf} BOPD / pwf: {params.pwf} psi")
-        if ipr_info:
-            st.caption(f"*{ipr_info}*")
 
 
 def _render_pump_identity_banner(params: SimulationParams) -> None:
@@ -100,7 +70,7 @@ def render_tab(
         inflow: InFlow object
         res_mix: ResMix object
     """
-    _render_input_summary(params)
+    render_input_summary(params)
 
     st.subheader("Jetpump Solver Results")
 

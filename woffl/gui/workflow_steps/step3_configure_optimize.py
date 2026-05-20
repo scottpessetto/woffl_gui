@@ -160,6 +160,42 @@ def render_step3():
     # below can read them without a separate fallback.
     st.markdown("### Configuration")
 
+    # When Pad scope is active (set on Step 1), pre-fill Total PF from the
+    # pad's pump limit. Source of truth is the editable value the user can
+    # set on the Marginal WC tab (_pad_pump_limit_<pad>), falling back to
+    # PUMP_LIMIT_PRESETS so the field works even without a Marginal-WC visit.
+    # We seed `uw_total_pf` BEFORE rendering the number_input — Streamlit
+    # forbids writes to a widget's key after it renders. Re-seed only when
+    # the pad changes so the user can still hand-tune the value within a
+    # single pad-mode session.
+    pad_scope = (
+        st.session_state.get("uw_pad_scope_pad")
+        if st.session_state.get("uw_scope") == "Pad"
+        else None
+    )
+    pad_limit_for_banner = None
+    if pad_scope:
+        from woffl.gui.scotts_tools.well_sort import PUMP_LIMIT_PRESETS
+
+        pad_limit_for_banner = int(
+            st.session_state.get(
+                f"_pad_pump_limit_{pad_scope}",
+                PUMP_LIMIT_PRESETS.get(pad_scope, 0),
+            )
+        )
+        last_seeded = st.session_state.get("_uw_pad_scope_seeded_pad")
+        if last_seeded != pad_scope:
+            st.session_state["uw_total_pf"] = pad_limit_for_banner
+            st.session_state["_uw_pad_scope_seeded_pad"] = pad_scope
+        st.info(
+            f"**Pad mode: {pad_scope}-Pad** — PF constraint pre-filled from "
+            f"the pad's pump limit (**{pad_limit_for_banner:,} BWPD**). "
+            "Edit below to override for this run; change the preset on the "
+            "Marginal WC tab to make it stick."
+        )
+    else:
+        st.session_state.pop("_uw_pad_scope_seeded_pad", None)
+
     pf_col1, pf_col2, pf_col3 = st.columns(3)
     with pf_col1:
         total_pf = st.number_input(
@@ -168,7 +204,11 @@ def render_step3():
             value=int(st.session_state.get("uw_total_pf", 30000)),
             step=500,
             key="uw_total_pf",
-            help="Total power fluid available across all wells.",
+            help=(
+                f"PF capacity for {pad_scope}-Pad pump (pre-filled from preset)."
+                if pad_scope
+                else "Total power fluid available across all wells."
+            ),
         )
     with pf_col2:
         pf_pressure = st.number_input(

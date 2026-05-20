@@ -540,12 +540,10 @@ def _render_batch_params() -> tuple[list[str], list[str], str]:
     throat_batch_options = st.multiselect(
         "Throat Ratios to Test", options=THROAT_OPTIONS, default=["A", "B", "C", "D"]
     )
-    water_type = st.radio(
-        "Water Type for Analysis",
-        options=["lift", "total"],
-        index=1,
-        help="'Lift' shows power fluid water, 'Total' shows power fluid + formation water",
-    )
+    # water_type lives next to the Marginal WC quickfix on the Batch Run
+    # page (more discoverable than buried in the sidebar Advanced section).
+    # We just read the current value here so SimulationParams stays correct.
+    water_type = st.session_state.get("water_type", "total")
     return nozzle_batch_options, throat_batch_options, water_type
 
 

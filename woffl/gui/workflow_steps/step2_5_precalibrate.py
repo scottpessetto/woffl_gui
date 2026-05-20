@@ -289,27 +289,48 @@ def render_step2_5() -> None:
                     "Test", format="YYYY-MM-DD",
                 ),
                 "observed_oil": st.column_config.NumberColumn(
-                    "Obs Oil", format="%.0f",
+                    "Obs Oil (BOPD)", format="%.0f",
+                    help="Observed oil rate from the latest qualifying well test.",
                 ),
                 "observed_lift_wat": st.column_config.NumberColumn(
-                    "Obs Lift", format="%.0f",
+                    "Obs PF (BWPD)", format="%.0f",
+                    help=(
+                        "Observed power-fluid (lift) water rate from the "
+                        "latest qualifying well test."
+                    ),
                 ),
                 "observed_bhp": st.column_config.NumberColumn(
-                    "Obs BHP", format="%.0f",
+                    "Obs BHP (psi)", format="%.0f",
+                    help=(
+                        "Observed bottom-hole pressure from the latest "
+                        "qualifying well test."
+                    ),
                 ),
                 "ppf_surf": st.column_config.NumberColumn(
                     "PF Cal (psi)", format="%.0f",
-                    help="ppf_surf such that modeled qnz matches obs lift_wat",
+                    help=(
+                        "Calibrated power-fluid surface pressure — drives "
+                        "the modeled nozzle rate to match Obs PF."
+                    ),
                 ),
                 "lift_residual": st.column_config.NumberColumn(
-                    "Lift Res", format="%.1f",
+                    "PF Err (BWPD)", format="%+.1f",
+                    help=(
+                        "modeled PF rate − Obs PF after calibration. "
+                        "Positive = over-prediction, negative = under. "
+                        "Should be near zero on convergence."
+                    ),
                 ),
                 "knz": st.column_config.NumberColumn("knz", format="%.4f"),
                 "ken": st.column_config.NumberColumn("ken", format="%.4f"),
                 "kth": st.column_config.NumberColumn("kth", format="%.4f"),
                 "kdi": st.column_config.NumberColumn("kdi", format="%.4f"),
                 "bhp_error": st.column_config.NumberColumn(
-                    "BHP Err", format="%.1f",
+                    "BHP Err (psi)", format="%+.1f",
+                    help=(
+                        "modeled BHP − Obs BHP after friction-coef "
+                        "calibration. Positive = over-prediction."
+                    ),
                 ),
                 "match_quality": st.column_config.TextColumn("Match"),
                 "pf_bounded": st.column_config.CheckboxColumn("PF Bnd"),
