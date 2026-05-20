@@ -21,11 +21,44 @@ except ImportError:
     HAS_PLOTLY = False
 
 
+def _pump_label_at_date(
+    jp_history: Optional[pd.DataFrame],
+    well_name: str,
+    test_date,
+) -> Optional[str]:
+    """Pump installed on/before ``test_date`` formatted as e.g. ``"13C"``.
+
+    Used by the IPR chart hover text so the user can see which pump was in
+    the well at each test point. Returns None when no JP history is provided
+    or no install record qualifies — caller falls through to a pump-less
+    hover line.
+    """
+    if jp_history is None or test_date is None or pd.isna(test_date):
+        return None
+    well_df = jp_history[jp_history["Well Name"] == well_name].copy()
+    if well_df.empty:
+        return None
+    well_df = well_df.dropna(subset=["Date Set"])
+    well_df = well_df[well_df["Date Set"] <= pd.Timestamp(test_date)]
+    if well_df.empty:
+        return None
+    latest = well_df.sort_values("Date Set", ascending=False).iloc[0]
+    nozzle = latest.get("Nozzle Number")
+    throat = latest.get("Throat Ratio")
+    if not (pd.notna(nozzle) and pd.notna(throat)):
+        return None
+    try:
+        return f"{int(nozzle)}{str(throat).strip()}"
+    except (TypeError, ValueError):
+        return None
+
+
 def create_ipr_plotly(
     well_name: str,
     ipr_data: Dict,
     merged_data: pd.DataFrame,
     form_wc: Optional[float] = None,
+    jp_history: Optional[pd.DataFrame] = None,
 ) -> "go.Figure":
     """Create an interactive Plotly IPR plot for a single well.
 
@@ -96,10 +129,17 @@ def create_ipr_plotly(
                         row.get("WtOilVol")
                     ):
                         oil_str = f"Oil: {row['WtOilVol']:.0f} BOPD<br>"
+                    pump_label = _pump_label_at_date(
+                        jp_history, well_name, row.get("date")
+                    )
+                    pump_str = (
+                        f"Pump: {pump_label}<br>" if pump_label else ""
+                    )
                     hover_text.append(
                         f"Fluid: {row['WtTotalFluid']:.0f} BPD<br>"
                         f"{oil_str}"
                         f"BHP: {row['BHP']:.0f} psi<br>"
+                        f"{pump_str}"
                         f"Date: {row['date'].strftime('%Y-%m-%d')}<br>"
                         f"Days ago: {row['days_since']}"
                     )
@@ -178,6 +218,7 @@ def create_ipr_plotly(
 def create_ipr_grid_plotly(
     ipr_data: Dict[str, Dict],
     merged_data: pd.DataFrame,
+    jp_history: Optional[pd.DataFrame] = None,
 ) -> "go.Figure":
     """Create an interactive Plotly grid of IPR plots for all wells.
 
@@ -272,6 +313,22 @@ def create_ipr_grid_plotly(
         ):
             well_test_data = well_test_data.dropna(subset=["BHP", "WtTotalFluid"])
             if not well_test_data.empty:
+                # Build per-point hover text so we can include the JP that was
+                # in the well at each test's date. The base hover stays the
+                # same when jp_history isn't provided.
+                hover_text = []
+                for _, trow in well_test_data.iterrows():
+                    base = (
+                        f"{well}<br>"
+                        f"Fluid: {trow['WtTotalFluid']:.0f} BPD<br>"
+                        f"BHP: {trow['BHP']:.0f} psi"
+                    )
+                    pump_label = _pump_label_at_date(
+                        jp_history, well, trow.get("date")
+                    )
+                    if pump_label:
+                        base += f"<br>Pump: {pump_label}"
+                    hover_text.append(base)
                 fig.add_trace(
                     go.Scatter(
                         x=well_test_data["WtTotalFluid"],
@@ -289,7 +346,8 @@ def create_ipr_grid_plotly(
                             ),
                             line=dict(width=0.5, color="black"),
                         ),
-                        hovertemplate=f"{well}<br>Fluid: %{{x:.0f}} BPD<br>BHP: %{{y:.0f}} psi<extra></extra>",
+                        text=hover_text,
+                        hoverinfo="text",
                     ),
                     row=row,
                     col=col,

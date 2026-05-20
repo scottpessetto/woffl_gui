@@ -261,6 +261,9 @@ def _render_ipr_review():
         mime="text/csv",
     )
 
+    # --- Upload-edited-template re-visualizer ---
+    _render_edited_template_viewer(merged_with_rp)
+
     # --- Proceed ---
     if st.button(
         f"Proceed to Optimization with {len(included_wells)} wells →",
@@ -292,8 +295,21 @@ def _render_ipr_review():
         st.rerun()
 
 
-def _render_ipr_curves(ipr_curves, merged_data, vogel_coeffs):
-    """Render IPR curves with well selector."""
+def _render_ipr_curves(
+    ipr_curves,
+    merged_data,
+    vogel_coeffs,
+    *,
+    key_suffix: str = "",
+    png_filename: str = "vogel_ipr_grid.png",
+    pdf_filename: str = "vogel_ipr_curves.pdf",
+):
+    """Render IPR curves with a well selector and PNG/PDF download buttons.
+
+    ``key_suffix`` lets the same UI be rendered twice on one page without
+    Streamlit key collisions — used by the "View Edited IPRs" section below
+    to mirror the original IPR Curves tab against an uploaded template.
+    """
     if not ipr_curves:
         st.warning("No IPR curves to display.")
         return
@@ -305,7 +321,7 @@ def _render_ipr_curves(ipr_curves, merged_data, vogel_coeffs):
         selected_well = st.selectbox(
             "Select Well:",
             wells,
-            key="uw_ipr_well_selector",
+            key=f"uw_ipr_well_selector{key_suffix}",
         )
     with col_nav:
         st.write("")
@@ -316,6 +332,7 @@ def _render_ipr_curves(ipr_curves, merged_data, vogel_coeffs):
             selected_well,
             ipr_curves[selected_well],
             merged_data,
+            jp_history=st.session_state.get("jp_history_df"),
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -326,7 +343,11 @@ def _render_ipr_curves(ipr_curves, merged_data, vogel_coeffs):
             c1.metric("Res Pressure", f"{row['ResP']:.0f} psi")
             c2.metric("Qmax (Recent)", f"{row['QMax_recent']:.0f} BPD")
             c3.metric("Test BHP", f"{row['pwf']:.0f} psi")
-            c4.metric("# Tests", int(row["num_tests"]))
+            n_tests = row.get("num_tests")
+            c4.metric(
+                "# Tests",
+                int(n_tests) if pd.notna(n_tests) else "—",
+            )
 
     # Export all IPR curves — single-click: build the file then auto-trigger
     # the browser download via a hidden anchor + JS, skipping the separate
@@ -334,14 +355,135 @@ def _render_ipr_curves(ipr_curves, merged_data, vogel_coeffs):
     st.write("---")
     exp_col1, exp_col2 = st.columns(2)
     with exp_col1:
-        if st.button("Download Grid PNG", use_container_width=True, key="uw_gen_png"):
+        if st.button(
+            "Download Grid PNG",
+            use_container_width=True,
+            key=f"uw_gen_png{key_suffix}",
+        ):
             with st.spinner(f"Rendering {len(wells)} wells..."):
                 png_bytes = create_ipr_grid_png(ipr_curves, merged_data, dpi=200)
-            _trigger_browser_download(png_bytes, "vogel_ipr_grid.png", "image/png")
+            _trigger_browser_download(png_bytes, png_filename, "image/png")
     with exp_col2:
-        if st.button("Download PDF", use_container_width=True, key="uw_gen_pdf"):
+        if st.button(
+            "Download PDF",
+            use_container_width=True,
+            key=f"uw_gen_pdf{key_suffix}",
+        ):
             with st.spinner(f"Generating PDF for {len(wells)} wells..."):
                 pdf_bytes = create_ipr_pdf(ipr_curves, merged_data)
-            _trigger_browser_download(
-                pdf_bytes, "vogel_ipr_curves.pdf", "application/pdf"
-            )
+            _trigger_browser_download(pdf_bytes, pdf_filename, "application/pdf")
+
+
+def _template_to_vogel_coeffs(df: pd.DataFrame) -> pd.DataFrame:
+    """Map an optimization-template CSV back to the schema generate_ipr_curves expects.
+
+    The download (``export_optimization_template``) flattens ``vogel_coeffs``
+    + ``jp_chars`` into a "ready to optimize" shape. To re-visualize the
+    IPRs from an edited copy we just need the columns generate_ipr_curves
+    actually reads: Well, ResP, qwf, pwf, QMax_recent. QMax_recent isn't in
+    the template so we re-derive it via the Vogel formula from the edited
+    ResP / qwf / pwf.
+    """
+    coeffs = df[["Well"]].copy()
+    coeffs["ResP"] = pd.to_numeric(df["res_pres"], errors="coerce")
+    coeffs["qwf"] = pd.to_numeric(df["qwf_blpd"], errors="coerce")
+    coeffs["pwf"] = pd.to_numeric(df["pwf"], errors="coerce")
+    if "form_wc" in df.columns:
+        coeffs["form_wc"] = pd.to_numeric(df["form_wc"], errors="coerce").fillna(0.5)
+    else:
+        coeffs["form_wc"] = 0.5
+    if "form_gor" in df.columns:
+        coeffs["fgor"] = pd.to_numeric(df["form_gor"], errors="coerce").fillna(250)
+    else:
+        coeffs["fgor"] = 250
+    coeffs["num_tests"] = float("nan")  # not carried in template
+    coeffs["most_recent_date"] = pd.NaT
+
+    # QMax_recent via Vogel: qmax = qwf / (1 − 0.2·x − 0.8·x²)  where x = pwf/ResP
+    x = coeffs["pwf"] / coeffs["ResP"]
+    vogel_frac = 1 - 0.2 * x - 0.8 * x * x
+    coeffs["QMax_recent"] = coeffs["qwf"] / vogel_frac.where(vogel_frac > 0, 1.0)
+
+    # Drop rows that can't produce a curve (missing or non-positive ResP)
+    coeffs = coeffs[coeffs["ResP"] > 0].reset_index(drop=True)
+    return coeffs
+
+
+def _render_edited_template_viewer(merged_with_rp: pd.DataFrame) -> None:
+    """Upload-edited-template re-visualizer.
+
+    Sits below the optimization-template download in the Review IPR step.
+    The user downloads the template, hand-edits ResP / qwf / pwf / form_wc,
+    re-uploads here, and sees the same IPR Curves view (well selector +
+    PNG / PDF download) against the edited values. View-only — does NOT
+    feed downstream optimization; to actually run with edited values, the
+    user uploads via Step 1's CSV-upload path.
+    """
+    st.write("### View Edited IPRs")
+    st.caption(
+        "Download the **Optimization Template CSV** above, hand-edit values "
+        "(ResP, qwf, pwf, form_wc), and upload it here to visualize the IPRs "
+        "from your edits. View-only — to actually optimize against the edited "
+        "values, restart Step 1 with the **Upload CSV Template** path."
+    )
+
+    uploaded = st.file_uploader(
+        "Upload edited optimization template",
+        type=["csv"],
+        key="uw_ipr_edited_upload",
+        help=(
+            "Same column shape as the template download above: "
+            "Well / res_pres / qwf_blpd / pwf / form_wc (others ignored)."
+        ),
+    )
+    if uploaded is None:
+        return
+
+    try:
+        edited_df = pd.read_csv(uploaded)
+    except Exception as e:
+        st.error(f"Could not read the uploaded CSV: {e}")
+        return
+
+    required = {"Well", "res_pres", "qwf_blpd", "pwf"}
+    missing = required - set(edited_df.columns)
+    if missing:
+        st.error(
+            f"Upload is missing required columns: {sorted(missing)}. "
+            "Expected the same schema as the template download above."
+        )
+        return
+
+    try:
+        edited_coeffs = _template_to_vogel_coeffs(edited_df)
+    except Exception as e:
+        st.error(f"Could not parse edited template: {e}")
+        return
+
+    if edited_coeffs.empty:
+        st.warning(
+            "No wells in the upload have a positive ResP — nothing to plot. "
+            "Check the res_pres column."
+        )
+        return
+
+    edited_curves = generate_ipr_curves(edited_coeffs)
+    if not edited_curves:
+        st.warning(
+            "Could not generate IPR curves from the edited values — Vogel "
+            "couldn't fit any well. Check pwf < ResP for each row."
+        )
+        return
+
+    st.success(
+        f"Loaded **{len(edited_curves)}** wells from the edited template."
+    )
+
+    _render_ipr_curves(
+        edited_curves,
+        merged_with_rp,
+        edited_coeffs,
+        key_suffix="_edited",
+        png_filename="vogel_ipr_grid_edited.png",
+        pdf_filename="vogel_ipr_curves_edited.pdf",
+    )

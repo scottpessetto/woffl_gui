@@ -1090,6 +1090,7 @@ def _render_model_vs_actual(
             ipr_data[params.selected_well],
             plot_data,
             form_wc=params.form_wc,
+            jp_history=jp_hist,
         )
         st.plotly_chart(fig, use_container_width=True)
 
