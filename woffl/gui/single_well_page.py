@@ -175,6 +175,54 @@ def _render_view(
         jp_history_tab.render_tab(params)
 
 
+def _handle_print_request(
+    params: SimulationParams, jetpump, wellbore, wp, inflow, res_mix
+) -> None:
+    """If the sidebar requested a PDF, generate it now and trigger a rerun.
+
+    The sidebar can't run this itself because the simulation objects are
+    built here in the main page. So the sidebar sets ``_print_pdf_pending``
+    and we pick it up at the top of ``run_single_well_page``.
+
+    On success: stores bytes + filename in session_state, clears the
+    pending flag, calls ``st.rerun()`` so the sidebar's download button
+    appears on the next render. On failure: shows an error in the main
+    panel and clears the flag (no rerun — keep the error visible).
+    """
+    if not st.session_state.get("_print_pdf_pending"):
+        return
+
+    import datetime as _dt
+
+    from woffl.gui.pdf_export import generate_report
+
+    engineer = st.session_state.get("print_engineer_name", "")
+    notes = st.session_state.get("print_notes", "")
+
+    with st.spinner(
+        "Generating report — running batch sweep, this takes ~30 seconds…"
+    ):
+        try:
+            pdf_bytes = generate_report(
+                params, jetpump, wellbore, wp, inflow, res_mix,
+                engineer_name=engineer, notes=notes,
+            )
+        except Exception as e:
+            st.error(f"Report generation failed: {e}")
+            st.session_state.pop("_print_pdf_pending", None)
+            return
+
+    today = _dt.datetime.now().strftime("%Y%m%d")
+    well_slug = params.selected_well.replace("-", "")
+    pump_slug = f"{params.nozzle_no}{params.area_ratio}"
+    filename = f"{well_slug}_{pump_slug}_{today}.pdf"
+
+    st.session_state["_print_pdf_bytes"] = pdf_bytes
+    st.session_state["_print_pdf_filename"] = filename
+    st.session_state.pop("_print_pdf_pending", None)
+    st.rerun()
+
+
 def run_single_well_page(params: SimulationParams) -> None:
     """Run the single-well analysis page.
 
@@ -185,6 +233,11 @@ def run_single_well_page(params: SimulationParams) -> None:
     jetpump, wellbore, inflow, res_mix, wp, _survey_present = _build_simulation_objects(
         params
     )
+
+    # Sidebar-driven PDF report. Has to run AFTER sim objects are built but
+    # BEFORE the view renders — generation re-runs the batch and we don't
+    # want both happening in the same render.
+    _handle_print_request(params, jetpump, wellbore, wp, inflow, res_mix)
 
     # Survey-presence indicator lives in the Well Profile view (where it's
     # actionable) rather than as a header banner that repeats on every tab.

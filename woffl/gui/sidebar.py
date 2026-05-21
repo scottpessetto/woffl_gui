@@ -547,6 +547,111 @@ def _render_batch_params() -> tuple[list[str], list[str], str]:
     return nozzle_batch_options, throat_batch_options, water_type
 
 
+def _render_print_section(selected_well: str) -> None:
+    """Bottom-of-sidebar PDF report controls.
+
+    Adds engineer name + notes inputs and the Generate Report button. On
+    click, sets ``_print_pdf_pending`` so ``run_single_well_page`` can do the
+    heavy work (it has the simulation objects already built); the next rerun
+    surfaces the download button via the same helper.
+
+    The two-phase flow (set flag → main page generates → rerun → download
+    button appears) is needed because the sidebar renders before the main
+    page is built, so the sim objects aren't available here. Keeping
+    generation in the main page also lets the spinner live in the central
+    panel where the user is looking.
+    """
+    st.divider()
+    st.subheader("Print Report")
+
+    st.text_input(
+        "Engineer Name (optional)",
+        key="print_engineer_name",
+        placeholder="Your name",
+    )
+    st.text_area(
+        "Notes (optional)",
+        key="print_notes",
+        placeholder="Context for the reader (what / why)",
+        height=100,
+    )
+
+    is_custom = selected_well == "Custom"
+    gen_help = (
+        "Disabled in Custom mode — select a real well to generate a report."
+        if is_custom
+        else (
+            "Builds a PDF with inputs, solver results, the IPR chart, and the "
+            "batch performance plot. Runs the batch sweep, so the first "
+            "generation takes ~30 seconds."
+        )
+    )
+    if st.button(
+        "Generate Report",
+        key="print_generate_btn",
+        type="primary",
+        use_container_width=True,
+        disabled=is_custom,
+        help=gen_help,
+    ):
+        st.session_state["_print_pdf_pending"] = True
+        # Wipe stale output so the download button doesn't briefly show
+        # last run's file while the new one is generating. Clearing the
+        # downloaded flag lets the auto-download iframe re-fire after the
+        # new generation completes.
+        st.session_state.pop("_print_pdf_bytes", None)
+        st.session_state.pop("_print_pdf_filename", None)
+        st.session_state.pop("_print_pdf_downloaded", None)
+
+    pdf_bytes = st.session_state.get("_print_pdf_bytes")
+    pdf_filename = st.session_state.get("_print_pdf_filename")
+    if pdf_bytes and pdf_filename:
+        # Auto-trigger the browser download on the first render after
+        # generation. ``st.download_button`` requires a user click — we
+        # mimic the click via a tiny embedded iframe whose <script> tag
+        # clicks a hidden <a download> link. Only fires once per
+        # generation (guarded by ``_print_pdf_downloaded``), so changing
+        # an unrelated sidebar slider later doesn't re-download.
+        if not st.session_state.get("_print_pdf_downloaded"):
+            _auto_download(pdf_bytes, pdf_filename)
+            st.session_state["_print_pdf_downloaded"] = True
+
+        # Manual fallback — useful when the auto-download is blocked by
+        # the browser, or when the user wants to grab the file again.
+        st.download_button(
+            "↓ Download Again",
+            data=pdf_bytes,
+            file_name=pdf_filename,
+            mime="application/pdf",
+            use_container_width=True,
+            key="print_download_btn",
+        )
+
+
+def _auto_download(pdf_bytes: bytes, filename: str) -> None:
+    """Embed a hidden iframe that clicks a download link on render.
+
+    Streamlit has no API to programmatically trigger a download. We work
+    around it by rendering an HTML component (iframe) that contains a
+    hidden ``<a download href="data:...">`` and a tiny script that calls
+    ``.click()`` on it. ``components.html`` runs JS inside its iframe,
+    and modern browsers honor the ``download`` attribute on a data URL
+    even from a sandboxed iframe.
+    """
+    import base64
+
+    import streamlit.components.v1 as components
+
+    b64 = base64.b64encode(pdf_bytes).decode("ascii")
+    html = (
+        f'<a id="woffl_auto_dl" '
+        f'href="data:application/pdf;base64,{b64}" '
+        f'download="{filename}"></a>'
+        f'<script>document.getElementById("woffl_auto_dl").click();</script>'
+    )
+    components.html(html, height=0)
+
+
 def _render_power_fluid_range_params() -> tuple[int, int, int]:
     """Render PF-range parameters (only used by the Power Fluid Range view)."""
     st.caption("Used by the Power Fluid Range view")
@@ -658,6 +763,9 @@ def render_sidebar() -> tuple[bool, SimulationParams]:
             power_fluid_min, power_fluid_max, power_fluid_step = (
                 _render_power_fluid_range_params()
             )
+
+        # Print Report section — bottom of the sidebar, below all inputs.
+        _render_print_section(selected_well)
 
     params = SimulationParams(
         nozzle_no=nozzle_no,
