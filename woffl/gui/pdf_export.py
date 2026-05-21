@@ -19,15 +19,20 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
 
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
-import streamlit as st
+# Matplotlib uses the headless 'Agg' backend so we can render PNGs in a
+# server-side Streamlit process (or a Databricks Apps container) without
+# a display. Setting the backend must happen before pyplot is imported.
+import matplotlib
 
-from woffl.assembly.batchpump import exp_model
-from woffl.gui.ipr_viz import create_ipr_plotly
-from woffl.gui.params import SimulationParams
-from woffl.gui.utils import (
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+import streamlit as st  # noqa: E402
+
+from woffl.assembly.batchpump import exp_model  # noqa: E402
+from woffl.gui.params import SimulationParams  # noqa: E402
+from woffl.gui.utils import (  # noqa: E402
     is_valid_number,
     recommend_jetpump,
     run_batch_pump,
@@ -36,28 +41,27 @@ from woffl.gui.utils import (
 
 
 # ---------------------------------------------------------------------------
-# Figure rendering via Kaleido
+# Figure rendering via matplotlib
 # ---------------------------------------------------------------------------
 
-# Output figure dimensions (px). Sized for a ~7" wide image at 200 DPI on
-# Letter paper. Taller batch figure keeps the scatter readable when there are
-# many semi-finalists.
-_IPR_FIG_PX = (1400, 900)
-_BATCH_FIG_PX = (1400, 1000)
-_PNG_SCALE = 2  # kaleido scale=2 doubles the pixel density for crisp text
+# DPI for PNG rendering. 180 gives crisp text on Letter at 7" wide without
+# blowing up the PDF file size. Higher (250+) is overkill for screen + print.
+_FIG_DPI = 180
 
 
-def _plotly_to_png(fig: go.Figure, size_px: tuple[int, int]) -> bytes:
-    """Render a Plotly figure to PNG bytes via Kaleido.
+def _fig_to_png(fig: plt.Figure) -> bytes:
+    """Render a matplotlib Figure to PNG bytes.
 
-    Requires Kaleido >= 1.0 (Kaleido 0.2.x hangs against Plotly 6.x). The
-    1.x line bundles its own Chromium via Choreographer, so this works
-    headlessly in the Databricks Apps container without extra system deps.
-    ``scale=2`` doubles the effective DPI without us having to bump the
-    layout dimensions everywhere.
+    Uses ``bbox_inches='tight'`` so the saved PNG crops cleanly to its
+    content (no whitespace borders). Closes the figure after saving to
+    release the matplotlib resources — important in a long-lived
+    Streamlit process where many reports could otherwise leak figures.
     """
-    width, height = size_px
-    return fig.to_image(format="png", width=width, height=height, scale=_PNG_SCALE)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=_FIG_DPI, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -153,13 +157,14 @@ def _actuals_from_test(test_row: Optional[pd.Series]) -> dict[str, Optional[floa
 
 def _build_ipr_figure(
     params: SimulationParams,
-) -> Optional[go.Figure]:
-    """Reconstruct the Solver tab's Model-vs-Actual IPR Plotly figure.
+) -> Optional[plt.Figure]:
+    """Build a matplotlib IPR figure mirroring the Solver tab's Model vs Actual.
 
-    Mirrors the Vogel-or-single-point fallback in ``_render_model_vs_actual``
-    but without the on-screen checkboxes and metrics. Honors the persisted
-    ``mva_override_res_p`` flag so the PDF respects the user's choice between
-    sidebar ResP and IPR-derived ResP.
+    Same data-prep flow as before (Vogel-or-single-point fallback,
+    ``mva_override_res_p`` honored), then renders with matplotlib instead
+    of Plotly. Matplotlib renders cleanly in any headless container —
+    Kaleido isn't always reliable on Databricks Apps because its 1.x line
+    fetches Chromium at runtime, which fails in restricted environments.
 
     Returns None for Custom mode or wells whose well-test cache is empty —
     no IPR section is added to the PDF in that case.
@@ -181,7 +186,6 @@ def _build_ipr_figure(
     if test_df.empty:
         return None
 
-    jp_hist = st.session_state.get("jp_history_df")
     override_res_p = bool(st.session_state.get("mva_override_res_p", False))
 
     coeff_row = None
@@ -256,20 +260,62 @@ def _build_ipr_figure(
     if params.selected_well not in ipr_data:
         return None
 
-    fig = create_ipr_plotly(
-        params.selected_well,
-        ipr_data[params.selected_well],
-        plot_points if plot_points is not None else pd.DataFrame(),
-        form_wc=params.form_wc,
-        jp_history=jp_hist,
-        show_jp_labels=False,
+    well_ipr = ipr_data[params.selected_well]
+    fig, ax = plt.subplots(figsize=(10.5, 6.5))
+
+    # Vogel IPR curve.
+    ax.plot(
+        well_ipr["fluid_recent"],
+        list(well_ipr["bhp_array"]),
+        color="steelblue", linewidth=2.5, label="Vogel IPR", zorder=3,
     )
-    # Print-friendly tweaks: bigger fonts, no interactivity hints.
-    fig.update_layout(
-        font=dict(size=14),
-        title=dict(font=dict(size=18)),
-        margin=dict(l=80, r=40, t=80, b=70),
+
+    # Test data scatter — colored by days_since to match the screen.
+    if (
+        plot_points is not None
+        and not plot_points.empty
+        and "well" in plot_points.columns
+    ):
+        scatter_df = plot_points[plot_points["well"] == params.selected_well].copy()
+        scatter_df = scatter_df.dropna(subset=["BHP", "WtTotalFluid"])
+        if not scatter_df.empty and "WtDate" in scatter_df.columns:
+            scatter_df["date"] = pd.to_datetime(scatter_df["WtDate"])
+            today = pd.to_datetime("today")
+            scatter_df["days_since"] = (today - scatter_df["date"]).dt.days
+            sc = ax.scatter(
+                scatter_df["WtTotalFluid"],
+                scatter_df["BHP"],
+                c=scatter_df["days_since"],
+                cmap="viridis",
+                s=80, edgecolors="black", linewidth=0.5,
+                alpha=0.85, zorder=5, label="Test Data",
+            )
+            cbar = fig.colorbar(sc, ax=ax, shrink=0.8)
+            cbar.set_label("Days Ago", fontsize=11)
+
+    res_p = well_ipr["res_pres"]
+    qmax = well_ipr["qmax_recent"]
+    ax.text(
+        0.02, 0.97,
+        f"Res P: {res_p:.0f} psi\nQmax: {qmax:.0f} BPD",
+        transform=ax.transAxes, fontsize=11, va="top",
+        bbox=dict(
+            boxstyle="round,pad=0.4", facecolor="lightyellow",
+            alpha=0.9, edgecolor="gray",
+        ),
     )
+
+    ax.set_xlabel("Total Fluid Rate (BPD)", fontsize=13)
+    ax.set_ylabel("Bottom Hole Pressure (psi)", fontsize=13)
+    ax.set_title(
+        f"{params.selected_well} — Vogel IPR",
+        fontsize=16, fontweight="bold",
+    )
+    ax.set_xlim(left=0)
+    ax.set_ylim(bottom=0)
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper right", fontsize=11)
+    fig.tight_layout()
     return fig
 
 
@@ -280,13 +326,14 @@ def _build_ipr_figure(
 
 def _build_batch_figure(
     batch_pump: Any, params: SimulationParams
-) -> tuple[Optional[go.Figure], Optional[dict]]:
-    """Reconstruct the Batch Run view's performance Plotly figure.
+) -> tuple[Optional[plt.Figure], Optional[dict]]:
+    """Build a matplotlib batch-performance figure for the PDF.
 
-    Returns (fig, recommendation_dict). Both may be None when the batch run
-    didn't produce a usable result. The figure mirrors ``_render_performance_graph``
-    in tabs/batch_run.py: eliminated + semi-finalist scatter, exp-fit curve,
-    gold-star recommendation.
+    Mirrors ``_render_performance_graph`` in tabs/batch_run.py:
+    eliminated (blue circles) + semi-finalist (red diamonds) scatter,
+    dashed exp-fit curve through the semi-finalists, gold-star
+    recommendation marker. Returns (fig, recommendation_dict); both may
+    be None when the batch run didn't produce usable results.
     """
     water = params.water_type if params.water_type is not None else "total"
 
@@ -296,52 +343,47 @@ def _build_batch_figure(
         return None, None
 
     water_col = "form_wat" if water == "formation" else "totl_wat"
-    water_label = "Formation Water" if water == "formation" else "Total Water"
     max_water_data = float(df[water_col].max())
 
-    fig = go.Figure()
+    fig, ax = plt.subplots(figsize=(10.5, 6.5))
 
     elim = df[~df["semi"]]
     if not elim.empty:
-        labels = [n + t for n, t in zip(elim["nozzle"], elim["throat"])]
-        fig.add_trace(
-            go.Scatter(
-                x=elim[water_col],
-                y=elim["qoil_std"],
-                mode="markers+text",
-                name="Eliminated",
-                marker=dict(size=10, color="royalblue", line=dict(width=1, color="black")),
-                text=labels,
-                textposition="top right",
-                textfont=dict(size=10),
-            )
+        ax.scatter(
+            elim[water_col], elim["qoil_std"],
+            color="royalblue", s=70, edgecolor="black", linewidth=0.6,
+            label="Eliminated", zorder=4,
         )
+        for x, y, n, t in zip(
+            elim[water_col], elim["qoil_std"], elim["nozzle"], elim["throat"],
+        ):
+            ax.annotate(
+                f"{n}{t}", (x, y),
+                xytext=(5, 5), textcoords="offset points",
+                fontsize=8, color="#333333",
+            )
 
     semi = df[df["semi"]]
     if not semi.empty:
-        labels = [n + t for n, t in zip(semi["nozzle"], semi["throat"])]
-        fig.add_trace(
-            go.Scatter(
-                x=semi[water_col],
-                y=semi["qoil_std"],
-                mode="markers+text",
-                name="Semi-Finalist",
-                marker=dict(
-                    size=12, color="crimson", symbol="diamond",
-                    line=dict(width=1, color="black"),
-                ),
-                text=labels,
-                textposition="top right",
-                textfont=dict(size=10, color="crimson"),
-            )
+        ax.scatter(
+            semi[water_col], semi["qoil_std"],
+            color="crimson", marker="D", s=90, edgecolor="black", linewidth=0.6,
+            label="Semi-Finalist", zorder=6,
         )
+        for x, y, n, t in zip(
+            semi[water_col], semi["qoil_std"], semi["nozzle"], semi["throat"],
+        ):
+            ax.annotate(
+                f"{n}{t}", (x, y),
+                xytext=(5, 5), textcoords="offset points",
+                fontsize=8, color="crimson", fontweight="bold",
+            )
 
     x_curve_zero = 0.0
-    if water == "formation":
-        coeff = getattr(batch_pump, "coeff_form", None)
-    else:
-        coeff = getattr(batch_pump, "coeff_totl", None)
-
+    coeff = (
+        getattr(batch_pump, "coeff_form", None) if water == "formation"
+        else getattr(batch_pump, "coeff_totl", None)
+    )
     if coeff is not None:
         a, b, c = coeff
         fit_water = np.linspace(0, max_water_data, 200)
@@ -350,11 +392,10 @@ def _build_batch_figure(
         positive_mask = fit_oil_raw > 0
         if positive_mask.any():
             x_curve_zero = float(fit_water[int(np.argmax(positive_mask))])
-        fig.add_trace(
-            go.Scatter(
-                x=fit_water, y=fit_oil, mode="lines", name="Exp. Curve Fit",
-                line=dict(color="crimson", width=2, dash="dash"),
-            )
+        ax.plot(
+            fit_water, fit_oil,
+            color="crimson", linewidth=2, linestyle="--",
+            label="Exp. Curve Fit", zorder=5,
         )
 
     recommendation: Optional[dict] = None
@@ -362,45 +403,34 @@ def _build_batch_figure(
         recommendation = recommend_jetpump(
             batch_pump, params.marginal_watercut, water
         )
-        fig.add_trace(
-            go.Scatter(
-                x=[recommendation["water_rate"]],
-                y=[recommendation["qoil_std"]],
-                mode="markers",
-                name="Recommended",
-                marker=dict(
-                    size=22, color="gold", symbol="star",
-                    line=dict(width=2, color="black"),
-                ),
-            )
+        ax.scatter(
+            [recommendation["water_rate"]], [recommendation["qoil_std"]],
+            marker="*", s=500, color="gold", edgecolor="black", linewidth=1.2,
+            label="Recommended", zorder=10,
         )
     except Exception:
         pass
 
+    # x-axis range: same logic as the Plotly version. Formation water sits in a
+    # narrow band, so autorange. Total water can start from the curve's
+    # zero crossing to drop the empty left margin.
     if water == "formation":
-        xaxis_cfg = dict(autorange=True, gridcolor="lightgray")
+        ax.set_xlim(left=df[water_col].min() * 0.95)
     else:
         x_axis_upper = max(max_water_data * 1.05, x_curve_zero + 1.0)
-        xaxis_cfg = dict(range=[x_curve_zero, x_axis_upper], gridcolor="lightgray")
+        ax.set_xlim(left=x_curve_zero, right=x_axis_upper)
+    ax.set_ylim(bottom=0)
 
     wellname = getattr(batch_pump, "wellname", params.selected_well)
-    fig.update_layout(
-        title=dict(
-            text=f"<b>{wellname}</b> Jet Pump Performance",
-            font=dict(size=18),
-        ),
-        xaxis_title=f"{water.capitalize()} Water Rate (BWPD)",
-        yaxis_title="Produced Oil Rate (BOPD)",
-        xaxis=xaxis_cfg,
-        yaxis=dict(rangemode="nonnegative", gridcolor="lightgray"),
-        plot_bgcolor="white",
-        font=dict(size=14),
-        height=600,
-        legend=dict(
-            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
-        ),
-        margin=dict(l=80, r=40, t=80, b=70),
+    ax.set_xlabel(f"{water.capitalize()} Water Rate (BWPD)", fontsize=13)
+    ax.set_ylabel("Produced Oil Rate (BOPD)", fontsize=13)
+    ax.set_title(
+        f"{wellname} — Jet Pump Performance",
+        fontsize=16, fontweight="bold",
     )
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper right", fontsize=11, framealpha=0.95)
+    fig.tight_layout()
     return fig, recommendation
 
 
@@ -953,8 +983,8 @@ def generate_report(
         _augment_with_formation_marginals(batch_pump)
         batch_fig, recommendation = _build_batch_figure(batch_pump, params)
 
-    ipr_png = _plotly_to_png(ipr_fig, _IPR_FIG_PX) if ipr_fig is not None else None
-    batch_png = _plotly_to_png(batch_fig, _BATCH_FIG_PX) if batch_fig is not None else None
+    ipr_png = _fig_to_png(ipr_fig) if ipr_fig is not None else None
+    batch_png = _fig_to_png(batch_fig) if batch_fig is not None else None
 
     # ---- Document assembly ----
     buf = io.BytesIO()
