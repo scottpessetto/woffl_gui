@@ -300,12 +300,11 @@ def _render_calibration_flags_for_installed_pump(
     modeled_bhp = pump_rows.loc[closest_idx, "psu_solv"]
     modeled_pf = pump_rows.loc[closest_idx, "lift_wat"]
 
-    # Actuals from latest well test
-    all_tests = st.session_state.get("all_well_tests_df")
-    if all_tests is None or all_tests.empty:
-        return
-    well_tests = all_tests[all_tests["well"] == params.selected_well]
-    if well_tests.empty:
+    # Actuals from latest well test (memory-gauge override applied if active).
+    from woffl.gui.utils import get_well_tests_for_well
+
+    well_tests = get_well_tests_for_well(params.selected_well)
+    if well_tests is None or well_tests.empty:
         return
     recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
     actual_bhp = recent.get("BHP") if "BHP" in well_tests.columns else None

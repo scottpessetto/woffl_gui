@@ -417,12 +417,10 @@ def _render_recommender_table(batch_pump, params: SimulationParams, water: str) 
 
 
 def _get_well_tests(well_name: str):
-    """Get tests for a single well from the pre-fetched session state cache."""
-    all_tests = st.session_state.get("all_well_tests_df")
-    if all_tests is None or all_tests.empty:
-        return None
-    well_df = all_tests[all_tests["well"] == well_name].copy()
-    return well_df if not well_df.empty else None
+    """Get tests for a single well, with memory-gauge BHP override applied."""
+    from woffl.gui.utils import get_well_tests_for_well
+
+    return get_well_tests_for_well(well_name)
 
 
 def _compute_batch_calibration(

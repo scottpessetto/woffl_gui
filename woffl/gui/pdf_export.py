@@ -116,15 +116,13 @@ def _latest_test_row(well_name: str) -> Optional[pd.Series]:
     """Most recent well-test row for the given well, or None.
 
     Print captures the most-recent-test view (matches the Solver test picker
-    default). Custom mode and no-tests wells return None.
+    default). Routes through ``get_well_tests_for_well`` so memory-gauge BHP
+    overrides flow into the PDF's hero-strip deltas and selected-test card.
     """
-    if well_name == "Custom":
-        return None
-    all_tests = st.session_state.get("all_well_tests_df")
-    if all_tests is None or all_tests.empty:
-        return None
-    well_tests = all_tests[all_tests["well"] == well_name]
-    if well_tests.empty:
+    from woffl.gui.utils import get_well_tests_for_well
+
+    well_tests = get_well_tests_for_well(well_name)
+    if well_tests is None or well_tests.empty:
         return None
     return well_tests.sort_values("WtDate", ascending=False).iloc[0]
 
@@ -176,14 +174,10 @@ def _build_ipr_figure(
     )
     from woffl.flow.inflow import InFlow
 
-    if params.selected_well == "Custom":
-        return None
+    from woffl.gui.utils import get_well_tests_for_well
 
-    all_tests = st.session_state.get("all_well_tests_df")
-    if all_tests is None or all_tests.empty:
-        return None
-    test_df = all_tests[all_tests["well"] == params.selected_well].copy()
-    if test_df.empty:
+    test_df = get_well_tests_for_well(params.selected_well)
+    if test_df is None or test_df.empty:
         return None
 
     override_res_p = bool(st.session_state.get("mva_override_res_p", False))

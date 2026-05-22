@@ -25,6 +25,306 @@ from woffl.gui.utils import (
 )
 
 
+def _render_memory_gauge_section(well_name: str) -> None:
+    """Memory-gauge upload + status block at the top of the Solver tab.
+
+    Two surfaces:
+      * **Persistent banner** when a gauge is active — coverage window,
+        sample count, and tests matched. Visible without expanding anything.
+      * **Collapsible expander** with the file uploader and preview. Stays
+        collapsed by default so the page isn't cluttered for wells where
+        gauge data isn't needed.
+
+    Custom mode is skipped — gauge overrides are per-well, and Custom
+    has no well-test data to override against.
+    """
+    if well_name == "Custom":
+        return
+
+    from woffl.gui.memory_gauge import (
+        add_file_to_gauge,
+        clear_extended_tests,
+        clear_gauge,
+        compute_databricks_vs_gauge_delta,
+        coverage_summary,
+        fetch_databricks_bhp_daily,
+        fetch_extended_tests,
+        get_gauge,
+        is_disregarding_databricks_bhp,
+        parse_xlsx,
+        remove_file_from_gauge,
+        set_disregard_databricks_bhp,
+        store_extended_tests,
+    )
+    from woffl.gui.utils import get_well_tests_for_well
+
+    # Surface any one-shot warning persisted from a prior Apply (extended-
+    # fetch failure couldn't render mid-button-handler because the rerun
+    # cleared the page).
+    warn_msg = st.session_state.pop("_mg_apply_warning", None)
+    if warn_msg:
+        st.warning(warn_msg)
+
+    gauge = get_gauge(well_name)
+    disregard = is_disregarding_databricks_bhp(well_name)
+
+    # Persistent status banner — visible without expanding the upload box.
+    # Composes both states: gauge upload and "disregard Databricks BHP".
+    if gauge is not None or disregard:
+        # Surface a one-shot auto-divergence note (set on Apply) right
+        # above the banner so users see WHY the disregard flag flipped on.
+        auto_note = st.session_state.pop("_mg_auto_disregard_msg", None)
+        if auto_note:
+            st.warning(auto_note, icon="⚠️")
+
+        bn_cols = st.columns([5, 1])
+
+        with bn_cols[0]:
+            if gauge is not None:
+                well_tests_df = get_well_tests_for_well(well_name)
+                cov = (
+                    coverage_summary(well_tests_df, gauge)
+                    if well_tests_df is not None else None
+                )
+                file_count = len(gauge.files)
+                file_str = (
+                    f" ({file_count} file{'s' if file_count != 1 else ''})"
+                )
+                date_range = (
+                    f"{gauge.start_date.strftime('%Y-%m-%d')} → "
+                    f"{gauge.end_date.strftime('%Y-%m-%d')}"
+                )
+                cov_str = (
+                    f" · {cov['tests_matched']}/{cov['tests_total']} tests matched"
+                    if cov else ""
+                )
+                disregard_str = (
+                    " · **Databricks BHP disregarded**" if disregard else ""
+                )
+                st.info(
+                    f"**Memory gauge active for {well_name}**{file_str} — "
+                    f"{date_range} ({gauge.sample_count:,} samples)"
+                    f"{cov_str}{disregard_str}. Gauge BHP replaces Databricks "
+                    f"across the Solver, IPR fit, and JP history views.",
+                    icon="📊",
+                )
+            else:
+                # Disregard only — no gauge uploaded
+                st.warning(
+                    f"**Databricks BHP disregarded for {well_name}** — "
+                    "no BHP data will be used in the Solver, IPR fit, or "
+                    "Model vs Actual until you upload a memory gauge.",
+                    icon="🚫",
+                )
+
+        with bn_cols[1]:
+            if gauge is not None:
+                if st.button(
+                    "Clear gauge",
+                    key=f"mg_clear_btn_{well_name}",
+                    use_container_width=True,
+                    help="Remove the memory-gauge override. The disregard flag is independent — uncheck it inside the expander to also restore Databricks BHP.",
+                ):
+                    clear_gauge(well_name)
+                    clear_extended_tests(well_name)
+                    st.session_state["_force_ipr_refresh"] = True
+                    st.rerun()
+
+    expander_label = (
+        f"Memory Gauge Data — {len(gauge.files)} file"
+        f"{'s' if len(gauge.files) != 1 else ''} loaded"
+        if gauge is not None
+        else "Memory Gauge Data — upload BHP for wells without a permanent gauge"
+    )
+    with st.expander(expander_label, expanded=False):
+        st.caption(
+            "Upload one or more XLSX files from downhole memory gauges (each "
+            "must have a 'Date Time' column and a 'Pressure' column). Multiple "
+            "files for the same well are combined into a single daily-median "
+            "BHP series — useful when gauges get pulled and re-hung over time. "
+            "Used in place of Databricks BHP across the Solver, IPR fit, and "
+            "JP history views — for this well only, for this session."
+        )
+
+        # Manual disregard control. Independent of gauge upload: a well
+        # with a known-bad Databricks feed can be flagged before (or even
+        # without) uploading a gauge. The Apply handler may also auto-tick
+        # this when the divergence check trips.
+        disregard_widget_key = f"mg_disregard_cb_{well_name}"
+        if disregard_widget_key not in st.session_state:
+            st.session_state[disregard_widget_key] = disregard
+
+        def _on_disregard_toggle() -> None:
+            new_val = bool(st.session_state.get(disregard_widget_key, False))
+            set_disregard_databricks_bhp(well_name, new_val)
+            st.session_state["_force_ipr_refresh"] = True
+
+        st.checkbox(
+            "Disregard Databricks BHP for this well",
+            key=disregard_widget_key,
+            on_change=_on_disregard_toggle,
+            help=(
+                "Use this when the well has a Databricks BHP feed that is "
+                "known to be wrong. The bad values are dropped before any "
+                "memory-gauge data is applied, so the Solver and IPR fit "
+                "only see gauge BHP (or no BHP at all if no gauge is loaded)."
+            ),
+        )
+
+        # Loaded-files list — one row per file with a Remove button. Sorted
+        # by start_date so the oldest is on top (matches how the user thinks
+        # about gauge runs chronologically).
+        if gauge is not None:
+            st.markdown("**Loaded files:**")
+            for f in sorted(gauge.files, key=lambda x: x.start_date):
+                col_text, col_btn = st.columns([5, 1])
+                with col_text:
+                    st.markdown(
+                        f"📄 `{f.source_filename}` — "
+                        f"{f.start_date.strftime('%Y-%m-%d')} → "
+                        f"{f.end_date.strftime('%Y-%m-%d')} · "
+                        f"{f.sample_count:,} samples"
+                    )
+                with col_btn:
+                    # Sanitize filename for the widget key — Streamlit keys
+                    # don't tolerate '/', '\', or other special chars.
+                    safe_name = "".join(
+                        c if c.isalnum() else "_" for c in f.source_filename
+                    )
+                    if st.button(
+                        "Remove",
+                        key=f"mg_remove_{well_name}_{safe_name}",
+                        use_container_width=True,
+                    ):
+                        remove_file_from_gauge(well_name, f.source_filename)
+                        # Removing the last file clears the gauge; clear
+                        # the extended tests + disregard flag too for clean
+                        # revert to Databricks state.
+                        if not get_gauge(well_name):
+                            clear_extended_tests(well_name)
+                        st.session_state["_force_ipr_refresh"] = True
+                        st.rerun()
+            st.divider()
+
+        # The uploader uses a counter in its key so it can be "reset" by
+        # incrementing the counter after a successful Add (Streamlit has
+        # no API to programmatically clear a file_uploader).
+        upload_counter = st.session_state.get(
+            f"_mg_upload_counter_{well_name}", 0
+        )
+        upload_label = (
+            "Upload another gauge file"
+            if gauge is not None
+            else "Memory gauge XLSX"
+        )
+        uploaded = st.file_uploader(
+            upload_label,
+            type=["xlsx"],
+            key=f"mg_upload_{well_name}_{upload_counter}",
+        )
+        if uploaded is None:
+            return
+
+        # Parse on every render while a file is in the uploader. Cheap
+        # (~100 ms for ~9k rows). Each parse returns a single MemoryGaugeFile;
+        # add_file_to_gauge combines it with any already-loaded files.
+        try:
+            preview = parse_xlsx(uploaded.getvalue(), uploaded.name)
+        except Exception as e:
+            st.error(f"Could not parse memory gauge file: {e}")
+            return
+
+        # Warn on duplicate filename — Streamlit's uploader can keep the
+        # same file across reruns, and silently double-adding would inflate
+        # the sample count. Filename match is good enough for now.
+        if gauge is not None and any(
+            f.source_filename == preview.source_filename for f in gauge.files
+        ):
+            st.warning(
+                f"`{preview.source_filename}` is already loaded — "
+                "click Remove on it above first if you want to replace it."
+            )
+            return
+
+        c1, c2 = st.columns(2)
+        c1.metric("Samples", f"{preview.sample_count:,}")
+        pr_min = float(preview.raw_df["pressure"].min())
+        pr_max = float(preview.raw_df["pressure"].max())
+        c2.metric("Pressure range", f"{pr_min:,.0f} – {pr_max:,.0f} psi")
+        st.caption(
+            f"Coverage: **{preview.start_date.strftime('%Y-%m-%d')}** → "
+            f"**{preview.end_date.strftime('%Y-%m-%d')}**"
+        )
+
+        button_label = (
+            f"Add file to {well_name} gauge"
+            if gauge is not None
+            else f"Apply gauge to {well_name}"
+        )
+        if st.button(
+            button_label,
+            type="primary",
+            key=f"mg_apply_btn_{well_name}",
+            use_container_width=True,
+        ):
+            # Combine the new file into the well's gauge (creates one if
+            # none exists). The resulting MemoryGaugeData carries the
+            # union daily-median series across all files.
+            new_gauge = add_file_to_gauge(well_name, preview)
+
+            # Network fetches keyed off the COMBINED window — that way
+            # extended tests + divergence checks cover the full coverage
+            # span, not just the newly-added file's window.
+            with st.spinner(
+                f"Fetching well tests + Databricks BHP "
+                f"{new_gauge.start_date.strftime('%Y-%m-%d')} → today…"
+            ):
+                ext_df = fetch_extended_tests(well_name, new_gauge.start_date)
+                db_bhp_df = fetch_databricks_bhp_daily(
+                    well_name, new_gauge.start_date, new_gauge.end_date,
+                )
+
+            if ext_df is not None and not ext_df.empty:
+                store_extended_tests(well_name, ext_df)
+            else:
+                st.session_state["_mg_apply_warning"] = (
+                    f"Could not fetch extended tests for {well_name} "
+                    "(Databricks query returned nothing or failed). The "
+                    "gauge is still active, but only tests in the shared "
+                    "3-month cache will pick up gauge BHPs."
+                )
+
+            # Auto-divergence vs Databricks across the combined window.
+            # Each Add re-checks because the wider gauge can shift the
+            # comparison. Auto-set ON only; once on, the user owns it.
+            delta = compute_databricks_vs_gauge_delta(db_bhp_df, new_gauge)
+            if delta is not None and delta["divergent"]:
+                set_disregard_databricks_bhp(well_name, True)
+                # Pop the widget key (writing it directly raises a
+                # StreamlitAPIException since the checkbox already
+                # rendered this run) — see CLAUDE.md.
+                st.session_state.pop(f"mg_disregard_cb_{well_name}", None)
+                st.session_state["_mg_auto_disregard_msg"] = (
+                    f"Auto-disabled Databricks BHP for {well_name} — "
+                    f"the Databricks feed differs from your gauge by an "
+                    f"average of **{delta['mean_abs_delta']:.0f} psi "
+                    f"({delta['mean_pct_delta']:.0f}%)** over "
+                    f"{delta['n_overlap']} overlapping days. "
+                    f"Gauge mean: {delta['gauge_mean']:.0f} psi · "
+                    f"Databricks mean: {delta['databricks_mean']:.0f} psi. "
+                    f"Uncheck *Disregard Databricks BHP* below to override."
+                )
+
+            # Reset the uploader by bumping its key counter — the next
+            # render renders a fresh empty file_uploader, ready for the
+            # next file.
+            st.session_state[f"_mg_upload_counter_{well_name}"] = (
+                upload_counter + 1
+            )
+            st.session_state["_force_ipr_refresh"] = True
+            st.rerun()
+
+
 def _render_pump_identity_banner(
     params: SimulationParams,
     *,
@@ -134,6 +434,11 @@ def render_tab(
     import pandas as pd
 
     render_input_summary(params)
+
+    # Memory-gauge upload + status. Lives near the top so the status banner
+    # is unmissable when an override is active; the upload itself is in a
+    # collapsed expander so it stays out of the way when not needed.
+    _render_memory_gauge_section(params.selected_well)
 
     # Surface any persisted message from a prior auto-recovery (e.g. GOR reset)
     msg = st.session_state.pop("_solver_gor_reset_msg", None)
@@ -358,11 +663,13 @@ def render_tab(
         # Compact calibration action bar — buttons live here so they're
         # visible without scrolling. Run is disabled while PF mismatch is
         # blocking; the Push button stays available so a prior result can
-        # still be applied. Also disabled when the latest test has no
-        # measured BHP (the calibration objective is BHP-match — without
-        # an actual, there's nothing to fit toward).
+        # still be applied. Also disabled when the SELECTED test (from the
+        # picker) has no measured BHP — there's nothing to target. Both
+        # ``selected_test_row`` and ``bhp_missing`` reflect the picker so
+        # the gating + calibration target stay in sync.
         _render_fric_cal_action_bar(
             params, wellbore, well_profile,
+            selected_test_row=selected_test_row,
             pf_blocked=pf_blocked,
             bhp_missing=(actuals["bhp"] is None),
         )
@@ -430,29 +737,42 @@ def _can_run_fric_cal(params: SimulationParams) -> bool:
     tests = _get_well_tests(params.selected_well)
     if tests is None or len(tests) < 1:
         return False
-    recent = tests.sort_values("WtDate", ascending=False).iloc[0]
-    return is_valid_number(recent.get("BHP"))
+    # Calibration is possible if ANY test has measured BHP — the test
+    # picker decides which specific test to target. Checking only the
+    # most-recent test missed memory-gauge wells where the gauge covers
+    # older tests but the most-recent test is outside coverage (and so
+    # has NaN BHP after gauge merge).
+    return any(is_valid_number(v) for v in tests["BHP"])
 
 
 def _execute_fric_cal(
-    params: SimulationParams, wellbore, well_profile
+    params: SimulationParams, wellbore, well_profile, *, selected_test_row=None,
 ) -> tuple[bool, str | None]:
     """Build the calibration inputs and run calibrate_friction_coefs.
 
     Single source of truth for "how do we calibrate this well" — invoked from
-    the top action bar. Result is stashed in
-    session_state["sw_fric_calibration"][well] for the existing display code.
+    the top action bar. ``selected_test_row`` (from the Solver tab's test
+    picker) is the target test; when omitted, most-recent test is used
+    (preserves the pre-picker behaviour for direct callers).
 
-    Returns (success, error_message). On failure, error_message is the
-    caller's responsibility to surface.
+    Result is stashed in session_state["sw_fric_calibration"][well] for the
+    existing display code. Returns (success, error_message); the caller is
+    responsible for surfacing the error.
     """
     from woffl.gui.utils import build_calibration_inputs
 
-    inputs = build_calibration_inputs(params, wellbore, well_profile)
+    inputs = build_calibration_inputs(
+        params, wellbore, well_profile, selected_test_row=selected_test_row,
+    )
     if inputs is None:
         return False, "Cannot calibrate — missing JP history or test data."
     if inputs["actual_bhp"] is None:
-        return False, "Cannot calibrate — most recent test has no measured BHP."
+        return (
+            False,
+            "Cannot calibrate — the selected test has no measured BHP. "
+            "Pick a different test in the test picker above, or upload "
+            "memory-gauge data to fill in this test's BHP.",
+        )
 
     _, water_obj, _ = create_pvt_components(params.field_model)
     prop_pf = water_obj.condition(0, 60)
@@ -504,6 +824,7 @@ def _render_fric_cal_action_bar(
     wellbore,
     well_profile,
     *,
+    selected_test_row=None,
     pf_blocked: bool = False,
     bhp_missing: bool = False,
 ) -> None:
@@ -539,9 +860,10 @@ def _render_fric_cal_action_bar(
     disabled = pf_blocked or bhp_missing
     if bhp_missing:
         disable_help = (
-            "Disabled — most recent test has no measured BHP. Friction-coef "
-            "calibration fits ken/kth/kdi to drive modeled BHP toward "
-            "measured BHP, and needs a measured value to target."
+            "Disabled — the selected test (test picker above) has no "
+            "measured BHP. Friction-coef calibration fits ken/kth/kdi to "
+            "drive modeled BHP toward measured BHP, so it needs a target. "
+            "Pick a test that has a BHP value, or upload memory-gauge data."
         )
     elif pf_blocked:
         disable_help = (
@@ -595,7 +917,10 @@ def _render_fric_cal_action_bar(
 
     if run_clicked:
         with st.spinner("Calibrating (Nelder-Mead)..."):
-            ok, err = _execute_fric_cal(params, wellbore, well_profile)
+            ok, err = _execute_fric_cal(
+                params, wellbore, well_profile,
+                selected_test_row=selected_test_row,
+            )
         if not ok:
             st.error(err)
         else:
@@ -686,12 +1011,10 @@ def _render_fric_calibration_section(
 
 
 def _get_well_tests(well_name: str):
-    """Get tests for a single well from the pre-fetched session state cache."""
-    all_tests = st.session_state.get("all_well_tests_df")
-    if all_tests is None or all_tests.empty:
-        return None
-    well_df = all_tests[all_tests["well"] == well_name].copy()
-    return well_df if not well_df.empty else None
+    """Get tests for a single well, with memory-gauge BHP override applied."""
+    from woffl.gui.utils import get_well_tests_for_well
+
+    return get_well_tests_for_well(well_name)
 
 
 def _latest_actuals(well_name: str) -> dict[str, float | None]:
@@ -793,13 +1116,34 @@ def _render_test_picker(well_name: str, test_df):
       * the Model vs Actual section's modeled pump (via :func:`_pump_at_test_date`)
         and its comparison row.
 
+    When a memory gauge is active, the picker is filtered to tests on dates
+    the gauge actually covers (the union of daily medians across all loaded
+    files). Tests in gaps between multi-file uploads, or outside any file's
+    window, are hidden — picking them would produce a meaningless comparison
+    because their BHP is NaN.
+
     Selection persists per-well via session_state, so switching wells doesn't
     carry stale state. Returns None when no tests exist.
     """
     import pandas as pd
 
+    from woffl.gui.memory_gauge import get_gauge
+
     if test_df is None or test_df.empty:
         return None
+
+    gauge = get_gauge(well_name)
+    if gauge is not None and not gauge.daily_df.empty:
+        dates = pd.to_datetime(test_df["WtDate"]).dt.normalize()
+        test_df = test_df[dates.isin(gauge.daily_df["tag_date"])]
+        if test_df.empty:
+            st.info(
+                f"No {well_name} tests fall on dates the memory gauge "
+                "covers. Upload an additional gauge file (or check the "
+                "file's date range against your test history) to enable "
+                "model-vs-actual comparisons."
+            )
+            return None
 
     sorted_tests = test_df.sort_values(
         "WtDate", ascending=False

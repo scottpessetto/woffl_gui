@@ -61,10 +61,75 @@ def render_input_summary(params) -> None:
 
 
 def is_valid_number(val) -> bool:
-    """Check if a value is a valid (non-None, non-NaN) number."""
+    """Check if a value is a valid (non-None, non-NaN) number.
+
+    Uses ``pd.isna`` so it catches ``pd.NA`` in addition to None and NaN —
+    pd.NA can appear in well-test rows after a "disregard Databricks BHP"
+    toggle, and the older isinstance(float)+math.isnan check missed it.
+    """
     if val is None:
         return False
-    return not (isinstance(val, float) and math.isnan(val))
+    try:
+        return not bool(pd.isna(val))
+    except (TypeError, ValueError):
+        return True  # non-NA-checkable scalars (strings, etc.)
+
+
+def get_well_tests_for_well(well_name: str) -> pd.DataFrame | None:
+    """Return well tests for a single well with memory-gauge BHP override applied.
+
+    Single source of truth for all consumers — Solver MvA, Batch hero, sidebar
+    IPR auto-populate, PDF export, calibration. Encapsulates three things:
+      1. Per-well **extended** test window when a memory gauge sets one
+         (tests from gauge.start_date to today, fetched on Apply). Takes
+         precedence over the shared 3-month cache because the gauge's
+         coverage typically extends further back than 3 months.
+      2. Slicing the shared ``st.session_state["all_well_tests_df"]`` cache
+         when there's no extended-window override.
+      3. Applying the gauge's BHP daily medians to the resulting test rows.
+
+    Returns ``None`` for Custom mode, missing cache, or empty well slice.
+    Always returns a *copy* so callers can safely mutate (e.g. append columns).
+    """
+    if well_name == "Custom":
+        return None
+
+    # Lazy imports — keeps gui.utils importable at startup without depending
+    # on the gauge module's session-state shape.
+    from woffl.gui.memory_gauge import (
+        apply_to_well_tests,
+        get_extended_tests,
+        get_gauge,
+        is_disregarding_databricks_bhp,
+    )
+
+    extended = get_extended_tests(well_name)
+    if extended is not None and not extended.empty:
+        # Extended fetch is a per-well full pull starting at the gauge's
+        # start date — a superset of whatever this well has in the shared
+        # 3-month cache, so prefer it unconditionally.
+        well_df = extended.copy()
+    else:
+        all_tests = st.session_state.get("all_well_tests_df")
+        if all_tests is None or all_tests.empty:
+            return None
+        well_df = all_tests[all_tests["well"] == well_name].copy()
+        if well_df.empty:
+            return None
+
+    # "Disregard Databricks BHP" — blank the column before applying the
+    # gauge so anything OUTSIDE the gauge's coverage shows as missing
+    # rather than inheriting the (known-bad) Databricks value. Using
+    # ``np.nan`` (not ``pd.NA``) so the column stays float64 — pd.NA
+    # would coerce to object dtype and break the Vogel fit downstream.
+    if is_disregarding_databricks_bhp(well_name) and "BHP" in well_df.columns:
+        well_df["BHP"] = np.nan
+
+    gauge = get_gauge(well_name)
+    if gauge is not None:
+        well_df = apply_to_well_tests(well_df, gauge)
+
+    return well_df
 
 
 GOR_AUTO_RECOVERY_VALUE = 250
@@ -285,14 +350,23 @@ def render_pf_mismatch_warning(
     return True, block
 
 
-def build_calibration_inputs(params, wellbore, well_profile) -> dict | None:
+def build_calibration_inputs(
+    params, wellbore, well_profile, selected_test_row=None,
+) -> dict | None:
     """Build the IPR-derived simulation inputs for calibration / PF-search.
 
     Single source of truth for "given a selected well, what inputs do we feed
-    the solver to compare against the most recent test." Used by both the
+    the solver to compare against a specific well test." Used by both the
     BHP friction-cal executor and the PF auto-match solver — they need the
-    exact same pump identity (current installed JP), inflow (IPR-derived),
-    and surface-pressure choice (test value if present, else sidebar).
+    exact same pump identity, inflow (IPR-derived), and surface-pressure
+    choice (test value if present, else sidebar).
+
+    The ``selected_test_row`` argument lets a caller target a specific test
+    (driven by the Solver tab's test picker) instead of defaulting to the
+    most-recent test. When provided, the pump used for calibration is the
+    one that was installed in the well on that test's date — looked up
+    via :func:`woffl.gui.tabs.jetpump_solver._pump_at_test_date`. When
+    omitted, behavior matches the original most-recent-test default.
 
     Honors the override flags set in the Model vs Actual section:
       - mva_override_res_p → use sidebar reservoir pressure instead of IPR
@@ -321,22 +395,54 @@ def build_calibration_inputs(params, wellbore, well_profile) -> dict | None:
     jp_hist = st.session_state.get("jp_history_df")
     if jp_hist is None:
         return None
-    current_pump = get_current_pump(jp_hist, params.selected_well)
-    if current_pump is None:
+
+    # Route through the central helper so memory-gauge BHP overrides feed
+    # into both the BHP-target friction cal and the PF auto-match solver.
+    well_tests = get_well_tests_for_well(params.selected_well)
+    if well_tests is None or len(well_tests) < 1:
         return None
-    nozzle = current_pump.get("nozzle_no")
-    throat = current_pump.get("throat_ratio")
+
+    # Pick the target test (and, when the user has selected one explicitly,
+    # also the pump that was installed at that test's date). Falling back
+    # to most-recent + current-pump preserves the original behaviour for
+    # callers that don't pass a selection.
+    if selected_test_row is not None:
+        recent = selected_test_row
+        # Lazy import to avoid utils ↔ tabs/jetpump_solver circular import
+        # at module load. ``_pump_at_test_date`` is a pure pandas helper,
+        # no UI side effects.
+        from woffl.gui.tabs.jetpump_solver import _pump_at_test_date
+
+        td = recent.get("WtDate")
+        pump_at_date = (
+            _pump_at_test_date(jp_hist, params.selected_well, td)
+            if pd.notna(td) else None
+        )
+        if (
+            pump_at_date is not None
+            and pump_at_date.get("nozzle_no")
+            and pump_at_date.get("throat_ratio")
+        ):
+            nozzle = pump_at_date["nozzle_no"]
+            throat = pump_at_date["throat_ratio"]
+        else:
+            # Test predates any JP install record; fall back to current pump
+            # rather than failing the whole calibration call.
+            current_pump = get_current_pump(jp_hist, params.selected_well)
+            if current_pump is None:
+                return None
+            nozzle = current_pump.get("nozzle_no")
+            throat = current_pump.get("throat_ratio")
+    else:
+        current_pump = get_current_pump(jp_hist, params.selected_well)
+        if current_pump is None:
+            return None
+        nozzle = current_pump.get("nozzle_no")
+        throat = current_pump.get("throat_ratio")
+        recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
+
     if not nozzle or not throat:
         return None
-
-    all_tests = st.session_state.get("all_well_tests_df")
-    if all_tests is None or all_tests.empty:
-        return None
-    well_tests = all_tests[all_tests["well"] == params.selected_well]
-    if len(well_tests) < 1:
-        return None
-
-    recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
 
     coeff_row = None
     if len(well_tests) >= 2:

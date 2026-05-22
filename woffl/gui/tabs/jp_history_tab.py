@@ -38,14 +38,19 @@ def render_tab(params: SimulationParams) -> None:
     )
 
     # Fetch well tests back to earliest JP change
-    test_df, bhp_daily_df = _fetch_extended_well_tests(well_name, earliest_date)
+    test_df, bhp_daily_df, bhp_overlay_df = _fetch_extended_well_tests(
+        well_name, earliest_date
+    )
 
     if test_df is not None and not test_df.empty:
         bhp_zero = st.checkbox(
             "BHP axis starts at 0", value=True, key="jp_hist_bhp_zero"
         )
         fig = _create_history_chart(
-            well_name, test_df, well_jp, bhp_daily_df=bhp_daily_df, bhp_from_zero=bhp_zero
+            well_name, test_df, well_jp,
+            bhp_daily_df=bhp_daily_df,
+            bhp_overlay_df=bhp_overlay_df,
+            bhp_from_zero=bhp_zero,
         )
         st.plotly_chart(fig, use_container_width=True)
     else:
@@ -151,28 +156,74 @@ def _cached_bhp_daily(db_name: str, start_date: str, end_date: str):
 
 def _fetch_extended_well_tests(
     well_name: str, earliest_date
-) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-    """Fetch well tests and daily BHP going back to earliest JP change date."""
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None]:
+    """Fetch well tests + the BHP series the chart should plot.
+
+    Returns ``(test_df, primary_bhp_df, overlay_bhp_df)``. The three slots:
+      * ``test_df`` — well tests (with gauge BHP merged when a gauge is
+        active, so test-date scatter lines up with the daily line).
+      * ``primary_bhp_df`` — main BHP trace: the memory gauge when one is
+        uploaded, otherwise the Databricks daily feed.
+      * ``overlay_bhp_df`` — secondary trace shown only when the user has
+        BOTH uploaded a gauge AND disregarded Databricks (so the user can
+        see the divergence the auto-detection caught). Plotted in a muted
+        style and labeled "disregarded" so it doesn't suggest the chart
+        is using it.
+    """
     from datetime import datetime
 
     from woffl.assembly.well_test_client import _denormalize_well_name
+    from woffl.gui.memory_gauge import (
+        apply_to_well_tests,
+        daily_bhp_from_gauge,
+        get_gauge,
+        is_disregarding_databricks_bhp,
+    )
 
     db_name = _denormalize_well_name(well_name)
     start = earliest_date.strftime("%Y-%m-%d")
     end = datetime.now().strftime("%Y-%m-%d")
 
     test_df = None
-    bhp_df = None
+    primary_bhp_df = None
+    overlay_bhp_df = None
+    gauge = get_gauge(well_name)
+    disregard = is_disregarding_databricks_bhp(well_name)
+
     with st.spinner(f"Fetching tests for {well_name} ({start} to {end})..."):
         try:
             test_df = _cached_extended_tests(db_name, start, end)
+            if test_df is not None and not test_df.empty:
+                if disregard and "BHP" in test_df.columns:
+                    # np.nan (not pd.NA) keeps the column float64 so the
+                    # downstream chart and BHP-scatter trace work.
+                    import numpy as _np
+                    test_df["BHP"] = _np.nan
+                if gauge is not None:
+                    test_df = apply_to_well_tests(test_df, gauge)
         except Exception as e:
             st.warning(f"Databricks query failed: {e}")
-        try:
-            bhp_df = _cached_bhp_daily(db_name, start, end)
-        except Exception:
-            pass  # BHP daily is optional; fall back to test-date BHP
-    return test_df, bhp_df
+
+        if gauge is not None:
+            primary_bhp_df = daily_bhp_from_gauge(gauge)
+            # Show Databricks alongside the gauge when the user has flagged
+            # it as bad — visualizes the divergence the auto-detect caught.
+            if disregard:
+                try:
+                    overlay_bhp_df = _cached_bhp_daily(db_name, start, end)
+                except Exception:
+                    pass
+        elif not disregard:
+            # No gauge AND not disregarding — normal Databricks path.
+            try:
+                primary_bhp_df = _cached_bhp_daily(db_name, start, end)
+            except Exception:
+                pass
+        # else: disregard only (no gauge) → no BHP shown. User has said
+        # the Databricks data is bad and hasn't given us a replacement,
+        # so showing nothing is more honest than showing the bad line.
+
+    return test_df, primary_bhp_df, overlay_bhp_df
 
 
 def _format_jp(nozzle, throat) -> str:
@@ -190,6 +241,7 @@ def _create_history_chart(
     test_df: pd.DataFrame,
     jp_changes: pd.DataFrame,
     bhp_daily_df: pd.DataFrame | None = None,
+    bhp_overlay_df: pd.DataFrame | None = None,
     bhp_from_zero: bool = False,
 ) -> go.Figure:
     """Create interactive Plotly chart with stacked production, BHP, and JP change lines."""
@@ -230,16 +282,42 @@ def _create_history_chart(
             secondary_y=False,
         )
 
-    # BHP on secondary y-axis — prefer daily BHP, fall back to test-date BHP
+    # BHP on secondary y-axis — prefer daily BHP, fall back to test-date BHP.
+    # Memory-gauge daily BHP is rendered in the same orange to keep the chart
+    # readable, but the legend names it explicitly so the user always knows
+    # which data source they're looking at.
+    from woffl.gui.memory_gauge import has_gauge
+
+    bhp_legend_name = (
+        "BHP (Memory Gauge, psi)" if has_gauge(well_name) else "BHP (psi)"
+    )
     if bhp_daily_df is not None and not bhp_daily_df.empty:
         fig.add_trace(
             go.Scatter(
                 x=bhp_daily_df["tag_date"],
                 y=bhp_daily_df["bhp"],
-                name="BHP (psi)",
+                name=bhp_legend_name,
                 mode="lines",
                 line=dict(color="#E65100", width=1.5),
                 hovertemplate="%{x|%Y-%m-%d}<br>BHP: %{y:.0f} psi<extra></extra>",
+            ),
+            secondary_y=True,
+        )
+
+    # Overlay: disregarded Databricks BHP, plotted in a muted dashed gray
+    # so the user can see the divergence that prompted the auto-disregard
+    # without thinking the chart is using that data. Only set when both a
+    # gauge is active AND the disregard flag is on — see _fetch_extended_well_tests.
+    if bhp_overlay_df is not None and not bhp_overlay_df.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=bhp_overlay_df["tag_date"],
+                y=bhp_overlay_df["bhp"],
+                name="Databricks BHP (disregarded)",
+                mode="lines",
+                line=dict(color="#9E9E9E", width=1, dash="dash"),
+                opacity=0.7,
+                hovertemplate="%{x|%Y-%m-%d}<br>Databricks BHP: %{y:.0f} psi<extra></extra>",
             ),
             secondary_y=True,
         )

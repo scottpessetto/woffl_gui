@@ -93,6 +93,10 @@ def _update_well_parameters_from_data(
     is_new_well = selected_well != st.session_state.get(
         "last_selected_well_all", "Custom"
     )
+    # Memory-gauge apply/clear sets this flag so the sidebar re-runs IPR
+    # auto-populate (Vogel fit + pwf/res_pres seed) without also resetting
+    # geometry / pump identity, which a full well re-selection would.
+    force_ipr_refresh = bool(st.session_state.pop("_force_ipr_refresh", False))
 
     if is_new_well:
         _set_param("tubing_od", float(well_data.get("out_dia", 4.5)))
@@ -128,6 +132,10 @@ def _update_well_parameters_from_data(
         _populate_pump_from_history(selected_well)
         _auto_populate_from_ipr(selected_well)
         st.session_state.last_selected_well_all = selected_well
+    elif force_ipr_refresh:
+        # Gauge override changed — refresh IPR-driven sidebar values
+        # against the new BHPs without touching geometry/pump.
+        _auto_populate_from_ipr(selected_well)
 
 
 def _auto_populate_from_ipr(selected_well: str) -> None:
@@ -144,18 +152,25 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
 
     Only called once per well selection (inside the is_new_well guard).
     """
-    import math
+    import pandas as _pd
 
     def _is_finite(v) -> bool:
-        return v is not None and not (isinstance(v, float) and math.isnan(v))
+        # Use pd.isna so pd.NA, NaN, NaT, and None all return False — the
+        # BHP column may carry pd.NA after a "disregard Databricks BHP"
+        # toggle, and the older isinstance(float)+math.isnan check misses it.
+        if v is None:
+            return False
+        try:
+            return not bool(_pd.isna(v))
+        except (TypeError, ValueError):
+            return True  # non-NA-checkable scalars (strings, etc.)
 
-    all_tests = st.session_state.get("all_well_tests_df")
-    if all_tests is None or all_tests.empty:
-        _clear_ipr_state()
-        return
+    # Route through the central helper so memory-gauge BHP overrides feed
+    # into the IPR auto-populate (Vogel fit + sidebar pwf/res_pres seed).
+    from woffl.gui.utils import get_well_tests_for_well
 
-    well_tests = all_tests[all_tests["well"] == selected_well].copy()
-    if well_tests.empty:
+    well_tests = get_well_tests_for_well(selected_well)
+    if well_tests is None or well_tests.empty:
         _clear_ipr_state()
         return
 
