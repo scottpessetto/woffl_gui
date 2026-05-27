@@ -169,12 +169,17 @@ def fetch_well_props() -> pd.DataFrame:
 
     Well names are normalized from Databricks format ("B-028") to GUI format
     ("MPB-28") via the existing well_test_client._normalize_well_name.
+
+    Wells defined in jp_data/local_well_overrides.csv are appended at the end
+    if they aren't already present in the Databricks result — used for wells
+    that exist in the field but haven't yet been added to mpu.wells.prop_hist.
+    Delete the CSV (or remove the row) once Databricks catches up.
     """
     from woffl.assembly.well_test_client import _normalize_well_name
 
     df = execute_query(WELL_PROPS_QUERY)
     if df.empty:
-        return df
+        return _merge_local_overrides(df)
 
     df["Well"] = df["well_name"].astype(str).str.strip().map(_normalize_well_name)
     df["out_dia"] = df["tubing_out_dia"]
@@ -187,7 +192,52 @@ def fetch_well_props() -> pd.DataFrame:
     df["wat_sg"] = df["form_wat_sg"]
     df["bubble_point"] = df["resvr_bubb"]
 
-    return df
+    return _merge_local_overrides(df)
+
+
+def _local_overrides_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "jp_data" / "local_well_overrides.csv"
+
+
+def _merge_local_overrides(df: pd.DataFrame) -> pd.DataFrame:
+    """Append rows from local_well_overrides.csv for wells not yet in Databricks."""
+    path = _local_overrides_path()
+    if not path.exists():
+        return df
+    try:
+        overrides = pd.read_csv(path)
+    except Exception:
+        return df
+    if overrides.empty or "Well" not in overrides.columns:
+        return df
+
+    existing = set(df["Well"].dropna().astype(str)) if "Well" in df.columns else set()
+    new_rows = overrides[~overrides["Well"].astype(str).isin(existing)].copy()
+    if new_rows.empty:
+        return df
+
+    # Derive the same downstream columns fetch_well_props computes from the
+    # raw mech/resvr columns. NaN-safe: missing inputs leave outputs as NaN.
+    if "tubing_out_dia" in new_rows.columns:
+        new_rows["out_dia"] = new_rows["tubing_out_dia"]
+    if {"tubing_out_dia", "tubing_inn_dia"}.issubset(new_rows.columns):
+        new_rows["thick"] = (new_rows["tubing_out_dia"] - new_rows["tubing_inn_dia"]) / 2.0
+    if "jpump_md" in new_rows.columns:
+        new_rows["JP_MD"] = new_rows["jpump_md"]
+    if "resvr_press" in new_rows.columns:
+        new_rows["res_pres"] = new_rows["resvr_press"]
+    if "resvr_temp" in new_rows.columns:
+        new_rows["form_temp"] = new_rows["resvr_temp"]
+    if "form_oil_api" in new_rows.columns:
+        new_rows["oil_api"] = new_rows["form_oil_api"]
+    if "form_gas_sg" in new_rows.columns:
+        new_rows["gas_sg"] = new_rows["form_gas_sg"]
+    if "form_wat_sg" in new_rows.columns:
+        new_rows["wat_sg"] = new_rows["form_wat_sg"]
+    if "resvr_bubb" in new_rows.columns:
+        new_rows["bubble_point"] = new_rows["resvr_bubb"]
+
+    return pd.concat([df, new_rows], ignore_index=True)
 
 
 def _survey_dir() -> Path:
