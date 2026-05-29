@@ -75,6 +75,36 @@ def is_valid_number(val) -> bool:
         return True  # non-NA-checkable scalars (strings, etc.)
 
 
+# Default well-test lookback window (months). The single-well solver lets the
+# user widen this via the sidebar; app startup pre-fetches this window into the
+# shared ``all_well_tests_df`` cache.
+DEFAULT_TEST_MONTHS = 6
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_all_well_tests(months_back: int = DEFAULT_TEST_MONTHS):
+    """Fetch recent well tests for all MPU wells in one query. Cached 24h per window.
+
+    Single source of truth for the well-test lookback window. Both app startup
+    and per-well slicing in :func:`get_well_tests_for_well` call this, so a
+    change to the sidebar lookback re-fetches (cached) for the new window
+    without disturbing windows already cached or other consumers reading the
+    startup-cached frame.
+    """
+    from datetime import datetime
+
+    from dateutil.relativedelta import relativedelta
+
+    from woffl.assembly.well_test_client import fetch_milne_well_tests
+
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - relativedelta(months=months_back)).strftime(
+        "%Y-%m-%d"
+    )
+    df, _ = fetch_milne_well_tests(start_date, end_date)
+    return df
+
+
 def get_well_tests_for_well(well_name: str) -> pd.DataFrame | None:
     """Return well tests for a single well with memory-gauge BHP override applied.
 
@@ -87,9 +117,12 @@ def get_well_tests_for_well(well_name: str) -> pd.DataFrame | None:
       2. Slicing the shared ``st.session_state["all_well_tests_df"]`` cache
          when there's no extended-window override.
       3. Applying the gauge's BHP daily medians to the resulting test rows.
+      4. Appending session-only manual/provisional tests (Solver tab entry
+         form) so a well with no Databricks tests can still be modeled.
 
-    Returns ``None`` for Custom mode, missing cache, or empty well slice.
-    Always returns a *copy* so callers can safely mutate (e.g. append columns).
+    Returns ``None`` for Custom mode, or when neither Databricks nor manual
+    tests exist for the well. Always returns a *copy* so callers can safely
+    mutate (e.g. append columns).
     """
     if well_name == "Custom":
         return None
@@ -103,33 +136,103 @@ def get_well_tests_for_well(well_name: str) -> pd.DataFrame | None:
         is_disregarding_databricks_bhp,
     )
 
+    well_df = None
     extended = get_extended_tests(well_name)
     if extended is not None and not extended.empty:
         # Extended fetch is a per-well full pull starting at the gauge's
         # start date — a superset of whatever this well has in the shared
-        # 3-month cache, so prefer it unconditionally.
+        # lookback cache, so prefer it unconditionally.
         well_df = extended.copy()
     else:
-        all_tests = st.session_state.get("all_well_tests_df")
+        # Honor the sidebar lookback. fetch_all_well_tests is cached per
+        # months_back, so the default window reuses the startup-cached frame
+        # and a widened window fetches once then caches. Fall back to the
+        # startup-cached frame if the re-fetch fails (e.g. Databricks down).
+        months = int(st.session_state.get("sw_test_months", DEFAULT_TEST_MONTHS))
+        try:
+            all_tests = fetch_all_well_tests(months)
+        except Exception:
+            all_tests = None
         if all_tests is None or all_tests.empty:
-            return None
-        well_df = all_tests[all_tests["well"] == well_name].copy()
-        if well_df.empty:
-            return None
+            all_tests = st.session_state.get("all_well_tests_df")
+        if all_tests is not None and not all_tests.empty:
+            sliced = all_tests[all_tests["well"] == well_name].copy()
+            if not sliced.empty:
+                well_df = sliced
 
-    # "Disregard Databricks BHP" — blank the column before applying the
-    # gauge so anything OUTSIDE the gauge's coverage shows as missing
-    # rather than inheriting the (known-bad) Databricks value. Using
-    # ``np.nan`` (not ``pd.NA``) so the column stays float64 — pd.NA
-    # would coerce to object dtype and break the Vogel fit downstream.
-    if is_disregarding_databricks_bhp(well_name) and "BHP" in well_df.columns:
-        well_df["BHP"] = np.nan
+    # Memory-gauge handling applies only to the Databricks-sourced rows.
+    if well_df is not None:
+        # "Disregard Databricks BHP" — blank the column before applying the
+        # gauge so anything OUTSIDE the gauge's coverage shows as missing
+        # rather than inheriting the (known-bad) Databricks value. Using
+        # ``np.nan`` (not ``pd.NA``) so the column stays float64 — pd.NA
+        # would coerce to object dtype and break the Vogel fit downstream.
+        if is_disregarding_databricks_bhp(well_name) and "BHP" in well_df.columns:
+            well_df["BHP"] = np.nan
 
-    gauge = get_gauge(well_name)
-    if gauge is not None:
-        well_df = apply_to_well_tests(well_df, gauge)
+        gauge = get_gauge(well_name)
+        if gauge is not None:
+            well_df = apply_to_well_tests(well_df, gauge)
+
+    # Inject session-only manual/provisional tests (Solver tab entry form).
+    # Done after gauge handling so manual rows keep their own measured BHP,
+    # and before the count cap so a recent manual test survives the cap.
+    well_df = _append_manual_tests(well_df, well_name)
+
+    if well_df is None or well_df.empty:
+        return None
+
+    # Optional cap: keep only the N most recent tests. 0 (default) = no cap.
+    cap = int(st.session_state.get("sw_test_count_cap", 0) or 0)
+    if cap > 0 and "WtDate" in well_df.columns and len(well_df) > cap:
+        well_df = (
+            well_df.sort_values("WtDate", ascending=False)
+            .head(cap)
+            .reset_index(drop=True)
+        )
 
     return well_df
+
+
+# Column schema for manually-entered provisional tests, aligned with the
+# Databricks well-test frame so injected rows merge cleanly.
+MANUAL_TEST_COLUMNS = [
+    "well",
+    "WtDate",
+    "WtOilVol",
+    "WtWaterVol",
+    "WtTotalFluid",
+    "BHP",
+    "fgor",
+    "lift_wat",
+    "whp",
+]
+
+
+def _append_manual_tests(well_df, well_name: str):
+    """Append session-cached manual tests for a well to its test frame.
+
+    Manual tests live in ``st.session_state['sw_manual_tests'][well]`` (a list
+    of row dicts written by the Solver tab's entry form). Returns the combined
+    frame sorted newest-first, the manual rows alone when there are no
+    Databricks tests, or the input unchanged when there are no manual rows.
+    """
+    manual = st.session_state.get("sw_manual_tests", {}).get(well_name)
+    if not manual:
+        return well_df
+
+    manual_df = pd.DataFrame(manual)
+    if "WtDate" in manual_df.columns:
+        manual_df["WtDate"] = pd.to_datetime(manual_df["WtDate"], errors="coerce")
+
+    if well_df is None or well_df.empty:
+        combined = manual_df
+    else:
+        combined = pd.concat([well_df, manual_df], ignore_index=True)
+
+    if "WtDate" in combined.columns:
+        combined = combined.sort_values("WtDate", ascending=False)
+    return combined.reset_index(drop=True)
 
 
 GOR_AUTO_RECOVERY_VALUE = 250
@@ -446,14 +549,39 @@ def build_calibration_inputs(
 
     coeff_row = None
     if len(well_tests) >= 2:
-        try:
-            merged = estimate_reservoir_pressure(well_tests)
-            vogel = compute_vogel_coefficients(merged)
-            well_coeffs = vogel[vogel["Well"] == params.selected_well]
-            if not well_coeffs.empty:
-                coeff_row = well_coeffs.iloc[0]
-        except Exception:
-            coeff_row = None
+        # Honor the Solver tab's IPR-anchor selector so the calibration target
+        # operating point matches the chart. Defaults to "recent" (the global
+        # least-squares fit) when the user hasn't picked an anchor.
+        anchor_mode = st.session_state.get(
+            f"sw_ipr_anchor_mode_{params.selected_well}", "recent"
+        )
+        anchor_date = st.session_state.get(
+            f"sw_ipr_anchor_date_{params.selected_well}"
+        )
+        if anchor_mode in ("median", "specific"):
+            from woffl.gui.ipr_anchor import compute_anchored_vogel
+
+            field_max_rp = (
+                3000 if str(params.field_model).lower() == "kuparuk" else 1800
+            )
+            anchored = compute_anchored_vogel(
+                well_tests,
+                well_name=params.selected_well,
+                anchor_mode=anchor_mode,
+                anchor_date=anchor_date,
+                field_max_rp=field_max_rp,
+            )
+            if anchored is not None:
+                coeff_row = pd.Series(anchored)
+        if coeff_row is None:
+            try:
+                merged = estimate_reservoir_pressure(well_tests)
+                vogel = compute_vogel_coefficients(merged)
+                well_coeffs = vogel[vogel["Well"] == params.selected_well]
+                if not well_coeffs.empty:
+                    coeff_row = well_coeffs.iloc[0]
+            except Exception:
+                coeff_row = None
 
     override_res_p = bool(st.session_state.get("mva_override_res_p", False))
 
@@ -548,17 +676,25 @@ def _solve_pf_for_actual_lift(
     well_profile,
     inputs: dict,
 ) -> tuple[int | None, float | None, str | None]:
-    """Brent-search for the ppf_surf that produces target_lift_wat from the installed pump.
+    """Search for the ppf_surf that produces target_lift_wat from the installed pump.
 
     Uses the installed pump (from JP history) and IPR-derived inflow — the
     same context calibration uses. Each evaluation runs the full jetpump
-    solver once; brentq typically converges in ~10 evaluations, so a few
-    seconds total.
+    solver once.
+
+    The search starts at [1500, 4000] psi but uses a NaN-robust,
+    self-expanding bracket finder (``pf_calibration.robust_bracket``) that
+    nudges past solver-failure bounds and widens to the realistic surface
+    envelope [800, 5500] psi before giving up — so a true bracket that lies
+    outside the narrow start window is still found. brentq then converges
+    within the bracket.
 
     Returns (solved_ppf, achieved_lift, error_message). On no-bracket or
     solver failure, ppf is None and error_message explains why.
     """
     from scipy.optimize import brentq
+
+    from woffl.gui.pf_calibration import robust_bracket
 
     pump = create_jetpump(
         inputs["nozzle"], inputs["throat"], params.ken, params.kth, params.kdi
@@ -583,36 +719,51 @@ def _solve_pf_for_actual_lift(
         _psu, _sonic, _qoil, _fwat, qnz, _mach = result
         return float(qnz)
 
-    lo, hi = 1500.0, 4000.0
-    f_lo = lift_at(lo) - target_lift_wat
-    f_hi = lift_at(hi) - target_lift_wat
-    import math
+    def residual(ppf: float) -> float:
+        # NaN (solver failure) propagates through the subtraction.
+        return lift_at(ppf) - target_lift_wat
 
-    if math.isnan(f_lo) or math.isnan(f_hi):
+    # Realistic PF surface-pressure envelope. Start narrow; robust_bracket
+    # expands outward to these caps as needed.
+    LO_FLOOR, HI_CAP = 800.0, 5500.0
+    br = robust_bracket(
+        residual, 1500.0, 4000.0, lo_floor=LO_FLOOR, hi_cap=HI_CAP
+    )
+
+    if br["status"] == "nan":
         return None, None, (
-            "Solver failed at one of the search bounds (1500 / 4000 psi). "
-            "The installed pump may not solve at extreme PF pressures."
+            "Solver failed across the PF-pressure search range — the installed "
+            "pump may not converge at these conditions. Check the IPR and pump "
+            "inputs."
         )
-    if f_lo * f_hi > 0:
-        if f_lo > 0:
+
+    if br["status"] == "no_bracket":
+        # Same sign even at the caps: fb<0 → can't reach target even at HI_CAP;
+        # fa>0 → overshoots even at LO_FLOOR.
+        if br["fb"] < 0:
+            modeled = br["fb"] + target_lift_wat
             return None, None, (
-                f"Even at the minimum 1500 psi, the modeled lift "
-                f"({f_lo + target_lift_wat:.0f} BWPD) exceeds target "
-                f"({target_lift_wat:.0f} BWPD). The installed pump can't "
-                "operate that low — check pump or test data."
+                f"Even at {br['b']:.0f} psi PF, modeled lift "
+                f"({modeled:.0f} BWPD) stays below the target "
+                f"({target_lift_wat:.0f} BWPD). The pump can't reach the "
+                "measured rate within the realistic surface envelope — likely "
+                "a washout or the wrong nozzle/throat."
             )
+        modeled = br["fa"] + target_lift_wat
         return None, None, (
-            f"Even at the maximum 4000 psi, the modeled lift "
-            f"({f_hi + target_lift_wat:.0f} BWPD) is below target "
-            f"({target_lift_wat:.0f} BWPD). The installed pump can't reach "
-            "the actual rate within range."
+            f"Even at {br['a']:.0f} psi PF, modeled lift "
+            f"({modeled:.0f} BWPD) exceeds the target "
+            f"({target_lift_wat:.0f} BWPD). The pump moves more than the "
+            "measured rate at the lowest realistic PF pressure — check the "
+            "pump size or the test's PF rate."
         )
+
+    a, b = br["a"], br["b"]
+    if a == b:  # exact hit on a bound
+        return int(round(a)), float(br["fa"] + target_lift_wat), None
 
     try:
-        solved = brentq(
-            lambda ppf: lift_at(ppf) - target_lift_wat,
-            lo, hi, xtol=10, maxiter=30,
-        )
+        solved = brentq(residual, a, b, xtol=2, maxiter=40)
     except Exception as e:
         return None, None, f"Auto-match search failed: {e}"
 

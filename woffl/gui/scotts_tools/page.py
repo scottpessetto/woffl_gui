@@ -8,6 +8,7 @@ Marginal WC calculator.
 import streamlit as st
 
 from . import (
+    header_impact,
     jp_calibration,
     jp_fric_trend,
     jp_washout,
@@ -24,6 +25,7 @@ def run_scotts_tools_page():
 
     tab_labels = [
         "PF Scenario Analysis",
+        "Header Pressure Impact",
         "JP Friction Calibration",
         "JP Fric Trend",
         "JP Wash-Out",
@@ -36,16 +38,19 @@ def run_scotts_tools_page():
         pf_scenario.render_tab()
 
     with tabs[1]:
-        jp_calibration.render_tab()
+        header_impact.render_tab()
 
     with tabs[2]:
-        jp_fric_trend.render_tab()
+        jp_calibration.render_tab()
 
     with tabs[3]:
-        jp_washout.render_tab()
+        jp_fric_trend.render_tab()
 
     with tabs[4]:
-        pad_watercut.render_tab()
+        jp_washout.render_tab()
 
     with tabs[5]:
+        pad_watercut.render_tab()
+
+    with tabs[6]:
         test_harness.render_tab()

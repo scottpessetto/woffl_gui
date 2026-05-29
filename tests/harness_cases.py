@@ -287,10 +287,64 @@ def case_pump_handler_presets_consistent() -> CaseResult:
 # Registry — append new cases here.
 # ---------------------------------------------------------------------------
 
+def case_header_impact_universe() -> CaseResult:
+    """The Header Impact tool's producer universe + lift classifier should
+    find a sensible mix on today's data (≥80 producers, ≥30 ESPs, ≥30 JPs).
+    Catches a schema break in vw_well_test / vw_well_header / jp_history that
+    would empty the input table or misclassify lift types."""
+    from woffl.assembly.databricks_client import fetch_jp_history
+    from woffl.gui.scotts_tools import header_impact as hi
+
+    try:
+        ov = hi.fetch_well_overview(6)
+        jp_hist = fetch_jp_history()
+    except Exception as e:
+        return CaseResult(
+            name="Header Impact universe",
+            description=case_header_impact_universe.__doc__ or "",
+            passed=False,
+            summary=f"raised: {type(e).__name__}",
+            error=str(e),
+        )
+
+    if ov is None or ov.empty:
+        return CaseResult(
+            name="Header Impact universe",
+            description=case_header_impact_universe.__doc__ or "",
+            passed=False,
+            summary="fetch_well_overview returned empty",
+        )
+
+    ov = ov.copy()
+    ov["lift"] = [hi._classify_lift(r["well"], jp_hist, r) for _, r in ov.iterrows()]
+    n = int(len(ov))
+    mix = ov["lift"].value_counts().to_dict()
+    n_esp = int(mix.get("ESP", 0))
+    n_jp = int(mix.get("JP", 0))
+    ok = n >= 80 and n_esp >= 30 and n_jp >= 30
+
+    return CaseResult(
+        name="Header Impact universe",
+        description=case_header_impact_universe.__doc__ or "",
+        passed=ok,
+        summary=(
+            f"{n} producers (ESP {n_esp}, JP {n_jp})"
+            if ok
+            else f"below floor: {n} producers (ESP {n_esp}, JP {n_jp})"
+        ),
+        details={
+            "total_producers": n,
+            "lift_mix": mix,
+            "expected_floor": {"total": 80, "ESP": 30, "JP": 30},
+        },
+    )
+
+
 ALL_CASES: list[Callable[[], CaseResult]] = [
     case_field_marginal_wc_in_range,
     case_per_pad_marginal_wc_runs,
     case_online_well_count_in_range,
     case_field_oil_total_sanity,
     case_pump_handler_presets_consistent,
+    case_header_impact_universe,
 ]

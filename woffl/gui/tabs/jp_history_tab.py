@@ -291,6 +291,10 @@ def _create_history_chart(
     bhp_legend_name = (
         "BHP (Memory Gauge, psi)" if has_gauge(well_name) else "BHP (psi)"
     )
+    # Primary BHP trace: prefer the daily series; fall back to the test-date
+    # scatter ONLY when no daily BHP is available. (The old code used an elif
+    # on the overlay block below, which let the test-date scatter draw on top
+    # of the daily line whenever no overlay was set — producing two BHP traces.)
     if bhp_daily_df is not None and not bhp_daily_df.empty:
         fig.add_trace(
             go.Scatter(
@@ -300,24 +304,6 @@ def _create_history_chart(
                 mode="lines",
                 line=dict(color="#E65100", width=1.5),
                 hovertemplate="%{x|%Y-%m-%d}<br>BHP: %{y:.0f} psi<extra></extra>",
-            ),
-            secondary_y=True,
-        )
-
-    # Overlay: disregarded Databricks BHP, plotted in a muted dashed gray
-    # so the user can see the divergence that prompted the auto-disregard
-    # without thinking the chart is using that data. Only set when both a
-    # gauge is active AND the disregard flag is on — see _fetch_extended_well_tests.
-    if bhp_overlay_df is not None and not bhp_overlay_df.empty:
-        fig.add_trace(
-            go.Scatter(
-                x=bhp_overlay_df["tag_date"],
-                y=bhp_overlay_df["bhp"],
-                name="Databricks BHP (disregarded)",
-                mode="lines",
-                line=dict(color="#9E9E9E", width=1, dash="dash"),
-                opacity=0.7,
-                hovertemplate="%{x|%Y-%m-%d}<br>Databricks BHP: %{y:.0f} psi<extra></extra>",
             ),
             secondary_y=True,
         )
@@ -336,6 +322,24 @@ def _create_history_chart(
                 ),
                 secondary_y=True,
             )
+
+    # Overlay: disregarded Databricks BHP, plotted in a muted dashed gray so the
+    # user can see the divergence that prompted the auto-disregard without
+    # thinking the chart is using that data. Only fires when both a gauge is
+    # active AND the disregard flag is on — see _fetch_extended_well_tests.
+    if bhp_overlay_df is not None and not bhp_overlay_df.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=bhp_overlay_df["tag_date"],
+                y=bhp_overlay_df["bhp"],
+                name="Databricks BHP (disregarded)",
+                mode="lines",
+                line=dict(color="#9E9E9E", width=1, dash="dash"),
+                opacity=0.7,
+                hovertemplate="%{x|%Y-%m-%d}<br>Databricks BHP: %{y:.0f} psi<extra></extra>",
+            ),
+            secondary_y=True,
+        )
 
     # Vertical lines for each JP change with JPCO labels
     for idx in range(len(jp_changes)):

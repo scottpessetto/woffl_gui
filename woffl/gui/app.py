@@ -88,21 +88,9 @@ def _prefetch_well_sort_data() -> None:
     thread.start()
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def _cached_all_well_tests(months_back: int = 3):
-    """Fetch recent well tests for all MPU wells in one query. Cached 24h."""
-    from datetime import datetime
-
-    from dateutil.relativedelta import relativedelta
-
-    from woffl.assembly.well_test_client import fetch_milne_well_tests
-
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - relativedelta(months=months_back)).strftime(
-        "%Y-%m-%d"
-    )
-    df, _ = fetch_milne_well_tests(start_date, end_date)
-    return df
+# Well-test pre-fetch lives in gui.utils (fetch_all_well_tests) so the single-
+# source-of-truth lookback window is shared between startup and the per-well
+# slicer get_well_tests_for_well. Imported lazily at the call site below.
 
 
 def main():
@@ -138,8 +126,10 @@ def main():
             # Pre-fetch all well tests once (cached 24h for all users)
             if "all_well_tests_df" not in st.session_state:
                 with st.spinner("Fetching recent well tests from Databricks..."):
+                    from woffl.gui.utils import fetch_all_well_tests
+
                     try:
-                        st.session_state["all_well_tests_df"] = _cached_all_well_tests()
+                        st.session_state["all_well_tests_df"] = fetch_all_well_tests()
                     except Exception as e:
                         st.warning(f"Could not fetch well tests: {e}")
                         st.session_state["all_well_tests_df"] = None

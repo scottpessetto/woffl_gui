@@ -36,6 +36,88 @@ TOL_PSI = 5.0
 MAX_ITER = 30
 
 
+def robust_bracket(
+    f,
+    lo: float,
+    hi: float,
+    *,
+    lo_floor: float,
+    hi_cap: float,
+    expand_step: float = 500.0,
+    max_iter: int = 16,
+) -> dict:
+    """Bracket a sign change of a (monotonic-ish) residual, robust to NaNs.
+
+    ``f(x)`` returns a float, or NaN when the underlying solver fails at ``x``.
+    The PF residual increases with ppf_surf (more PF pressure → more nozzle
+    flow), so the search:
+
+      1. Gets finite evaluations at the starting bounds, nudging a NaN bound
+         *inward* toward the midpoint until the solver converges.
+      2. Returns immediately if the start bounds already bracket a sign change.
+      3. Otherwise expands the same-sign side *outward* toward its cap
+         (``hi`` up when both residuals are negative, ``lo`` down when both are
+         positive), re-evaluating until a sign change appears or a cap/NaN wall
+         is hit.
+
+    Returns ``{"status", "a", "b", "fa", "fb"}`` where status is:
+      * ``"ok"``         — ``(a, b)`` brackets a sign change (finite, opposite
+        signs); ``a == b`` marks an exact hit on a bound.
+      * ``"nan"``        — couldn't get finite evaluations at usable bounds.
+      * ``"no_bracket"`` — same sign even after expanding to the caps; inspect
+        ``fa``/``fb`` to message under- vs over-shoot.
+    """
+
+    def feval(x: float) -> float:
+        try:
+            return float(f(x))
+        except Exception:
+            return float("nan")
+
+    def finite_bound(x: float, mid: float) -> tuple[float, float]:
+        v = feval(x)
+        for _ in range(8):
+            if not np.isnan(v):
+                return x, v
+            x = x + (mid - x) * 0.4
+            if abs(mid - x) < 1.0:
+                break
+            v = feval(x)
+        return x, v
+
+    mid = (lo + hi) / 2.0
+    lo, f_lo = finite_bound(lo, mid)
+    hi, f_hi = finite_bound(hi, mid)
+
+    if np.isnan(f_lo) or np.isnan(f_hi):
+        return {"status": "nan", "a": lo, "b": hi, "fa": f_lo, "fb": f_hi}
+    if f_lo == 0.0:
+        return {"status": "ok", "a": lo, "b": lo, "fa": f_lo, "fb": f_lo}
+    if f_hi == 0.0:
+        return {"status": "ok", "a": hi, "b": hi, "fa": f_hi, "fb": f_hi}
+    if f_lo * f_hi < 0:
+        return {"status": "ok", "a": lo, "b": hi, "fa": f_lo, "fb": f_hi}
+
+    for _ in range(max_iter):
+        expanded = False
+        if f_hi < 0 and hi < hi_cap:
+            new_hi = min(hi_cap, hi + expand_step)
+            v = feval(new_hi)
+            if not np.isnan(v):
+                hi, f_hi, expanded = new_hi, v, True
+        elif f_lo > 0 and lo > lo_floor:
+            new_lo = max(lo_floor, lo - expand_step)
+            v = feval(new_lo)
+            if not np.isnan(v):
+                lo, f_lo, expanded = new_lo, v, True
+        if f_lo * f_hi < 0:
+            return {"status": "ok", "a": lo, "b": hi, "fa": f_lo, "fb": f_hi}
+        if not expanded:
+            break  # hit a cap or a NaN wall — can't widen further
+
+    return {"status": "no_bracket", "a": lo, "b": hi, "fa": f_lo, "fb": f_hi}
+
+
 @dataclass
 class PfCalibrationResult:
     well_name: str

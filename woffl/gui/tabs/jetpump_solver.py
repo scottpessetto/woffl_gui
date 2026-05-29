@@ -946,6 +946,10 @@ def _render_fric_calibration_section(
     """
     st.markdown("#### Friction-Coef Calibration (BHP-target)")
 
+    from woffl.gui.explainers import render_kcoef_explainer
+
+    render_kcoef_explainer()
+
     if not is_valid_number(actual_bhp):
         st.caption(
             "Cannot calibrate — most recent test has no measured BHP. "
@@ -1199,6 +1203,169 @@ def _render_test_picker(well_name: str, test_df):
     return sorted_tests.iloc[idx]
 
 
+def _render_ipr_anchor_control(well_name: str, test_df):
+    """Selector for which test anchors the Vogel IPR (separate from the
+    comparison picker).
+
+    Modes:
+      * ``recent``   — anchor on the most-recent test; reservoir pressure fit
+        to the whole test cloud (unchanged library behavior).
+      * ``median``   — anchor on the median-BHP test; reservoir pressure re-fit
+        for the best fit *through* that test.
+      * ``specific`` — anchor on a user-picked test; reservoir pressure re-fit
+        through it.
+
+    Writes the resolved mode/date to ``sw_ipr_anchor_mode_{well}`` /
+    ``sw_ipr_anchor_date_{well}`` (non-widget keys) so
+    :func:`woffl.gui.utils.build_calibration_inputs` targets the same operating
+    point as the chart. Returns ``(anchor_mode, anchor_date)``.
+    """
+    import pandas as pd
+
+    label_to_mode = {
+        "Most recent": "recent",
+        "Median test": "median",
+        "Specific test": "specific",
+    }
+
+    col_mode, col_pick = st.columns(2)
+    with col_mode:
+        sel = st.selectbox(
+            "IPR anchor",
+            options=list(label_to_mode),
+            index=0,
+            key=f"_sw_ipr_anchor_sel_{well_name}",
+            help=(
+                "Which test the Vogel IPR is anchored on. 'Most recent' fits "
+                "reservoir pressure to the whole test cloud (default). 'Median "
+                "test' / 'Specific test' anchor the curve on that test and "
+                "re-fit reservoir pressure for the best fit through it. "
+                "Independent of the 'Test to compare against' picker above."
+            ),
+        )
+    mode = label_to_mode[sel]
+
+    anchor_date = None
+    if mode == "specific":
+        sorted_tests = test_df.sort_values(
+            "WtDate", ascending=False
+        ).reset_index(drop=True)
+
+        def _opt(row) -> str:
+            d = row.get("WtDate")
+            parts = [d.strftime("%Y-%m-%d") if pd.notna(d) else "N/A"]
+            bhp = row.get("BHP")
+            if is_valid_number(bhp):
+                parts.append(f"BHP {float(bhp):,.0f}")
+            oil = row.get("WtOilVol")
+            if is_valid_number(oil):
+                parts.append(f"Oil {float(oil):,.0f}")
+            return "  ·  ".join(parts)
+
+        date_opts = [_opt(r) for _, r in sorted_tests.iterrows()]
+        anchor_key = f"_sw_ipr_anchor_pick_{well_name}"
+        if st.session_state.get(anchor_key) not in date_opts:
+            st.session_state.pop(anchor_key, None)
+        with col_pick:
+            picked = st.selectbox(
+                "Anchor test",
+                options=date_opts,
+                index=0,
+                key=anchor_key,
+                help="The test the Vogel curve is forced through.",
+            )
+        ad = sorted_tests.iloc[date_opts.index(picked)].get("WtDate")
+        anchor_date = ad if pd.notna(ad) else None
+
+    st.session_state[f"sw_ipr_anchor_mode_{well_name}"] = mode
+    st.session_state[f"sw_ipr_anchor_date_{well_name}"] = anchor_date
+    return mode, anchor_date
+
+
+def _render_manual_test_entry(well_name: str) -> None:
+    """Expander to add provisional well tests not yet in Databricks.
+
+    Stored per-well in ``st.session_state['sw_manual_tests'][well]`` for the
+    session only (cleared on browser refresh / Streamlit restart). Injected
+    into the test set by :func:`woffl.gui.utils.get_well_tests_for_well`, so a
+    manual test flows into the IPR fit, the comparison picker, the anchor list,
+    and the test table without any other call site changing.
+    """
+    from datetime import date
+
+    import pandas as pd
+
+    store = st.session_state.setdefault("sw_manual_tests", {})
+    existing = store.get(well_name, [])
+
+    label = "Add a provisional test (not yet in the system)"
+    if existing:
+        label += f" — {len(existing)} added this session"
+    with st.expander(label, expanded=False):
+        st.caption(
+            "Enter a well test that isn't in Databricks yet. It's kept for this "
+            "session only and feeds the IPR fit, comparison picker, anchor list, "
+            "and test table for this well. Leave a field at 0 to mark it unknown."
+        )
+        with st.form(f"_manual_test_form_{well_name}", clear_on_submit=True):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                t_date = st.date_input("Test date", value=date.today())
+                oil = st.number_input("Oil (BOPD)", min_value=0.0, step=10.0)
+                water = st.number_input("Water (BWPD)", min_value=0.0, step=10.0)
+            with c2:
+                bhp = st.number_input("BHP (psi)", min_value=0.0, step=10.0)
+                whp = st.number_input("Surface / WHP (psi)", min_value=0.0, step=10.0)
+            with c3:
+                gor = st.number_input("GOR (scf/bbl)", min_value=0.0, step=10.0)
+                pf = st.number_input(
+                    "PF rate / lift water (BWPD)", min_value=0.0, step=10.0
+                )
+            submitted = st.form_submit_button("Add test")
+
+        if submitted:
+            row = {
+                "well": well_name,
+                "WtDate": pd.Timestamp(t_date),
+                "WtOilVol": float(oil),
+                "WtWaterVol": float(water),
+                "WtTotalFluid": float(oil) + float(water),
+                "BHP": float(bhp) if bhp > 0 else float("nan"),
+                "fgor": float(gor) if gor > 0 else float("nan"),
+                "lift_wat": float(pf) if pf > 0 else float("nan"),
+                "whp": float(whp) if whp > 0 else float("nan"),
+            }
+            store.setdefault(well_name, []).append(row)
+            st.success(
+                f"Added provisional test "
+                f"{pd.Timestamp(t_date).strftime('%Y-%m-%d')} for {well_name}."
+            )
+            st.rerun()
+
+        if existing:
+            st.markdown("**Provisional tests this session:**")
+            for i, r in enumerate(existing):
+                d = r.get("WtDate")
+                ds = pd.Timestamp(d).strftime("%Y-%m-%d") if d is not None else "N/A"
+                bhp_str = (
+                    f"{float(r.get('BHP')):,.0f}"
+                    if is_valid_number(r.get("BHP"))
+                    else "n/a"
+                )
+                cols = st.columns([5, 1])
+                with cols[0]:
+                    st.caption(
+                        f"{ds} · Oil {r.get('WtOilVol', 0):,.0f} · "
+                        f"Water {r.get('WtWaterVol', 0):,.0f} · BHP {bhp_str}"
+                    )
+                with cols[1]:
+                    if st.button("Remove", key=f"_mt_rm_{well_name}_{i}"):
+                        store[well_name].pop(i)
+                        if not store[well_name]:
+                            store.pop(well_name, None)
+                        st.rerun()
+
+
 def _render_model_vs_actual(
     params: SimulationParams,
     wellbore,
@@ -1269,9 +1436,24 @@ def _render_model_vs_actual(
         else "N/A"
     )
 
-    # 2. Get well tests from pre-fetched cache
+    # 2. Get well tests from pre-fetched cache (includes any session-only
+    # manual/provisional tests injected by get_well_tests_for_well).
     test_df = _get_well_tests(params.selected_well)
     n_tests = 0 if test_df is None or test_df.empty else len(test_df)
+
+    # Manual provisional-test entry — always available (a well with no
+    # Databricks tests can still be modeled once a manual test is added).
+    _render_manual_test_entry(params.selected_well)
+
+    # IPR anchor selector (≥2 tests). Separate from the comparison picker: it
+    # controls which test the Vogel curve is anchored on and re-fits reservoir
+    # pressure through it. Writes session keys consumed by
+    # build_calibration_inputs so calibration targets the same operating point.
+    anchor_mode, anchor_date = "recent", None
+    if n_tests >= 2:
+        anchor_mode, anchor_date = _render_ipr_anchor_control(
+            params.selected_well, test_df
+        )
 
     # 3. Try Vogel fit (≥2 tests). With 0 or 1 tests we fall through to a
     # single-point synthetic IPR anchored on sidebar ResP — chart still
@@ -1280,27 +1462,62 @@ def _render_model_vs_actual(
     merged_with_rp = None
     vogel_coeffs = None
     if n_tests >= 2:
-        try:
-            merged_with_rp = estimate_reservoir_pressure(test_df)
-            vogel_coeffs = compute_vogel_coefficients(merged_with_rp)
-        except Exception as e:
-            st.warning(
-                f"Vogel IPR fit failed ({e}); falling back to a single-point "
-                "IPR with sidebar reservoir pressure."
-            )
-            vogel_coeffs = None
+        if anchor_mode in ("median", "specific"):
+            # Anchored fit: hold the chosen test as the Vogel anchor and re-fit
+            # reservoir pressure for the best fit through it (GUI-layer helper,
+            # no upstream-library change).
+            from woffl.gui.ipr_anchor import compute_anchored_vogel
 
-        # Vogel may return an empty DataFrame when every test row for this
-        # well is missing BHP (e.g. S-pad wells whose recent tests have no
-        # coincident gauge). Fall through to the no-IPR path in that case.
-        if (
-            vogel_coeffs is not None
-            and not vogel_coeffs.empty
-            and "Well" in vogel_coeffs.columns
-        ):
-            well_coeffs = vogel_coeffs[vogel_coeffs["Well"] == params.selected_well]
-            if not well_coeffs.empty:
-                coeff_row = well_coeffs.iloc[0]
+            field_max_rp = (
+                3000 if str(params.field_model).lower() == "kuparuk" else 1800
+            )
+            anchored = compute_anchored_vogel(
+                test_df,
+                well_name=params.selected_well,
+                anchor_mode=anchor_mode,
+                anchor_date=anchor_date,
+                field_max_rp=field_max_rp,
+            )
+            if anchored is not None:
+                coeff_row = pd.Series(anchored)
+                vogel_coeffs = pd.DataFrame([anchored])
+                merged_with_rp = test_df
+                st.caption(
+                    f"IPR anchored on **{anchored['anchor_label']}** · reservoir "
+                    f"pressure re-fit to **{anchored['ResP']:,} psi** for best "
+                    f"fit through that test (R² = {anchored['R2']})."
+                )
+            else:
+                st.warning(
+                    "Anchored IPR fit unavailable (no test with both BHP and "
+                    "rate); falling back to the most-recent global fit."
+                )
+
+        if coeff_row is None:
+            # Most-recent / global least-squares fit (unchanged library path).
+            try:
+                merged_with_rp = estimate_reservoir_pressure(test_df)
+                vogel_coeffs = compute_vogel_coefficients(merged_with_rp)
+            except Exception as e:
+                st.warning(
+                    f"Vogel IPR fit failed ({e}); falling back to a single-point "
+                    "IPR with sidebar reservoir pressure."
+                )
+                vogel_coeffs = None
+
+            # Vogel may return an empty DataFrame when every test row for this
+            # well is missing BHP (e.g. S-pad wells whose recent tests have no
+            # coincident gauge). Fall through to the no-IPR path in that case.
+            if (
+                vogel_coeffs is not None
+                and not vogel_coeffs.empty
+                and "Well" in vogel_coeffs.columns
+            ):
+                well_coeffs = vogel_coeffs[
+                    vogel_coeffs["Well"] == params.selected_well
+                ]
+                if not well_coeffs.empty:
+                    coeff_row = well_coeffs.iloc[0]
 
     # 4. Resolve the IPR anchor (qwf, pwf, ResP) and the points to overlay.
     # Compute test_gor / test_whp HERE (was: later, after the chart) so the

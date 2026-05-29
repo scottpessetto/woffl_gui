@@ -7,7 +7,7 @@ into a dedicated module. Returns a SimulationParams dataclass and run button sta
 import streamlit as st
 
 from woffl.gui.params import NOZZLE_OPTIONS, THROAT_OPTIONS, SimulationParams
-from woffl.gui.utils import get_available_wells, get_well_data
+from woffl.gui.utils import DEFAULT_TEST_MONTHS, get_available_wells, get_well_data
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +293,46 @@ def _on_well_change() -> None:
         st.session_state.sw_sim_active = True
 
 
+def _render_test_lookback_controls() -> None:
+    """Well-test lookback window + optional count cap.
+
+    Drives how much test history feeds the IPR fit, the comparison picker, and
+    the Vogel auto-populate — everything reads through
+    ``utils.get_well_tests_for_well``, which honors these two keys. Defaults:
+    6 months, no count cap.
+
+    Note: changing these updates the Solver tab's Model-vs-Actual chart/table
+    live (it re-reads tests each render), but does not re-seed the sidebar
+    qwf/pwf/ResP fields — those refresh on the next well selection.
+    """
+    with st.expander("Well Test History", expanded=False):
+        _number_input(
+            "Lookback (months)",
+            "sw_test_months",
+            default=DEFAULT_TEST_MONTHS,
+            min_value=1,
+            max_value=24,
+            step=1,
+            help=(
+                "How far back to pull well tests for this well. Widen this when "
+                "a well has too few recent tests to fit a sensible IPR. "
+                "Re-fetches from Databricks (cached per window)."
+            ),
+        )
+        _number_input(
+            "Max tests (0 = all)",
+            "sw_test_count_cap",
+            default=0,
+            min_value=0,
+            max_value=50,
+            step=1,
+            help=(
+                "Cap the number of most-recent tests used. 0 keeps every test "
+                "in the lookback window."
+            ),
+        )
+
+
 def _render_well_selection() -> tuple[str, dict | None]:
     """Render well selection widgets and return selected well + data."""
     st.subheader("Well Selection")
@@ -352,6 +392,8 @@ def _render_well_selection() -> tuple[str, dict | None]:
                     st.info(ipr_info)
         else:
             st.warning(f"Could not load data for {selected_well}")
+
+        _render_test_lookback_controls()
 
     return selected_well, well_data
 
