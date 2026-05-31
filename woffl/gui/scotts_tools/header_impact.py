@@ -38,19 +38,42 @@ from woffl.assembly.batchpump import BatchPump
 from woffl.assembly.jp_history import get_current_pump
 from woffl.assembly.network_optimizer import WellConfig
 from woffl.geometry.jetpump import JetPump
-from woffl.gui.utils import default_pad_pf, load_well_characteristics
+from woffl.gui.utils import PAD_PF_FALLBACK, default_pad_pf, load_well_characteristics
 
 from . import header_trend as ht
 from ._common import (
     build_well_config,
     create_well_objects,
+    fetch_well_tests_raw,
     friction_coefs_from_chars,
     get_latest_bhp_per_well,
     get_latest_whp_per_well,
     get_vogel_for_wells,
     pad_from_mp_name,
 )
+from .header_engine import (
+    OWN_TOKEN,
+    _chosen_method,
+    _verdict,
+    aggregate_response_curve,
+    average_slope,
+    average_vogel_rows,
+    bias_by_pad,
+    corr_display_plan,
+    describe_donor,
+    donor_member_wells,
+    donor_tokens,
+    pf_map_from_selected,
+    resolve_pad_pf,
+    sense_check_table,
+    summarize_sensitivity,
+)
 from .pf_scenario import _estimate_gaugeless_ipr
+
+# Header-change grid for the per-pad response curves (psi, relative to each well's
+# current WHP). Symmetric — show the oil response equally for header drops and rises.
+_SWEEP_DELTAS = (-150, -100, -50, 0, 50, 100, 150)
+_WHP_FLOOR = 30.0  # don't solve below this absolute WHP (avoid nonsense)
 
 
 # ── solver (mirror of pf_scenario._solve_at_pf, but sweep pwh) ──────────────
@@ -151,17 +174,79 @@ def _classify_lift(well: str, jp_hist, ov_row) -> str:
     return "flowing"
 
 
+# ── per-pad power-fluid pressure ─────────────────────────────────────────────
+
+
+def _render_pad_pf_editor(pads: list[str]) -> dict[str, int]:
+    """Editable per-pad power-fluid pressure table — the modeled PF baseline.
+
+    Each pad runs its jet pumps at a different PF pressure; this makes that
+    explicit (e.g. G/H/I/J distinct) instead of one global value. Values seed
+    from PAD_PF_DEFAULTS, are editable, and persist across reruns in session
+    state. Jet-pump wells inherit their pad's value as the "PF held" default in
+    the well table below, overridable per well.
+    """
+    resolved = resolve_pad_pf(pads, st.session_state.get("hpi_pad_pf"), default_pad_pf)
+    grid = pd.DataFrame(
+        [
+            {
+                "Pad": p,
+                "PF (psi)": resolved[p],
+                "Source": "default" if resolved[p] == int(default_pad_pf(p)) else "edited",
+            }
+            for p in pads
+        ]
+    )
+    st.caption(
+        "**Power-fluid pressure per pad** — held fixed while the header (WHP) is "
+        "swept, so it sets the modeled baseline. Seeded from pad defaults; edit to "
+        "match each pad's actual PF. JP wells inherit their pad's value below "
+        "(overridable per well)."
+    )
+    edited = st.data_editor(
+        grid,
+        key="hpi_pad_pf_editor",
+        hide_index=True,
+        column_config={
+            "Pad": st.column_config.TextColumn("Pad", disabled=True),
+            "PF (psi)": st.column_config.NumberColumn(
+                "PF (psi)", format="%d", min_value=1000, max_value=5000, step=50,
+                help="Power-fluid surface pressure for this pad's jet pumps.",
+            ),
+            "Source": st.column_config.TextColumn(
+                "Source", disabled=True,
+                help="'default' = pad default; 'edited' = you changed it.",
+            ),
+        },
+    )
+    out: dict[str, int] = {}
+    for _, r in edited.iterrows():
+        try:
+            out[str(r["Pad"])] = int(round(float(r["PF (psi)"])))
+        except (TypeError, ValueError):
+            out[str(r["Pad"])] = int(default_pad_pf(str(r["Pad"])))
+    st.session_state["hpi_pad_pf"] = out
+    return out
+
+
 # ── input table ─────────────────────────────────────────────────────────────
 
 
-def _build_input_table(pads: list[str], months_back: int) -> pd.DataFrame | None:
+def _build_input_table(
+    pads: list[str], months_back: int, pad_pf: dict[str, int] | None = None
+) -> pd.DataFrame | None:
     """Per-well input table for the selected pads — ALL producers, by lift type.
 
     JP wells (current pump) take the physics path; ESP / gas-lift / flowing wells
     take the empirical/analog path. WHP from the latest test; ResP from
     vw_prop_resvr / jp_chars where available, else assumed 1800 (ESPs aren't
     characterized in vw_prop_resvr). PF held + Pump apply to JP wells only.
+
+    ``pad_pf`` is the per-pad power-fluid pressure map (from the per-pad PF
+    editor); each JP well's "PF held" seeds from its pad's value, falling back to
+    ``default_pad_pf`` when a pad is absent. Overridable per well in the editor.
     """
+    pad_pf = pad_pf or {}
     jp_hist = st.session_state.get("jp_history_df")
     if jp_hist is None:
         return None
@@ -183,6 +268,11 @@ def _build_input_table(pads: list[str], months_back: int) -> pd.DataFrame | None
         is_jp = lift == "JP" and pump is not None and pump.get("nozzle_no") and pump.get("throat_ratio")
         chars = jp_chars_dict.get(wn, {})
 
+        is_sch = chars.get("is_sch", True)
+        if isinstance(is_sch, str):
+            is_sch = is_sch.lower() in ("true", "1", "yes")
+        formation = "Schrader" if is_sch else "Kuparuk"
+
         res_pres = chars.get("res_pres")
         if res_pres is None or pd.isna(res_pres):
             res_pres = ov.get("resvr_press")
@@ -200,16 +290,32 @@ def _build_input_table(pads: list[str], months_back: int) -> pd.DataFrame | None
                 "Lift": lift,
                 "Pump": f"{pump['nozzle_no']}{pump['throat_ratio']}" if is_jp else "",
                 "Oil (BOPD)": round(float(oil), 0) if pd.notna(oil) else None,
-                # PF-PRESSURE-DEPENDENCY: pad default, JP only, no per-well source yet
-                "PF held (psi)": default_pad_pf(pad) if is_jp else None,
+                # Per-pad PF (from the per-pad PF editor); JP only, overridable per well.
+                "PF held (psi)": (
+                    int(pad_pf.get(pad, default_pad_pf(pad))) if is_jp else None
+                ),
                 "WHP now (psi)": int(round(whp_now)) if pd.notna(whp_now) else None,
                 "ResP (psi)": int(round(float(res_pres))),
+                "Formation": formation,
+                # Like-wells donors (G3): blank = use the well's own IPR/correlation.
+                "IPR donor": OWN_TOKEN,
+                "Corr donor": OWN_TOKEN,
                 "Include": True,
             }
         )
     if not rows:
         return None
-    return pd.DataFrame(rows).sort_values(["Pad", "Lift", "Well"]).reset_index(drop=True)
+    df = pd.DataFrame(rows).sort_values(["Pad", "Lift", "Well"]).reset_index(drop=True)
+    # Fill a missing 'WHP now' with the average of the other wells on the same pad —
+    # wells on a shared header sit near the same WHP, so the pad mean is a sensible
+    # stand-in (a NaN well doesn't contribute to its own pad mean). Editable per row.
+    if "WHP now (psi)" in df.columns:
+        whp = pd.to_numeric(df["WHP now (psi)"], errors="coerce")
+        if whp.isna().any():
+            pad_mean = whp.groupby(df["Pad"]).transform("mean")
+            whp = whp.fillna(pad_mean)
+        df["WHP now (psi)"] = [int(round(v)) if pd.notna(v) else None for v in whp]
+    return df
 
 
 # ── empirical comparison ─────────────────────────────────────────────────────
@@ -286,49 +392,53 @@ def _empirical_columns(
     }
 
 
-def _verdict(
-    sonic_now: bool,
-    sonic_scen: bool,
-    delta_oil: float,
-    emp_class: str | None,
-    compare_emp: bool,
-    resp_thresh: float = 5.0,
-) -> str:
-    """Combine the physics sonic flag + ΔOil with the empirical class into an
-    actionable per-well label (Scott's sonic-decoupling insight made explicit).
-
-    A jet pump already sonic at the current WHP is choked — a header move can't
-    propagate past the critical throat, so it won't respond regardless of what
-    the IPR suggests. Non-sonic wells that the physics says respond are then
-    confirmed or contradicted by the empirical slope.
-    """
-    if sonic_now:
-        return "sonic-decoupled"          # already choked — header won't help
-    if sonic_scen:
-        return "chokes when lowered"       # responds, then sonic-limits
-    responds = pd.notna(delta_oil) and abs(delta_oil) >= resp_thresh
-    if not responds:
-        return "no response"
-    if not compare_emp or emp_class in (None, "no tag", "no data", "insufficient"):
-        return "responsive (physics)"
-    if emp_class == "responsive":
-        return "responsive ✓"
-    if emp_class == "slugging":
-        return "disagree — check"
-    return "responsive (physics)"
+def _synthetic_fit(slope: float):
+    """A WithinDayFit carrying just an averaged BHP~WHP slope, classified
+    responsive, so a donor / group-average correlation flows through
+    ``_empirical_columns`` and ``_solve_nonjp_row`` unchanged."""
+    return ht.WithinDayFit(
+        y_name="BHP", x_name="WHP",
+        mean_slope=float(slope), median_slope=float(slope), slope_std=0.0,
+        n_days=30, n_good_days=20, mean_r2=0.8, daily=pd.DataFrame(),
+    )
 
 
-def _solve_nonjp_row(wn, row, emp_fits: dict, emp_well_dfs: dict, delta_p: float) -> dict:
+def _resolve_corr_fits(well: str, token: str, rows_meta: dict, emp_fits: dict):
+    """Resolve the {key: WithinDayFit} dict to use for a well's empirical / non-JP
+    estimate, per its Corr-donor token. Returns ``(fit_dict, provenance)``."""
+    members = donor_member_wells(well, token, rows_meta)
+    if members is None:
+        return emp_fits.get(well), describe_donor(token)
+    prov = describe_donor(token, len(members))
+    if len(members) == 1:
+        return (emp_fits.get(members[0]) or emp_fits.get(well)), prov
+    slopes = [
+        emp_fits[m]["BHP~WHP"].mean_slope
+        for m in members
+        if m in emp_fits and emp_fits[m].get("BHP~WHP") is not None
+    ]
+    avg = average_slope(slopes)
+    if avg is None:
+        return emp_fits.get(well), prov + " (no slope → own)"
+    return {"BHP~WHP": _synthetic_fit(avg)}, prov
+
+
+def _solve_nonjp_row(
+    wn, row, emp_fits: dict, emp_well_dfs: dict, delta_p: float,
+    fit_override: dict | None = None, corr_prov: str = "own",
+    ipr_sink: dict | None = None,
+) -> dict:
     """Empirical-only result row for a non-JP well (ESP / gas-lift / flowing).
 
     No jet-pump physics: ``pwf`` = the well's own recent measured BHP; a generic
     Vogel IPR from the latest test oil rate + assumed reservoir pressure gives
     ΔOil for ΔBHP = (empirical BHP~WHP slope) × Δ. Gaugeless wells (no BHP trend)
-    are flagged to use the Analog estimate instead.
+    are flagged to use the Analog estimate instead. ``fit_override`` lets a Corr
+    donor (a like well or a group average) supply the BHP~WHP slope.
     """
     from woffl.flow.inflow import InFlow
 
-    fit = (emp_fits.get(wn) or {}).get("BHP~WHP")
+    fit = (fit_override or emp_fits.get(wn) or {}).get("BHP~WHP")
     emp_class = ht.classify_response(fit) if fit is not None else "no data"
     emp_slope = fit.mean_slope if fit is not None else np.nan
 
@@ -362,6 +472,23 @@ def _solve_nonjp_row(wn, row, emp_fits: dict, emp_well_dfs: dict, delta_p: float
         emp_doil = ipr.oil_flow(b1, "vogel") - ipr.oil_flow(b0, "vogel")
         verdict = "responsive (empirical)"
 
+    # Stash the generic Vogel IPR (anchored at the measured BHP + test oil +
+    # assumed ResP) so the review shows an IPR curve for ESP / non-JP wells too.
+    if (
+        ipr_sink is not None
+        and pd.notna(bhp_now)
+        and oil is not None
+        and pd.notna(oil)
+        and float(oil) > 0
+    ):
+        ipr_sink[wn] = {
+            "res_pres": float(max(res_pres, bhp_now + 100.0)),
+            "qwf": float(oil),
+            "pwf": float(bhp_now),
+            "form_wc": 0.0,  # qwf is already the oil rate for non-JP
+        }
+    oil_scen = (float(oil) + emp_doil) if (pd.notna(oil) and pd.notna(emp_doil)) else np.nan
+
     return {
         "Well": wn,
         "Pad": row["Pad"],
@@ -377,7 +504,7 @@ def _solve_nonjp_row(wn, row, emp_fits: dict, emp_well_dfs: dict, delta_p: float
         "BHP scen (psi)": (bhp_now + emp_dbhp) if (pd.notna(emp_dbhp) and pd.notna(bhp_now)) else np.nan,
         "ΔBHP (psi)": emp_dbhp,
         "Oil now (BOPD)": float(oil) if pd.notna(oil) else np.nan,
-        "Oil scen (BOPD)": np.nan,
+        "Oil scen (BOPD)": oil_scen,
         "ΔOil (BOPD)": np.nan,  # no physics estimate for non-JP
         "Phys dBHP/dWHP": np.nan,
         "PF rate now (BWPD)": np.nan,
@@ -389,8 +516,99 @@ def _solve_nonjp_row(wn, row, emp_fits: dict, emp_well_dfs: dict, delta_p: float
         "Emp days": fit.n_days if fit is not None else 0,
         "Emp dBHP/dWHP": emp_slope,
         "Emp ΔOil (BOPD)": emp_doil,
+        "IPR donor": "—",
+        "Corr donor": corr_prov,
         "Verdict": verdict,
     }
+
+
+def _add_nonjp_curve(wn, rrow, ipr_rows, curve_wells, deltas) -> None:
+    """Add a non-JP well's empirical oil-vs-header curve to ``curve_wells`` so the
+    per-pad / field response curve includes ESP / non-JP producers, not just the
+    swept JP wells. Oil at each Δ = the well's Vogel IPR sampled at BHP + slope×Δ.
+    """
+    from woffl.flow.inflow import InFlow
+
+    ir = ipr_rows.get(wn)
+    slope = rrow.get("Emp dBHP/dWHP")
+    if ir is None or pd.isna(slope) or rrow.get("Emp class") != "responsive":
+        return
+    try:
+        rp = float(ir["res_pres"])
+        inflow = InFlow(qwf=float(ir["qwf"]), pwf=float(ir["pwf"]), pres=rp)
+        oils = []
+        for d in deltas:
+            b = float(np.clip(float(ir["pwf"]) + float(slope) * d, 1.0, rp))
+            oils.append(float(inflow.oil_flow(b, "vogel")))
+        curve_wells[wn] = {"pad": rrow["Pad"], "oil": oils}
+    except Exception:
+        pass
+
+
+# ── saved scenarios (G6) ─────────────────────────────────────────────────────
+
+
+def _current_scenario() -> dict:
+    """Snapshot the configured inputs + overrides (not results) for reuse."""
+    df = st.session_state.get("hpi_input_df")
+    return {
+        "version": 1,
+        "pads": st.session_state.get("hpi_pads", []),
+        "months_back": int(st.session_state.get("hpi_months", 6)),
+        "delta_p": int(st.session_state.get("hpi_delta", -50)),
+        "build_curves": bool(st.session_state.get("hpi_build_curves", False)),
+        "fric_mode": st.session_state.get("hpi_fric_mode", "calibrate"),
+        "pad_pf": st.session_state.get("hpi_pad_pf", {}),
+        "input_table": df.to_dict("records") if df is not None else [],
+    }
+
+
+def _apply_scenario(blob: dict, all_pads: list[str]) -> None:
+    """Restore a scenario into session state. Widget keys are set before the
+    widgets render (the supported Streamlit pattern); editor deltas + stale
+    results are cleared so the restored logical state wins."""
+    pads = [p for p in (blob.get("pads") or []) if p in all_pads]
+    if pads:
+        st.session_state["hpi_pads"] = pads
+    if blob.get("months_back") is not None:
+        st.session_state["hpi_months"] = int(blob["months_back"])
+    if blob.get("delta_p") is not None:
+        st.session_state["hpi_delta"] = int(blob["delta_p"])
+    if blob.get("build_curves") is not None:
+        st.session_state["hpi_build_curves"] = bool(blob["build_curves"])
+    if blob.get("fric_mode") in ("calibrate", "databricks", "manual"):
+        st.session_state["hpi_fric_mode"] = blob["fric_mode"]
+    if blob.get("pad_pf"):
+        st.session_state["hpi_pad_pf"] = {str(k): int(v) for k, v in blob["pad_pf"].items()}
+    if blob.get("input_table"):
+        st.session_state["hpi_input_df"] = pd.DataFrame(blob["input_table"])
+    for k in ("hpi_editor", "hpi_pad_pf_editor", "hpi_results_df", "hpi_pdf_bytes", "hpi_curve"):
+        st.session_state.pop(k, None)
+
+
+def _render_scenario_io(all_pads: list[str]) -> None:
+    """Expander to save / load a full scenario (inputs + overrides) so a run is
+    reproducible. Results aren't saved — reload restores inputs and you re-run."""
+    import json
+
+    with st.expander("💾 Saved scenario — save / load inputs + overrides", expanded=False):
+        up = st.file_uploader("Load scenario (.json)", type=["json"], key="hpi_scn_up")
+        if up is not None:
+            sig = f"{up.name}:{up.size}"
+            if st.session_state.get("hpi_scn_sig") != sig:
+                try:
+                    _apply_scenario(json.load(up), all_pads)
+                    st.session_state["hpi_scn_sig"] = sig
+                    st.success("Scenario loaded — press **Run header impact** to compute.")
+                    st.rerun()
+                except Exception as e:
+                    st.warning(f"Could not load scenario ({type(e).__name__}: {e}).")
+        st.download_button(
+            "Download current scenario (.json)",
+            data=json.dumps(_current_scenario(), indent=2, default=str).encode("utf-8"),
+            file_name="header_impact_scenario.json", mime="application/json",
+            key="hpi_scn_dl",
+        )
 
 
 # ── main tab ─────────────────────────────────────────────────────────────────
@@ -421,8 +639,10 @@ def render_tab() -> None:
     jp_chars_df = load_well_characteristics()
     all_pads = sorted({pad_from_mp_name(w) for w in jp_chars_df["Well"]})
 
+    _render_scenario_io(all_pads)
+
     # ── settings ───────────────────────────────────────────────────────
-    c1, c2, c3 = st.columns([2, 1, 1])
+    c1, c2 = st.columns([2, 1])
     with c1:
         pads = st.multiselect(
             "Pad(s) / header",
@@ -438,13 +658,12 @@ def render_tab() -> None:
             key="hpi_months",
             help="Window for well tests (IPR) and historian trends (empirical slope).",
         )
-    with c3:
-        test_pf_pres = st.number_input(
-            "PF at test time (psi)",
-            min_value=1000, max_value=5000, value=3400, step=100,
-            key="hpi_test_pf",
-            help="Used only to back-calculate BHP for gaugeless jet-pump wells.",
-        )
+
+    # Per-pad power-fluid pressure (the modeled baseline; each pad differs). This
+    # also drives the gaugeless BHP back-calc — no single global "PF at test time".
+    pad_pf: dict[str, int] = {}
+    if pads:
+        pad_pf = _render_pad_pf_editor(pads)
 
     delta_p = st.number_input(
         "Header pressure change Δ (psi)",
@@ -499,7 +718,7 @@ def render_tab() -> None:
 
     if st.button("Load wells", key="hpi_load"):
         with st.spinner("Loading producers on the selected pad(s)..."):
-            input_df = _build_input_table(pads, months_back)
+            input_df = _build_input_table(pads, months_back, pad_pf)
         if input_df is None or input_df.empty:
             st.warning("No producers with recent allocated tests on the selected pad(s).")
             return
@@ -514,14 +733,21 @@ def render_tab() -> None:
 
     st.caption(
         "All producers on the pad: **JP** → physics, **ESP / gas-lift / flowing** → "
-        "empirical (no jet-pump model). **PF held** (JP only) is a pad default — no "
-        "per-well source yet. **ResP** is from vw_prop_resvr where available, else "
-        "assumed 1800 (ESPs aren't characterized there) — edit it. **WHP now** is the "
-        "latest test WHP."
+        "empirical (no jet-pump model). **PF held** (JP only) seeds from the per-pad "
+        "PF above — edit a cell to override a single well. **ResP** is from "
+        "vw_prop_resvr where available, else assumed 1800 (ESPs aren't characterized "
+        "there) — edit it. **WHP now** is the latest test WHP (pad average where a "
+        "well's own is missing). After a run, the "
+        "**IPR & Correlation Coverage** panel (in the results) shows which wells are "
+        "missing one and lets you assign a like-well / group-average donor, then re-run."
     )
 
-    edited_df = st.data_editor(
-        input_df,
+    config_cols = [c for c in [
+        "Well", "Pad", "Lift", "Pump", "Oil (BOPD)", "PF held (psi)",
+        "WHP now (psi)", "ResP (psi)", "Formation", "Include",
+    ] if c in input_df.columns]
+    edited_cfg = st.data_editor(
+        input_df[config_cols],
         key="hpi_editor",
         hide_index=True,
         use_container_width=True,
@@ -529,17 +755,18 @@ def render_tab() -> None:
             "Well": st.column_config.TextColumn("Well", disabled=True, pinned="left"),
             "Pad": st.column_config.TextColumn("Pad", disabled=True),
             "Pump": st.column_config.TextColumn("Pump", disabled=True),
+            "Formation": st.column_config.TextColumn("Formation", disabled=True),
             "PF held (psi)": st.column_config.NumberColumn(
                 "PF held (psi)", format="%d",
                 min_value=1000, max_value=5000, step=50,
                 help="Power-fluid pressure held fixed during the WHP sweep. "
-                "Pad default — no per-well source yet.",
+                "Seeds from the per-pad PF above; edit to override this well.",
             ),
             "WHP now (psi)": st.column_config.NumberColumn(
                 "WHP now (psi)", format="%d",
                 min_value=0, max_value=2000, step=10,
-                help="Baseline wellhead pressure (latest test). Edit if the "
-                "current header differs.",
+                help="Baseline wellhead pressure (latest test; the pad average where "
+                "a well's own test WHP is missing). Edit if the current header differs.",
             ),
             "Include": st.column_config.CheckboxColumn(
                 "Include", help="Uncheck to skip this well in the run.",
@@ -547,11 +774,50 @@ def render_tab() -> None:
         },
     )
 
+    # Donors are assigned in the post-run "IPR & Correlation Coverage" panel (where
+    # you can see which wells need one) and carried forward to the run from here.
+    edited_df = edited_cfg.copy()
+    edited_df["IPR donor"] = (
+        input_df["IPR donor"].values if "IPR donor" in input_df.columns else OWN_TOKEN
+    )
+    edited_df["Corr donor"] = (
+        input_df["Corr donor"].values if "Corr donor" in input_df.columns else OWN_TOKEN
+    )
+
+    # Persist edits so they survive reruns and feed the per-well PF map. The
+    # data_editor stores absolute cell values, so re-feeding the edited frame on
+    # the next run is idempotent (no double-apply).
+    st.session_state["hpi_input_df"] = edited_df.copy()
+
+    if st.button(
+        "↻ Re-apply pad PF to wells",
+        key="hpi_reapply_pf",
+        help="Reset each JP well's 'PF held' to its pad's current value above "
+        "(discards per-well PF overrides; keeps Include / WHP edits).",
+    ):
+        df2 = edited_df.copy()
+        jp_mask = df2["Lift"] == "JP"
+        df2.loc[jp_mask, "PF held (psi)"] = df2.loc[jp_mask, "Pad"].map(
+            lambda p: int(pad_pf.get(p, default_pad_pf(p)))
+        )
+        st.session_state["hpi_input_df"] = df2
+        st.session_state.pop("hpi_editor", None)  # clear stale editor delta
+        st.rerun()
+
     _render_analog(months_back, delta_p)
+
+    build_curves = st.checkbox(
+        "Build per-pad oil-vs-header response curves (recommended; adds a sweep per well)",
+        value=st.session_state.get("hpi_build_curves", True),
+        key="hpi_build_curves",
+        help="Solves each well across a range of header changes so the Sensitivity "
+        "section shows the oil-vs-WHP lever per pad plus a field total. Untick for a "
+        "faster run if you only need the single-Δ numbers.",
+    )
 
     run_clicked = st.button(
         "Run header impact", type="primary", use_container_width=True, key="hpi_run"
-    )
+    ) or st.session_state.pop("hpi_trigger_run", False)
     if not run_clicked:
         results_df = st.session_state.get("hpi_results_df")
         if results_df is not None:
@@ -583,11 +849,14 @@ def render_tab() -> None:
         vogel_dict = get_vogel_for_wells(well_names, months_back)
     missing = [w for w in well_names if w not in vogel_dict]
     if missing:
+        # Per-well PF (from each well's "PF held" = its pad's PF unless overridden)
+        # drives the gaugeless BHP back-calc — replaces the old global test_pf_pres.
+        pf_map_sel = pf_map_from_selected(selected)
         with st.spinner(f"Estimating BHP for {len(missing)} gaugeless wells..."):
             vogel_dict.update(
                 _estimate_gaugeless_ipr(
-                    missing, months_back, test_pf_pres, jp_hist, jp_chars_dict,
-                    whp_map=whp_map,
+                    missing, months_back, PAD_PF_FALLBACK, jp_hist, jp_chars_dict,
+                    whp_map=whp_map, pf_map=pf_map_sel,
                 )
             )
 
@@ -630,21 +899,46 @@ def render_tab() -> None:
     # ── solve each well at baseline WHP and at WHP + Δ ─────────────────
     results = []
     errors: list[str] = []
+    ipr_rows: dict = {}     # exact IPR (ResP/qwf/pwf/wc) used per JP well, for the review
+    curve_wells: dict = {}  # per-well swept oil for the response curves (if requested)
+    # Like-wells donor metadata (G3): pad / lift / formation per selected well.
+    rows_meta = {
+        str(r["Well"]): {
+            "pad": r["Pad"], "lift": r.get("Lift"), "formation": r.get("Formation"),
+        }
+        for _, r in selected.iterrows()
+    }
     progress = st.progress(0, text="Starting...")
     n = len(selected)
     for i, (_, row) in enumerate(selected.iterrows()):
         wn = row["Well"]
         progress.progress(i / max(n, 1), text=f"Solving {wn} ({i+1}/{n})...")
+        ipr_token = str(row.get("IPR donor", OWN_TOKEN))
+        corr_token = str(row.get("Corr donor", OWN_TOKEN))
 
         # Non-JP wells (ESP / gas-lift / flowing) take the empirical-only path.
         if str(row.get("Lift", "JP")) != "JP":
-            results.append(_solve_nonjp_row(wn, row, emp_fits, emp_well_dfs, delta_p))
+            fit_ov, corr_prov = _resolve_corr_fits(wn, corr_token, rows_meta, emp_fits)
+            nrow = _solve_nonjp_row(
+                wn, row, emp_fits, emp_well_dfs, delta_p, fit_ov, corr_prov,
+                ipr_sink=ipr_rows,
+            )
+            results.append(nrow)
+            if build_curves:
+                _add_nonjp_curve(wn, nrow, ipr_rows, curve_wells, _SWEEP_DELTAS)
             continue
 
         pump = get_current_pump(jp_hist, wn)
         if pump is None or not pump.get("nozzle_no") or not pump.get("throat_ratio"):
             # Classified JP but no current pump now → fall back to empirical-only.
-            results.append(_solve_nonjp_row(wn, row, emp_fits, emp_well_dfs, delta_p))
+            fit_ov, corr_prov = _resolve_corr_fits(wn, corr_token, rows_meta, emp_fits)
+            nrow = _solve_nonjp_row(
+                wn, row, emp_fits, emp_well_dfs, delta_p, fit_ov, corr_prov,
+                ipr_sink=ipr_rows,
+            )
+            results.append(nrow)
+            if build_curves:
+                _add_nonjp_curve(wn, nrow, ipr_rows, curve_wells, _SWEEP_DELTAS)
             continue
         chars = jp_chars_dict.get(wn)
 
@@ -656,9 +950,21 @@ def render_tab() -> None:
         ipr_src = "gauge" if wn in gauged else ("back-calc" if wn in estimated else "jp_chars")
 
         try:
-            wc = build_well_config(wn, jp_chars_dict, vogel_dict.get(wn), surf_pres=whp_now)
+            # IPR donor (G3): own, a specific well, or a like-wells group average.
+            ipr_members = donor_member_wells(wn, ipr_token, rows_meta)
+            if ipr_members is None:
+                donor_vogel = vogel_dict.get(wn)
+            else:
+                donor_vogel = average_vogel_rows(
+                    [vogel_dict[m] for m in ipr_members if m in vogel_dict]
+                ) or vogel_dict.get(wn)
+            wc = build_well_config(wn, jp_chars_dict, donor_vogel, surf_pres=whp_now)
             well_objs = create_well_objects(wc)
             wellbore, well_profile, inflow, res_mix, prop_pf = well_objs
+            ipr_rows[wn] = {
+                "res_pres": float(wc.res_pres), "qwf": float(wc.qwf),
+                "pwf": float(wc.pwf), "form_wc": float(wc.form_wc),
+            }
 
             # Friction coefs by mode: Databricks defaults, manual override, or
             # per-well calibration to measured BHP (tames default-coef optimism
@@ -696,6 +1002,21 @@ def render_tab() -> None:
                 wc, well_objs, pump["nozzle_no"], pump["throat_ratio"],
                 whp_now + delta_p, pf_held, fric,
             )
+            if build_curves:
+                oils = []
+                for d in _SWEEP_DELTAS:
+                    whp_d = whp_now + d
+                    if whp_d < _WHP_FLOOR:
+                        oils.append(np.nan)
+                    elif d == 0:
+                        oils.append(res_now["oil"])
+                    else:
+                        rd = _solve_at_whp(
+                            wc, well_objs, pump["nozzle_no"], pump["throat_ratio"],
+                            whp_d, pf_held, fric,
+                        )
+                        oils.append(rd["oil"])
+                curve_wells[wn] = {"pad": row["Pad"], "oil": oils}
         except Exception as e:
             errors.append(f"{wn}: solver error — {e}")
             continue
@@ -730,13 +1051,16 @@ def render_tab() -> None:
             "Sonic scen": res_scen["sonic"],
             "Mach scen": res_scen["mach"],
         }
+        corr_fits, corr_prov = _resolve_corr_fits(wn, corr_token, rows_meta, emp_fits)
         emp_class = None
         if compare_emp:
             ecols = _empirical_columns(
-                emp_fits.get(wn), well_objs[2], wc.res_pres, res_now["psu"], delta_p
+                corr_fits, well_objs[2], wc.res_pres, res_now["psu"], delta_p
             )
             row_d.update(ecols)
             emp_class = ecols.get("Emp class")
+        row_d["IPR donor"] = describe_donor(ipr_token, len(ipr_members or []))
+        row_d["Corr donor"] = corr_prov
         row_d["Verdict"] = _verdict(
             res_now["sonic"], res_scen["sonic"], row_d["ΔOil (BOPD)"], emp_class, compare_emp
         )
@@ -756,32 +1080,31 @@ def render_tab() -> None:
     results_df = pd.DataFrame(results)
     st.session_state["hpi_results_df"] = results_df
     st.session_state["hpi_delta_used"] = delta_p
+    st.session_state["hpi_run_token"] = st.session_state.get("hpi_run_token", 0) + 1
+    # Review inputs: exact IPR rows (for the IPR panel), measured test oil (for
+    # the sense check), and any response-curve points.
+    st.session_state["hpi_ipr_rows"] = ipr_rows
+    # Well-test points for the IPR scatter overlay (oil/water/BHP/date/... per test).
+    try:
+        _traw = fetch_well_tests_raw(months_back)
+        st.session_state["hpi_test_df"] = (
+            _traw[_traw["well"].isin(well_names)].copy()
+            if _traw is not None and not _traw.empty else None
+        )
+    except Exception:
+        st.session_state["hpi_test_df"] = None
+    st.session_state["hpi_test_oil"] = {
+        str(r["Well"]): r.get("Oil (BOPD)") for _, r in selected.iterrows()
+    }
+    if build_curves and curve_wells:
+        st.session_state["hpi_curve"] = {"deltas": list(_SWEEP_DELTAS), "wells": curve_wells}
+    else:
+        st.session_state.pop("hpi_curve", None)
     _render_results(results_df, delta_p)
     _render_diagnostics()
 
 
 # ── results display ───────────────────────────────────────────────────────
-
-
-def _chosen_method(phys_doil, emp_doil, method: str):
-    """Pick the ΔOil to trust for a well + a label, per the global method.
-
-    auto = keep physics unless the empirical ΔOil is available AND materially
-    disagrees (Scott's "override physics when reality differs"); empirical = use
-    the field value wherever a responsive empirical slope produced one.
-    """
-    phys = float(phys_doil) if pd.notna(phys_doil) else np.nan
-    emp = float(emp_doil) if pd.notna(emp_doil) else np.nan
-    if pd.isna(phys):  # non-JP well (no physics) — empirical is the only estimate
-        return (emp, "empirical") if pd.notna(emp) else (np.nan, "—")
-    if method == "physics":
-        return phys, "physics"
-    if method == "empirical":
-        return (emp, "empirical") if pd.notna(emp) else (phys, "physics (emp N/A)")
-    # auto
-    if pd.notna(emp) and pd.notna(phys) and abs(phys - emp) >= max(20.0, 0.3 * abs(phys)):
-        return emp, "empirical (override)"
-    return phys, "physics"
 
 
 def _render_results(results_df: pd.DataFrame, delta_p: float) -> None:
@@ -859,33 +1182,22 @@ def _render_results(results_df: pd.DataFrame, delta_p: float) -> None:
         vc = results_df["Verdict"].value_counts()
         st.caption("Verdict mix — " + "  ·  ".join(f"**{k}**: {v}" for k, v in vc.items()))
 
-    # Pad subtotals
-    st.subheader("By Pad")
-    pad_agg = (
-        results_df.groupby("Pad")
-        .agg(**{
-            "Oil now (BOPD)": ("Oil now (BOPD)", "sum"),
-            "ΔOil (BOPD)": ("Chosen ΔOil (BOPD)", "sum"),
-        })
-        .reset_index()
-    )
-    pad_agg["Oil after Δ (BOPD)"] = pad_agg["Oil now (BOPD)"] + pad_agg["ΔOil (BOPD)"]
-    st.dataframe(
-        pad_agg.style.format(
-            {
-                "Oil now (BOPD)": "{:,.0f}",
-                "ΔOil (BOPD)": "{:+,.0f}",
-                "Oil after Δ (BOPD)": "{:,.0f}",
-            }
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
+    # Coverage: which wells lack a real IPR / correlation, with inline donor
+    # assignment (so you see the gap and fix it without scrolling back up).
+    _render_coverage_panel(results_df)
+
+    # Per-pad + overall sensitivity (response-class breakdown + BOPD/100psi) and,
+    # if response curves were built, the oil-vs-header lever per pad / field.
+    _render_field_sensitivity(results_df, delta_p)
+
+    # Per-pad review — IPR curves, WHP→BHP correlations, sensitivity, drill-down.
+    _render_pad_review(results_df, delta_p)
 
     # Well details — Verdict + provenance up front.
     st.subheader("Well Details")
     front = [c for c in ["Well", "Pad", "Lift", "Verdict", "Method used",
-                          "Chosen ΔOil (BOPD)", "Pump", "IPR src", "Fric src"]
+                          "Chosen ΔOil (BOPD)", "Pump", "IPR src", "IPR donor",
+                          "Corr donor", "Fric src"]
              if c in results_df.columns]
     disp_df = results_df[front + [c for c in results_df.columns if c not in front]]
     fmt = {
@@ -966,6 +1278,10 @@ def _render_results(results_df: pd.DataFrame, delta_p: float) -> None:
             ),
         },
     )
+
+    # ── modeled vs reality (oil residual + optimism bias) ──────────────
+    # The slope half of the sense check is the Physics-vs-Empirical scatter below.
+    _render_sense_check(results_df)
 
     # ── physics vs empirical comparison ────────────────────────────────
     if has_emp:
@@ -1070,13 +1386,628 @@ def _render_results(results_df: pd.DataFrame, delta_p: float) -> None:
             hide_index=True,
         )
 
-    # CSV
-    st.download_button(
-        "Download Results CSV",
-        data=results_df.to_csv(index=False).encode("utf-8"),
-        file_name="header_impact_results.csv",
-        mime="text/csv",
-        key="hpi_csv_download",
+    # Printouts & export — per-section CSVs, correlation summary, PDF report.
+    _render_exports(results_df, delta_p)
+
+
+# ── v2 review surface: sensitivity, per-pad expanders, IPR, sense check ──────
+
+
+def _ipr_grid_fig(pad_df: pd.DataFrame, ipr_rows: dict, test_df: pd.DataFrame | None = None):
+    """Grid of Vogel IPR curves for a pad's wells (JP and ESP/non-JP alike), with:
+    the operating point (oil now @ BHP now, ●), the scenario point (oil scen @ BHP
+    scen, ✕), and the well's actual well-test points overlaid (hover shows the full
+    test detail) so the header lever and the data behind the IPR are both visible.
+    Returns a Figure or None.
+    """
+    from plotly.subplots import make_subplots
+
+    from woffl.flow.inflow import InFlow
+
+    wells = [w for w in pad_df["Well"].tolist() if w in ipr_rows]
+    if not wells:
+        return None
+    cols = int(np.ceil(np.sqrt(len(wells))))
+    rows = int(np.ceil(len(wells) / cols))
+    fig = make_subplots(
+        rows=rows, cols=cols, subplot_titles=wells,
+        vertical_spacing=0.13, horizontal_spacing=0.08,
+        x_title="Oil (BOPD)", y_title="BHP (psi)",
+    )
+    by_well = pad_df.set_index("Well")
+    for i, w in enumerate(wells):
+        r, c = i // cols + 1, i % cols + 1
+        ir = ipr_rows[w]
+        res_pres = float(ir.get("res_pres", 1800.0))
+        form_wc = float(ir.get("form_wc", 0.5))
+        try:
+            inflow = InFlow(
+                qwf=float(ir["qwf"]) * (1.0 - form_wc), pwf=float(ir["pwf"]), pres=res_pres
+            )
+            bhp_grid = np.linspace(0.0, res_pres, 40)
+            oil_grid = [float(inflow.oil_flow(float(b), "vogel")) for b in bhp_grid]
+        except Exception:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=oil_grid, y=bhp_grid, mode="lines",
+                line=dict(color="#1f77b4", width=2), showlegend=False,
+                hovertemplate="Oil %{x:.0f} BOPD<br>BHP %{y:.0f} psi<extra></extra>",
+            ),
+            row=r, col=c,
+        )
+        wr = by_well.loc[w] if w in by_well.index else None
+        if wr is not None:
+            o0, b0 = wr.get("Oil now (BOPD)"), wr.get("BHP now (psi)")
+            o1, b1 = wr.get("Oil scen (BOPD)"), wr.get("BHP scen (psi)")
+            if pd.notna(o0) and pd.notna(b0):
+                fig.add_trace(
+                    go.Scatter(
+                        x=[o0], y=[b0], mode="markers",
+                        marker=dict(color="black", size=9, symbol="circle"), showlegend=False,
+                        hovertemplate="now: %{x:.0f} BOPD @ %{y:.0f} psi<extra></extra>",
+                    ),
+                    row=r, col=c,
+                )
+            if pd.notna(o1) and pd.notna(b1):
+                fig.add_trace(
+                    go.Scatter(
+                        x=[o1], y=[b1], mode="markers",
+                        marker=dict(color="crimson", size=10, symbol="x"), showlegend=False,
+                        hovertemplate="scenario: %{x:.0f} BOPD @ %{y:.0f} psi<extra></extra>",
+                    ),
+                    row=r, col=c,
+                )
+        # Actual well-test points (oil vs BHP) with full test detail on hover.
+        if test_df is not None and not getattr(test_df, "empty", True) and "well" in test_df.columns:
+            wt = test_df[test_df["well"] == w]
+            if "BHP" in wt.columns and "WtOilVol" in wt.columns:
+                wt = wt.dropna(subset=["BHP", "WtOilVol"])
+            else:
+                wt = wt.iloc[0:0]
+            if not wt.empty:
+                hover = []
+                for _, t in wt.iterrows():
+                    parts = [str(w)]
+                    if pd.notna(t.get("WtDate")):
+                        parts.append(f"Date: {pd.Timestamp(t['WtDate']).date()}")
+                    if pd.notna(t.get("WtOilVol")):
+                        parts.append(f"Oil: {t['WtOilVol']:.0f} BOPD")
+                    if pd.notna(t.get("WtWaterVol")):
+                        parts.append(f"Water: {t['WtWaterVol']:.0f} BWPD")
+                    if pd.notna(t.get("WtTotalFluid")):
+                        parts.append(f"Fluid: {t['WtTotalFluid']:.0f} BPD")
+                    if pd.notna(t.get("fgor")):
+                        parts.append(f"GOR: {t['fgor']:.0f} scf/bbl")
+                    if pd.notna(t.get("whp")):
+                        parts.append(f"WHP: {t['whp']:.0f} psi")
+                    if pd.notna(t.get("BHP")):
+                        parts.append(f"BHP: {t['BHP']:.0f} psi")
+                    hover.append("<br>".join(parts))
+                fig.add_trace(
+                    go.Scatter(
+                        x=wt["WtOilVol"], y=wt["BHP"], mode="markers",
+                        marker=dict(size=6, color="#777", symbol="circle-open",
+                                    line=dict(width=1, color="#777")),
+                        text=hover, hoverinfo="text", showlegend=False, name=f"{w} tests",
+                    ),
+                    row=r, col=c,
+                )
+    fig.update_layout(
+        height=max(280, rows * 250), showlegend=False,
+        title_text="Vogel IPR — ● now → ✕ scenario",
+        margin=dict(l=60, r=20, t=60, b=55),
+    )
+    fig.update_annotations(font_size=10)
+    fig.update_xaxes(rangemode="tozero")
+    fig.update_yaxes(rangemode="tozero")
+    return fig
+
+
+def _response_curve_fig(agg: dict, pads_to_show: list[str] | None = None, title: str = ""):
+    """Line chart of ΔOil vs header change per pad (and the field total)."""
+    if not agg or "deltas" not in agg:
+        return None
+    deltas = agg["deltas"]
+    pads = agg.get("pads", {})
+    keys = pads_to_show if pads_to_show is not None else sorted(pads.keys())
+    palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2"]
+    fig = go.Figure()
+    for i, pad in enumerate(keys):
+        if pad not in pads:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=deltas, y=pads[pad], mode="lines+markers", name=f"Pad {pad}",
+                line=dict(color=palette[i % len(palette)]),
+                hovertemplate="Δ%{x:+d} psi<br>ΔOil %{y:+.0f} BOPD<extra></extra>",
+            )
+        )
+    if pads_to_show is None and "ALL" in agg:
+        fig.add_trace(
+            go.Scatter(
+                x=deltas, y=agg["ALL"], mode="lines+markers", name="Field (ALL)",
+                line=dict(color="black", width=3, dash="dot"),
+                hovertemplate="Δ%{x:+d} psi<br>ΔOil %{y:+.0f} BOPD<extra></extra>",
+            )
+        )
+    fig.add_hline(y=0, line_dash="dash", line_color="gray")
+    fig.add_vline(x=0, line_dash="dash", line_color="gray")
+    fig.update_layout(
+        title=title or "Oil response vs header change",
+        xaxis_title="Header change Δ (psi)", yaxis_title="ΔOil vs current (BOPD)",
+        height=420,
+    )
+    return fig
+
+
+def _render_field_sensitivity(results_df: pd.DataFrame, delta_p: float) -> None:
+    """Overall + per-pad sensitivity table, plus the field response curve if built."""
+    st.subheader("Sensitivity")
+    per_pad, overall = summarize_sensitivity(results_df, delta_p)
+    if per_pad.empty:
+        return
+    table = pd.concat([per_pad, pd.DataFrame([overall])], ignore_index=True)
+    st.dataframe(
+        table.style.format(
+            {
+                "Oil now (BOPD)": "{:,.0f}", "ΔOil (BOPD)": "{:+,.0f}",
+                "Oil after Δ (BOPD)": "{:,.0f}", "BOPD per 100 psi": "{:+,.1f}",
+            },
+            na_rep="—",
+        ),
+        use_container_width=True, hide_index=True,
+    )
+    st.caption(
+        f"ΔOil at the {int(delta_p):+d} psi run, normalized to BOPD per 100 psi of header "
+        "change, with each pad split by response class. The **ALL** row is the field total."
+    )
+    agg = aggregate_response_curve(st.session_state.get("hpi_curve"))
+    if agg:
+        fig = _response_curve_fig(agg, title="Field oil response vs header change")
+        if fig is not None:
+            st.plotly_chart(fig, use_container_width=True, key="hpi_field_curve")
+            st.caption(
+                "Each line is a pad's total oil change as the header moves; the dotted black "
+                "line is the field. Flattening = wells choking sonic (the lever stops working)."
+            )
+    else:
+        st.caption(
+            "Tick **Build per-pad response curves** before running to see the oil-vs-header "
+            "lever (a curve per pad) here and in each pad below."
+        )
+
+
+def _corr_review_fig(pad_df: pd.DataFrame, well_dfs: dict, fits: dict, driver: str = "WHP"):
+    """Per-pad WHP→BHP correlation grid for the review — one panel for EVERY well
+    used in the impact: its own trend, the donor's trend, or (for group-average
+    correlations / no data) a labeled note in the panel title. Returns a Figure
+    or None."""
+    from plotly.subplots import make_subplots
+
+    key = f"BHP~{driver}"
+    wells = list(pad_df["Well"])
+    if not wells:
+        return None
+    plan = corr_display_plan(pad_df, list((well_dfs or {}).keys()))
+    n = len(wells)
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = int(np.ceil(n / cols))
+    titles = []
+    for w in wells:
+        p = plan.get(w, {})
+        source = p.get("source")
+        note = p.get("note", "")
+        f = (fits.get(source) or {}).get(key) if source else None
+        if f is not None:
+            titles.append(
+                f"{w}  m={f.mean_slope:.2f}·{ht.classify_response(f)}"
+                + (f"<br>{note}" if note else "")
+            )
+        else:
+            titles.append(f"{w}<br>{note}" if note else f"{w} · no corr data")
+    fig = make_subplots(
+        rows=rows, cols=cols, subplot_titles=titles,
+        vertical_spacing=0.10, horizontal_spacing=0.06,
+        x_title=f"{driver} (psi)", y_title="BHP (psi)",
+    )
+    for i, w in enumerate(wells):
+        r, c = i // cols + 1, i % cols + 1
+        source = plan.get(w, {}).get("source")
+        src_df = (well_dfs or {}).get(source) if source else None
+        d = None
+        if src_df is not None and driver in src_df.columns and "BHP" in src_df.columns:
+            d = src_df[[driver, "BHP"]].replace([np.inf, -np.inf], np.nan).dropna()
+            d = d[d["BHP"] > 50]
+        if d is None or d.empty:
+            continue
+        idx = pd.DatetimeIndex(d.index)
+        ords = (idx.normalize() - idx.normalize().min()).days
+        fig.add_trace(
+            go.Scatter(
+                x=d[driver], y=d["BHP"], mode="markers",
+                marker=dict(size=4, color=ords, colorscale="Viridis", showscale=False),
+                hovertemplate=f"{driver}: %{{x:.0f}}<br>BHP: %{{y:.0f}}<extra>{w}</extra>",
+                showlegend=False,
+            ),
+            row=r, col=c,
+        )
+        f_fit = (fits.get(source) or {}).get(key)
+        if f_fit is not None and getattr(f_fit, "daily", None) is not None \
+                and not f_fit.daily.empty and "good" in f_fit.daily.columns:
+            xseg: list = []
+            yseg: list = []
+            for _, dr in f_fit.daily[f_fit.daily["good"]].iterrows():
+                x0, x1 = dr["x_min"], dr["x_max"]
+                xseg += [x0, x1, None]
+                yseg += [dr["slope"] * x0 + dr["intercept"], dr["slope"] * x1 + dr["intercept"], None]
+            if xseg:
+                fig.add_trace(
+                    go.Scatter(x=xseg, y=yseg, mode="lines", line=dict(color="crimson", width=1),
+                               opacity=0.6, hoverinfo="skip", showlegend=False),
+                    row=r, col=c,
+                )
+        try:
+            xlo, xhi = np.nanpercentile(d[driver], [1, 99])
+            ylo, yhi = np.nanpercentile(d["BHP"], [1, 99])
+            xpad = max((xhi - xlo) * 0.05, 1.0)
+            ypad = max((yhi - ylo) * 0.05, 1.0)
+            fig.update_xaxes(range=[xlo - xpad, xhi + xpad], row=r, col=c)
+            fig.update_yaxes(range=[ylo - ypad, yhi + ypad], row=r, col=c)
+        except Exception:
+            pass
+    fig.update_layout(
+        height=max(360, rows * 280), showlegend=False,
+        title_text=f"BHP vs {driver} — good daily fits in red",
+        margin=dict(l=60, r=20, t=80, b=60),
+    )
+    fig.update_annotations(font_size=9)
+    return fig
+
+
+def _render_pad_review(results_df: pd.DataFrame, delta_p: float) -> None:
+    """Per-pad expanders: wells table, IPR curves, WHP→BHP correlations, the pad's
+    response curve, and a single-well fit drill-down."""
+    st.subheader("Per-Pad Review")
+    ipr_rows = st.session_state.get("hpi_ipr_rows", {}) or {}
+    test_df = st.session_state.get("hpi_test_df")
+    well_dfs = st.session_state.get("hpi_emp_well_dfs", {}) or {}
+    fits = st.session_state.get("hpi_emp_fits", {}) or {}
+    per_pad, _ = summarize_sensitivity(results_df, delta_p)
+    bias = bias_by_pad(results_df)
+    agg = aggregate_response_curve(st.session_state.get("hpi_curve"))
+    pads = sorted(results_df["Pad"].unique())
+    for pi, pad in enumerate(pads):
+        pad_df = results_df[results_df["Pad"] == pad].copy()
+        prow = per_pad[per_pad["Pad"] == pad]
+        doil = float(prow["ΔOil (BOPD)"].iloc[0]) if not prow.empty else float("nan")
+        bopd100 = float(prow["BOPD per 100 psi"].iloc[0]) if not prow.empty else float("nan")
+        title = f"Pad {pad}  ·  ΔOil {doil:+,.0f} BOPD  ·  {bopd100:+,.1f}/100psi  ·  {len(pad_df)} wells"
+        with st.expander(title, expanded=(pi == 0)):
+            if not bias.empty:
+                brow = bias[bias["Pad"] == pad]
+                if not brow.empty:
+                    st.caption(
+                        f"Modeled-vs-field bias (responsive wells): "
+                        f"**{brow['Emp/Phys bias'].iloc[0]:.2f}** — {brow['Flag'].iloc[0]}"
+                    )
+            wcols = [
+                c for c in ["Well", "Lift", "Verdict", "Method used", "Chosen ΔOil (BOPD)",
+                            "BHP now (psi)", "BHP scen (psi)", "Oil now (BOPD)", "Oil scen (BOPD)",
+                            "Emp class"]
+                if c in pad_df.columns
+            ]
+            st.dataframe(
+                pad_df[wcols].style.format(
+                    {
+                        "Chosen ΔOil (BOPD)": "{:+,.0f}", "BHP now (psi)": "{:,.0f}",
+                        "BHP scen (psi)": "{:,.0f}", "Oil now (BOPD)": "{:,.0f}",
+                        "Oil scen (BOPD)": "{:,.0f}",
+                    },
+                    na_rep="—",
+                ),
+                use_container_width=True, hide_index=True,
+            )
+            if agg and pad in agg.get("pads", {}):
+                f = _response_curve_fig(agg, pads_to_show=[pad], title=f"Pad {pad} — oil vs header change")
+                if f is not None:
+                    st.plotly_chart(f, use_container_width=True, key=f"hpi_padcurve_{pad}")
+            ipr_fig = _ipr_grid_fig(pad_df, ipr_rows, test_df)
+            if ipr_fig is not None:
+                st.markdown("**IPR curves** — ● now, ✕ scenario")
+                st.plotly_chart(ipr_fig, use_container_width=True, key=f"hpi_ipr_{pad}")
+            pad_wells = pad_df["Well"].tolist()
+            sub_dfs = {w: well_dfs[w] for w in pad_wells if w in well_dfs}
+            sub_fits = {w: fits.get(w, {}) for w in pad_wells if w in well_dfs}
+            gfig = _corr_review_fig(pad_df, well_dfs, fits, "WHP")
+            if gfig is not None:
+                st.markdown(
+                    "**WHP→BHP correlations** — every well used; donor/group correlations "
+                    "noted in the panel title (good daily fits in red)"
+                )
+                st.plotly_chart(gfig, use_container_width=True, key=f"hpi_corr_{pad}")
+            if sub_dfs:
+                drill = st.selectbox(
+                    f"Drill-down well (Pad {pad})",
+                    options=["—"] + sorted(sub_dfs.keys()), key=f"hpi_drill_{pad}",
+                )
+                if drill and drill != "—":
+                    wf = _plot_well_fits(drill, sub_dfs[drill], sub_fits.get(drill, {}))
+                    if wf is not None:
+                        st.plotly_chart(wf, use_container_width=True, key=f"hpi_drillfig_{pad}")
+
+
+def _render_sense_check(results_df: pd.DataFrame) -> None:
+    """Modeled-vs-reality: per-well Phys/Emp/Chosen ΔOil + modeled vs measured
+    Oil-now, plus the per-pad optimism bias."""
+    st.subheader("Modeled vs Reality")
+    test_oil = st.session_state.get("hpi_test_oil", {}) or {}
+    tbl = sense_check_table(results_df, test_oil)
+    if tbl.empty:
+        return
+    st.dataframe(
+        tbl.style.format(
+            {
+                "Phys ΔOil (BOPD)": "{:+,.0f}", "Emp ΔOil (BOPD)": "{:+,.0f}",
+                "Chosen ΔOil (BOPD)": "{:+,.0f}", "Oil now modeled (BOPD)": "{:,.0f}",
+                "Oil now measured (BOPD)": "{:,.0f}", "Oil residual (BOPD)": "{:+,.0f}",
+                "Oil residual %": "{:+,.0f}%",
+            },
+            na_rep="—",
+        ),
+        use_container_width=True, hide_index=True,
+    )
+    st.caption(
+        "**Oil residual** = modeled Oil-now − the well's measured test oil. Large residuals mean "
+        "the IPR/friction baseline is off for that well (calibrate, or assign a better IPR in M3). "
+        "Phys vs Emp ΔOil shows where the field disagrees with the model."
+    )
+    bias = bias_by_pad(results_df)
+    if not bias.empty:
+        st.markdown("**Per-pad optimism bias** — Emp ÷ Phys ΔOil over responsive wells")
+        st.dataframe(
+            bias.style.format({"Emp/Phys bias": "{:.2f}"}, na_rep="—"),
+            use_container_width=True, hide_index=True,
+        )
+        st.caption(
+            "A soft flag, not a gate: <0.8 the physics looks optimistic vs the field; "
+            ">1.2 conservative."
+        )
+
+
+def _autodownload(data: bytes, filename: str, dom_id: str, mime: str = "application/pdf") -> None:
+    """Trigger an immediate browser download of ``data`` — single-click, no second
+    button. ALL Generate-PDF buttons use this so generating = downloading."""
+    import base64
+
+    import streamlit.components.v1 as components
+
+    b64 = base64.b64encode(data).decode()
+    components.html(
+        f'<a id="{dom_id}" download="{filename}" href="data:{mime};base64,{b64}"></a>'
+        f'<script>document.getElementById("{dom_id}").click()</script>',
+        height=0,
+    )
+
+
+def _render_coverage_panel(results_df: pd.DataFrame) -> None:
+    """Post-run coverage of IPR + WHP→BHP correlation per well, with inline donor
+    assignment. This is where you SEE which wells lack a real IPR / correlation
+    (e.g. a well with no within-day fit shows ⚠ for Corr); assign a like-well or
+    group-average donor in the last two columns and press Run again to apply.
+    """
+    input_df = st.session_state.get("hpi_input_df")
+    if input_df is None or "Well" not in results_df.columns:
+        return
+
+    cur_ipr = dict(zip(input_df.get("Well", []), input_df.get("IPR donor", [])))
+    cur_corr = dict(zip(input_df.get("Well", []), input_df.get("Corr donor", [])))
+
+    def _ipr_status(r) -> str:
+        donor = str(r.get("IPR donor", "own"))
+        if donor not in ("own", "—", "nan", "None"):
+            return f"✎ {donor}"
+        src = str(r.get("IPR src", ""))
+        if src == "jp_chars":
+            return "⚠ fallback (no test data)"
+        if src in ("gauge", "back-calc"):
+            return f"✓ {src}"
+        if str(r.get("Lift", "")) != "JP":
+            return "✓ generic (ESP test)"
+        return src or "—"
+
+    def _corr_status(r) -> str:
+        donor = str(r.get("Corr donor", "own"))
+        if donor not in ("own", "—", "nan", "None"):
+            return f"✎ {donor}"
+        cls = str(r.get("Emp class", ""))
+        if cls == "responsive":
+            return "✓ responsive"
+        if cls in ("no data", "no tag", "insufficient", "slugging", ""):
+            return f"⚠ {cls or 'no fit'}"
+        return cls
+
+    # Build the coverage table ONCE per run (keyed to the run token) and reuse it
+    # across reruns — feeding the data_editor a STABLE frame avoids the flicker /
+    # "refresh on every change" from rebuilding + writing back every render.
+    token = st.session_state.get("hpi_run_token", 0)
+    cov = st.session_state.get("hpi_cov_df")
+    if cov is None or st.session_state.get("hpi_cov_token") != token \
+            or list(cov.get("Well", [])) != list(results_df["Well"]):
+        cov = pd.DataFrame(
+            [
+                {
+                    "Well": r["Well"], "Pad": r.get("Pad"), "Lift": r.get("Lift"),
+                    "IPR status": _ipr_status(r), "Corr status": _corr_status(r),
+                    "IPR donor": cur_ipr.get(r["Well"], OWN_TOKEN),
+                    "Corr donor": cur_corr.get(r["Well"], OWN_TOKEN),
+                }
+                for _, r in results_df.iterrows()
+            ]
+        )
+        st.session_state["hpi_cov_df"] = cov
+        st.session_state["hpi_cov_token"] = token
+        st.session_state.pop("hpi_coverage_editor", None)
+
+    base = st.session_state["hpi_cov_df"]
+    n_ipr = int(base["IPR status"].str.startswith("⚠").sum())
+    n_corr = int(base["Corr status"].str.startswith("⚠").sum())
+
+    st.subheader("IPR & Correlation Coverage")
+    st.caption(
+        f"**{n_ipr}** well(s) on a fallback IPR (no test data) · **{n_corr}** with no "
+        "usable WHP→BHP correlation. Set an **IPR donor** / **Corr donor** — a specific "
+        "well or a **group average** (`(group: pad+lift)` / `(group: formation)`) — for "
+        "those, then click **Re-run** below. ✓ real · ⚠ weak/missing · ✎ donor assigned."
+    )
+    donor_opts = donor_tokens(list(results_df["Well"]))
+    edited = st.data_editor(
+        base, key="hpi_coverage_editor", hide_index=True, use_container_width=True,
+        column_config={
+            "Well": st.column_config.TextColumn("Well", disabled=True, pinned="left"),
+            "Pad": st.column_config.TextColumn("Pad", disabled=True),
+            "Lift": st.column_config.TextColumn("Lift", disabled=True),
+            "IPR status": st.column_config.TextColumn("IPR status", disabled=True),
+            "Corr status": st.column_config.TextColumn("Corr status", disabled=True),
+            "IPR donor": st.column_config.SelectboxColumn(
+                "IPR donor", options=donor_opts, required=False,
+                help="Borrow an IPR (JP wells): a specific well or a like-wells group average.",
+            ),
+            "Corr donor": st.column_config.SelectboxColumn(
+                "Corr donor", options=donor_opts, required=False,
+                help="Borrow a WHP→BHP correlation: a specific well or a group average.",
+            ),
+        },
+    )
+    # Persist donor edits onto the input table so the (re-)run applies them. Do NOT
+    # write `edited` back into hpi_cov_df — feeding a data_editor its own output makes
+    # a feedback loop that drops/duplicates cells during mass edits. The widget replays
+    # its edits onto the STABLE frame each rerun, so the source must stay fixed.
+    new_ipr = dict(zip(edited["Well"], edited["IPR donor"]))
+    new_corr = dict(zip(edited["Well"], edited["Corr donor"]))
+    idf = input_df.copy()
+    idf["IPR donor"] = idf["Well"].map(lambda w: new_ipr.get(w, cur_ipr.get(w, OWN_TOKEN)))
+    idf["Corr donor"] = idf["Well"].map(lambda w: new_corr.get(w, cur_corr.get(w, OWN_TOKEN)))
+    st.session_state["hpi_input_df"] = idf
+
+    b1, b2 = st.columns(2)
+    if b1.button("🔄 Re-run impact with these donor assignments", key="hpi_cov_rerun",
+                 type="primary", use_container_width=True):
+        st.session_state["hpi_trigger_run"] = True
+        st.rerun()
+    if b2.button("📄 Download per-well review PDF (IPR + correlation)",
+                 key="hpi_cov_wellpdf", use_container_width=True):
+        from datetime import datetime
+
+        from .header_report import build_per_well_pdf
+        with st.spinner("Building per-well PDF..."):
+            try:
+                wpdf = build_per_well_pdf(
+                    results_df,
+                    ipr_rows=st.session_state.get("hpi_ipr_rows", {}) or {},
+                    well_dfs=st.session_state.get("hpi_emp_well_dfs", {}) or {},
+                    fits=st.session_state.get("hpi_emp_fits", {}) or {},
+                    test_df=st.session_state.get("hpi_test_df"),
+                    stamp=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                )
+                _autodownload(wpdf, "header_per_well.pdf", "hpiwpdf")
+            except Exception as e:
+                st.warning(f"Per-well PDF failed ({type(e).__name__}: {e}).")
+
+
+# ── printouts & export (G4) ──────────────────────────────────────────────────
+
+
+def _correlation_table(results_df: pd.DataFrame, emp_fits: dict) -> pd.DataFrame:
+    """Per-well WHP→BHP correlation summary from the within-day fits — the slopes
+    that were previously trapped inside the scatter/grid plots."""
+    if "Well" not in results_df.columns:
+        return pd.DataFrame()
+    pad_map = dict(zip(results_df["Well"], results_df["Pad"]))
+    rows = []
+    for wn in results_df["Well"]:
+        fitd = (emp_fits or {}).get(wn) or {}
+        fwp = fitd.get("BHP~WHP")
+        fhp = fitd.get("BHP~HeaderP")
+        rows.append(
+            {
+                "Well": wn,
+                "Pad": pad_map.get(wn, "—"),
+                "BHP~WHP slope": fwp.mean_slope if fwp is not None else np.nan,
+                "n days": fwp.n_days if fwp is not None else 0,
+                "n good": fwp.n_good_days if fwp is not None else 0,
+                "r²": fwp.mean_r2 if fwp is not None else np.nan,
+                "class": ht.classify_response(fwp) if fwp is not None else "no data",
+                "BHP~HeaderP slope": fhp.mean_slope if fhp is not None else np.nan,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _csv_dl(container, label: str, df: pd.DataFrame, fname: str, key: str) -> None:
+    if df is None or df.empty:
+        return
+    container.download_button(
+        label, data=df.to_csv(index=False).encode("utf-8"),
+        file_name=fname, mime="text/csv", key=key, use_container_width=True,
+    )
+
+
+def _render_exports(results_df: pd.DataFrame, delta_p: float) -> None:
+    """G4 printouts: per-section CSVs, the correlation summary, and a one-click
+    PDF report assembling all four artifacts (IPR, correlations, per-pad
+    sensitivity, overall) plus the IPR curves."""
+    from datetime import datetime
+
+    st.subheader("Printouts & Export")
+    emp_fits = st.session_state.get("hpi_emp_fits", {}) or {}
+    well_dfs = st.session_state.get("hpi_emp_well_dfs", {}) or {}
+    ipr_rows = st.session_state.get("hpi_ipr_rows", {}) or {}
+    test_oil = st.session_state.get("hpi_test_oil", {}) or {}
+    test_df = st.session_state.get("hpi_test_df")
+    curve = st.session_state.get("hpi_curve")
+
+    per_pad, overall = summarize_sensitivity(results_df, delta_p)
+    sens_tbl = (
+        pd.concat([per_pad, pd.DataFrame([overall])], ignore_index=True)
+        if not per_pad.empty else pd.DataFrame()
+    )
+    sense_tbl = sense_check_table(results_df, test_oil)
+    corr_tbl = _correlation_table(results_df, emp_fits)
+
+    if not corr_tbl.empty:
+        with st.expander("WHP→BHP correlation summary (per well)", expanded=False):
+            st.dataframe(
+                corr_tbl.style.format(
+                    {"BHP~WHP slope": "{:.2f}", "r²": "{:.2f}", "BHP~HeaderP slope": "{:.2f}"},
+                    na_rep="—",
+                ),
+                use_container_width=True, hide_index=True,
+            )
+
+    cols = st.columns(4)
+    _csv_dl(cols[0], "Results CSV", results_df, "header_impact_results.csv", "hpi_dl_results")
+    _csv_dl(cols[1], "Sensitivity CSV", sens_tbl, "header_impact_sensitivity.csv", "hpi_dl_sens")
+    _csv_dl(cols[2], "Sense-check CSV", sense_tbl, "header_impact_sensecheck.csv", "hpi_dl_sense")
+    _csv_dl(cols[3], "Correlations CSV", corr_tbl, "header_impact_correlations.csv", "hpi_dl_corr")
+
+    if st.button("Generate PDF report (downloads)", key="hpi_pdf_btn"):
+        from .header_report import build_report_pdf
+
+        with st.spinner("Building PDF report (rendering figures)..."):
+            try:
+                pdf = build_report_pdf(
+                    results_df, delta_p, ipr_rows=ipr_rows, test_oil=test_oil,
+                    curve=curve, corr_table=corr_tbl, test_df=test_df,
+                    well_dfs=well_dfs, fits=emp_fits,
+                    stamp=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                )
+                _autodownload(pdf, "header_impact_report.pdf", "hpipdf")
+            except Exception as e:
+                st.warning(f"PDF generation failed ({type(e).__name__}: {e}).")
+    st.caption(
+        "Full report = field/pad summary + sensitivity + sense-check + per-pad IPR & "
+        "correlation pages. The per-well flip-through PDF is in the **Coverage panel** above."
     )
 
 
@@ -1163,8 +2094,9 @@ def _plot_well_fits(well: str, trend_df: pd.DataFrame, well_fits: dict):
 def _grid_fig(well_dfs: dict, fits: dict, driver: str = "WHP"):
     """Plotly subplot grid — one panel per well, BHP vs ``driver``, hourly points
     colored by date with the good daily fits overlaid in red. Replaces the
-    matplotlib grid: interactive in-app (pan/zoom, hover) and crisp PNG export
-    via kaleido (no rasterization blur).
+    matplotlib grid: interactive in-app (pan/zoom, hover). PNG / PDF export is
+    rendered separately in matplotlib (see ``header_report.corr_grid_mpl``) —
+    kaleido-free, so it works on Databricks Apps.
 
     Returns a ``plotly.graph_objects.Figure``, or None if no well has usable data.
     """
@@ -1274,15 +2206,20 @@ def _render_diagnostics() -> None:
     fig = _plot_well_fits(well, well_dfs[well], fits.get(well, {}))
     if fig is not None:
         st.plotly_chart(fig, use_container_width=True)
+        from .header_report import fig_to_png_bytes, well_fit_mpl
         try:
-            png = fig.to_image(format="png", width=1200, height=480, scale=2)
-            st.download_button(
-                "Download this plot (PNG)", data=png,
-                file_name=f"header_fit_{well}.png", mime="image/png",
-                key="hpi_diag_png",
-            )
+            mf = well_fit_mpl(well, well_dfs[well], fits.get(well, {}))
+            if mf is not None:
+                st.download_button(
+                    "Download this plot (PNG)", data=fig_to_png_bytes(mf),
+                    file_name=f"header_fit_{well}.png", mime="image/png",
+                    key="hpi_diag_png",
+                )
         except Exception as e:
-            st.caption(f"PNG export unavailable ({e}). Use the chart's camera icon to save instead.")
+            st.caption(
+                f"PNG export unavailable ({type(e).__name__}). Use the chart's camera "
+                "icon to save instead."
+            )
     else:
         st.info("No usable trend data for this well.")
 
@@ -1308,17 +2245,17 @@ def _render_diagnostics() -> None:
     if gfig is not None:
         used = st.session_state.get("hpi_grid_driver_used", "WHP")
         st.plotly_chart(gfig, use_container_width=True)
+        from .header_report import corr_grid_mpl, fig_to_png_bytes
         try:
-            png = gfig.to_image(format="png", scale=2)
-            st.download_button(
-                "Download grid PNG", data=png,
-                file_name=f"header_fit_grid_{used}.png", mime="image/png",
-                key="hpi_grid_dl",
-            )
+            mf = corr_grid_mpl(well_dfs, fits, sorted(well_dfs.keys()), used)
+            if mf is not None:
+                st.download_button(
+                    "Download grid PNG", data=fig_to_png_bytes(mf),
+                    file_name=f"header_fit_grid_{used}.png", mime="image/png",
+                    key="hpi_grid_dl",
+                )
         except Exception as e:
-            st.caption(
-                f"PNG export unavailable ({e}). Use the camera icon on the chart to save instead."
-            )
+            st.caption(f"PNG export unavailable ({type(e).__name__}).")
 
 
 # ── analog-donor estimate (gaugeless / non-JP wells) ──────────────────────────

@@ -2,8 +2,8 @@
 
 Public entry point: :func:`generate_report`. Pulls the same inputs the
 on-screen Solver and Batch Run views consume, runs the solver + batch sweep,
-renders the IPR + batch performance Plotly figures to PNG via Kaleido, and
-assembles a multi-page PDF via ReportLab.
+renders the IPR + batch performance figures to PNG via matplotlib (kaleido-free,
+so it works in headless Databricks Apps), and assembles a multi-page PDF via ReportLab.
 
 The figure-building helpers here intentionally duplicate a small amount of
 logic from ``tabs/jetpump_solver.py`` and ``tabs/batch_run.py`` rather than

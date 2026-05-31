@@ -193,3 +193,203 @@ def test_fit_within_day_slugging_well_has_few_good_days():
 def test_fit_within_day_returns_none_when_columns_absent():
     df = pd.DataFrame({"BHP": [1, 2, 3]}, index=pd.date_range("2025-01-01", periods=3))
     assert ht.fit_within_day(df, y_name="BHP", x_name="HeaderP") is None
+
+
+# ── v2 review figure builders (Plotly construction, no Streamlit) ────────────
+
+
+def test_response_curve_fig_builds_pad_and_field_traces():
+    agg = {"deltas": [-50, 0, 50], "pads": {"G": [10.0, 0.0, -5.0]}, "ALL": [10.0, 0.0, -5.0]}
+    fig = hi._response_curve_fig(agg)
+    assert fig is not None
+    names = [t.name for t in fig.data]
+    assert "Pad G" in names and "Field (ALL)" in names
+
+
+def test_response_curve_fig_single_pad_filter():
+    agg = {"deltas": [-50, 0, 50], "pads": {"G": [10.0, 0.0, -5.0], "H": [1.0, 0.0, -1.0]}, "ALL": [11.0, 0.0, -6.0]}
+    fig = hi._response_curve_fig(agg, pads_to_show=["G"])
+    names = [t.name for t in fig.data]
+    assert "Pad G" in names and "Pad H" not in names and "Field (ALL)" not in names
+
+
+def test_response_curve_fig_empty_returns_none():
+    assert hi._response_curve_fig({}) is None
+
+
+def test_ipr_grid_fig_builds_curve_and_operating_points():
+    pad_df = pd.DataFrame(
+        {
+            "Well": ["MPG-01"],
+            "Oil now (BOPD)": [300.0],
+            "BHP now (psi)": [800.0],
+            "Oil scen (BOPD)": [340.0],
+            "BHP scen (psi)": [740.0],
+        }
+    )
+    ipr_rows = {"MPG-01": {"res_pres": 1800.0, "qwf": 1000.0, "pwf": 800.0, "form_wc": 0.5}}
+    fig = hi._ipr_grid_fig(pad_df, ipr_rows)
+    assert fig is not None
+    # IPR curve + operating point (●) + scenario point (✕) = 3 traces.
+    assert len(fig.data) == 3
+
+
+def test_ipr_grid_fig_none_when_no_jp_rows():
+    pad_df = pd.DataFrame({"Well": ["MPL-09"], "Oil now (BOPD)": [80.0], "BHP now (psi)": [np.nan]})
+    assert hi._ipr_grid_fig(pad_df, ipr_rows={}) is None
+
+
+def test_ipr_grid_fig_overlays_test_points_with_hover():
+    pad_df = pd.DataFrame(
+        {
+            "Well": ["MPG-01"], "Oil now (BOPD)": [300.0], "BHP now (psi)": [800.0],
+            "Oil scen (BOPD)": [340.0], "BHP scen (psi)": [740.0],
+        }
+    )
+    ipr_rows = {"MPG-01": {"res_pres": 1800.0, "qwf": 1000.0, "pwf": 800.0, "form_wc": 0.5}}
+    test_df = pd.DataFrame(
+        {
+            "well": ["MPG-01", "MPG-01"],
+            "BHP": [780.0, 820.0],
+            "WtOilVol": [310.0, 290.0],
+            "WtWaterVol": [100.0, 110.0],
+            "WtTotalFluid": [410.0, 400.0],
+            "WtDate": pd.to_datetime(["2026-01-01", "2026-02-01"]),
+            "fgor": [250.0, 240.0],
+            "whp": [210.0, 215.0],
+        }
+    )
+    fig = hi._ipr_grid_fig(pad_df, ipr_rows, test_df)
+    # IPR curve + operating point + scenario point + test-points = 4 traces
+    assert len(fig.data) == 4
+    test_trace = [t for t in fig.data if getattr(t, "name", "") == "MPG-01 tests"]
+    assert test_trace and "Oil: 310 BOPD" in test_trace[0].text[0]
+
+
+# ── non-JP contribution to the response curve ────────────────────────────────
+
+
+def test_add_nonjp_curve_populates_for_responsive():
+    ipr_rows = {"MPL-03": {"res_pres": 1800.0, "qwf": 200.0, "pwf": 700.0, "form_wc": 0.0}}
+    rrow = {"Pad": "L", "Emp dBHP/dWHP": 0.8, "Emp class": "responsive"}
+    curve: dict = {}
+    hi._add_nonjp_curve("MPL-03", rrow, ipr_rows, curve, (-100, -50, 0, 50))
+    assert "MPL-03" in curve
+    assert curve["MPL-03"]["pad"] == "L"
+    assert len(curve["MPL-03"]["oil"]) == 4
+    # a header drop (negative Δ) lowers BHP → more oil than the +50 point
+    assert curve["MPL-03"]["oil"][0] > curve["MPL-03"]["oil"][-1]
+
+
+def test_add_nonjp_curve_skips_unresponsive():
+    ipr_rows = {"MPL-03": {"res_pres": 1800.0, "qwf": 200.0, "pwf": 700.0, "form_wc": 0.0}}
+    rrow = {"Pad": "L", "Emp dBHP/dWHP": 0.1, "Emp class": "slugging"}
+    curve: dict = {}
+    hi._add_nonjp_curve("MPL-03", rrow, ipr_rows, curve, (-50, 0, 50))
+    assert curve == {}
+
+
+# ── PDF report (matplotlib, headless) ────────────────────────────────────────
+
+
+def _report_results_df():
+    return pd.DataFrame(
+        {
+            "Well": ["MPG-01", "MPG-02"],
+            "Pad": ["G", "G"],
+            "Lift": ["JP", "JP"],
+            "Verdict": ["responsive ✓", "sonic-decoupled"],
+            "Sonic now": [False, True],
+            "Oil now (BOPD)": [100.0, 200.0],
+            "Oil scen (BOPD)": [140.0, 200.0],
+            "BHP now (psi)": [800.0, 600.0],
+            "BHP scen (psi)": [740.0, 600.0],
+            "ΔOil (BOPD)": [40.0, 0.0],
+            "Emp ΔOil (BOPD)": [35.0, np.nan],
+            "Chosen ΔOil (BOPD)": [40.0, 0.0],
+            "Method used": ["physics", "physics"],
+            "Emp class": ["responsive", "no data"],
+        }
+    )
+
+
+def test_build_report_pdf_returns_valid_pdf_bytes():
+    from woffl.gui.scotts_tools import header_report as hr
+
+    ipr_rows = {
+        "MPG-01": {"res_pres": 1800.0, "qwf": 1000.0, "pwf": 800.0, "form_wc": 0.5},
+        "MPG-02": {"res_pres": 1700.0, "qwf": 1200.0, "pwf": 600.0, "form_wc": 0.4},
+    }
+    curve = {"deltas": [-50, 0, 50], "wells": {"MPG-01": {"pad": "G", "oil": [110, 100, 95]}}}
+    pdf = hr.build_report_pdf(
+        _report_results_df(), -50, ipr_rows=ipr_rows, test_oil={"MPG-01": 95.0}, curve=curve
+    )
+    assert pdf[:4] == b"%PDF"
+    assert len(pdf) > 1500
+
+
+def test_build_report_pdf_empty_still_valid():
+    from woffl.gui.scotts_tools import header_report as hr
+
+    pdf = hr.build_report_pdf(pd.DataFrame(), -50)
+    assert pdf[:4] == b"%PDF"
+
+
+def _synthetic_well_dfs_fits():
+    from woffl.gui.scotts_tools import header_trend as ht
+
+    idx = pd.date_range("2026-01-01", periods=48, freq="h")
+    wdf = pd.DataFrame(
+        {
+            "WHP": np.linspace(200, 260, 48),
+            "HeaderP": np.linspace(180, 210, 48),
+            "BHP": np.linspace(520, 560, 48),
+        },
+        index=idx,
+    )
+    empty_daily = pd.DataFrame(
+        columns=["day", "slope", "intercept", "r2", "n", "x_min", "x_max", "good"]
+    )
+    fit = ht.WithinDayFit("BHP", "WHP", 0.7, 0.7, 0.05, 30, 20, 0.85, empty_daily)
+    return {"MPG-01": wdf}, {"MPG-01": {"BHP~WHP": fit}}
+
+
+def test_build_report_pdf_with_correlation_grid_matplotlib():
+    from woffl.gui.scotts_tools import header_report as hr
+
+    well_dfs, fits = _synthetic_well_dfs_fits()
+    pdf = hr.build_report_pdf(_report_results_df(), -50, well_dfs=well_dfs, fits=fits)
+    assert pdf[:4] == b"%PDF"
+    assert len(pdf) > 1500
+
+
+def test_corr_grid_and_well_fit_mpl_render_png_no_kaleido():
+    from woffl.gui.scotts_tools import header_report as hr
+
+    well_dfs, fits = _synthetic_well_dfs_fits()
+    cg = hr.corr_grid_mpl(well_dfs, fits, ["MPG-01"], "WHP")
+    assert hr.fig_to_png_bytes(cg)[:8] == b"\x89PNG\r\n\x1a\n"  # PNG magic
+    wf = hr.well_fit_mpl("MPG-01", well_dfs["MPG-01"], fits["MPG-01"])
+    assert hr.fig_to_png_bytes(wf)[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_build_per_well_pdf_one_page_each():
+    from woffl.gui.scotts_tools import header_report as hr
+
+    well_dfs, fits = _synthetic_well_dfs_fits()
+    ipr_rows = {
+        "MPG-01": {"res_pres": 1800.0, "qwf": 1000.0, "pwf": 800.0, "form_wc": 0.5},
+        "MPG-02": {"res_pres": 1700.0, "qwf": 1200.0, "pwf": 600.0, "form_wc": 0.4},
+    }
+    # MPG-02 has no trend → its correlation panel shows the "no data" note, not a crash.
+    pdf = hr.build_per_well_pdf(
+        _report_results_df(), ipr_rows=ipr_rows, well_dfs=well_dfs, fits=fits
+    )
+    assert pdf[:4] == b"%PDF"
+    assert len(pdf) > 1500
+
+
+def test_build_per_well_pdf_empty_still_valid():
+    from woffl.gui.scotts_tools import header_report as hr
+
+    assert hr.build_per_well_pdf(pd.DataFrame())[:4] == b"%PDF"

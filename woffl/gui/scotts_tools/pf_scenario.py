@@ -192,11 +192,17 @@ def _estimate_bhp(
 def _estimate_gaugeless_ipr(
     missing_wells, months_back, test_pf_pres, jp_hist, jp_chars_dict,
     whp_map: dict[str, float] | None = None,
+    pf_map: dict[str, float] | None = None,
 ):
     """For wells without BHP gauges, estimate BHP from production + jet pump physics.
 
     Returns dict of {well_name: synthetic_vogel_row} compatible with the
     Vogel dict used elsewhere.
+
+    ``pf_map`` optionally supplies a per-well power-fluid pressure (psi); a well
+    absent from it falls back to the scalar ``test_pf_pres``. The Header Pressure
+    Impact tab passes per-pad PF here so the back-calc matches each pad's actual
+    power-fluid pressure instead of one global value.
     """
     from woffl.assembly.network_optimizer import _load_well_profile
 
@@ -270,8 +276,9 @@ def _estimate_gaugeless_ipr(
 
         # Use oil rate (not total fluid) as qoil_std for the solver
         psu_max = float(chars.get("res_pres", 1800))
+        pf_for_well = float((pf_map or {}).get(wn, test_pf_pres))
         bhp_est = _estimate_bhp(
-            oil_rate, wc, fgor, pwh, tsu, test_pf_pres,
+            oil_rate, wc, fgor, pwh, tsu, pf_for_well,
             jpump, wellbore, well_profile, prop_pf,
             field_model=fm, psu_max=psu_max,
         )
