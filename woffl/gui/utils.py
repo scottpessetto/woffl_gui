@@ -273,10 +273,11 @@ def pad_from_mp_name(mp_name: str) -> str:
 def _trigger_gor_reset(well_name: str, current_gor, reason: str) -> None:
     """Auto-recover from a solver failure caused by too-low GOR.
 
-    Sets sidebar form_gor to GOR_AUTO_RECOVERY_VALUE, checks the MvA override,
-    records a per-well GOR floor so the next well-selection cycle won't
-    repopulate this well below the recovery value, queues a warning to display
-    on the next render, then triggers a rerun.
+    Sets sidebar form_gor to GOR_AUTO_RECOVERY_VALUE and records a per-well GOR
+    floor so neither the next well-selection cycle nor the IPR-anchor seed
+    (jetpump_solver._sync_chosen_ipr_to_sidebar) repopulates this well below the
+    recovery value, queues a warning to display on the next render, then
+    triggers a rerun.
 
     Streamlit forbids writing to a widget's state key after the widget rendered
     (the sidebar already rendered above the tabs). So we set the logical key
@@ -285,10 +286,11 @@ def _trigger_gor_reset(well_name: str, current_gor, reason: str) -> None:
     """
     st.session_state["form_gor"] = GOR_AUTO_RECOVERY_VALUE
     st.session_state.pop("form_gor_input", None)
-    st.session_state["mva_override_gor"] = True
 
     # Remember per-well GOR floor — survives well-switches within the session
-    # so we don't keep tripping the same failure for the same well.
+    # so we don't keep tripping the same failure for the same well. Both the
+    # sidebar auto-populate and the IPR-anchor seed honor this floor, so
+    # re-seeding from a test can't drop GOR back below the recovery value.
     floor_map = st.session_state.setdefault("_well_min_gor", {})
     floor_map[well_name] = max(
         floor_map.get(well_name, 0), GOR_AUTO_RECOVERY_VALUE
@@ -297,8 +299,8 @@ def _trigger_gor_reset(well_name: str, current_gor, reason: str) -> None:
     st.session_state["_solver_gor_reset_msg"] = (
         f"Solver failed to converge for {well_name} at GOR={current_gor} scf/bbl "
         f"({reason}). GOR has been reset to **{GOR_AUTO_RECOVERY_VALUE} scf/bbl** "
-        f"and the 'Override GOR from well test' box has been checked. "
-        f"This floor is now remembered for {well_name} for the rest of the session."
+        f"in the sidebar. This floor is now remembered for {well_name} for the "
+        f"rest of the session."
     )
     st.rerun()
 
@@ -471,25 +473,17 @@ def build_calibration_inputs(
     via :func:`woffl.gui.tabs.jetpump_solver._pump_at_test_date`. When
     omitted, behavior matches the original most-recent-test default.
 
-    Honors the override flags set in the Model vs Actual section:
-      - mva_override_res_p → use sidebar reservoir pressure instead of IPR
-      - mva_override_gor   → use sidebar GOR instead of test GOR
-
-    Two test-count branches:
-      - **2+ tests** → fit Vogel coefficients and use the IPR-derived
-        (qwf, pwf, ResP) triple as the operating point.
-      - **1 test** → no Vogel fit possible. Anchor the inflow with the
-        single test's oil rate + BHP and complete the curve with the
-        sidebar's reservoir pressure. Lets calibration run for new
-        wells with only one historical test (e.g. H-31).
+    The operating point (qwf, pwf, ResP, WC, GOR) comes from the SIDEBAR. The
+    Solver tab's IPR-anchor selector seeds those from the chosen test
+    (jetpump_solver._sync_chosen_ipr_to_sidebar) and the engineer can override
+    any of them in the sidebar, so calibrating against the sidebar keeps the cal
+    target aligned with the IPR chart, Batch Run, and the top Solver. (1-test
+    wells: the sidebar auto-populate seeds straight from the single test, so
+    this still anchors on that test.)
 
     Returns None when prerequisites are missing (Custom mode, no JP history,
     no well tests, etc.). Callers must handle None.
     """
-    from woffl.assembly.ipr_analyzer import (
-        compute_vogel_coefficients,
-        estimate_reservoir_pressure,
-    )
     from woffl.assembly.jp_history import get_current_pump
 
     if params.selected_well == "Custom":
@@ -547,72 +541,16 @@ def build_calibration_inputs(
     if not nozzle or not throat:
         return None
 
-    coeff_row = None
-    if len(well_tests) >= 2:
-        # Honor the Solver tab's IPR-anchor selector so the calibration target
-        # operating point matches the chart. Defaults to "recent" (the global
-        # least-squares fit) when the user hasn't picked an anchor.
-        anchor_mode = st.session_state.get(
-            f"sw_ipr_anchor_mode_{params.selected_well}", "recent"
-        )
-        anchor_date = st.session_state.get(
-            f"sw_ipr_anchor_date_{params.selected_well}"
-        )
-        if anchor_mode in ("median", "specific"):
-            from woffl.gui.ipr_anchor import compute_anchored_vogel
-
-            field_max_rp = (
-                3000 if str(params.field_model).lower() == "kuparuk" else 1800
-            )
-            anchored = compute_anchored_vogel(
-                well_tests,
-                well_name=params.selected_well,
-                anchor_mode=anchor_mode,
-                anchor_date=anchor_date,
-                field_max_rp=field_max_rp,
-            )
-            if anchored is not None:
-                coeff_row = pd.Series(anchored)
-        if coeff_row is None:
-            try:
-                merged = estimate_reservoir_pressure(well_tests)
-                vogel = compute_vogel_coefficients(merged)
-                well_coeffs = vogel[vogel["Well"] == params.selected_well]
-                if not well_coeffs.empty:
-                    coeff_row = well_coeffs.iloc[0]
-            except Exception:
-                coeff_row = None
-
-    override_res_p = bool(st.session_state.get("mva_override_res_p", False))
-
-    if coeff_row is not None:
-        model_res_p = (
-            float(params.pres) if override_res_p else float(coeff_row["ResP"])
-        )
-        oil_qwf = float(coeff_row["qwf"]) * (1 - float(coeff_row["form_wc"]))
-        pwf_for_inflow = float(coeff_row["pwf"])
-        wc_for_resmix = float(coeff_row["form_wc"])
-    else:
-        # 1-test (or Vogel-fit-failed) fallback: anchor IPR on the single test
-        # point + sidebar ResP. WC pulls from sidebar since there's no Vogel-
-        # averaged value available.
-        model_res_p = float(params.pres)
-        actual_oil = recent.get("WtOilVol")
-        actual_bhp_val = recent.get("BHP")
-        if is_valid_number(actual_oil) and is_valid_number(actual_bhp_val):
-            oil_qwf = float(actual_oil)
-            pwf_for_inflow = float(actual_bhp_val)
-        else:
-            oil_qwf = float(params.qwf)
-            pwf_for_inflow = float(params.pwf)
-        wc_for_resmix = float(params.form_wc)
-
-    test_gor = recent.get("fgor")
-    test_gor = int(test_gor) if is_valid_number(test_gor) else None
-    override_gor = bool(st.session_state.get("mva_override_gor", False))
-    model_gor = (
-        params.form_gor if (override_gor or test_gor is None) else test_gor
-    )
+    # Operating point comes from the SIDEBAR (qwf / pwf / res_pres / form_wc /
+    # form_gor). The Solver tab's IPR-anchor selector seeds those from the
+    # chosen test and the engineer can override them, so the cal target stays
+    # aligned with the IPR chart, Batch Run, and the top Solver. qwf is the OIL
+    # rate, matching create_inflow's contract.
+    model_res_p = float(params.pres)
+    oil_qwf = float(params.qwf)
+    pwf_for_inflow = float(params.pwf)
+    wc_for_resmix = float(params.form_wc)
+    model_gor = int(params.form_gor)
 
     test_whp = recent.get("whp")
     model_surf_pres = (

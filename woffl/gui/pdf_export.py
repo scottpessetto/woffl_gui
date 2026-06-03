@@ -158,8 +158,8 @@ def _build_ipr_figure(
 ) -> Optional[plt.Figure]:
     """Build a matplotlib IPR figure mirroring the Solver tab's Model vs Actual.
 
-    Same data-prep flow as before (Vogel-or-single-point fallback,
-    ``mva_override_res_p`` honored), then renders with matplotlib instead
+    Same data-prep flow as before (Vogel-or-single-point fallback, sidebar
+    reservoir pressure honored), then renders with matplotlib instead
     of Plotly. Matplotlib renders cleanly in any headless container —
     Kaleido isn't always reliable on Databricks Apps because its 1.x line
     fetches Chromium at runtime, which fails in restricted environments.
@@ -180,8 +180,6 @@ def _build_ipr_figure(
     if test_df is None or test_df.empty:
         return None
 
-    override_res_p = bool(st.session_state.get("mva_override_res_p", False))
-
     coeff_row = None
     merged_with_rp = None
     vogel_coeffs = None
@@ -201,17 +199,14 @@ def _build_ipr_figure(
             coeff_row = None
 
     if coeff_row is not None:
-        model_res_p = (
-            float(params.pres) if override_res_p else float(coeff_row["ResP"])
-        )
-        if override_res_p:
-            vogel_coeffs_plot = vogel_coeffs.copy()
-            vogel_coeffs_plot.loc[
-                vogel_coeffs_plot["Well"] == params.selected_well, "ResP"
-            ] = model_res_p
-            ipr_data = generate_ipr_curves(vogel_coeffs_plot)
-        else:
-            ipr_data = generate_ipr_curves(vogel_coeffs)
+        # ResP comes from the sidebar (seeded from the IPR-anchor test, editable)
+        # so the PDF chart matches what the Solver / Batch Run use.
+        model_res_p = float(params.pres)
+        vogel_coeffs_plot = vogel_coeffs.copy()
+        vogel_coeffs_plot.loc[
+            vogel_coeffs_plot["Well"] == params.selected_well, "ResP"
+        ] = model_res_p
+        ipr_data = generate_ipr_curves(vogel_coeffs_plot)
         plot_points = merged_with_rp if merged_with_rp is not None else pd.DataFrame()
     else:
         # 0/1-test or Vogel-failed: synthesize a single-point IPR anchored

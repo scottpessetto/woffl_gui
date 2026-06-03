@@ -96,13 +96,13 @@ def _prefetch_well_sort_data() -> None:
 def main():
     """Main function for the Streamlit application."""
     st.set_page_config(
-        page_title="WOFFL Jetpump Simulator",
-        page_icon="🛢️",
+        page_title="WOFFL Haus",
+        page_icon="🧇",  # waffle — shows as the browser-tab favicon
         layout="wide",
         initial_sidebar_state="expanded",
     )
 
-    st.title("WOFFL Haus")
+    st.title("WOFFL Haus 🧇")
     st.caption("*Built on Kaelin Ellis's WOFFL Jet Pump Model*")
 
     # Global JP history — fetch from Databricks, fall back to bundled Excel

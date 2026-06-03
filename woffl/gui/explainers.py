@@ -53,6 +53,27 @@ Calibrating per-well fits a one-number-per-component "wear / efficiency
 factor" so the model matches actual measured BHP. The coefficients absorb
 whatever the pump physics + simplified model couldn't predict from
 spec-sheet geometry alone.
+
+**Reading a high or rising value:**
+
+A `kth` or `kdi` pushed toward the top of its range means the model needs a
+lot of throat/diffuser loss to match the measured BHP — which **is**
+consistent with **throat/diffuser wear**: sand erosion roughens and distorts
+these surfaces, and the throat is where most of a jet pump's energy loss and
+erosive wear concentrate. Treat a high value as a flag, not proof:
+
+- **Rule out the cheap explanations first.** The coefficients absorb *all*
+  model error, so a wrong power-fluid pressure, IPR, or GOR inflates them too
+  — that's why calibration is gated on a good PF-rate match.
+- **A rising trend beats a single value.** Erosion is progressive, so a
+  coefficient climbing across successive tests is the real wear signal, not
+  one high number. See **Scott's Tools → JP Fric Trend**.
+- **Classic nozzle wash-out is geometric, not a friction term.** An eroded,
+  enlarged nozzle passes too much power fluid, which shows up as a PF-rate
+  mismatch rather than a high coefficient — **JP Wash-Out** catches those.
+- **Pinned at the upper bound** (the "bounded" flag on a result) usually means
+  friction alone can't close the BHP gap; suspect a deeper mismatch (a
+  sonic-pinned throat, or a wrong IPR) rather than just wear.
 """
 
 

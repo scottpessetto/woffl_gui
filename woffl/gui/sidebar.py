@@ -152,6 +152,16 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
 
     Only called once per well selection (inside the is_new_well guard).
     """
+    # The Solver tab's IPR-anchor seed tracks what it last applied via
+    # sw_ipr_applied_sig_<well>, and the anchor selectbox restores its selection
+    # from that marker so it survives a Batch/PF tab detour. Re-seeding here (new
+    # well selection or memory-gauge refresh) resets the sidebar to the recent
+    # fit, so clear the marker too — that way the anchor selector, the sidebar,
+    # and the seed all start consistently at "Most recent" for the (re)seeded
+    # well, rather than the sidebar showing recent while the selector still reads
+    # "specific".
+    st.session_state.pop(f"sw_ipr_applied_sig_{selected_well}", None)
+
     import pandas as _pd
 
     def _is_finite(v) -> bool:

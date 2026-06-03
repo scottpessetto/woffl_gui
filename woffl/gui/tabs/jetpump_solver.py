@@ -330,21 +330,17 @@ def _render_pump_identity_banner(
     *,
     effective_pump: tuple[str, str] | None = None,
     selected_test_date=None,
-    fallback_reason: str | None = None,
+    test_pump: tuple[str, str] | None = None,
+    pump_differs: bool = False,
 ) -> None:
-    """Show what pump the solver is modeling vs what's in the well today.
+    """Show which pump the hero strip is modeling and whether it matches the test.
 
-    ``effective_pump`` is whatever the solver is actually using on this run.
-    When a test is selected, this is the pump installed at that test's
-    date (looked up via :func:`_pump_at_test_date`). Otherwise it falls
-    back to the sidebar pump (``params.nozzle_no``/``area_ratio``).
-
-    ``selected_test_date`` makes the banner clarify the test context
-    ("Modeling X to match the YYYY-MM-DD test \u2014 current pump \u2026").
-
-    ``fallback_reason`` flags the rare case where a test was selected but
-    no JP install record qualifies \u2014 we fall back to the current pump and
-    explain why.
+    The hero models the **sidebar** pump (``effective_pump``). ``test_pump`` is
+    the pump that was in the well at the selected test's date. When they differ,
+    the test's actuals were measured on a different pump, so the hero's
+    vs-actual deltas aren't a like-for-like comparison \u2014 this banner says so and
+    the caller greys the deltas. When they match (or there's no test pump to
+    compare against), the deltas are a valid comparison.
     """
     import pandas as pd
 
@@ -353,69 +349,42 @@ def _render_pump_identity_banner(
     else:
         model_n, model_t = params.nozzle_no, params.area_ratio
 
-    jp_hist = st.session_state.get("jp_history_df")
-    if jp_hist is None or params.selected_well == "Custom":
-        st.info(f"Modeling: Nozzle {model_n}, Throat {model_t}")
-        return
-
-    from woffl.assembly.jp_history import get_current_pump
-
-    current_pump = get_current_pump(jp_hist, params.selected_well)
-    if current_pump is None:
-        st.info(f"Modeling: Nozzle {model_n}, Throat {model_t}")
-        return
-
-    cur_n = current_pump["nozzle_no"]
-    cur_t = current_pump["throat_ratio"]
-    cur_date_str = (
-        current_pump["date_set"].strftime("%Y-%m-%d")
-        if current_pump.get("date_set") is not None
-        else "N/A"
-    )
-
     test_str = None
     if selected_test_date is not None and pd.notna(selected_test_date):
         test_str = selected_test_date.strftime("%Y-%m-%d")
 
-    matches_current = (model_n == cur_n and model_t == cur_t)
+    if params.selected_well == "Custom":
+        st.info(f"Modeling **{model_n}{model_t}**.")
+        return
 
-    # Caveat path: the test selected has no qualifying JP install record,
-    # so we fell back to the current pump.
-    if fallback_reason:
+    # Modeled pump differs from the pump in the well at the test's date \u2014 the
+    # vs-actual deltas would compare different pumps, so they're not valid.
+    if pump_differs and test_pump is not None:
+        tn, tt = test_pump
+        date_part = f" {test_str}" if test_str else ""
         st.warning(
-            f"Modeling **{model_n}{model_t}** (current pump in well). "
-            f"{fallback_reason}"
+            f"Modeling **{model_n}{model_t}** \u2014 **differs from the pump in the "
+            f"well at the{date_part} test** you're matching to (**{tn}{tt}**). "
+            "The vs-actual deltas below compare a different pump against that "
+            f"test, so they're greyed out. Set the sidebar pump to **{tn}{tt}** "
+            "to compare against this test, or use the Model-vs-Actual section "
+            f"below (it models {tn}{tt} for the proper comparison).",
+            icon="\u26a0\ufe0f",
         )
         return
 
-    # Test-aware framing \u2014 "Modeling X to match the YYYY-MM-DD test".
-    if test_str:
-        if matches_current:
-            st.success(
-                f"Modeling **{model_n}{model_t}** to match the "
-                f"**{test_str}** test \u2014 matches the current installed pump "
-                f"(set {cur_date_str})."
-            )
-        else:
-            st.info(
-                f"Modeling **{model_n}{model_t}** to match the "
-                f"**{test_str}** test. Current pump in well: "
-                f"**{cur_n}{cur_t}** (set {cur_date_str})."
-            )
-        return
-
-    # No test selected \u2014 original sidebar-vs-current framing.
-    if matches_current:
+    # Modeled pump matches the test's pump \u2192 the deltas are like-for-like.
+    if test_pump is not None and test_str:
         st.success(
-            f"Modeling: Nozzle {model_n}, Throat {model_t} "
-            f"\u2014 Matches current installed pump ({cur_n}{cur_t}, set {cur_date_str})"
+            f"Modeling **{model_n}{model_t}** \u2014 matches the pump in the well at "
+            f"the **{test_str}** test, so the vs-actual deltas below are a "
+            "like-for-like comparison."
         )
-    else:
-        st.warning(
-            f"Current installed pump is {cur_n}{cur_t}. "
-            f"You are modeling a different configuration "
-            f"(Nozzle {model_n}, Throat {model_t})."
-        )
+        return
+
+    # No test pump to compare against (no test selected, or no JP install record
+    # at the test's date) \u2014 just report what's being modeled.
+    st.info(f"Modeling **{model_n}{model_t}** (sidebar pump).")
 
 
 def render_tab(
@@ -450,16 +419,27 @@ def render_tab(
     # selected). Default = most recent test; matches the pre-picker
     # behaviour.
     test_df = _get_well_tests(params.selected_well)
-    selected_test_row = _render_test_picker(params.selected_well, test_df)
+    # By default the comparison test is synced to the IPR anchor (chosen in
+    # Model vs Actual below). The decouple checkbox there sets sw_ipr_decouple_*;
+    # Streamlit commits a widget's value before the rerun, so we can read it here
+    # even though the checkbox renders later in the same run.
+    _decoupled = st.session_state.get(
+        f"sw_ipr_decouple_{params.selected_well}", False
+    )
+    selected_test_row = _render_test_picker(
+        params.selected_well, test_df, synced=not _decoupled
+    )
 
-    # Resolve the EFFECTIVE pump for the solver. When a test is selected we
-    # look up the JP install on/before that test's date — the test's PF rate
-    # and BHP only make sense vs the pump that was actually in the well at
-    # the time. When no JP record qualifies (or no test is selected), we
-    # fall back to the sidebar/current pump.
+    # The hero strip models the SIDEBAR pump — the pump the user picked to model.
+    # We still look up the pump that was in the well at the selected test's date
+    # so we can flag when the modeled pump differs from it: the test's actuals
+    # were measured on that pump, so comparing a different pump's model to them
+    # isn't valid (the vs-actual deltas get greyed out below). The
+    # Model-vs-Actual section further down still models the test's own pump for
+    # the proper historical comparison.
     jp_hist_for_pump = st.session_state.get("jp_history_df")
     test_date_for_pump = None
-    fallback_reason = None
+    test_pump = None  # (nozzle, throat) installed at the selected test's date
     effective_nozzle = params.nozzle_no
     effective_throat = params.area_ratio
 
@@ -473,42 +453,27 @@ def render_tab(
             if pump_at_test and pump_at_test.get("nozzle_no") and pump_at_test.get(
                 "throat_ratio"
             ):
-                effective_nozzle = pump_at_test["nozzle_no"]
-                effective_throat = pump_at_test["throat_ratio"]
-            else:
-                fallback_reason = (
-                    f"No JP install record on or before "
-                    f"{td_raw.strftime('%Y-%m-%d')} — using the current "
-                    "pump for the model. Modeled vs actual will be misleading "
-                    "if the pump differed at the test's date."
+                test_pump = (
+                    pump_at_test["nozzle_no"],
+                    pump_at_test["throat_ratio"],
                 )
+
+    pump_differs = (
+        test_pump is not None
+        and (effective_nozzle, effective_throat) != test_pump
+    )
 
     _render_pump_identity_banner(
         params,
         effective_pump=(effective_nozzle, effective_throat),
         selected_test_date=test_date_for_pump,
-        fallback_reason=fallback_reason,
+        test_pump=test_pump,
+        pump_differs=pump_differs,
     )
 
-    # Build the effective JetPump. When it matches the sidebar's pump
-    # (no test override) we reuse the one passed in to avoid the extra
-    # construction; when it differs we build a new one with the same
-    # friction coefs.
-    if (effective_nozzle, effective_throat) == (
-        params.nozzle_no,
-        params.area_ratio,
-    ):
-        effective_jetpump = jetpump
-    else:
-        from woffl.gui.utils import create_jetpump as _make_jp
-
-        effective_jetpump = _make_jp(
-            effective_nozzle,
-            effective_throat,
-            params.ken,
-            params.kth,
-            params.kdi,
-        )
+    # The hero models the sidebar pump (effective == sidebar), so reuse the
+    # JetPump already built from the sidebar inputs.
+    effective_jetpump = jetpump
 
     # Clear stale calibration if well changed
     _cal = st.session_state.get("sw_calibration_result")
@@ -532,9 +497,10 @@ def render_tab(
             )
         except IndexError:
             # Throat-entry iteration produced no valid points — typically caused
-            # by an unrealistically low GOR for the well's PVT. Bump GOR to 250
-            # and force the MvA override so a re-run uses sidebar GOR instead
-            # of the (likely too-low) test GOR.
+            # by an unrealistically low GOR for the well's PVT. Reset the sidebar
+            # GOR to GOR_AUTO_RECOVERY_VALUE (250) and remember a per-well GOR
+            # floor, so the re-solve — and every view, which all read the sidebar
+            # GOR now — uses the recovered value.
             #
             # Streamlit forbids writing to a widget's state key after the widget
             # has rendered (and the sidebar already rendered above the tabs).
@@ -596,6 +562,11 @@ def render_tab(
         def _delta(modeled: float, actual: float | None, suffix: str) -> str | None:
             if actual is None:
                 return None
+            if pump_differs:
+                # Modeled pump ≠ the test's pump, so a numeric delta would be
+                # meaningless — blank the number but keep the "vs actual"
+                # context (and the caller greys it).
+                return suffix
             return f"{modeled - actual:+,.0f} {suffix}"
 
         def _label(base: str, actual) -> str:
@@ -604,12 +575,18 @@ def render_tab(
             measured value."""
             return base if actual is not None else f"{base} (modeled)"
 
+        # When the modeled (sidebar) pump differs from the pump the test was run
+        # on, the vs-actual deltas compare different pumps — grey them out (the
+        # banner above explains why). Streamlit's delta_color "off" renders the
+        # delta in grey rather than red/green.
+        _dcolor = "off" if pump_differs else "normal"
+
         h1, h2, h3, h4 = st.columns(4)
         with h1:
             d = _delta(qoil_std, actuals["oil"], "vs actual")
             st.metric(
                 _label("Oil Rate", actuals["oil"]), f"{qoil_std:,.0f} BOPD",
-                delta=d, delta_color="off" if d is None else "normal",
+                delta=d, delta_color="off" if d is None else _dcolor,
             )
         with h2:
             # Formation Water has no actuals counterpart (we don't track it
@@ -619,60 +596,74 @@ def render_tab(
             d = _delta(qnz_bwpd, actuals["pf"], "vs actual")
             st.metric(
                 _label("Power Fluid", actuals["pf"]), f"{qnz_bwpd:,.0f} BWPD",
-                delta=d, delta_color="off" if d is None else "normal",
+                delta=d, delta_color="off" if d is None else _dcolor,
             )
         with h4:
             d = _delta(psu, actuals["bhp"], "vs actual")
             st.metric(
                 _label("Suction Pressure", actuals["bhp"]), f"{psu:,.0f} psig",
-                delta=d, delta_color="off" if d is None else "normal",
+                delta=d, delta_color="off" if d is None else _dcolor,
             )
 
-        # PF mismatch is the foundational check — if the sidebar PF pressure
-        # doesn't match operating conditions, friction calibration will fit
-        # nonsense ken values to compensate. Gate calibration on this.
-        # Pull the test date so the warning + quickfix can show it.
-        cal_inputs = build_calibration_inputs(params, wellbore, well_profile)
-        test_date_str = cal_inputs["test_date_str"] if cal_inputs else None
-        pf_warning_shown, pf_blocked = render_pf_mismatch_warning(
-            qnz_bwpd,
-            actuals["pf"],
-            params.ppf_surf,
-            test_date_str=test_date_str,
-            well_name=params.selected_well,
-        )
-        # Render the quickfix whenever any warning fires (red OR yellow info)
-        # so the user always has a one-click path to fine-tune. Calibration
-        # gating (cal button disabled) is governed by `pf_blocked` only.
-        if pf_warning_shown:
-            render_pf_quickfix_widget(
-                params, wellbore, well_profile, target_lift_wat=actuals["pf"]
+        # When the modeled (sidebar) pump differs from the test's pump, the
+        # vs-actual checks below (PF-rate match, BHP calibration) would compare
+        # different pumps — pause them and nudge the user back to a like-for-like
+        # setup. (The banner above already explains; this is the actionable hint
+        # under the metrics.)
+        if pump_differs:
+            tn, tt = test_pump
+            st.caption(
+                f"What-if mode — modeling **{effective_nozzle}{effective_throat}**, "
+                f"not the test's pump (**{tn}{tt}**). PF-match and BHP "
+                f"calibration are paused; set the sidebar pump to {tn}{tt} to "
+                "compare against and calibrate to this test."
             )
-
-        # BHP red flag (only meaningful once PF is right — otherwise the BHP
-        # delta is mostly explained by the wrong PF, not friction).
-        if not pf_blocked:
-            warned = render_bhp_calibration_warning(
-                psu, actuals["bhp"], on_solver_view=True
+        else:
+            # PF mismatch is the foundational check — if the sidebar PF pressure
+            # doesn't match operating conditions, friction calibration will fit
+            # nonsense ken values to compensate. Gate calibration on this.
+            # Pull the test date so the warning + quickfix can show it.
+            cal_inputs = build_calibration_inputs(params, wellbore, well_profile)
+            test_date_str = cal_inputs["test_date_str"] if cal_inputs else None
+            pf_warning_shown, pf_blocked = render_pf_mismatch_warning(
+                qnz_bwpd,
+                actuals["pf"],
+                params.ppf_surf,
+                test_date_str=test_date_str,
+                well_name=params.selected_well,
             )
-            if not warned and any(v is not None for v in actuals.values()):
-                st.caption(
-                    "Deltas compare modeled values to the most recent well test."
+            # Render the quickfix whenever any warning fires (red OR yellow info)
+            # so the user always has a one-click path to fine-tune. Calibration
+            # gating (cal button disabled) is governed by `pf_blocked` only.
+            if pf_warning_shown:
+                render_pf_quickfix_widget(
+                    params, wellbore, well_profile, target_lift_wat=actuals["pf"]
                 )
 
-        # Compact calibration action bar — buttons live here so they're
-        # visible without scrolling. Run is disabled while PF mismatch is
-        # blocking; the Push button stays available so a prior result can
-        # still be applied. Also disabled when the SELECTED test (from the
-        # picker) has no measured BHP — there's nothing to target. Both
-        # ``selected_test_row`` and ``bhp_missing`` reflect the picker so
-        # the gating + calibration target stay in sync.
-        _render_fric_cal_action_bar(
-            params, wellbore, well_profile,
-            selected_test_row=selected_test_row,
-            pf_blocked=pf_blocked,
-            bhp_missing=(actuals["bhp"] is None),
-        )
+            # BHP red flag (only meaningful once PF is right — otherwise the BHP
+            # delta is mostly explained by the wrong PF, not friction).
+            if not pf_blocked:
+                warned = render_bhp_calibration_warning(
+                    psu, actuals["bhp"], on_solver_view=True
+                )
+                if not warned and any(v is not None for v in actuals.values()):
+                    st.caption(
+                        "Deltas compare modeled values to the most recent well test."
+                    )
+
+            # Compact calibration action bar — buttons live here so they're
+            # visible without scrolling. Run is disabled while PF mismatch is
+            # blocking; the Push button stays available so a prior result can
+            # still be applied. Also disabled when the SELECTED test (from the
+            # picker) has no measured BHP — there's nothing to target. Both
+            # ``selected_test_row`` and ``bhp_missing`` reflect the picker so
+            # the gating + calibration target stay in sync.
+            _render_fric_cal_action_bar(
+                params, wellbore, well_profile,
+                selected_test_row=selected_test_row,
+                pf_blocked=pf_blocked,
+                bhp_missing=(actuals["bhp"] is None),
+            )
 
         # Secondary diagnostics
         with st.expander("Throat diagnostics", expanded=False):
@@ -915,6 +906,12 @@ def _render_fric_cal_action_bar(
                 "then auto-applies to the sidebar."
             )
 
+    # "What do these coefficients represent?" explainer — sits right below the
+    # calibrate button so the user can read what ken/kth/kdi mean before running.
+    from woffl.gui.explainers import render_kcoef_explainer
+
+    render_kcoef_explainer()
+
     if run_clicked:
         with st.spinner("Calibrating (Nelder-Mead)..."):
             ok, err = _execute_fric_cal(
@@ -945,10 +942,6 @@ def _render_fric_calibration_section(
     just the metrics and convergence flags from the most recent run.
     """
     st.markdown("#### Friction-Coef Calibration (BHP-target)")
-
-    from woffl.gui.explainers import render_kcoef_explainer
-
-    render_kcoef_explainer()
 
     if not is_valid_number(actual_bhp):
         st.caption(
@@ -1111,7 +1104,36 @@ def _pump_at_test_date(jp_hist, well_name: str, test_date):
     }
 
 
-def _render_test_picker(well_name: str, test_df):
+def _resolve_anchor_test_row(well_name: str, sorted_tests):
+    """The well-test row the IPR anchor currently points to.
+
+    Used to keep the 'Test to compare against' picker in sync with the IPR
+    anchor: reads the last-applied anchor signature (mode, date) and maps it to
+    a row in ``sorted_tests`` the same way ipr_anchor._resolve_anchor_row does
+    (median → nearest-median-BHP; specific → matching date; else most-recent).
+    Falls back to the most-recent test. ``sorted_tests`` must be WtDate-desc.
+    """
+    import pandas as pd
+
+    if sorted_tests is None or sorted_tests.empty:
+        return None
+    sig = st.session_state.get(f"sw_ipr_applied_sig_{well_name}")
+    mode = sig[0] if sig else "recent"
+    token = sig[1] if sig else None
+    if mode == "median" and "BHP" in sorted_tests.columns:
+        valid = sorted_tests[sorted_tests["BHP"].notna()]
+        if not valid.empty:
+            pos = int((valid["BHP"] - valid["BHP"].median()).abs().values.argmin())
+            return valid.iloc[pos]
+    elif mode == "specific" and token:
+        d = pd.to_datetime(sorted_tests["WtDate"], errors="coerce")
+        match = sorted_tests[d.dt.strftime("%Y-%m-%d") == token]
+        if not match.empty:
+            return match.iloc[0]
+    return sorted_tests.iloc[0]  # most-recent (WtDate-desc) / fallback
+
+
+def _render_test_picker(well_name: str, test_df, *, synced: bool = False):
     """Selectbox listing the well's tests (date-desc); returns the picked row.
 
     Default = most recent test, so behaviour matches the pre-picker version
@@ -1179,17 +1201,63 @@ def _render_test_picker(well_name: str, test_df):
 
     options = [_fmt(row) for _, row in sorted_tests.iterrows()]
     key = f"sw_test_picker_{well_name}"
+    shadow_key = f"sw_test_picker_date_{well_name}"
 
+    # SYNCED (default): slave the comparison test to the IPR anchor so the model
+    # is compared against the same test the IPR is built on. Only meaningful with
+    # 2+ tests (i.e. when the IPR anchor selector is shown); with 0/1 tests there
+    # is nothing to anchor, so fall through to the normal independent picker.
+    if synced and len(sorted_tests) >= 2:
+        target = _resolve_anchor_test_row(well_name, sorted_tests)
+        tgt_idx = 0
+        if target is not None and pd.notna(target.get("WtDate")):
+            ttok = target["WtDate"].strftime("%Y-%m-%d")
+            for i, (_, r) in enumerate(sorted_tests.iterrows()):
+                d = r.get("WtDate")
+                if pd.notna(d) and d.strftime("%Y-%m-%d") == ttok:
+                    tgt_idx = i
+                    break
+        # Pop the key so `index` wins, then render disabled (visibly slaved).
+        st.session_state.pop(key, None)
+        st.selectbox(
+            "Test to compare against",
+            options=options,
+            index=tgt_idx,
+            key=key,
+            disabled=True,
+            help=(
+                "Synced to the IPR anchor (in Model vs Actual below). Check "
+                "'Use a different test for comparison' under the IPR anchor to "
+                "pick the comparison test independently."
+            ),
+        )
+        return sorted_tests.iloc[tgt_idx]
+
+    # DECOUPLED (or <2 tests): independent picker.
     # Clamp persisted selection to the current option list so a stale value
     # from a prior session doesn't crash the selectbox if the test cache
     # changed shape.
     if st.session_state.get(key) not in options:
         st.session_state.pop(key, None)
 
+    # The view switcher renders only the active view, so Streamlit drops this
+    # selectbox's widget state when the user detours through Batch Run / PF
+    # Range. The shadow date key (a non-widget key) survives, so we re-seed the
+    # default index from it on return rather than snapping back to most-recent.
+    # When the widget state survived, Streamlit ignores `index` and keeps it.
+    default_idx = 0
+    token = st.session_state.get(shadow_key)
+    if token:
+        for i, (_, r) in enumerate(sorted_tests.iterrows()):
+            d = r.get("WtDate")
+            if pd.notna(d) and d.strftime("%Y-%m-%d") == token:
+                default_idx = i
+                break
+
     selected = st.selectbox(
         "Test to compare against",
         options=options,
-        index=0,
+        index=default_idx,
         key=key,
         help=(
             "Pick a well test. The hero-strip vs-actual deltas, the Model vs "
@@ -1200,7 +1268,12 @@ def _render_test_picker(well_name: str, test_df):
     )
 
     idx = options.index(selected)
-    return sorted_tests.iloc[idx]
+    row = sorted_tests.iloc[idx]
+    # Persist the pick so a Batch/PF detour doesn't snap it back to most-recent.
+    _d = row.get("WtDate")
+    if pd.notna(_d):
+        st.session_state[shadow_key] = _d.strftime("%Y-%m-%d")
+    return row
 
 
 def _render_ipr_anchor_control(well_name: str, test_df):
@@ -1215,10 +1288,10 @@ def _render_ipr_anchor_control(well_name: str, test_df):
       * ``specific`` — anchor on a user-picked test; reservoir pressure re-fit
         through it.
 
-    Writes the resolved mode/date to ``sw_ipr_anchor_mode_{well}`` /
-    ``sw_ipr_anchor_date_{well}`` (non-widget keys) so
-    :func:`woffl.gui.utils.build_calibration_inputs` targets the same operating
-    point as the chart. Returns ``(anchor_mode, anchor_date)``.
+    Returns ``(anchor_mode, anchor_date)``; the caller passes these to
+    :func:`_sync_chosen_ipr_to_sidebar`, which seeds the chosen test's IPR +
+    fluid into the sidebar so every view (Batch Run, PF Range, top solver, and
+    this section) uses the same curve.
     """
     import pandas as pd
 
@@ -1227,20 +1300,36 @@ def _render_ipr_anchor_control(well_name: str, test_df):
         "Median test": "median",
         "Specific test": "specific",
     }
+    mode_order = ["recent", "median", "specific"]
+
+    # The view switcher renders only the active view, so Streamlit garbage-
+    # collects this selectbox's widget state whenever the user detours through
+    # Batch Run / PF Range. Restore the selection from the last-APPLIED anchor
+    # (sw_ipr_applied_sig_<well>, a non-widget key that survives the detour) so
+    # returning to the Solver tab doesn't snap back to "Most recent" — which
+    # would also reseed the sidebar back to the recent fit, losing the user's
+    # chosen IPR. When the widget state survived, Streamlit ignores `index` and
+    # keeps the live value.
+    applied_sig = st.session_state.get(f"sw_ipr_applied_sig_{well_name}")
+    applied_mode = applied_sig[0] if applied_sig else "recent"
+    default_mode_idx = (
+        mode_order.index(applied_mode) if applied_mode in mode_order else 0
+    )
 
     col_mode, col_pick = st.columns(2)
     with col_mode:
         sel = st.selectbox(
             "IPR anchor",
             options=list(label_to_mode),
-            index=0,
+            index=default_mode_idx,
             key=f"_sw_ipr_anchor_sel_{well_name}",
             help=(
                 "Which test the Vogel IPR is anchored on. 'Most recent' fits "
                 "reservoir pressure to the whole test cloud (default). 'Median "
                 "test' / 'Specific test' anchor the curve on that test and "
                 "re-fit reservoir pressure for the best fit through it. "
-                "Independent of the 'Test to compare against' picker above."
+                "The 'Test to compare against' picker above syncs to this by "
+                "default (toggle below to unsync)."
             ),
         )
     mode = label_to_mode[sel]
@@ -1250,10 +1339,17 @@ def _render_ipr_anchor_control(well_name: str, test_df):
         sorted_tests = test_df.sort_values(
             "WtDate", ascending=False
         ).reset_index(drop=True)
+        jp_hist = st.session_state.get("jp_history_df")
 
         def _opt(row) -> str:
             d = row.get("WtDate")
             parts = [d.strftime("%Y-%m-%d") if pd.notna(d) else "N/A"]
+            # JP installed at this test's date — shown like the "Test to compare
+            # against" dropdown so the pump is visible here too.
+            if pd.notna(d) and jp_hist is not None:
+                pump = _pump_at_test_date(jp_hist, well_name, d)
+                if pump and pump.get("nozzle_no") and pump.get("throat_ratio"):
+                    parts.append(f"{pump['nozzle_no']}{pump['throat_ratio']}")
             bhp = row.get("BHP")
             if is_valid_number(bhp):
                 parts.append(f"BHP {float(bhp):,.0f}")
@@ -1266,20 +1362,144 @@ def _render_ipr_anchor_control(well_name: str, test_df):
         anchor_key = f"_sw_ipr_anchor_pick_{well_name}"
         if st.session_state.get(anchor_key) not in date_opts:
             st.session_state.pop(anchor_key, None)
+
+        # Same restore for the specific-date picker: fall back to the applied
+        # anchor date when the widget state was dropped on a tab detour.
+        default_date_idx = 0
+        if applied_sig and applied_sig[0] == "specific" and applied_sig[1]:
+            token = applied_sig[1]
+            for i, (_, r) in enumerate(sorted_tests.iterrows()):
+                d = r.get("WtDate")
+                if pd.notna(d) and d.strftime("%Y-%m-%d") == token:
+                    default_date_idx = i
+                    break
+
         with col_pick:
             picked = st.selectbox(
                 "Anchor test",
                 options=date_opts,
-                index=0,
+                index=default_date_idx,
                 key=anchor_key,
                 help="The test the Vogel curve is forced through.",
             )
         ad = sorted_tests.iloc[date_opts.index(picked)].get("WtDate")
         anchor_date = ad if pd.notna(ad) else None
 
-    st.session_state[f"sw_ipr_anchor_mode_{well_name}"] = mode
-    st.session_state[f"sw_ipr_anchor_date_{well_name}"] = anchor_date
+    # Decouple toggle. By default the top "Test to compare against" picker is
+    # slaved to this IPR anchor (so the model is compared against the same test
+    # the IPR is built on). Checking this frees the comparison picker to select
+    # any test. render_tab reads this key at the top of the run — Streamlit
+    # commits it before the rerun, so toggling takes effect immediately. (It
+    # resets to synced after a tab detour, which keeps the test selection
+    # consistent since the anchor itself persists.)
+    st.checkbox(
+        "Use a different test for comparison (un-sync from the IPR anchor)",
+        key=f"sw_ipr_decouple_{well_name}",
+        help=(
+            "By default the 'Test to compare against' picker at the top of the "
+            "tab matches the IPR anchor test selected here, so the model is "
+            "compared against the same test the IPR is built on. Check this to "
+            "choose the comparison test independently."
+        ),
+    )
+
     return mode, anchor_date
+
+
+# Default IPR-anchor signature: most-recent anchor. The sidebar's auto-populate
+# already seeds this exact operating point on well selection, so the default
+# state must never push back (and never stomp a manual sidebar edit). Only an
+# active change of the anchor TEST away from this writes anything.
+_IPR_SIDEBAR_DEFAULT_SIG = ("recent", None)
+
+
+def _sync_chosen_ipr_to_sidebar(
+    well_name: str,
+    *,
+    anchor_mode: str,
+    anchor_date,
+    qwf_oil: float,
+    pwf: float,
+    res_p: float,
+    form_wc: float,
+    fgor: float,
+) -> None:
+    """Seed the chosen test's IPR + fluid inputs into the sidebar.
+
+    The InFlow / ResMix shared by Batch Run, PF Range, and the top Solver are
+    built in ``single_well_page._build_simulation_objects`` from the sidebar's
+    ``qwf`` / ``pwf`` / ``res_pres`` / ``form_wc`` / ``form_gor``. This makes the
+    IPR-anchor test selection seed all five so every view uses the chosen test's
+    curve AND fluid; the engineer then overrides any field by editing the
+    sidebar (the edit persists for the session because it doesn't change the
+    selection signature below). Before this, picking a non-default anchor only
+    moved this Model-vs-Actual section — every other view reverted to the
+    auto-populated most-recent fit (the reported bug).
+
+    Writes only when the anchor TEST selection changes, tracked via a per-well
+    signature. That keeps three things true:
+      * the default state (most-recent anchor) never writes — auto-populate
+        already seeded it, and manual sidebar edits survive untouched,
+      * switching back to "Most recent" restores the recent-fit values,
+      * it can't loop: after the push the signature matches and it stops.
+
+    GOR is floored by ``_well_min_gor`` (set by the marginal-well solver
+    auto-recovery in utils._trigger_gor_reset) so re-seeding can't undo a
+    recovery that lifted GOR off an unsolvable value.
+
+    Follows the documented logical-key + pop-widget-key + ``st.rerun`` dance:
+    the sidebar already rendered this run, so its ``*_input`` widget keys can't
+    be written directly (Streamlit raises after the widget renders).
+    """
+    import pandas as pd
+
+    sig_key = f"sw_ipr_applied_sig_{well_name}"
+    date_token = (
+        anchor_date.strftime("%Y-%m-%d")
+        if anchor_date is not None and pd.notna(anchor_date)
+        else None
+    )
+    current_sig = (anchor_mode, date_token)
+    if current_sig == st.session_state.get(sig_key, _IPR_SIDEBAR_DEFAULT_SIG):
+        return
+
+    # Match the int/round casting the sidebar auto-populate uses (sidebar.py
+    # _auto_populate_from_ipr), so the recent-fit case is a byte-for-byte no-op
+    # and never reports a spurious change.
+    gor_floor = st.session_state.get("_well_min_gor", {}).get(well_name, 0)
+    new_vals = {
+        "qwf": int(qwf_oil),
+        "pwf": int(pwf),
+        "res_pres": int(res_p),
+        "form_wc": round(float(form_wc), 2),
+        "form_gor": max(int(fgor), gor_floor),
+    }
+
+    # Record the selection as applied up front so we don't keep re-evaluating.
+    st.session_state[sig_key] = current_sig
+
+    if all(st.session_state.get(k) == v for k, v in new_vals.items()):
+        return  # sidebar already matches — nothing to push
+
+    for k, v in new_vals.items():
+        st.session_state[k] = v
+        # Drop the widget key so the sidebar's _number_input re-seeds it from
+        # the logical key on the next run (writing *_input after render raises).
+        st.session_state.pop(f"{k}_input", None)
+
+    anchor_human = {
+        "recent": "most-recent-test",
+        "median": "median-test",
+        "specific": "selected-test",
+    }.get(anchor_mode, anchor_mode)
+    st.session_state["_ipr_sync_msg"] = (
+        f"Seeded the {anchor_human} IPR + fluid into the sidebar "
+        f"(qwf {new_vals['qwf']:,} BOPD · pwf {new_vals['pwf']:,} psi · "
+        f"ResP {new_vals['res_pres']:,} psi · WC {new_vals['form_wc']:.2f} · "
+        f"GOR {new_vals['form_gor']:,}). Batch Run, PF Range, and the Solver "
+        "now use this — edit any field in the sidebar to override."
+    )
+    st.rerun()
 
 
 def _render_manual_test_entry(well_name: str) -> None:
@@ -1455,6 +1675,12 @@ def _render_model_vs_actual(
             params.selected_well, test_df
         )
 
+    # One-shot confirmation from the prior run's sidebar sync. The sync reruns
+    # the app, so the note has to be surfaced on the following render.
+    _ipr_sync_msg = st.session_state.pop("_ipr_sync_msg", None)
+    if _ipr_sync_msg:
+        st.success(_ipr_sync_msg, icon="✅")
+
     # 3. Try Vogel fit (≥2 tests). With 0 or 1 tests we fall through to a
     # single-point synthetic IPR anchored on sidebar ResP — chart still
     # renders so the user can see the model's expected operating envelope.
@@ -1519,91 +1745,64 @@ def _render_model_vs_actual(
                 if not well_coeffs.empty:
                     coeff_row = well_coeffs.iloc[0]
 
-    # 4. Resolve the IPR anchor (qwf, pwf, ResP) and the points to overlay.
-    # Compute test_gor / test_whp HERE (was: later, after the chart) so the
-    # GOR override checkbox can sit next to the ResP override in a single
-    # st.columns(2) row at the top of this section. Both checkboxes render
-    # before the chart so the user sees them above the picture they affect.
+    # Seed the chosen test's IPR + fluid into the sidebar so Batch Run, PF
+    # Range, and the top Solver all use it (the engineer can then override any
+    # field in the sidebar — see _sync_chosen_ipr_to_sidebar). No-op unless the
+    # anchor-test selection actually changed. Done before the chart so a
+    # selection change reruns immediately and the chart/solver below read the
+    # freshly-seeded sidebar values.
+    if coeff_row is not None:
+        _sync_chosen_ipr_to_sidebar(
+            params.selected_well,
+            anchor_mode=anchor_mode,
+            anchor_date=anchor_date,
+            qwf_oil=float(coeff_row["qwf"]) * (1 - float(coeff_row["form_wc"])),
+            pwf=float(coeff_row["pwf"]),
+            res_p=float(coeff_row["ResP"]),
+            form_wc=float(coeff_row["form_wc"]),
+            fgor=float(coeff_row["fgor"]),
+        )
+
+    # 4. Resolve the comparison test row + its surface pressure for the chart
+    # and the modeled-vs-actual solver below. WC / GOR / ResP now come from the
+    # sidebar (seeded from the anchor test above, editable to override), so
+    # there are no per-field override widgets here anymore.
     recent_test = None
-    test_gor: int | None = None
     test_whp: float | None = None
     if n_tests >= 1:
         if selected_test_row is not None:
             recent_test = selected_test_row
         else:
             recent_test = test_df.sort_values("WtDate", ascending=False).iloc[0]
-        _g = recent_test.get("fgor", None)
-        test_gor = int(_g) if is_valid_number(_g) else None
         _w = recent_test.get("whp", None)
         test_whp = float(_w) if is_valid_number(_w) else None
 
-    # Side-by-side overrides. Each column is independent: ResP only renders
-    # when Vogel produced a coeff_row; GOR only renders when the selected
-    # test has an fgor value. Captions stack below each column.
-    if coeff_row is not None or test_gor is not None:
-        col_resp, col_gor = st.columns(2)
-        with col_resp:
-            if coeff_row is not None:
-                ipr_res_p = coeff_row["ResP"]
-                override_res_p = st.checkbox(
-                    "Override Reservoir Pressure from IPR analysis",
-                    value=False,
-                    help=(
-                        f"IPR analysis ResP: {ipr_res_p:.0f} psi. Check to "
-                        f"use sidebar value ({params.pres}) instead."
-                    ),
-                    key="mva_override_res_p",
-                )
-                model_res_p_local = (
-                    params.pres if override_res_p else ipr_res_p
-                )
-                st.caption(
-                    f"Using Reservoir Pressure: **{model_res_p_local:.0f}** "
-                    f"psi ({'sidebar' if override_res_p else 'IPR analysis'})"
-                )
-            else:
-                override_res_p = False
-                model_res_p_local = float(params.pres)
-
-        with col_gor:
-            if test_gor is not None:
-                override_gor = st.checkbox(
-                    "Override GOR from well test",
-                    value=st.session_state.get("mva_override_gor", False),
-                    help=(
-                        f"Test GOR: {test_gor} scf/bbl. Check to use "
-                        f"sidebar value ({params.form_gor}) instead."
-                    ),
-                    key="mva_override_gor",
-                )
-                model_gor = (
-                    params.form_gor if override_gor else test_gor
-                )
-                st.caption(
-                    f"Using GOR: **{model_gor}** scf/bbl "
-                    f"({'sidebar' if override_gor else 'well test'})"
-                )
-            else:
-                override_gor = False
-                model_gor = params.form_gor
+    # The chosen anchor test seeded WC / GOR / Reservoir Pressure into the
+    # sidebar (see _sync_chosen_ipr_to_sidebar). The sidebar is the single
+    # source of truth from here on: this section, Batch Run, PF Range, and the
+    # top Solver all read it, so they never disagree. The engineer overrides any
+    # value by editing the sidebar — the edit persists for the session until a
+    # different anchor test is picked.
+    model_res_p = float(params.pres)
+    model_gor = int(params.form_gor)
 
     if coeff_row is not None:
-        model_res_p = model_res_p_local
-
-        if override_res_p:
-            vogel_coeffs_plot = vogel_coeffs.copy()
-            vogel_coeffs_plot.loc[
-                vogel_coeffs_plot["Well"] == params.selected_well, "ResP"
-            ] = model_res_p
-            ipr_data = generate_ipr_curves(vogel_coeffs_plot)
-        else:
-            ipr_data = generate_ipr_curves(vogel_coeffs)
+        st.caption(
+            f"IPR + fluid seeded from the anchor test into the sidebar: "
+            f"Reservoir Pressure **{model_res_p:.0f}** psi · "
+            f"GOR **{model_gor:,}** scf/bbl · WC **{float(params.form_wc):.2f}**. "
+            "Edit any of them in the sidebar to override (persists for the session)."
+        )
+        # Draw the curve at the sidebar ResP (seeded from the anchor test,
+        # overridable in the sidebar) so the chart matches the solver + Batch.
+        vogel_coeffs_plot = vogel_coeffs.copy()
+        vogel_coeffs_plot.loc[
+            vogel_coeffs_plot["Well"] == params.selected_well, "ResP"
+        ] = model_res_p
+        ipr_data = generate_ipr_curves(vogel_coeffs_plot)
         plot_points = merged_with_rp
     else:
-        # 0-test, 1-test, or Vogel-failed path. Clear any stale override flag
-        # from a previously-selected multi-test well; the override only makes
-        # sense when there's an IPR-derived ResP to override.
-        st.session_state.pop("mva_override_res_p", None)
+        # 0-test, 1-test, or Vogel-failed path.
         model_res_p = float(params.pres)
 
         anchor_src = None
@@ -1718,23 +1917,22 @@ def _render_model_vs_actual(
     if n_tests == 0:
         return
 
-    # 7. Run model with current JP + IPR-derived inflow.
-    # `recent_test`, `test_gor`, `test_whp`, and `model_gor` were all
-    # computed earlier (next to the override checkboxes at the top of this
-    # section). When test_gor is None we fall back to sidebar GOR — same as
-    # the prior behaviour, just expressed up front.
-    if test_gor is None:
-        model_gor = params.form_gor
-
+    # 7. Run the comparison model. The IPR + fluid come from the SIDEBAR (which
+    # the anchor test seeded above and the engineer may have overridden), so the
+    # Model-vs-Actual solver, Batch Run, PF Range, and the top Solver all use
+    # the same operating point. `model_res_p` / `model_gor` were resolved from
+    # the sidebar above; `recent_test` / `test_whp` come from the selected test.
     model_surf_pres = test_whp if test_whp is not None else params.surf_pres
     st.caption(
         f"Using Surface Pressure: **{model_surf_pres:.0f}** psi ({'well test' if test_whp is not None else 'sidebar'})"
     )
 
     if coeff_row is not None:
-        oil_qwf = coeff_row["qwf"] * (1 - coeff_row["form_wc"])
-        pwf_for_inflow = coeff_row["pwf"]
-        wc_for_resmix = coeff_row["form_wc"]
+        # Sidebar is the single source of truth (seeded from the anchor test;
+        # editable). qwf is the OIL rate, matching create_inflow's contract.
+        oil_qwf = float(params.qwf)
+        pwf_for_inflow = float(params.pwf)
+        wc_for_resmix = float(params.form_wc)
     else:
         # Single-test fallback — same logic as build_calibration_inputs.
         actual_oil_anchor = recent_test.get("WtOilVol")

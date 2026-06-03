@@ -124,6 +124,54 @@ def fetch_bhp_tag_map() -> dict[tuple[str, int], dict]:
     return out
 
 
+# Latest valid reading per tag over a date window. ROW_NUMBER picks the most
+# recent cleaned (>0, <10000) value, so a trailing null/spike doesn't win.
+_LATEST_HEADER_QUERY = """
+WITH recent AS (
+    SELECT tag, value,
+           ROW_NUMBER() OVER (PARTITION BY tag ORDER BY LocalTime DESC) AS rn
+    FROM reporting.historian.vw_mpu_measurements
+    WHERE tag IN ({tag_list})
+      AND MeasureDate BETWEEN '{start_date}' AND '{end_date}'
+      AND value > 0 AND value < 10000
+)
+SELECT tag, value FROM recent WHERE rn = 1;
+"""
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_latest_pad_header(
+    pads: tuple[str, ...], start_date: str, end_date: str
+) -> dict[str, float]:
+    """Latest valid manifold (header) pressure per pad, from the historian.
+
+    Reads each pad's header tag (PAD_HEADER_TAGS) and returns the most recent
+    cleaned reading over [start_date, end_date]. Pads without a header tag, or
+    with no data in the window, are simply omitted. Keyed by pad letter ('G').
+
+    ``pads`` is a tuple (not list) so the result is cacheable.
+    """
+    from woffl.assembly.databricks_client import execute_query
+
+    tag_to_pad = {PAD_HEADER_TAGS[p]: p for p in pads if p in PAD_HEADER_TAGS}
+    if not tag_to_pad:
+        return {}
+    tag_list = ", ".join(f"'{t}'" for t in tag_to_pad)
+    df = execute_query(
+        _LATEST_HEADER_QUERY.format(
+            tag_list=tag_list, start_date=start_date, end_date=end_date
+        )
+    )
+    out: dict[str, float] = {}
+    if df is None or df.empty:
+        return out
+    for _, r in df.iterrows():
+        pad = tag_to_pad.get(str(r["tag"]).strip())
+        if pad is not None and pd.notna(r["value"]):
+            out[pad] = float(r["value"])
+    return out
+
+
 def _resolve_bhp(wide: pd.DataFrame, esp_tag: str | None, other_tag: str | None) -> pd.Series | None:
     """Pick the BHP candidate with the most cleaned data (auto-resolves 3 vs 7).
 

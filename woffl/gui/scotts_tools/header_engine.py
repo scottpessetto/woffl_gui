@@ -293,6 +293,559 @@ def bias_by_pad(results_df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([out, pd.DataFrame([total])], ignore_index=True)
 
 
+# ── model-vs-observed response sense check ───────────────────────────────────
+
+
+def slope_agreement(
+    model_slope, obs_slope, rel_tol: float = 0.30, abs_tol: float = 0.15
+) -> tuple[str, float]:
+    """Does the historian's observed dBHP/dWHP match the model's predicted one?
+
+    The model says BHP should move ``model_slope`` psi per psi of wellhead change;
+    the within-day historian fit says it actually moved ``obs_slope``. This is the
+    heart of "did we see what the model expects?".
+
+    Agreement when ``|obs − model| ≤ max(abs_tol, rel_tol·|model|)`` — a blended
+    absolute + relative band so near-zero slopes aren't judged on ratio alone.
+    Outside the band: the field moved LESS than the model (model over-predicts the
+    response — e.g. a near-sonic / slugging well) or MORE (model under-predicts).
+
+    Returns ``(label, obs/model ratio)``. ``ratio`` is NaN when it isn't defined.
+    """
+    m = float(model_slope) if model_slope is not None and not pd.isna(model_slope) else np.nan
+    o = float(obs_slope) if obs_slope is not None and not pd.isna(obs_slope) else np.nan
+    if np.isnan(m) and np.isnan(o):
+        return "no data", np.nan
+    if np.isnan(o):
+        return "no observed slope", np.nan
+    if np.isnan(m):
+        return "empirical only", np.nan
+    ratio = (o / m) if abs(m) > 1e-9 else np.nan
+    if abs(o - m) <= max(abs_tol, rel_tol * abs(m)):
+        return "confirmed ✓", ratio
+    if o < m:
+        return "model over-predicts", ratio   # field moved less than the model
+    return "model under-predicts", ratio        # field moved more than the model
+
+
+def sense_check_response(
+    results_df: pd.DataFrame, rel_tol: float = 0.30, abs_tol: float = 0.15
+) -> pd.DataFrame:
+    """Per-well model-vs-observed response sense check.
+
+    For each well: the model's BHP sensitivity (``Phys dBHP/dWHP``) vs the observed
+    historian slope (``Emp dBHP/dWHP``), with a verdict from :func:`slope_agreement`.
+    Sonic-decoupled wells (physics says the header can't propagate past the choke)
+    are reported separately, and we note whether the history is correspondingly flat
+    (agrees) or shows a response the physics can't (worth a look).
+    """
+    if results_df is None or results_df.empty:
+        return pd.DataFrame()
+    flat_classes = ("slugging", "insufficient", "no data", "no tag", "")
+    rows = []
+    for _, r in results_df.iterrows():
+        model_s = r.get("Phys dBHP/dWHP", np.nan)
+        obs_s = r.get("Emp dBHP/dWHP", np.nan)
+        emp_class = str(r.get("Emp class", ""))
+        if bool(r.get("Sonic now", False)):
+            label, ratio = "sonic-decoupled", np.nan
+            if emp_class == "responsive":
+                note = "history shows response — check"
+            elif emp_class in flat_classes:
+                note = "history flat — agrees"
+            else:
+                note = ""
+        else:
+            label, ratio = slope_agreement(model_s, obs_s, rel_tol, abs_tol)
+            note = ""
+        rows.append(
+            {
+                "Well": r.get("Well"), "Pad": r.get("Pad"), "Lift": r.get("Lift"),
+                "WHP now (psi)": r.get("WHP now (psi)"),
+                "BHP now (psi)": r.get("BHP now (psi)"),
+                "Model dBHP/dWHP": model_s, "Obs dBHP/dWHP": obs_s,
+                "Obs/Model": ratio, "Emp class": emp_class,
+                "Sense-check": label, "Note": note,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def pad_updown_lever(curve: dict | None, pad: str, ref: int = 100) -> tuple[float, float]:
+    """The pad's oil lever DOWN vs UP from today, summed over its wells.
+
+    From the swept response curve, ``(down, up)`` = oil change for a ``ref``-psi
+    header drop and a ``ref``-psi rise (BOPD). The two differ when the response is
+    nonlinear — e.g. wells choke sonic on the way down, flattening that side. NaN
+    where the curve lacks the ±ref or 0 points, or no pad well has data there.
+    """
+    if not curve:
+        return (np.nan, np.nan)
+    deltas = list(curve.get("deltas", []))
+    wells = curve.get("wells", {}) or {}
+    if 0 not in deltas or ref not in deltas or -ref not in deltas:
+        return (np.nan, np.nan)
+    i0, idn, iup = deltas.index(0), deltas.index(-ref), deltas.index(ref)
+
+    def pad_oil(i: int) -> float:
+        tot, seen = 0.0, False
+        for wd in wells.values():
+            if str(wd.get("pad")) != str(pad):
+                continue
+            o = wd.get("oil", [])
+            if i < len(o) and o[i] is not None and not pd.isna(o[i]):
+                tot += float(o[i])
+                seen = True
+        return tot if seen else np.nan
+
+    o0, odn, oup = pad_oil(i0), pad_oil(idn), pad_oil(iup)
+    down = (odn - o0) if not (np.isnan(odn) or np.isnan(o0)) else np.nan
+    up = (oup - o0) if not (np.isnan(oup) or np.isnan(o0)) else np.nan
+    return (down, up)
+
+
+# ── long-horizon back-test (real header move vs the model) ───────────────────
+
+
+def backtest_anchors(
+    test_well: pd.DataFrame, frac: float = 0.30,
+    date_col: str = "WtDate", whp_col: str = "whp", bhp_col: str = "BHP",
+    oil_col: str = "WtOilVol", liquid_col: str = "WtTotalFluid",
+) -> dict:
+    """Then/now operating-point anchors for the long-horizon back-test.
+
+    Splits a well's allocated tests (sorted by date) into an early ``frac`` slice
+    and a late ``frac`` slice, taking the median of each pressure/rate per slice —
+    robust to single-test noise. Returns medians, the Δ between them, test count
+    and day span; ``{}`` if fewer than 2 tests. Liquid falls back to oil when
+    total-fluid is absent.
+    """
+    if test_well is None or test_well.empty or date_col not in test_well.columns:
+        return {}
+    d = test_well.dropna(subset=[date_col]).sort_values(date_col)
+    n = len(d)
+    if n < 2:
+        return {}
+    k = max(1, int(round(n * frac)))
+    early, late = d.iloc[:k], d.iloc[-k:]
+
+    def med(g, col):
+        if col in g.columns:
+            v = pd.to_numeric(g[col], errors="coerce").median()
+            return float(v) if pd.notna(v) else np.nan
+        return np.nan
+
+    liq_then, liq_now = med(early, liquid_col), med(late, liquid_col)
+    if np.isnan(liq_then):
+        liq_then = med(early, oil_col)
+    if np.isnan(liq_now):
+        liq_now = med(late, oil_col)
+    out = {
+        "n_tests": int(n), "k": int(k),
+        "whp_then": med(early, whp_col), "whp_now": med(late, whp_col),
+        "bhp_then": med(early, bhp_col), "bhp_now": med(late, bhp_col),
+        "oil_then": med(early, oil_col), "oil_now": med(late, oil_col),
+        "liquid_then": liq_then, "liquid_now": liq_now,
+    }
+    try:
+        span = late[date_col].median() - early[date_col].median()
+        out["days"] = float(getattr(span, "days", np.nan))
+    except Exception:
+        out["days"] = np.nan
+    out["d_whp"] = out["whp_now"] - out["whp_then"]
+    out["d_bhp"] = out["bhp_now"] - out["bhp_then"]
+    out["d_oil"] = out["oil_now"] - out["oil_then"]
+    out["d_liquid"] = liq_now - liq_then
+    return out
+
+
+def predict_dbhp_from_curve(curve_well: dict | None, whp_then, whp_now):
+    """Model-predicted ΔBHP for the *actual* header move, read off the swept
+    BHP-vs-WHP curve: ``BHP_model(whp_now) − BHP_model(whp_then)`` by interpolation.
+
+    Returns ``(dbhp, extrapolated)``; ``extrapolated`` is True when either WHP is
+    outside the swept range (np.interp clamps to the endpoints, so the prediction
+    is a floor/ceiling, not a true solve).
+    """
+    if not curve_well:
+        return (np.nan, False)
+    pts = sorted(
+        (float(x), float(y))
+        for x, y in zip(curve_well.get("whp") or [], curve_well.get("bhp") or [])
+        if x is not None and y is not None and not pd.isna(x) and not pd.isna(y)
+    )
+    if len(pts) < 2 or pd.isna(whp_then) or pd.isna(whp_now):
+        return (np.nan, False)
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    extr = not (xs[0] <= whp_then <= xs[-1] and xs[0] <= whp_now <= xs[-1])
+    return (float(np.interp(whp_now, xs, ys)) - float(np.interp(whp_then, xs, ys)), extr)
+
+
+def backpressure_consistency(
+    d_whp, d_bhp, d_liquid, whp_eps: float = 15.0, bhp_eps: float = 15.0,
+    q_eps: float = 20.0,
+) -> str:
+    """Diagnose the observed window move against the nodal back-pressure signature:
+    WHP↑ ⇒ BHP↑ (less drawdown) ⇒ liquid↓.
+
+    Separates a genuine back-pressure response from reservoir depletion (rate falls
+    with BHP flat — the IPR moved, not the operating point) and from contradictions
+    (BHP moved opposite the header — gauge / pump-change / sonic). ``*_eps`` are
+    dead-bands so noise near zero reads as 'flat', not a move.
+    """
+    def sgn(x, eps):
+        if x is None or pd.isna(x):
+            return None
+        return 1 if x > eps else (-1 if x < -eps else 0)
+
+    sw, sb, sq = sgn(d_whp, whp_eps), sgn(d_bhp, bhp_eps), sgn(d_liquid, q_eps)
+    if sw is None or sw == 0:
+        return "header ~flat (n/a)"
+    if sb is None:                                   # gaugeless: lean on liquid only
+        if sq == -sw:
+            return "liquid consistent (no BHP)"
+        return "liquid ~flat (no BHP)" if sq == 0 else "inconclusive (no BHP)"
+    if sb == -sw:
+        return "contradicts (BHP vs WHP)"
+    if sb == sw:                                     # BHP tracked WHP — response link holds
+        if sq == -sb:
+            return "back-pressure-consistent ✓"
+        return "BHP tracks WHP; liquid ~flat" if sq == 0 else "BHP tracks WHP; liquid wrong way"
+    return "depletion-like / BHP flat"               # sb == 0: BHP flat despite WHP move
+
+
+# ── windowed Vogel fits: back into a pseudo-pr that's allowed to deplete ──────
+
+# Physical ceiling on the backed-out pseudo reservoir pressure, by formation —
+# clustered/sparse tests can otherwise drive the LS fit to an unphysical pr. MPU
+# caps (Scott, 2026-06-02): Schrader ~2200 psi, Kuparuk ~4200 psi (deeper/higher).
+PR_MAX_DEFAULT = 3500.0
+FORMATION_PR_MAX = {"Schrader": 2200.0, "Kuparuk": 4200.0}
+
+
+def pr_hi_for_formation(formation) -> float:
+    """Upper bound for the pseudo-Pr fit given a well's formation (defaults to
+    ``PR_MAX_DEFAULT`` for unknown/missing)."""
+    return float(FORMATION_PR_MAX.get(str(formation), PR_MAX_DEFAULT))
+
+
+def vogel_oil(bhp, qmax: float, pr: float) -> float:
+    """Vogel oil rate at a bottomhole pressure for a given qmax & reservoir pressure
+    (bhp clamped to [0, pr]). The pure inverse of :func:`fit_vogel_ipr`, used to
+    predict the oil change for a BHP move off a fitted pseudo-Pr IPR."""
+    if pr is None or pd.isna(pr) or pr <= 0 or pd.isna(qmax) or pd.isna(bhp):
+        return float("nan")
+    r = min(max(float(bhp), 0.0), float(pr)) / float(pr)
+    return float(qmax) * (1.0 - 0.2 * r - 0.8 * r * r)
+
+
+def fit_vogel_ipr(pwf, q, pr_hi: float = PR_MAX_DEFAULT, n_grid: int = 240) -> dict | None:
+    """Fit a Vogel IPR — qmax and a *pseudo* reservoir pressure ``pr`` — to a cluster
+    of ``(pwf, q)`` test points by least squares (Standing-style back-out).
+
+    Vogel: ``q = qmax·[1 − 0.2(pwf/pr) − 0.8(pwf/pr)²]``. We don't measure pr, so we
+    back into it: for each candidate pr (> max pwf, so the Vogel factor stays > 0),
+    ``qmax`` is the closed-form LS scale and we keep the pr minimizing the residual.
+
+    Returns ``dict(qmax, pr, rmse, n, pwf_spread, pr_at_bound)`` or ``None`` for < 2
+    usable points. With little pwf spread the pr is weakly constrained — small
+    ``pwf_spread`` / ``pr_at_bound`` tell the caller the fit is soft (don't trust the
+    absolute pr, only its trend across windows).
+    """
+    P = np.asarray(pwf, dtype=float)
+    Q = np.asarray(q, dtype=float)
+    m = np.isfinite(P) & np.isfinite(Q) & (P > 0) & (Q > 0)
+    P, Q = P[m], Q[m]
+    if P.size < 2:
+        return None
+    spread = float(P.max() - P.min())
+    pr_lo = float(P.max()) * 1.02 + 1.0
+    if pr_hi <= pr_lo:
+        pr_hi = pr_lo + 500.0
+    grid = np.linspace(pr_lo, pr_hi, n_grid)
+    best = None
+    for pr in grid:
+        r = P / pr
+        f = 1.0 - 0.2 * r - 0.8 * r * r
+        denom = float(np.sum(f * f))
+        if np.any(f <= 0) or denom <= 0:
+            continue
+        qmax = float(np.sum(Q * f) / denom)
+        sse = float(np.sum((Q - qmax * f) ** 2))
+        if best is None or sse < best[0]:
+            best = (sse, qmax, float(pr))
+    if best is None:
+        return None
+    sse, qmax, pr = best
+    step = grid[1] - grid[0]
+    return {
+        "qmax": qmax, "pr": pr, "rmse": float(np.sqrt(sse / P.size)),
+        "n": int(P.size), "pwf_spread": spread,
+        "pr_at_bound": bool(abs(pr - grid[-1]) < step),
+    }
+
+
+def windowed_ipr_fits(
+    test_well: pd.DataFrame, min_tests: int = 3, min_days: int = 25,
+    max_days: int = 95, pr_hi: float = PR_MAX_DEFAULT, date_col: str = "WtDate",
+    bhp_col: str = "BHP", oil_col: str = "WtOilVol",
+) -> list[dict]:
+    """Fit a Vogel IPR per time window so the curve is allowed to SHIFT over the
+    lookback (depletion), instead of forcing one IPR on 12 months of data.
+
+    Windows grow until they hold ``min_tests`` AND span ``min_days`` (hard-capped at
+    ``max_days`` once they have ≥2 points), so they adapt to test density — ~1 month
+    where tests are frequent, up to ~3 where sparse. Each window backs into a pseudo
+    pr via :func:`fit_vogel_ipr`. The **pr trend across windows is the depletion
+    signal**; points sliding along a single window's curve is the back-pressure
+    response. Returns a time-ordered list of window dicts (start/end/mid/n_window +
+    the fit fields); unfittable windows are dropped.
+    """
+    if test_well is None or test_well.empty or date_col not in test_well.columns:
+        return []
+    if bhp_col not in test_well.columns or oil_col not in test_well.columns:
+        return []
+    d = test_well.dropna(subset=[date_col, bhp_col, oil_col]).sort_values(date_col)
+    n = len(d)
+    if n < 2:
+        return []
+    ts = list(pd.to_datetime(d[date_col]))
+    groups: list[tuple[int, int]] = []
+    start = 0
+    for k in range(1, n):
+        cnt = k - start                       # window = indices [start .. k-1]
+        span = (ts[k - 1] - ts[start]).days
+        if (cnt >= min_tests and span >= min_days) or (span >= max_days and cnt >= 2):
+            groups.append((start, k - 1))
+            start = k
+    groups.append((start, n - 1))
+    # fold a too-small trailing window into its predecessor
+    if len(groups) >= 2 and (groups[-1][1] - groups[-1][0] + 1) < 2:
+        s0 = groups[-2][0]
+        e1 = groups[-1][1]
+        groups = groups[:-2] + [(s0, e1)]
+
+    out = []
+    for s, e in groups:
+        sub = d.iloc[s:e + 1]
+        fit = fit_vogel_ipr(sub[bhp_col].tolist(), sub[oil_col].tolist(), pr_hi=pr_hi)
+        if fit is not None:
+            sd, ed = ts[s], ts[e]
+            out.append(
+                {"start": sd, "end": ed, "mid": sd + (ed - sd) / 2,
+                 "n_window": e - s + 1, **fit}
+            )
+    return out
+
+
+def fit_well_ipr(
+    test_well: pd.DataFrame, pr_hi: float = PR_MAX_DEFAULT, min_pts: int = 3,
+    bhp_col: str = "BHP", rate_col: str = "WtTotalFluid",
+) -> dict | None:
+    """Single Vogel IPR fit to ALL a well's (BHP, rate) test points.
+
+    Fit on **total liquid** (``WtTotalFluid``), NOT oil — Vogel is a liquid inflow
+    relationship and the rest of the system (compute_vogel_coefficients,
+    build_well_config) is liquid→WC→oil; fitting oil directly is a units mismatch
+    when water cut varies. Convert the resulting ΔLiquid to ΔOil with (1−WC) downstream.
+
+    Field-tested choice over per-window fitting: using every point maximizes the BHP
+    spread (~280 vs ~50 psi/window). The absolute pr is still soft for many wells (it
+    pins to the formation cap) — trust the IPR *shape*, read depletion from
+    :func:`depletion_signature`. Returns ``fit_vogel_ipr``'s dict or ``None``.
+    """
+    if test_well is None or test_well.empty:
+        return None
+    if bhp_col not in test_well.columns or rate_col not in test_well.columns:
+        return None
+    d = test_well.dropna(subset=[bhp_col, rate_col])
+    if len(d) < min_pts:
+        return None
+    return fit_vogel_ipr(d[bhp_col].tolist(), d[rate_col].tolist(), pr_hi=pr_hi)
+
+
+def depletion_signature(
+    test_well: pd.DataFrame, corr_min: float = 0.35, rate_eps: float = 10.0,
+    min_pts: int = 4, date_col: str = "WtDate", bhp_col: str = "BHP",
+    rate_col: str = "WtTotalFluid",
+) -> dict:
+    """Geometric depletion read from a well's operating points over time.
+
+    Uses **total liquid** (``WtTotalFluid``) as the rate, to match the liquid IPR.
+    On a FIXED IPR, rate and BHP are inversely related (Vogel: more drawdown → more
+    rate). If instead BHP and rate move **together** (positive correlation), the IPR
+    itself is shifting — down = depletion (Scott's "horizontal line"), up = rising.
+    Robust because it keys on the *sign* of the BHP↔rate correlation, not a fragile
+    absolute-pr fit.
+
+    Returns ``{corr, bhp_per_mo, rate_per_mo, rate_bhp_slope, n, verdict}``:
+      - ``back-pressure`` corr < -corr_min (riding a fixed IPR),
+      - ``depleting``   corr > corr_min AND rate falling > rate_eps/mo (BHP not rising),
+      - ``improving``   corr > corr_min AND rate rising > rate_eps/mo (BHP not falling),
+      - ``flat/mixed``  correlated-but-small-trend, |corr| ≤ corr_min, or mixed trends,
+      - ``insufficient`` < min_pts paired points or no BHP/rate spread.
+    """
+    out = {"corr": np.nan, "bhp_per_mo": np.nan, "rate_per_mo": np.nan,
+           "rate_bhp_slope": np.nan, "n": 0, "verdict": "insufficient"}
+    if test_well is None or test_well.empty:
+        return out
+    if not all(c in test_well.columns for c in (date_col, bhp_col, rate_col)):
+        return out
+    d = test_well.dropna(subset=[date_col, bhp_col, rate_col]).sort_values(date_col)
+    bhp = pd.to_numeric(d[bhp_col], errors="coerce").to_numpy(dtype=float)
+    rate = pd.to_numeric(d[rate_col], errors="coerce").to_numpy(dtype=float)
+    days = (pd.to_datetime(d[date_col]) - pd.to_datetime(d[date_col]).min()).dt.days.to_numpy(dtype=float)
+    ok = np.isfinite(bhp) & np.isfinite(rate) & np.isfinite(days)
+    bhp, rate, days = bhp[ok], rate[ok], days[ok]
+    out["n"] = int(bhp.size)
+    if bhp.size < min_pts or np.std(bhp) < 1.0 or np.std(rate) < 1.0:
+        return out
+    out["corr"] = float(np.corrcoef(bhp, rate)[0, 1])
+    # Direct rate sensitivity dLiquid/dBHP = linear slope of liquid on BHP (BPD/psi).
+    # For a back-pressure well (corr<0) this IS the IPR slope at the operating range —
+    # robust, no fragile Vogel pr. (For a depleting well it's the depletion line.)
+    out["rate_bhp_slope"] = float(np.polyfit(bhp, rate, 1)[0])
+    if np.ptp(days) > 0:
+        out["bhp_per_mo"] = float(np.polyfit(days, bhp, 1)[0] * 30.0)
+        out["rate_per_mo"] = float(np.polyfit(days, rate, 1)[0] * 30.0)
+    corr, bt, ot = out["corr"], out["bhp_per_mo"], out["rate_per_mo"]
+    if corr <= -corr_min:
+        out["verdict"] = "back-pressure"
+    elif corr >= corr_min and pd.notna(ot):
+        # correlated → the rate trend's direction & size says depleting vs improving
+        if ot < -rate_eps and (pd.isna(bt) or bt < 0):
+            out["verdict"] = "depleting"
+        elif ot > rate_eps and (pd.isna(bt) or bt > 0):
+            out["verdict"] = "improving"
+        else:
+            out["verdict"] = "flat/mixed"     # correlated but no material/clean trend
+    else:
+        out["verdict"] = "flat/mixed"
+    return out
+
+
+# ── the deterministic per-well header-impact chain ───────────────────────────
+
+
+def estimate_header_impact(
+    d_whp, dbhp_dwhp, qmax, pr, bhp_now, wc, sonic: bool = False,
+) -> dict:
+    """Scott's per-well chain for a header change:
+
+        ΔWHP ──①dBHP/dWHP──▶ ΔBHP ──②liquid Vogel IPR──▶ ΔLiquid ──③×(1−WC)──▶ ΔOil
+
+    ① ``dbhp_dwhp`` is the ALREADY-RESOLVED WHP→BHP correlation (the well's own if good,
+       else a donor / group average). Pass ``sonic=True`` to force ΔBHP = 0 — a jet pump
+       in critical flow is choked, so the header can't propagate to BHP.
+    ② ``qmax, pr`` are the well's liquid Vogel IPR (its own, or a similar-reservoir
+       donor's). ΔLiquid is the FULL nonlinear delta off the curve, so a large move
+       curves correctly.
+    ③ ``wc`` is the water cut; ΔOil = ΔLiquid × (1 − WC).
+
+    Returns ``{dbhp, bhp_scen, dliquid, doil}`` (NaN where inputs are missing). A sonic
+    well returns dbhp=0, dliquid=0, doil=0 — explicitly "no header lever".
+    """
+    out = {"dbhp": np.nan, "bhp_scen": np.nan, "dliquid": np.nan, "doil": np.nan}
+    if pd.isna(d_whp) or pd.isna(bhp_now):
+        return out
+    slope = 0.0 if sonic else (float(dbhp_dwhp) if pd.notna(dbhp_dwhp) else np.nan)
+    if pd.isna(slope):
+        return out
+    dbhp = slope * float(d_whp)
+    bhp_scen = float(bhp_now) + dbhp
+    out["dbhp"] = dbhp
+    out["bhp_scen"] = bhp_scen
+    if pd.notna(qmax) and pd.notna(pr) and pr and pr > 0:
+        dliq = vogel_oil(bhp_scen, qmax, pr) - vogel_oil(bhp_now, qmax, pr)
+        out["dliquid"] = dliq
+        out["doil"] = dliq * (1.0 - (float(wc) if pd.notna(wc) else 0.0))
+    return out
+
+
+def group_correlation_stats(wells: dict) -> dict:
+    """Per-lift mean & std of the responsive wells' own dBHP/dWHP — the group
+    correlation and its spread (drives the donor default and the field CI)."""
+    def _ok(x):
+        return x is not None and not (isinstance(x, float) and np.isnan(x))
+    by_lift: dict = {}
+    for b in wells.values():
+        if _ok(b.get("own_corr")):
+            by_lift.setdefault(b.get("lift", "?"), []).append(float(b["own_corr"]))
+    return {k: (float(np.mean(v)), float(np.std(v)) if len(v) > 1 else 0.0)
+            for k, v in by_lift.items() if v}
+
+
+def estimate_header_impacts(wells: dict, d_whp, group_corr_override: dict | None = None) -> dict:
+    """Resolve donors across a set of wells, then run :func:`estimate_header_impact`
+    on each — the field-level orchestration of Scott's chain.
+
+    ``wells`` = ``{name: {own_corr, sonic, lift, qmax, pr, pad, formation, bhp_now, wc,
+    corr_donor, ipr_donor}}``. ``own_corr`` is the well's OWN dBHP/dWHP if good (else None);
+    ``sonic`` the jet-pump critical-flow flag; ``qmax/pr`` its OWN liquid IPR (else None);
+    ``corr_donor`` / ``ipr_donor`` (optional) a SPECIFIC well to borrow from.
+
+    ① correlation ladder: **specific-well donor → own → (JP & sonic ⇒ 0) → group-avg by
+       lift**. ② IPR ladder: **specific-well donor → own → group-avg by pad+formation**.
+    ``group_corr_override`` ({lift: corr}) swaps the group correlation (used for the CI).
+
+    Returns ``{name: {dbhp, bhp_scen, dliquid, doil, corr, corr_src, ipr_src, conf, qmax, pr}}``.
+    """
+    def _ok(x):
+        return x is not None and not (isinstance(x, float) and np.isnan(x))
+
+    grp_corr = {k: m for k, (m, _s) in group_correlation_stats(wells).items()}
+    if group_corr_override:
+        grp_corr = {**grp_corr, **group_corr_override}
+
+    grp_ipr: dict = {}
+    for b in wells.values():
+        if _ok(b.get("qmax")) and _ok(b.get("pr")):
+            grp_ipr.setdefault((b.get("pad"), b.get("formation")), []).append(
+                (float(b["qmax"]), float(b["pr"])))
+    grp_ipr = {k: (float(np.mean([q for q, _ in v])), float(np.mean([p for _, p in v])))
+               for k, v in grp_ipr.items() if v}
+
+    out: dict = {}
+    for name, b in wells.items():
+        lift, sonic = b.get("lift", "?"), bool(b.get("sonic", False))
+        cd = b.get("corr_donor")
+        if cd and _ok(wells.get(cd, {}).get("own_corr")):
+            corr, csrc = float(wells[cd]["own_corr"]), "donor"     # specific-well override wins
+        elif _ok(b.get("own_corr")):
+            corr, csrc = float(b["own_corr"]), "own"
+        elif sonic and lift == "JP":
+            corr, csrc = 0.0, "sonic"
+        elif lift in grp_corr:
+            corr, csrc = grp_corr[lift], "group"
+        else:
+            corr, csrc = np.nan, "none"
+
+        idn = b.get("ipr_donor")
+        if idn and _ok(wells.get(idn, {}).get("qmax")) and _ok(wells.get(idn, {}).get("pr")):
+            qmax, pr, isrc = float(wells[idn]["qmax"]), float(wells[idn]["pr"]), "donor"
+        elif _ok(b.get("qmax")) and _ok(b.get("pr")):
+            qmax, pr, isrc = b["qmax"], b["pr"], "own"
+        elif (b.get("pad"), b.get("formation")) in grp_ipr:
+            qmax, pr, isrc = *grp_ipr[(b.get("pad"), b.get("formation"))], "group"
+        else:
+            qmax, pr, isrc = np.nan, np.nan, "none"
+
+        est = estimate_header_impact(d_whp, corr, qmax, pr, b.get("bhp_now"),
+                                     b.get("wc"), sonic=(csrc == "sonic"))
+        if csrc == "sonic":
+            conf = "sonic"
+        elif csrc == "none" or isrc == "none":
+            conf = "none"
+        elif csrc == "own" and isrc == "own":
+            conf = "high"
+        else:
+            conf = "med"
+        out[name] = {**est, "corr": corr, "corr_src": csrc, "ipr_src": isrc,
+                     "conf": conf, "qmax": qmax, "pr": pr}
+    return out
+
+
 # ── response-curve aggregation (per-pad + overall) ───────────────────────────
 
 
@@ -337,14 +890,23 @@ def aggregate_response_curve(curve: dict | None) -> dict:
 
 OWN_TOKEN = "(own)"
 GROUP_PADLIFT = "(group: pad+lift)"
+GROUP_PADFORMATION = "(group: pad+formation)"
 GROUP_FORMATION = "(group: formation)"
-DONOR_GROUP_TOKENS = (GROUP_PADLIFT, GROUP_FORMATION)
+GROUP_LIFT = "(group: lift)"
+DONOR_GROUP_TOKENS = (GROUP_PADLIFT, GROUP_PADFORMATION, GROUP_FORMATION, GROUP_LIFT)
 
 
 def donor_tokens(well_names: list[str]) -> list[str]:
-    """The selectbox options for a donor column: own, the two group schemes,
-    then every well (so a specific donor can be picked)."""
-    return [OWN_TOKEN, GROUP_PADLIFT, GROUP_FORMATION] + sorted(well_names)
+    """The selectbox options for a donor column: own, the group schemes, then
+    every well (so a specific donor can be picked).
+
+    Group schemes — pad+lift / pad+formation borrow from nearby analogs on the
+    same pad; formation / lift borrow field-wide. The coverage panel auto-fills
+    pad+formation for wells with no IPR test data and lift for wells with no
+    usable WHP→BHP correlation (the widest pool of like-lift analogs)."""
+    return [
+        OWN_TOKEN, GROUP_PADLIFT, GROUP_PADFORMATION, GROUP_FORMATION, GROUP_LIFT
+    ] + sorted(well_names)
 
 
 def donor_member_wells(target: str, token: str, rows_meta: dict | None):
@@ -366,8 +928,17 @@ def donor_member_wells(target: str, token: str, rows_meta: dict | None):
             if m.get("pad") == tmeta.get("pad") and m.get("lift") == tmeta.get("lift")
         ]
         return members or None
+    if token == GROUP_PADFORMATION:
+        members = [
+            w for w, m in meta.items()
+            if m.get("pad") == tmeta.get("pad") and m.get("formation") == tmeta.get("formation")
+        ]
+        return members or None
     if token == GROUP_FORMATION:
         members = [w for w, m in meta.items() if m.get("formation") == tmeta.get("formation")]
+        return members or None
+    if token == GROUP_LIFT:
+        members = [w for w, m in meta.items() if m.get("lift") == tmeta.get("lift")]
         return members or None
     return [token] if token in meta else None
 
@@ -403,8 +974,12 @@ def describe_donor(token: str, n_members: int = 0) -> str:
         return "own"
     if token == GROUP_PADLIFT:
         return f"group pad+lift (n={n_members})"
+    if token == GROUP_PADFORMATION:
+        return f"group pad+formation (n={n_members})"
     if token == GROUP_FORMATION:
         return f"group formation (n={n_members})"
+    if token == GROUP_LIFT:
+        return f"group lift (n={n_members})"
     return f"donor {token}"
 
 

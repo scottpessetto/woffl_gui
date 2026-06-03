@@ -1,0 +1,1079 @@
+{
+  "generated": "2026-06-02T14:52:03",
+  "config": {
+    "delta_p": -50,
+    "months_back": 12,
+    "fric_mode": "calibrate",
+    "backtest_pred_uses_pseudo_pr": false,
+    "solve_uses_pseudo_pr": false,
+    "pads": [
+      "G",
+      "H",
+      "I",
+      "J"
+    ],
+    "formation_pr_cap": {
+      "Schrader": 2200.0,
+      "Kuparuk": 4200.0
+    }
+  },
+  "n_wells_backtested": 34,
+  "backtest_rows": [
+    {
+      "Well": "MPG-02",
+      "n tests": 50,
+      "\u0394WHP (psi)": 38.43799999999999,
+      "\u0394BHP actual (psi)": 157.90499999999997,
+      "\u0394BHP pred (psi)": 38.56705597331745,
+      "\u0394Oil actual (BOPD)": -12.690699999999993,
+      "\u0394Oil pred (BOPD)": -18.59042315160417,
+      "\u0394Liquid (BPD)": -273.06050000000005,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": 0.5549289868897314,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "back-pressure-consistent \u2713",
+      "Flags": "",
+      "Pad": "G"
+    },
+    {
+      "Well": "MPG-14",
+      "n tests": 73,
+      "\u0394WHP (psi)": 48.34650000000002,
+      "\u0394BHP actual (psi)": 27.11500000000001,
+      "\u0394BHP pred (psi)": null,
+      "\u0394Oil actual (BOPD)": -109.4678,
+      "\u0394Oil pred (BOPD)": -1.6985393400593836,
+      "\u0394Liquid (BPD)": -154.97090000000003,
+      "Pr fit": "1017",
+      "BHP\u2194oil corr": -0.49569106416434655,
+      "Depletion": "back-pressure",
+      "Diagnosis": "back-pressure-consistent \u2713",
+      "Flags": "",
+      "Pad": "G"
+    },
+    {
+      "Well": "MPG-16",
+      "n tests": 30,
+      "\u0394WHP (psi)": 21.20799999999997,
+      "\u0394BHP actual (psi)": 13.379999999999995,
+      "\u0394BHP pred (psi)": 0.0,
+      "\u0394Oil actual (BOPD)": -69.54909999999998,
+      "\u0394Oil pred (BOPD)": -4.016123560744177,
+      "\u0394Liquid (BPD)": -73.54590000000002,
+      "Pr fit": "757",
+      "BHP\u2194oil corr": -0.7874286233338055,
+      "Depletion": "back-pressure",
+      "Diagnosis": "depletion-like / BHP flat",
+      "Flags": "\u26a0 pump chg \u26a0 sonic",
+      "Pad": "G"
+    },
+    {
+      "Well": "MPG-18",
+      "n tests": 48,
+      "\u0394WHP (psi)": 55.52049999999997,
+      "\u0394BHP actual (psi)": null,
+      "\u0394BHP pred (psi)": 72.07652235834837,
+      "\u0394Oil actual (BOPD)": -187.21275000000003,
+      "\u0394Oil pred (BOPD)": null,
+      "\u0394Liquid (BPD)": 58.478849999999966,
+      "Pr fit": "\u2014",
+      "BHP\u2194oil corr": null,
+      "Depletion": "\u2014",
+      "Diagnosis": "inconclusive (no BHP)",
+      "Flags": "\u26a0 pump chg",
+      "Pad": "G"
+    },
+    {
+      "Well": "MPH-08",
+      "n tests": 28,
+      "\u0394WHP (psi)": 18.800999999999988,
+      "\u0394BHP actual (psi)": 64.78999999999996,
+      "\u0394BHP pred (psi)": 6.328522715507006,
+      "\u0394Oil actual (BOPD)": 65.59015,
+      "\u0394Oil pred (BOPD)": -47.5611677248321,
+      "\u0394Liquid (BPD)": -63.791150000000016,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": 0.13697658677411426,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "back-pressure-consistent \u2713",
+      "Flags": "\u26a0 pump chg",
+      "Pad": "H"
+    },
+    {
+      "Well": "MPH-16",
+      "n tests": 3,
+      "\u0394WHP (psi)": -5.7409999999999854,
+      "\u0394BHP actual (psi)": 14.899999999999977,
+      "\u0394BHP pred (psi)": -1.2424450398194722,
+      "\u0394Oil actual (BOPD)": -32.68950000000001,
+      "\u0394Oil pred (BOPD)": -19.79300807654647,
+      "\u0394Liquid (BPD)": -32.68950000000001,
+      "Pr fit": "690",
+      "BHP\u2194oil corr": null,
+      "Depletion": "insufficient",
+      "Diagnosis": "header ~flat (n/a)",
+      "Flags": "",
+      "Pad": "H"
+    },
+    {
+      "Well": "MPH-19",
+      "n tests": 52,
+      "\u0394WHP (psi)": 31.920999999999935,
+      "\u0394BHP actual (psi)": -18.454999999999927,
+      "\u0394BHP pred (psi)": 36.19756354710637,
+      "\u0394Oil actual (BOPD)": -0.18594999999999118,
+      "\u0394Oil pred (BOPD)": 0.5598520285391615,
+      "\u0394Liquid (BPD)": -22.281000000000006,
+      "Pr fit": "1799",
+      "BHP\u2194oil corr": -0.06852962830310683,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "contradicts (BHP vs WHP)",
+      "Flags": "\u26a0 pump chg",
+      "Pad": "H"
+    },
+    {
+      "Well": "MPH-22",
+      "n tests": 9,
+      "\u0394WHP (psi)": null,
+      "\u0394BHP actual (psi)": -374.76,
+      "\u0394BHP pred (psi)": null,
+      "\u0394Oil actual (BOPD)": -917.7158,
+      "\u0394Oil pred (BOPD)": 263.8583782372865,
+      "\u0394Liquid (BPD)": -1036.9,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": 0.7350541056280427,
+      "Depletion": "depleting",
+      "Diagnosis": "header ~flat (n/a)",
+      "Flags": "\u26a0 pump chg \u26a0 sonic",
+      "Pad": "H"
+    },
+    {
+      "Well": "MPH-23",
+      "n tests": 7,
+      "\u0394WHP (psi)": null,
+      "\u0394BHP actual (psi)": -465.19000000000005,
+      "\u0394BHP pred (psi)": null,
+      "\u0394Oil actual (BOPD)": -545.4020499999999,
+      "\u0394Oil pred (BOPD)": 244.81313379508356,
+      "\u0394Liquid (BPD)": -2129.22705,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": 0.2868577778567651,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "header ~flat (n/a)",
+      "Flags": "\u26a0 pump chg",
+      "Pad": "H"
+    },
+    {
+      "Well": "MPH-31",
+      "n tests": 5,
+      "\u0394WHP (psi)": null,
+      "\u0394BHP actual (psi)": null,
+      "\u0394BHP pred (psi)": null,
+      "\u0394Oil actual (BOPD)": 683.4499999999998,
+      "\u0394Oil pred (BOPD)": null,
+      "\u0394Liquid (BPD)": 683.4499999999998,
+      "Pr fit": "\u2014",
+      "BHP\u2194oil corr": null,
+      "Depletion": "\u2014",
+      "Diagnosis": "header ~flat (n/a)",
+      "Flags": "\u26a0 pump chg \u26a0 sonic",
+      "Pad": "H"
+    },
+    {
+      "Well": "MPH-32",
+      "n tests": 5,
+      "\u0394WHP (psi)": null,
+      "\u0394BHP actual (psi)": -466.8899999999999,
+      "\u0394BHP pred (psi)": null,
+      "\u0394Oil actual (BOPD)": -125.65000000000009,
+      "\u0394Oil pred (BOPD)": 482.9088246332162,
+      "\u0394Liquid (BPD)": -325.9500000000003,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": 0.713701988147741,
+      "Depletion": "depleting",
+      "Diagnosis": "header ~flat (n/a)",
+      "Flags": "\u26a0 pump chg \u26a0 sonic",
+      "Pad": "H"
+    },
+    {
+      "Well": "MPI-20",
+      "n tests": 29,
+      "\u0394WHP (psi)": 28.277000000000044,
+      "\u0394BHP actual (psi)": 76.26999999999998,
+      "\u0394BHP pred (psi)": 22.89839746988457,
+      "\u0394Oil actual (BOPD)": -66.23030000000006,
+      "\u0394Oil pred (BOPD)": -14.937903144693564,
+      "\u0394Liquid (BPD)": -72.55730000000005,
+      "Pr fit": "1218",
+      "BHP\u2194oil corr": -0.27584165461241483,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "back-pressure-consistent \u2713",
+      "Flags": "",
+      "Pad": "I"
+    },
+    {
+      "Well": "MPI-38",
+      "n tests": 28,
+      "\u0394WHP (psi)": 35.11500000000001,
+      "\u0394BHP actual (psi)": 42.14999999999998,
+      "\u0394BHP pred (psi)": 32.166831437452856,
+      "\u0394Oil actual (BOPD)": -0.7795999999999594,
+      "\u0394Oil pred (BOPD)": -4.2839155103282,
+      "\u0394Liquid (BPD)": -112.27109999999993,
+      "Pr fit": "998",
+      "BHP\u2194oil corr": -0.17551153642384792,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "back-pressure-consistent \u2713",
+      "Flags": "",
+      "Pad": "I"
+    },
+    {
+      "Well": "MPI-15",
+      "n tests": 7,
+      "\u0394WHP (psi)": 8.154499999999985,
+      "\u0394BHP actual (psi)": 57.79499999999996,
+      "\u0394BHP pred (psi)": 0.0,
+      "\u0394Oil actual (BOPD)": -45.549649999999986,
+      "\u0394Oil pred (BOPD)": -8.605560020970586,
+      "\u0394Liquid (BPD)": -34.09224999999998,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": 0.6129627442982267,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "header ~flat (n/a)",
+      "Flags": "\u26a0 pump chg \u26a0 sonic",
+      "Pad": "I"
+    },
+    {
+      "Well": "MPI-17",
+      "n tests": 33,
+      "\u0394WHP (psi)": 39.85499999999996,
+      "\u0394BHP actual (psi)": null,
+      "\u0394BHP pred (psi)": 50.19141855298881,
+      "\u0394Oil actual (BOPD)": 118.28840000000002,
+      "\u0394Oil pred (BOPD)": null,
+      "\u0394Liquid (BPD)": 420.84220000000005,
+      "Pr fit": "\u2014",
+      "BHP\u2194oil corr": null,
+      "Depletion": "\u2014",
+      "Diagnosis": "inconclusive (no BHP)",
+      "Flags": "\u26a0 pump chg",
+      "Pad": "I"
+    },
+    {
+      "Well": "MPI-22",
+      "n tests": 24,
+      "\u0394WHP (psi)": 24.865999999999985,
+      "\u0394BHP actual (psi)": -108.64999999999998,
+      "\u0394BHP pred (psi)": 21.278659818143012,
+      "\u0394Oil actual (BOPD)": -264.44600000000014,
+      "\u0394Oil pred (BOPD)": 125.5408572466772,
+      "\u0394Liquid (BPD)": 54.139900000000125,
+      "Pr fit": "1316",
+      "BHP\u2194oil corr": -0.4250477742205395,
+      "Depletion": "back-pressure",
+      "Diagnosis": "contradicts (BHP vs WHP)",
+      "Flags": "\u26a0 pump chg",
+      "Pad": "I"
+    },
+    {
+      "Well": "MPI-24",
+      "n tests": 32,
+      "\u0394WHP (psi)": 19.756500000000017,
+      "\u0394BHP actual (psi)": -236.08999999999992,
+      "\u0394BHP pred (psi)": 27.021026215395523,
+      "\u0394Oil actual (BOPD)": -80.41955000000002,
+      "\u0394Oil pred (BOPD)": 57.07881391351452,
+      "\u0394Liquid (BPD)": 84.24295000000006,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": 0.5643764552882461,
+      "Depletion": "depleting",
+      "Diagnosis": "contradicts (BHP vs WHP)",
+      "Flags": "\u26a0 pump chg",
+      "Pad": "I"
+    },
+    {
+      "Well": "MPI-26",
+      "n tests": 26,
+      "\u0394WHP (psi)": 27.661,
+      "\u0394BHP actual (psi)": -93.96999999999997,
+      "\u0394BHP pred (psi)": 50.99497630134471,
+      "\u0394Oil actual (BOPD)": -105.23525000000006,
+      "\u0394Oil pred (BOPD)": 9.420458685306016,
+      "\u0394Liquid (BPD)": -240.60024999999996,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": 0.5102224371539661,
+      "Depletion": "depleting",
+      "Diagnosis": "contradicts (BHP vs WHP)",
+      "Flags": "\u26a0 pump chg",
+      "Pad": "I"
+    },
+    {
+      "Well": "MPI-27",
+      "n tests": 27,
+      "\u0394WHP (psi)": 18.55200000000002,
+      "\u0394BHP actual (psi)": 48.76500000000004,
+      "\u0394BHP pred (psi)": 10.105690556291677,
+      "\u0394Oil actual (BOPD)": -203.58900000000006,
+      "\u0394Oil pred (BOPD)": -97.89352506461705,
+      "\u0394Liquid (BPD)": -123.3089500000001,
+      "Pr fit": "494",
+      "BHP\u2194oil corr": -0.8197080312712921,
+      "Depletion": "back-pressure",
+      "Diagnosis": "back-pressure-consistent \u2713",
+      "Flags": "\u26a0 pump chg",
+      "Pad": "I"
+    },
+    {
+      "Well": "MPI-29",
+      "n tests": 26,
+      "\u0394WHP (psi)": 30.461000000000013,
+      "\u0394BHP actual (psi)": -102.42000000000007,
+      "\u0394BHP pred (psi)": 0.0,
+      "\u0394Oil actual (BOPD)": -122.74939999999992,
+      "\u0394Oil pred (BOPD)": 89.18083003337676,
+      "\u0394Liquid (BPD)": 235.4668499999998,
+      "Pr fit": "1282",
+      "BHP\u2194oil corr": -0.44377504283640956,
+      "Depletion": "back-pressure",
+      "Diagnosis": "contradicts (BHP vs WHP)",
+      "Flags": "\u26a0 pump chg \u26a0 sonic",
+      "Pad": "I"
+    },
+    {
+      "Well": "MPI-31",
+      "n tests": 24,
+      "\u0394WHP (psi)": 19.690999999999974,
+      "\u0394BHP actual (psi)": -0.24500000000000455,
+      "\u0394BHP pred (psi)": 23.031548844709732,
+      "\u0394Oil actual (BOPD)": -489.9656000000001,
+      "\u0394Oil pred (BOPD)": 0.10785954143125309,
+      "\u0394Liquid (BPD)": -481.2929999999999,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": 0.13554095328372542,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "depletion-like / BHP flat",
+      "Flags": "\u26a0 pump chg",
+      "Pad": "I"
+    },
+    {
+      "Well": "MPI-33",
+      "n tests": 23,
+      "\u0394WHP (psi)": 30.335000000000036,
+      "\u0394BHP actual (psi)": 47.610000000000014,
+      "\u0394BHP pred (psi)": 0.0,
+      "\u0394Oil actual (BOPD)": -384.1155,
+      "\u0394Oil pred (BOPD)": -45.03887734418822,
+      "\u0394Liquid (BPD)": -825.3523,
+      "Pr fit": "1251",
+      "BHP\u2194oil corr": -0.26057349230236526,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "back-pressure-consistent \u2713",
+      "Flags": "\u26a0 pump chg \u26a0 sonic",
+      "Pad": "I"
+    },
+    {
+      "Well": "MPI-36",
+      "n tests": 17,
+      "\u0394WHP (psi)": 54.007000000000005,
+      "\u0394BHP actual (psi)": -70.91000000000008,
+      "\u0394BHP pred (psi)": 30.0628897490584,
+      "\u0394Oil actual (BOPD)": 83.83079999999995,
+      "\u0394Oil pred (BOPD)": 27.514365992349667,
+      "\u0394Liquid (BPD)": 40.36389999999983,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": 0.022752429539515326,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "contradicts (BHP vs WHP)",
+      "Flags": "\u26a0 pump chg",
+      "Pad": "I"
+    },
+    {
+      "Well": "MPJ-04",
+      "n tests": 3,
+      "\u0394WHP (psi)": 6.163000000000011,
+      "\u0394BHP actual (psi)": -279.34000000000003,
+      "\u0394BHP pred (psi)": null,
+      "\u0394Oil actual (BOPD)": 125.34689999999999,
+      "\u0394Oil pred (BOPD)": 37.91988815600749,
+      "\u0394Liquid (BPD)": 173.58589999999998,
+      "Pr fit": "1090",
+      "BHP\u2194oil corr": null,
+      "Depletion": "insufficient",
+      "Diagnosis": "header ~flat (n/a)",
+      "Flags": "",
+      "Pad": "J"
+    },
+    {
+      "Well": "MPJ-06",
+      "n tests": 33,
+      "\u0394WHP (psi)": 32.548,
+      "\u0394BHP actual (psi)": 48.34000000000003,
+      "\u0394BHP pred (psi)": 37.34919144796447,
+      "\u0394Oil actual (BOPD)": -58.7376,
+      "\u0394Oil pred (BOPD)": -2.5114024889110453,
+      "\u0394Liquid (BPD)": -149.03255000000001,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": -0.041250117409207435,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "back-pressure-consistent \u2713",
+      "Flags": "",
+      "Pad": "J"
+    },
+    {
+      "Well": "MPJ-10",
+      "n tests": 13,
+      "\u0394WHP (psi)": 10.465499999999963,
+      "\u0394BHP actual (psi)": -95.2399999999999,
+      "\u0394BHP pred (psi)": 7.198988023097172,
+      "\u0394Oil actual (BOPD)": -41.583349999999996,
+      "\u0394Oil pred (BOPD)": 2.8882480149120155,
+      "\u0394Liquid (BPD)": -335.88380000000006,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": 0.1028398435216669,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "header ~flat (n/a)",
+      "Flags": "",
+      "Pad": "J"
+    },
+    {
+      "Well": "MPJ-28",
+      "n tests": 16,
+      "\u0394WHP (psi)": -12.942000000000007,
+      "\u0394BHP actual (psi)": 24.29000000000002,
+      "\u0394BHP pred (psi)": null,
+      "\u0394Oil actual (BOPD)": -90.6619,
+      "\u0394Oil pred (BOPD)": -0.9494133353040013,
+      "\u0394Liquid (BPD)": -516.9599000000001,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": 0.30050129723157126,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "header ~flat (n/a)",
+      "Flags": "",
+      "Pad": "J"
+    },
+    {
+      "Well": "MPJ-40",
+      "n tests": 15,
+      "\u0394WHP (psi)": 14.708499999999958,
+      "\u0394BHP actual (psi)": 118.92000000000007,
+      "\u0394BHP pred (psi)": null,
+      "\u0394Oil actual (BOPD)": -435.1916,
+      "\u0394Oil pred (BOPD)": -215.9335025179371,
+      "\u0394Liquid (BPD)": -655.8939999999999,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": -0.06143885316182921,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "header ~flat (n/a)",
+      "Flags": "",
+      "Pad": "J"
+    },
+    {
+      "Well": "MPJ-42",
+      "n tests": 19,
+      "\u0394WHP (psi)": -11.40949999999998,
+      "\u0394BHP actual (psi)": -52.194999999999936,
+      "\u0394BHP pred (psi)": null,
+      "\u0394Oil actual (BOPD)": 27.53559999999993,
+      "\u0394Oil pred (BOPD)": 78.88220625393296,
+      "\u0394Liquid (BPD)": 275.04065,
+      "Pr fit": "1678",
+      "BHP\u2194oil corr": -0.13616063008798068,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "header ~flat (n/a)",
+      "Flags": "",
+      "Pad": "J"
+    },
+    {
+      "Well": "MPJ-44",
+      "n tests": 20,
+      "\u0394WHP (psi)": 5.616499999999974,
+      "\u0394BHP actual (psi)": -52.49499999999989,
+      "\u0394BHP pred (psi)": null,
+      "\u0394Oil actual (BOPD)": -69.14859999999999,
+      "\u0394Oil pred (BOPD)": 47.99327832968322,
+      "\u0394Liquid (BPD)": -636.8624,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": 0.12922273725743527,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "header ~flat (n/a)",
+      "Flags": "",
+      "Pad": "J"
+    },
+    {
+      "Well": "MPJ-46",
+      "n tests": 22,
+      "\u0394WHP (psi)": 15.75,
+      "\u0394BHP actual (psi)": -76.99000000000001,
+      "\u0394BHP pred (psi)": null,
+      "\u0394Oil actual (BOPD)": -70.00800000000004,
+      "\u0394Oil pred (BOPD)": 119.3305212157345,
+      "\u0394Liquid (BPD)": 324.1068,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": -0.06264885131603494,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "contradicts (BHP vs WHP)",
+      "Flags": "",
+      "Pad": "J"
+    },
+    {
+      "Well": "MPJ-27",
+      "n tests": 29,
+      "\u0394WHP (psi)": -17.839,
+      "\u0394BHP actual (psi)": 16.25999999999999,
+      "\u0394BHP pred (psi)": -5.575836323521685,
+      "\u0394Oil actual (BOPD)": 20.976200000000006,
+      "\u0394Oil pred (BOPD)": -34.76271996181475,
+      "\u0394Liquid (BPD)": -275.1360000000001,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": 0.1154713838985166,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "contradicts (BHP vs WHP)",
+      "Flags": "\u26a0 pump chg \u26a0 sonic",
+      "Pad": "J"
+    },
+    {
+      "Well": "MPJ-29",
+      "n tests": 13,
+      "\u0394WHP (psi)": -33.732500000000016,
+      "\u0394BHP actual (psi)": 63.93500000000006,
+      "\u0394BHP pred (psi)": -38.84061467701417,
+      "\u0394Oil actual (BOPD)": -84.87565000000001,
+      "\u0394Oil pred (BOPD)": -10.822462922926121,
+      "\u0394Liquid (BPD)": -165.21439999999996,
+      "Pr fit": "2200*",
+      "BHP\u2194oil corr": 0.33630711891794907,
+      "Depletion": "flat/mixed",
+      "Diagnosis": "contradicts (BHP vs WHP)",
+      "Flags": "\u26a0 pump chg",
+      "Pad": "J"
+    },
+    {
+      "Well": "MPJ-32",
+      "n tests": 14,
+      "\u0394WHP (psi)": 20.49200000000002,
+      "\u0394BHP actual (psi)": null,
+      "\u0394BHP pred (psi)": 28.24645858516294,
+      "\u0394Oil actual (BOPD)": -176.52680000000004,
+      "\u0394Oil pred (BOPD)": null,
+      "\u0394Liquid (BPD)": -395.6689,
+      "Pr fit": "\u2014",
+      "BHP\u2194oil corr": null,
+      "Depletion": "\u2014",
+      "Diagnosis": "liquid consistent (no BHP)",
+      "Flags": "\u26a0 pump chg",
+      "Pad": "J"
+    }
+  ],
+  "single_fits": {
+    "MPG-02": {
+      "fit": {
+        "qmax": 309.0947446769498,
+        "pr": 2200.0,
+        "rmse": 61.963754207346966,
+        "n": 49,
+        "pwf_spread": 602.63,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": 0.5549289868897314,
+        "bhp_per_mo": -7.855443636467543,
+        "oil_per_mo": -5.896356544700199,
+        "n": 49,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPG-14": {
+      "fit": {
+        "qmax": 780.0747181184128,
+        "pr": 1017.3127138075315,
+        "rmse": 50.544417344931546,
+        "n": 73,
+        "pwf_spread": 111.76999999999998,
+        "pr_at_bound": false
+      },
+      "depl": {
+        "corr": -0.49569106416434655,
+        "bhp_per_mo": 2.3950981904491075,
+        "oil_per_mo": -11.51344544297625,
+        "n": 73,
+        "verdict": "back-pressure"
+      }
+    },
+    "MPG-16": {
+      "fit": {
+        "qmax": 582.3096935549194,
+        "pr": 756.5038000000001,
+        "rmse": 57.04400300613269,
+        "n": 30,
+        "pwf_spread": 256.7300000000001,
+        "pr_at_bound": false
+      },
+      "depl": {
+        "corr": -0.7874286233338055,
+        "bhp_per_mo": 10.820934466992739,
+        "oil_per_mo": -20.1688253668307,
+        "n": 30,
+        "verdict": "back-pressure"
+      }
+    },
+    "MPH-08": {
+      "fit": {
+        "qmax": 227.9047165857179,
+        "pr": 2200.0,
+        "rmse": 42.90674321238384,
+        "n": 24,
+        "pwf_spread": 150.26999999999998,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": 0.13697658677411426,
+        "bhp_per_mo": 4.423669507486176,
+        "oil_per_mo": -0.524886932057239,
+        "n": 24,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPH-16": {
+      "fit": {
+        "qmax": 511.20306013990853,
+        "pr": 690.2046234309623,
+        "rmse": 8.253174852040432,
+        "n": 3,
+        "pwf_spread": 22.840000000000032,
+        "pr_at_bound": false
+      },
+      "depl": {
+        "corr": null,
+        "bhp_per_mo": null,
+        "oil_per_mo": null,
+        "n": 3,
+        "verdict": "insufficient"
+      }
+    },
+    "MPH-19": {
+      "fit": {
+        "qmax": 120.12449318743211,
+        "pr": 1799.289949790795,
+        "rmse": 40.332626588950404,
+        "n": 46,
+        "pwf_spread": 180.08000000000004,
+        "pr_at_bound": false
+      },
+      "depl": {
+        "corr": -0.06852962830310683,
+        "bhp_per_mo": -15.585464539227157,
+        "oil_per_mo": -0.6020620887992514,
+        "n": 46,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPH-22": {
+      "fit": {
+        "qmax": 1418.1323163182483,
+        "pr": 2200.0,
+        "rmse": 437.82728841900547,
+        "n": 9,
+        "pwf_spread": 637.2,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": 0.7350541056280427,
+        "bhp_per_mo": -75.93008462819094,
+        "oil_per_mo": -100.98430732056976,
+        "n": 9,
+        "verdict": "depleting"
+      }
+    },
+    "MPH-23": {
+      "fit": {
+        "qmax": 1348.7979114056068,
+        "pr": 2200.0,
+        "rmse": 450.9878479749185,
+        "n": 7,
+        "pwf_spread": 483.0400000000001,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": 0.2868577778567651,
+        "bhp_per_mo": -138.5253457738748,
+        "oil_per_mo": -220.99181361141606,
+        "n": 7,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPH-32": {
+      "fit": {
+        "qmax": 1849.4029073109907,
+        "pr": 2200.0,
+        "rmse": 294.3038058425225,
+        "n": 5,
+        "pwf_spread": 789.87,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": 0.713701988147741,
+        "bhp_per_mo": -292.32600675865956,
+        "oil_per_mo": -68.31399605744886,
+        "n": 5,
+        "verdict": "depleting"
+      }
+    },
+    "MPI-20": {
+      "fit": {
+        "qmax": 613.4201234907011,
+        "pr": 1217.8930376569037,
+        "rmse": 69.75930881236427,
+        "n": 29,
+        "pwf_spread": 208.93,
+        "pr_at_bound": false
+      },
+      "depl": {
+        "corr": -0.27584165461241483,
+        "bhp_per_mo": 8.358441315430417,
+        "oil_per_mo": -8.211489759770561,
+        "n": 29,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPI-38": {
+      "fit": {
+        "qmax": 423.69721680238445,
+        "pr": 997.6168627615064,
+        "rmse": 67.61817537171882,
+        "n": 28,
+        "pwf_spread": 162.85000000000002,
+        "pr_at_bound": false
+      },
+      "depl": {
+        "corr": -0.17551153642384792,
+        "bhp_per_mo": 2.670860661387303,
+        "oil_per_mo": 2.5676046528788983,
+        "n": 28,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPI-15": {
+      "fit": {
+        "qmax": 186.33952019898322,
+        "pr": 2200.0,
+        "rmse": 94.0595614195773,
+        "n": 7,
+        "pwf_spread": 159.65000000000003,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": 0.6129627442982267,
+        "bhp_per_mo": 12.00295140971809,
+        "oil_per_mo": -14.181767546490688,
+        "n": 7,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPI-22": {
+      "fit": {
+        "qmax": 1700.5689721961733,
+        "pr": 1316.1580251046025,
+        "rmse": 275.81446376446337,
+        "n": 23,
+        "pwf_spread": 396.81,
+        "pr_at_bound": false
+      },
+      "depl": {
+        "corr": -0.4250477742205395,
+        "bhp_per_mo": -12.35830261352198,
+        "oil_per_mo": -27.222109202042073,
+        "n": 23,
+        "verdict": "back-pressure"
+      }
+    },
+    "MPI-24": {
+      "fit": {
+        "qmax": 539.3842190966551,
+        "pr": 2200.0,
+        "rmse": 83.54437767209711,
+        "n": 31,
+        "pwf_spread": 410.66999999999996,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": 0.5643764552882461,
+        "bhp_per_mo": -27.158436890061207,
+        "oil_per_mo": -13.57870085442577,
+        "n": 31,
+        "verdict": "depleting"
+      }
+    },
+    "MPI-26": {
+      "fit": {
+        "qmax": 630.9418890540846,
+        "pr": 2200.0,
+        "rmse": 89.94773178790155,
+        "n": 25,
+        "pwf_spread": 135.81,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": 0.5102224371539661,
+        "bhp_per_mo": -9.570916259882912,
+        "oil_per_mo": -15.316080975178851,
+        "n": 25,
+        "verdict": "depleting"
+      }
+    },
+    "MPI-27": {
+      "fit": {
+        "qmax": 1392.463399714251,
+        "pr": 494.4851380753138,
+        "rmse": 85.57420388253551,
+        "n": 27,
+        "pwf_spread": 103.62,
+        "pr_at_bound": false
+      },
+      "depl": {
+        "corr": -0.8197080312712921,
+        "bhp_per_mo": 4.715155462298519,
+        "oil_per_mo": -20.710337980810884,
+        "n": 27,
+        "verdict": "back-pressure"
+      }
+    },
+    "MPI-29": {
+      "fit": {
+        "qmax": 1063.833968069334,
+        "pr": 1281.979758158996,
+        "rmse": 140.80219413548,
+        "n": 26,
+        "pwf_spread": 387.53000000000003,
+        "pr_at_bound": false
+      },
+      "depl": {
+        "corr": -0.44377504283640956,
+        "bhp_per_mo": 0.3848978798813316,
+        "oil_per_mo": -22.19916095906942,
+        "n": 26,
+        "verdict": "back-pressure"
+      }
+    },
+    "MPI-31": {
+      "fit": {
+        "qmax": 906.5436838403695,
+        "pr": 2200.0,
+        "rmse": 226.37182745203333,
+        "n": 23,
+        "pwf_spread": 188.73999999999995,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": 0.13554095328372542,
+        "bhp_per_mo": -2.9509469855251855,
+        "oil_per_mo": -45.97048717103613,
+        "n": 23,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPI-33": {
+      "fit": {
+        "qmax": 1132.9628124918695,
+        "pr": 1250.7591246861925,
+        "rmse": 196.1011912163053,
+        "n": 23,
+        "pwf_spread": 302.06000000000006,
+        "pr_at_bound": false
+      },
+      "depl": {
+        "corr": -0.26057349230236526,
+        "bhp_per_mo": 8.214448826563782,
+        "oil_per_mo": -41.4477180222572,
+        "n": 23,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPI-36": {
+      "fit": {
+        "qmax": 680.5493604975819,
+        "pr": 2200.0,
+        "rmse": 105.49209739626087,
+        "n": 17,
+        "pwf_spread": 281.36,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": 0.022752429539515326,
+        "bhp_per_mo": -10.797927204864864,
+        "oil_per_mo": 9.23063892216481,
+        "n": 17,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPJ-04": {
+      "fit": {
+        "qmax": 369.0974275099458,
+        "pr": 1090.2631213389122,
+        "rmse": 3.794827957595375,
+        "n": 3,
+        "pwf_spread": 279.34000000000003,
+        "pr_at_bound": false
+      },
+      "depl": {
+        "corr": null,
+        "bhp_per_mo": null,
+        "oil_per_mo": null,
+        "n": 3,
+        "verdict": "insufficient"
+      }
+    },
+    "MPJ-06": {
+      "fit": {
+        "qmax": 95.54628647213929,
+        "pr": 2200.0,
+        "rmse": 46.449881561639906,
+        "n": 33,
+        "pwf_spread": 319.12,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": -0.041250117409207435,
+        "bhp_per_mo": 0.45928356205140825,
+        "oil_per_mo": -7.104617794328779,
+        "n": 33,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPJ-10": {
+      "fit": {
+        "qmax": 49.36969841084824,
+        "pr": 2200.0,
+        "rmse": 23.793620500162316,
+        "n": 13,
+        "pwf_spread": 801.23,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": 0.1028398435216669,
+        "bhp_per_mo": 8.561984687909302,
+        "oil_per_mo": -3.836487122526074,
+        "n": 13,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPJ-28": {
+      "fit": {
+        "qmax": 157.49686291224205,
+        "pr": 2200.0,
+        "rmse": 50.737059459790274,
+        "n": 16,
+        "pwf_spread": 248.84999999999997,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": 0.30050129723157126,
+        "bhp_per_mo": -6.488203083417213,
+        "oil_per_mo": -9.37683571390717,
+        "n": 16,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPJ-40": {
+      "fit": {
+        "qmax": 1072.0726204436587,
+        "pr": 2200.0,
+        "rmse": 326.5775484359004,
+        "n": 9,
+        "pwf_spread": 952.41,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": -0.06143885316182921,
+        "bhp_per_mo": 34.00745605325453,
+        "oil_per_mo": -50.144154872847466,
+        "n": 9,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPJ-42": {
+      "fit": {
+        "qmax": 1377.4863703408466,
+        "pr": 1677.5198744769875,
+        "rmse": 195.52104320671285,
+        "n": 19,
+        "pwf_spread": 84.58999999999992,
+        "pr_at_bound": false
+      },
+      "depl": {
+        "corr": -0.13616063008798068,
+        "bhp_per_mo": -6.155723128085933,
+        "oil_per_mo": 0.6401466892964004,
+        "n": 19,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPJ-44": {
+      "fit": {
+        "qmax": 1018.9188695326271,
+        "pr": 2200.0,
+        "rmse": 184.93821131922212,
+        "n": 20,
+        "pwf_spread": 73.37000000000012,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": 0.12922273725743527,
+        "bhp_per_mo": -4.804278534834852,
+        "oil_per_mo": -4.684784811104754,
+        "n": 20,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPJ-46": {
+      "fit": {
+        "qmax": 1749.5138426732096,
+        "pr": 2200.0,
+        "rmse": 318.79838150573113,
+        "n": 22,
+        "pwf_spread": 170.16000000000008,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": -0.06264885131603494,
+        "bhp_per_mo": -10.876395853011704,
+        "oil_per_mo": -9.999533440936254,
+        "n": 22,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPJ-27": {
+      "fit": {
+        "qmax": 290.13333636529217,
+        "pr": 2200.0,
+        "rmse": 47.63190024732335,
+        "n": 29,
+        "pwf_spread": 92.25999999999999,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": 0.1154713838985166,
+        "bhp_per_mo": 2.653343982588196,
+        "oil_per_mo": 0.6228917068523957,
+        "n": 29,
+        "verdict": "flat/mixed"
+      }
+    },
+    "MPJ-29": {
+      "fit": {
+        "qmax": 443.57206605369805,
+        "pr": 2200.0,
+        "rmse": 81.63526061591699,
+        "n": 10,
+        "pwf_spread": 265.73,
+        "pr_at_bound": true
+      },
+      "depl": {
+        "corr": 0.33630711891794907,
+        "bhp_per_mo": -10.013438623352268,
+        "oil_per_mo": -51.62340132805215,
+        "n": 10,
+        "verdict": "flat/mixed"
+      }
+    }
+  }
+}
