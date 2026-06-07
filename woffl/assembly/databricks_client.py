@@ -181,6 +181,12 @@ def fetch_well_props() -> pd.DataFrame:
     if df.empty:
         return _merge_local_overrides(df)
 
+    # Drop orphan rows with no well_name (e.g. the nameless enthid 32795743 in
+    # vw_prop_mech). Without this, the astype(str) below turns a SQL NULL into the
+    # literal string "None" -- a phantom well that has no survey CSV and so trips
+    # the "missing deviation surveys" banner forever (and can never be pulled).
+    df = df[df["well_name"].notna() & (df["well_name"].astype(str).str.strip() != "")].copy()
+
     df["Well"] = df["well_name"].astype(str).str.strip().map(_normalize_well_name)
     df["out_dia"] = df["tubing_out_dia"]
     df["thick"] = (df["tubing_out_dia"] - df["tubing_inn_dia"]) / 2.0
