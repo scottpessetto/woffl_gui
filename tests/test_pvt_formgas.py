@@ -88,12 +88,26 @@ def test_zfactor_dranchuk() -> None:
 
 def test_gas_compressibility() -> None:
     # properties of petroleum fluids, 2nd Edition, McCain, Pag 174
-    pres_mccain = 1000 + 14.7  # psia + atm
+    # book example is at 1000 psia; condition() takes psig. The old
+    # "1000 + 14.7" input compensated for compress() wrongly using gauge
+    # pressure in the 1/p term (fixed 2026-06).
+    pres_mccain = 1000 - 14.7  # psig equivalent of 1000 psia
     temp_mccain = 68
     mccain_compress = 0.001120
     methane = FormGas(gas_sg=0.55)
     calc_compress = methane.condition(pres_mccain, temp_mccain).compress
     assert calc_compress == pytest.approx(mccain_compress, rel=0.03)
+
+
+def test_gas_compressibility_is_pure() -> None:
+    # reading compress must not re-condition the object — it used to leave
+    # the gas conditioned 10 psi high, poisoning in-flight cmix calculations
+    gas = FormGas(gas_sg=0.65)
+    gas.condition(500, 100)
+    rho_before = gas.density
+    _ = gas.compress
+    assert gas.press == 500
+    assert gas.density == rho_before
 
 
 def test_gas_density() -> None:

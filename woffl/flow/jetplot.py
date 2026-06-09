@@ -29,6 +29,7 @@ from matplotlib.figure import Figure
 
 from woffl.flow import jetflow as jf  # legacy
 from woffl.flow import singlephase as sp
+from woffl.flow.errors import ThroatEntryNoSolution
 from woffl.flow.inflow import InFlow
 from woffl.pvt.resmix import ResMix
 
@@ -216,9 +217,38 @@ class JetBook:
             vte (float): Throat Entry Velocity, ft/s
             rho_te (float): Throat Entry Density, lbm/ft3
             mach_te (float): Mach Throat Entry, unitless
+
+        Raises:
+            ThroatEntryNoSolution: when the sweep has no valid zero crossing
+                (subclasses both ValueError and IndexError for compatibility
+                with callers that caught the old bare IndexError).
         """
+        if len(prs_ray) < 2:
+            raise ThroatEntryNoSolution(
+                "throat entry sweep has fewer than two points, suction pressure "
+                "is likely at or below the sweep floor"
+            )
+
         dtdp = np.gradient(tde_ray, prs_ray)  # uses central limit thm, so same size
         mask = dtdp >= 0  # only points where slope is greater than or equal to zero
+
+        if not mask.any():
+            raise ThroatEntryNoSolution(
+                "throat entry sweep has no points with a non-negative tde gradient, "
+                "GOR or suction pressure is likely too low"
+            )
+
+        tde_masked = tde_ray[mask]
+        if tde_masked.max() < 0:
+            # interp would clamp to an endpoint and return a meaningless pte
+            raise ThroatEntryNoSolution(
+                "throat entry total differential energy is negative across the "
+                "entire subsonic branch, no valid throat entry pressure exists"
+            )
+        # When tde stays positive on the subsonic branch (tde_masked.min() > 0)
+        # np.interp clamps to the lowest-tde point — the near-sonic limit. That
+        # clamp is intentional: sonic evaluations at psu_min land exactly on
+        # this boundary, where the zero crossing sits just past Mach 1.
 
         tde_flipped = np.flip(tde_ray[mask])
 

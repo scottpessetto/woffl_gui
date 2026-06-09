@@ -7,7 +7,12 @@ into a dedicated module. Returns a SimulationParams dataclass and run button sta
 import streamlit as st
 
 from woffl.gui.params import NOZZLE_OPTIONS, THROAT_OPTIONS, SimulationParams
-from woffl.gui.utils import DEFAULT_TEST_MONTHS, get_available_wells, get_well_data
+from woffl.gui.utils import (
+    DEFAULT_TEST_MONTHS,
+    get_available_wells,
+    get_well_data,
+    is_valid_number,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -23,6 +28,52 @@ def _set_param(key: str, value) -> None:
     """
     st.session_state[key] = value
     st.session_state[f"{key}_input"] = value
+
+
+# Widget bounds for programmatically seeded fields, kept in sync with the
+# matching _number_input calls below. A seed outside its widget's min/max is
+# silently reset to the widget MINIMUM by Streamlit on the next frontend
+# round-trip — so every programmatic seed must be clamped into these ranges.
+SEED_BOUNDS = {
+    "qwf": (10, 6000),
+    "pwf": (100, 2500),
+    "res_pres": (400, 5000),
+    "form_wc": (0.0, 1.0),
+    "form_gor": (20, 10000),
+    "form_temp": (32, 350),
+    "surf_pres": (10, 600),
+    "ppf_surf": (800, 5500),
+    "jpump_tvd": (2500, 8000),
+    "oil_api": (11.0, 39.0),
+    "bubble_point": (1001.0, 2999.0),
+    "gas_sg": (0.51, 1.19),
+    "wat_sg": (0.51, 1.49),
+}
+
+
+def clamp_seed(key: str, value):
+    """Clamp a programmatic seed into its widget's bounds (see SEED_BOUNDS)."""
+    lo, hi = SEED_BOUNDS.get(key, (None, None))
+    if lo is not None:
+        value = max(value, lo)
+    if hi is not None:
+        value = min(value, hi)
+    return value
+
+
+def _seed_param(key: str, raw, default, cast=float) -> None:
+    """Seed a sidebar field from well data — NaN-safe and bounds-clamped.
+
+    Databricks chars rows carry missing values as NaN under a *present* key,
+    so a plain ``dict.get(key, default)`` never falls back — and ``int(nan)``
+    raises. Falls back to ``default`` for None/NaN/non-numeric and clamps the
+    result into the widget's bounds.
+    """
+    try:
+        value = cast(raw) if is_valid_number(raw) else cast(default)
+    except (TypeError, ValueError):
+        value = cast(default)
+    _set_param(key, clamp_seed(key, value))
 
 
 def _number_input(label: str, key: str, default, **kwargs):
@@ -99,24 +150,39 @@ def _update_well_parameters_from_data(
     force_ipr_refresh = bool(st.session_state.pop("_force_ipr_refresh", False))
 
     if is_new_well:
-        _set_param("tubing_od", float(well_data.get("out_dia", 4.5)))
-        _set_param("tubing_thickness", float(well_data.get("thick", 0.5)))
-        _set_param("form_temp", int(well_data.get("form_temp", 70)))
-        _set_param("jpump_tvd", int(well_data.get("JP_TVD", 4065)))
-        _set_param("res_pres", int(well_data.get("res_pres", 1700)))
-        st.session_state.field_model_index = (
-            0 if well_data.get("is_sch", True) else 1
-        )
+        _seed_param("tubing_od", well_data.get("out_dia"), 4.5)
+        _seed_param("tubing_thickness", well_data.get("thick"), 0.5)
+        _seed_param("form_temp", well_data.get("form_temp"), 70, cast=int)
+        _seed_param("jpump_tvd", well_data.get("JP_TVD"), 4065, cast=int)
+        _seed_param("res_pres", well_data.get("res_pres"), 1700, cast=int)
 
-        # PVT overrides from Databricks vw_prop_resvr (None when unavailable)
-        if well_data.get("oil_api") is not None:
-            _set_param("oil_api", float(well_data["oil_api"]))
-        if well_data.get("gas_sg") is not None:
-            _set_param("gas_sg", float(well_data["gas_sg"]))
-        if well_data.get("wat_sg") is not None:
-            _set_param("wat_sg", float(well_data["wat_sg"]))
-        if well_data.get("bubble_point") is not None:
-            _set_param("bubble_point", float(well_data["bubble_point"]))
+        # Casing from vw_prop_mech (casing_out_dia / casing_inn_dia) — the
+        # same source Scott's Tools uses. Resets to the 6.875/0.5 default when
+        # absent so the previous well's casing can't leak into this one.
+        from woffl.gui.scotts_tools._common import casing_dims_from_chars
+
+        casing_od, casing_thick = casing_dims_from_chars(well_data)
+        _set_param("casing_od", round(casing_od, 3))
+        _set_param("casing_thickness", round(casing_thick, 3))
+
+        # Field model — write the radio's WIDGET key directly (the radio
+        # renders later in this same run, so this is safe). Seeding only
+        # field_model_index did nothing: keyed widgets ignore ``index`` once
+        # they have state, so Kuparuk wells silently stayed on Schrader.
+        is_sch_raw = well_data.get("is_sch")
+        is_sch = True if not is_valid_number(is_sch_raw) else bool(is_sch_raw)
+        st.session_state["field_model_radio"] = "Schrader" if is_sch else "Kuparuk"
+        st.session_state.field_model_index = 0 if is_sch else 1
+
+        # PVT from Databricks vw_prop_resvr. Missing/NaN values reset to the
+        # selected field model's preset, so the previous well's PVT can't
+        # leak across and the Kuparuk presets (24 API / 2250 Pb) actually
+        # apply — these widgets always feed SimulationParams as overrides.
+        api_default, pbp_default = (22.0, 1750.0) if is_sch else (24.0, 2250.0)
+        _seed_param("oil_api", well_data.get("oil_api"), api_default)
+        _seed_param("bubble_point", well_data.get("bubble_point"), pbp_default)
+        _seed_param("gas_sg", well_data.get("gas_sg"), 0.65)
+        _seed_param("wat_sg", well_data.get("wat_sg"), 1.02)
 
         # Pad-aware PF surface pressure default. B/G/J wells run on booster
         # pads at ~2200 psi; F is ~2800; the rest run on Schrader at ~3400.
@@ -210,18 +276,26 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
                 coeff_row = well_coeffs.iloc[0]
                 st.session_state["sw_vogel_coeffs"] = coeff_row.to_dict()
 
-                _set_param("form_wc", round(float(coeff_row["form_wc"]), 2))
+                # Seeds clamped to widget bounds — out-of-range session values
+                # get silently reset to the widget minimum by Streamlit.
                 _set_param(
-                    "form_gor", max(int(coeff_row["fgor"]), gor_floor)
+                    "form_wc", clamp_seed("form_wc", round(float(coeff_row["form_wc"]), 2))
                 )
-                _set_param("qwf", int(coeff_row["qwf"] * (1 - coeff_row["form_wc"])))
-                _set_param("pwf", int(coeff_row["pwf"]))
-                _set_param("res_pres", int(coeff_row["ResP"]))
+                _set_param(
+                    "form_gor",
+                    clamp_seed("form_gor", max(int(coeff_row["fgor"]), gor_floor)),
+                )
+                _set_param(
+                    "qwf",
+                    clamp_seed("qwf", int(coeff_row["qwf"] * (1 - coeff_row["form_wc"]))),
+                )
+                _set_param("pwf", clamp_seed("pwf", int(coeff_row["pwf"])))
+                _set_param("res_pres", clamp_seed("res_pres", int(coeff_row["ResP"])))
 
                 recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
                 whp = recent.get("whp")
                 if _is_finite(whp):
-                    _set_param("surf_pres", int(whp))
+                    _set_param("surf_pres", clamp_seed("surf_pres", int(whp)))
 
                 num_tests = int(coeff_row["num_tests"])
                 most_recent = coeff_row["most_recent_date"]
@@ -263,13 +337,13 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
         wc = max(0.0, min(1.0, float(water) / float(total)))
         _set_param("form_wc", round(wc, 2))
     if _is_finite(oil):
-        _set_param("qwf", int(float(oil)))
+        _set_param("qwf", clamp_seed("qwf", int(float(oil))))
     if _is_finite(bhp):
-        _set_param("pwf", int(float(bhp)))
+        _set_param("pwf", clamp_seed("pwf", int(float(bhp))))
     if _is_finite(fgor):
-        _set_param("form_gor", max(int(float(fgor)), gor_floor))
+        _set_param("form_gor", clamp_seed("form_gor", max(int(float(fgor)), gor_floor)))
     if _is_finite(whp):
-        _set_param("surf_pres", int(float(whp)))
+        _set_param("surf_pres", clamp_seed("surf_pres", int(float(whp))))
 
     test_date = recent.get("WtDate")
     date_str = (
@@ -514,7 +588,7 @@ def _render_formation_inflow(
 
     qwf = _number_input(
         "Oil Rate at FBHP (qwf, BOPD)", "qwf", 750,
-        min_value=100, max_value=6000, step=10, help=ipr_help,
+        min_value=10, max_value=6000, step=10, help=ipr_help,
     )
     pwf = _number_input(
         "Flowing BHP @ qwf (pwf, psi)", "pwf", 500,
@@ -571,9 +645,12 @@ def _render_pvt_overrides(
 
 def _render_pressures() -> tuple[int, int]:
     """Render the two always-visible pressure knobs (PF + surface)."""
+    # Bounds match the PF Auto-match search envelope [800, 5500] — narrower
+    # widget bounds made Streamlit silently reset an out-of-range solved value
+    # to the widget minimum (user saw "Auto-matched 4300 psi", solver ran 1500).
     ppf_surf = _number_input(
         "Power Fluid Surface Pressure (psi)", "ppf_surf", 3168,
-        min_value=1500, max_value=4000, step=10,
+        min_value=800, max_value=5500, step=10,
     )
     surf_pres = _number_input(
         "Wellhead Surface Pressure (psi)", "surf_pres", 210,

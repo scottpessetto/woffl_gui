@@ -171,16 +171,16 @@ class FormGas:
             Fundamental Principles of Reservoir Engineering, B.Towler (2002) Page 16
             Applied Multiphase Flow in Pipes..., Al-Safran and Brill (2017) Page 305
         """
-        temp = self.temp
-        p1 = self.press
-        p2 = (
-            p1 + 10
-        )  # add 100 psi to evaluate a different condition for compressibility
-
+        # cg = 1/p - (1/z)(dz/dp) with p in psia. The z derivative is evaluated
+        # with a +10 psi forward difference computed directly from the
+        # correlation — calling self.condition() here would mutate the object
+        # mid-read and poison any in-flight mixture calculation (cmix).
+        dp = 10.0
+        p1 = self.pabs  # absolute pressure, psia
         z1 = self.zfactor
-        z2 = self.condition(p2, temp).zfactor
+        z2 = self._zfactor_grad_school((p1 + dp) / self.ppc, self.tpr)
 
-        cg = 1 / p1 - (1 / z1) * ((z2 - z1) / (p2 - p1))
+        cg = 1 / p1 - (z2 - z1) / (z1 * dp)
         return cg
 
     def hydrate_check(self) -> tuple[bool, float]:
@@ -285,6 +285,7 @@ class FormGas:
         c3 = FormGas._dak_c3(tpr, a7, a8, a9)
 
         # need to loop this section for z-factor convergence
+        n = 0
         while abs(z_ray[-2] - z_ray[-1]) > 0.001:
             rho_pr = FormGas._dak_rho_pr(z_ray[-1], ppr, tpr)
             c4 = FormGas._dak_c4(rho_pr, tpr, a10, a11)
@@ -293,6 +294,9 @@ class FormGas:
             zder = FormGas._dak_zderv(z_ray[-1], rho_pr, c1, c2, c3, c5)
             znew = z_ray[-1] - zfun / zder  # newtons method
             z_ray.append(znew)
+            n += 1
+            if n == 50:
+                raise ValueError("DAK z-factor newton iteration did not converge")
 
         return z_ray[-1]
 

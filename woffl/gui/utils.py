@@ -747,9 +747,11 @@ def render_pf_quickfix_widget(
 
     col_input, col_auto, col_status = st.columns([2, 1, 3])
     with col_input:
+        # Bounds match the sidebar ppf_surf widget and the Auto-match search
+        # envelope [800, 5500] so a solved value is always representable.
         st.number_input(
             "Quickfix: actual PF surface pressure (psi)",
-            min_value=1500, max_value=4000, step=10,
+            min_value=800, max_value=5500, step=10,
             key=_PF_QUICKFIX_KEY,
             on_change=_on_pf_quickfix_change,
             help=(

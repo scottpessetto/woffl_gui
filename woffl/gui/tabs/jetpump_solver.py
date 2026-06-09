@@ -1463,16 +1463,20 @@ def _sync_chosen_ipr_to_sidebar(
     if current_sig == st.session_state.get(sig_key, _IPR_SIDEBAR_DEFAULT_SIG):
         return
 
-    # Match the int/round casting the sidebar auto-populate uses (sidebar.py
-    # _auto_populate_from_ipr), so the recent-fit case is a byte-for-byte no-op
-    # and never reports a spurious change.
+    # Match the int/round casting AND bounds-clamping the sidebar auto-populate
+    # uses (sidebar.py _auto_populate_from_ipr / clamp_seed), so the recent-fit
+    # case is a byte-for-byte no-op and a seed can never land outside its
+    # widget's bounds (Streamlit silently resets out-of-range values to the
+    # widget minimum).
+    from woffl.gui.sidebar import clamp_seed
+
     gor_floor = st.session_state.get("_well_min_gor", {}).get(well_name, 0)
     new_vals = {
-        "qwf": int(qwf_oil),
-        "pwf": int(pwf),
-        "res_pres": int(res_p),
-        "form_wc": round(float(form_wc), 2),
-        "form_gor": max(int(fgor), gor_floor),
+        "qwf": clamp_seed("qwf", int(qwf_oil)),
+        "pwf": clamp_seed("pwf", int(pwf)),
+        "res_pres": clamp_seed("res_pres", int(res_p)),
+        "form_wc": clamp_seed("form_wc", round(float(form_wc), 2)),
+        "form_gor": clamp_seed("form_gor", max(int(fgor), gor_floor)),
     }
 
     # Record the selection as applied up front so we don't keep re-evaluating.

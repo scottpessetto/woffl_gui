@@ -11,6 +11,7 @@ from scipy.integrate import trapezoid
 
 from woffl.flow import jetplot as jp
 from woffl.flow import singlephase as sp
+from woffl.flow.errors import ConvergenceError, JetPumpError
 from woffl.flow.inflow import InFlow
 from woffl.pvt.resmix import ResMix
 
@@ -191,7 +192,8 @@ def psu_minimize(
         rho_te (float): Throat Entry Density, lbm/ft3
         vte (float): Throat Entry Velocity, ft/s
     """
-    psu_list = [ipr_su.pres - 200, ipr_su.pres - 300]
+    # seeds floored so low-pressure reservoirs can't produce negative psu guesses
+    psu_list = [max(ipr_su.pres - 200, 60.0), max(ipr_su.pres - 300, 50.0)]
     # store values of tee near mach=1 pressure
     tee_list = [
         throat_entry_mach_one(psu_list[0], tsu, ken, ate, ipr_su, prop_su)[0],
@@ -201,9 +203,11 @@ def psu_minimize(
     psu_diff = 5  # criteria for when you've converged to an answer
     n = 0  # loop counter
     while abs(psu_list[-2] - psu_list[-1]) > psu_diff:
-        # prevent suction pressure from dropping below 50
-        psu_nxt = max(
-            psu_secant(psu_list[-2], psu_list[-1], tee_list[-2], tee_list[-1]), 50
+        # keep suction pressure above 50 and below the reservoir pressure so a
+        # secant overshoot can't feed a non-physical psu into the IPR
+        psu_nxt = min(
+            max(psu_secant(psu_list[-2], psu_list[-1], tee_list[-2], tee_list[-1]), 50),
+            ipr_su.pres - 10,
         )
         tee_nxt, qoil_std, te_book = throat_entry_mach_one(
             psu_nxt, tsu, ken, ate, ipr_su, prop_su
@@ -212,7 +216,7 @@ def psu_minimize(
         tee_list.append(tee_nxt)
         n = n + 1
         if n == 15:
-            raise ValueError("psu_minimize did not converge")
+            raise ConvergenceError("psu_minimize did not converge")
     # pte, vte, rho_te, mach_te = te_book.dete_zero()
     return psu_list[-1], qoil_std, te_book
 
@@ -231,6 +235,10 @@ def psu_secant(psu1: float, psu2: float, dete1: float, dete2: float) -> float:
     Return:
         psu3 (float): Suction Pressure Three, psig
     """
+    if dete1 == dete2:
+        raise ConvergenceError(
+            "psu secant stalled, equal residuals at successive suction pressures"
+        )
     psu3 = psu2 - dete2 * (psu1 - psu2) / (dete1 - dete2)
     return psu3
 
@@ -249,6 +257,10 @@ def ptm_secant(ptm1: float, ptm2: float, bal1: float, bal2: float) -> float:
     Return:
         ptm3 (float): Throat Pressure Three, psig
     """
+    if bal1 == bal2:
+        raise ConvergenceError(
+            "ptm secant stalled, equal residuals at successive throat pressures"
+        )
     ptm3 = ptm2 - bal2 * (ptm1 - ptm2) / (bal1 - bal2)
     return ptm3
 
@@ -267,6 +279,11 @@ def nozzle_velocity(pni: float, pte: float, knz: float, rho_nz: float) -> float:
     Returns:
         vnz (float): Nozzle Velocity, ft/s
     """
+    if pni <= pte:
+        raise JetPumpError(
+            f"Nozzle inlet pressure {pni:.0f} psig is below throat entry pressure "
+            f"{pte:.0f} psig, power fluid cannot flow"
+        )
     vnz = math.sqrt(2 * 32.174 * 144 * (pni - pte) / (rho_nz * (1 + knz)))
     return vnz
 
@@ -501,9 +518,10 @@ def throat_discharge(
         mom_bal = throat_momentum_balance(pte, ptm, mom_nz, mom_te, mom_tm, mom_fr, ath)
         bal_list.append(mom_bal)
 
-    # bal_diff = 5
+    # converge on the LATEST residual so the returned ptm is the validated one
+    # (checking bal_list[-2] returned a point whose own residual was never tested)
     n = 0
-    while abs(bal_list[-2]) > 1:  # attempt to find ptm convergence
+    while abs(bal_list[-1]) > 1:  # attempt to find ptm convergence
         ptm = max(
             ptm_secant(ptm_list[-2], ptm_list[-1], bal_list[-2], bal_list[-1]), 15
         )  # force ptm to never go below 15 psig
@@ -518,7 +536,7 @@ def throat_discharge(
 
         n += 1
         if n == 15:
-            raise ValueError("throat mixture did not converge")
+            raise ConvergenceError("throat mixture did not converge")
 
     return ptm_list[-1]
 
@@ -675,6 +693,7 @@ def diffuser_discharge(
 
     pinc = 100  # pressure increase
 
+    n = 0
     while di_book.tde_ray[-1] < 0:
         pdi = di_book.prs_ray[-1] + pinc
 
@@ -685,6 +704,12 @@ def diffuser_discharge(
         di_book.append(
             pdi, vdi, prop_tm.rho_mix(), prop_tm.cmix(), diffuser_ke(kdi, vtm, vdi)
         )
+
+        n += 1
+        if n == 500:  # 50,000 psi above ptm — physically impossible, bail out
+            raise ConvergenceError(
+                "diffuser discharge did not converge, tde never crossed zero"
+            )
 
     pdi = di_book.dedi_zero()
     return vtm, pdi  # type: ignore

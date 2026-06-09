@@ -105,9 +105,14 @@ def test_oil_compressibility_above() -> None:
 
 
 def test_oil_compressibility_below() -> None:
+    # McCain SPE-15664 Eq. 5 takes temperature in deg R; the old expected
+    # value (2.5762e-05) locked in a deg F implementation bug (fixed 2026-06).
+    # Below-bubblepoint co is 1-2 orders of magnitude above the above-pbp
+    # value because of gas coming out of solution — 2.16e-4 psi^-1 is in the
+    # range McCain's paper reports.
     oil = BlackOil.test_oil()
     oil.condition(1000, 80)
-    assert oil.compress == pytest.approx(2.5762e-05, rel=0.01)
+    assert oil.compress == pytest.approx(2.1645e-04, rel=0.01)
 
 
 if __name__ == "__main__":

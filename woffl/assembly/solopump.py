@@ -4,12 +4,15 @@ Code that has to do with running the entire system together. A combination of th
 PVT, JetPump and Outflow. Used to create a final solution to compare.
 """
 
+import math
+
 import numpy as np
 
 from woffl.flow import InFlow
 from woffl.flow import jetflow as jf
 from woffl.flow import outflow as of
 from woffl.flow import singlephase as sp
+from woffl.flow.errors import ConvergenceError
 from woffl.geometry import JetPump, PipeInPipe, WellProfile
 from woffl.pvt import FormWater, ResMix
 
@@ -74,6 +77,10 @@ def qpf_secant(qpf1: float, qpf2: float, res1: float, res2: float) -> float:
     Return:
         qpf3 (float): Power Fluid Flow Three, BWPD
     """
+    if res1 == res2:
+        raise ConvergenceError(
+            "power fluid secant stalled, equal residuals at successive flowrates"
+        )
     qpf3 = qpf2 - res2 * (qpf1 - qpf2) / (res1 - res2)
     return qpf3
 
@@ -158,8 +165,13 @@ def discharge_residual(
         )
         res_list.append(qpf_res)
 
+    n = 0
     while abs(res_list[-1]) > 5:
         qpf = qpf_secant(qpf_list[-2], qpf_list[-1], res_list[-2], res_list[-1])
+        if not math.isfinite(qpf) or qpf <= 0:
+            raise ConvergenceError(
+                f"power fluid rate iteration produced a non-physical rate ({qpf})"
+            )
         qpf_res, vnz, pni = powerfluid_residual(
             qpf,
             pte,
@@ -174,6 +186,10 @@ def discharge_residual(
         )
         qpf_list.append(qpf)
         res_list.append(qpf_res)
+
+        n += 1
+        if n == 20:
+            raise ConvergenceError("power fluid rate did not converge")
 
     # print(f"Iterated PowerFluid and Residual {dict(zip(qpf_list, res_list))}")
     # print(f"Frictional Loss: {pni + dp_stat - ppf_surf:.1f} psi")
@@ -292,17 +308,22 @@ def jetpump_solver(
         # this isn't actually a value error, the code is working as intended
         # this provides a quick fix in the try statement in batch run
         raise ValueError("well cannot lift at max suction pressure")
-        return np.nan, False, np.nan, np.nan, np.nan, np.nan
 
     # start secant hunting for the answer, in between the two points
     psu_list = [psu_min, psu_max]
     res_list = [res_min, res_max]
 
-    psu_diff = 5  # criteria for when you've converged to an answer
+    psu_diff = 5  # converged when successive psu guesses are this close, psi
+    res_tol = 10  # and the discharge residual is driven this close to zero, psid
     n = 0  # loop counter
 
-    while abs(psu_list[-2] - psu_list[-1]) > psu_diff:
-        psu_nxt = jf.psu_secant(psu_list[0], psu_list[1], res_list[0], res_list[1])
+    while abs(psu_list[-2] - psu_list[-1]) > psu_diff or abs(res_list[-1]) > res_tol:
+        # secant on the LAST TWO iterates; the root stays bracketed between
+        # psu_min (res <= 0) and psu_max (res >= 0), so clamp overshoots back in
+        psu_nxt = jf.psu_secant(
+            psu_list[-2], psu_list[-1], res_list[-2], res_list[-1]
+        )
+        psu_nxt = min(max(psu_nxt, psu_min), psu_max)
         res_nxt, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = discharge_residual(
             psu_nxt,
             pwh,
@@ -319,6 +340,8 @@ def jetpump_solver(
         psu_list.append(psu_nxt)
         res_list.append(res_nxt)
         n += 1
-        if n == 10:
-            raise ValueError("Suction Pressure for Overall System did not converge")
+        if n == 20:
+            raise ConvergenceError(
+                "Suction Pressure for Overall System did not converge"
+            )
     return psu_list[-1], False, qoil_std, fwat_bwpd, qnz_bwpd, mach_te

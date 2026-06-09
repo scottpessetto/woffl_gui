@@ -18,8 +18,12 @@ class InFlow:
         Returns:
             Self
         """
-        if pwf > pres is True:
-            raise ValueError("Flowing pressure is greater than reservoir pressure")
+        if pres <= 0:
+            raise ValueError("Reservoir pressure must be greater than zero")
+        if pwf >= pres:
+            raise ValueError(
+                f"Flowing pressure {pwf} psig must be less than reservoir pressure {pres} psig"
+            )
 
         self.qwf = qwf
         self.pwf = pwf
@@ -78,10 +82,13 @@ class InFlow:
             qnew (float): Oil rate at pnew, stb/d
         """
         if pnew < 0:
-            ValueError("Flowing pressure must be greater than zero")
+            raise ValueError("Flowing pressure must be greater than zero")
 
         if pnew > self.pres:
-            ValueError("Flowing pressure must be less than reservoir pressure")
+            raise ValueError(
+                f"Flowing pressure {pnew:.0f} psig must not exceed reservoir pressure "
+                f"{self.pres:.0f} psig"
+            )
 
         if method == "vogel":
             qmax = self.vogel_qmax(self.qwf, self.pwf, self.pres)

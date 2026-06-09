@@ -120,11 +120,17 @@ def _discharge_residual_fixed_rate(
     for qpf in qpf_list:
         r, vnz, pni = so.powerfluid_residual(qpf, pte, ppf_surf, tsu, dp_stat, jpump, wellbore, wellprof, prop_pf, pf_path)
         res_pf.append(r)
+    from woffl.flow.errors import ConvergenceError
+
+    n = 0
     while abs(res_pf[-1]) > 5:
         qpf = so.qpf_secant(qpf_list[-2], qpf_list[-1], res_pf[-2], res_pf[-1])
         r, vnz, pni = so.powerfluid_residual(qpf, pte, ppf_surf, tsu, dp_stat, jpump, wellbore, wellprof, prop_pf, pf_path)
         qpf_list.append(qpf)
         res_pf.append(r)
+        n += 1
+        if n == 20:  # uncapped, this loop could hang the whole app process
+            raise ConvergenceError("power fluid rate did not converge")
 
     qnz = qpf_list[-1]
     wc_tm, _ = jf.throat_wc(qoil_std, prop_su.wc, qnz)
