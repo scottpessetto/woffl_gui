@@ -673,16 +673,31 @@ def _render_geometry(well_data: dict | None) -> tuple[int, float]:
     return jpump_tvd, rho_pf
 
 
+def _multiselect(label: str, key: str, options: list[str], default: list[str]) -> list[str]:
+    """Two-tier multiselect (logical key + widget key) — same pattern as
+    ``_number_input``, so selections survive the widget-state GC when the
+    sidebar unmounts (mode switches) instead of snapping back to defaults."""
+    widget_key = f"{key}_input"
+    if widget_key not in st.session_state:
+        st.session_state[widget_key] = [
+            v for v in st.session_state.get(key, default) if v in options
+        ]
+    value = st.multiselect(label, options=options, key=widget_key)
+    st.session_state[key] = value
+    return value
+
+
 def _render_batch_params() -> tuple[list[str], list[str], str]:
     """Render batch-run parameters (only used by the Batch Run view)."""
     st.caption("Used by the Batch Run view")
-    nozzle_batch_options = st.multiselect(
+    nozzle_batch_options = _multiselect(
         "Nozzle Sizes to Test",
-        options=NOZZLE_OPTIONS,
-        default=["9", "10", "11", "12", "13", "14", "15"],
+        "batch_nozzles",
+        NOZZLE_OPTIONS,
+        ["9", "10", "11", "12", "13", "14", "15"],
     )
-    throat_batch_options = st.multiselect(
-        "Throat Ratios to Test", options=THROAT_OPTIONS, default=["A", "B", "C", "D"]
+    throat_batch_options = _multiselect(
+        "Throat Ratios to Test", "batch_throats", THROAT_OPTIONS, ["A", "B", "C", "D"]
     )
     # water_type lives next to the Marginal WC quickfix on the Batch Run
     # page (more discoverable than buried in the sidebar Advanced section).
@@ -797,19 +812,23 @@ def _auto_download(pdf_bytes: bytes, filename: str) -> None:
 
 
 def _render_power_fluid_range_params() -> tuple[int, int, int]:
-    """Render PF-range parameters (only used by the Power Fluid Range view)."""
+    """Render PF-range parameters (only used by the Power Fluid Range view).
+
+    Two-tier keys so edits survive sidebar unmounts (mode switches) —
+    keyless widgets reset to their ``value=`` defaults on every remount.
+    """
     st.caption("Used by the Power Fluid Range view")
-    power_fluid_min = st.number_input(
-        "Min Power Fluid Pressure (psi)",
-        min_value=1000, max_value=5000, value=1800, step=100,
+    power_fluid_min = _number_input(
+        "Min Power Fluid Pressure (psi)", "power_fluid_min", 1800,
+        min_value=1000, max_value=5000, step=100,
     )
-    power_fluid_max = st.number_input(
-        "Max Power Fluid Pressure (psi)",
-        min_value=1000, max_value=5000, value=3600, step=100,
+    power_fluid_max = _number_input(
+        "Max Power Fluid Pressure (psi)", "power_fluid_max", 3600,
+        min_value=1000, max_value=5000, step=100,
     )
-    power_fluid_step = st.number_input(
-        "Pressure Step (psi)",
-        min_value=50, max_value=500, value=200, step=50,
+    power_fluid_step = _number_input(
+        "Pressure Step (psi)", "power_fluid_step", 200,
+        min_value=50, max_value=500, step=50,
     )
     return power_fluid_min, power_fluid_max, power_fluid_step
 

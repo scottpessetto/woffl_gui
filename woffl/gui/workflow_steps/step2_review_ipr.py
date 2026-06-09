@@ -94,6 +94,9 @@ def _render_csv_review():
         use_container_width=True,
         key="uw_step2_csv_proceed",
     ):
+        # Clear 2.5+ so a previous run's calibration can't be "Accepted"
+        # onto configs it wasn't fit against.
+        _clear_downstream(2.5)
         st.session_state["uw_current_step"] = 2.5
         st.session_state["uw_max_step_reached"] = max(
             st.session_state.get("uw_max_step_reached", 2), 2.5
@@ -222,7 +225,11 @@ def _render_ipr_review():
     st.caption("Uncheck wells to exclude them from optimization.")
 
     exclude_df = vogel_coeffs[["Well", "num_tests", "ResP", "QMax_recent"]].copy()
-    exclude_df.insert(0, "Include", True)
+    # Restore previous exclusions — the editor's widget state is GC'd by any
+    # step detour, which silently re-included every well. uw_excluded_wells
+    # is saved at Proceed time, so the base reflects the last applied set.
+    prev_excluded = st.session_state.get("uw_excluded_wells") or set()
+    exclude_df.insert(0, "Include", ~exclude_df["Well"].isin(prev_excluded))
     # Flag wells with few tests
     exclude_df["Note"] = exclude_df["num_tests"].apply(
         lambda n: "Few tests" if n < 3 else ""
@@ -251,7 +258,12 @@ def _render_ipr_review():
     # --- CSV download ---
     st.write("### Export")
     filtered_coeffs = vogel_coeffs[vogel_coeffs["Well"].isin(included_wells)]
-    template_df = export_optimization_template(filtered_coeffs)
+    # Pass the live Databricks chars (module-level import) — without them the
+    # template was built from legacy jp_chars.csv, whose stale/empty values
+    # clobbered the real JP_TVD etc. when loaded back into WellConfigs.
+    template_df = export_optimization_template(
+        filtered_coeffs, jp_chars=load_well_characteristics()
+    )
 
     csv_data = template_df.to_csv(index=False)
     st.download_button(
@@ -282,7 +294,10 @@ def _render_ipr_review():
             st.error(f"Error building well configurations: {e}")
             return
 
-        _clear_downstream(3)
+        # Clear 2.5+ (not just 3+): stale pre-calibration results fit against
+        # the OLD IPR anchors could otherwise be "Accepted" onto these new
+        # WellConfigs by name match.
+        _clear_downstream(2.5)
         st.session_state["uw_well_configs"] = well_configs
         st.session_state["uw_template_df"] = template_df
         st.session_state["uw_excluded_wells"] = set(

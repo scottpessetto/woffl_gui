@@ -112,23 +112,44 @@ def render_tab() -> None:
         st.error("No producers returned from vw_well_header.")
         return
 
-    # On-pad separation settings (persist across interactions)
+    # On-pad separation settings (persist across interactions). Defaults AND
+    # remembered selections are intersected with the live options — a value
+    # missing from options (empty catalog on a transient Databricks failure,
+    # a well dropping out of vw_well_header) raises StreamlitAPIException
+    # and kills the whole page.
     all_pads = sorted(catalog["well_pad"].dropna().unique().tolist()) if not catalog.empty else []
+    if "well_sort_pops_pads" in st.session_state:
+        st.session_state["well_sort_pops_pads"] = [
+            p for p in st.session_state["well_sort_pops_pads"] if p in all_pads
+        ]
     pops_pads = st.multiselect(
         "Pads with on-pad production separation",
         options=all_pads,
-        default=st.session_state.get(
-            "well_sort_pops_pads", ["E", "F", "H", "I", "M", "S"]
-        ),
+        default=[
+            p
+            for p in st.session_state.get(
+                "well_sort_pops_pads", ["E", "F", "H", "I", "M", "S"]
+            )
+            if p in all_pads
+        ],
         key="well_sort_pops_pads",
         help="Wells on these pads get PopsPad=True. Per-well overrides apply after.",
     )
     # Per-well PopsPad=True overrides (wells that get True even if their pad
     # doesn't have separation — e.g. MPS-08 in the Apr-20 bench sheet).
+    producer_opts = sorted(producers)
+    if "well_sort_pops_force_true" in st.session_state:
+        st.session_state["well_sort_pops_force_true"] = [
+            w for w in st.session_state["well_sort_pops_force_true"] if w in producer_opts
+        ]
     force_true_wells = st.multiselect(
         "Per-well PopsPad=True overrides",
-        options=sorted(producers),
-        default=st.session_state.get("well_sort_pops_force_true", []),
+        options=producer_opts,
+        default=[
+            w
+            for w in st.session_state.get("well_sort_pops_force_true", [])
+            if w in producer_opts
+        ],
         key="well_sort_pops_force_true",
         help="These wells are treated as having on-pad separation regardless "
         "of the pad-level setting above.",

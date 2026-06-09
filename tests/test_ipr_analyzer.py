@@ -639,7 +639,7 @@ class TestExportOptimizationTemplate:
             "form_gor",
             "field_model",
             "surf_pres",
-            "qwf_bopd",
+            "qwf_blpd",
             "pwf",
             "comments",
         ]
@@ -662,13 +662,15 @@ class TestExportOptimizationTemplate:
         )
         assert result.iloc[0]["res_pres"] == coeffs.iloc[0]["ResP"]
 
-    def test_qwf_bopd_from_vogel_coeffs(self):
-        """qwf_bopd should come from the qwf column in vogel_coeffs."""
+    def test_qwf_blpd_from_vogel_coeffs(self):
+        """qwf_blpd (total liquid) should come from the qwf column in
+        vogel_coeffs — consumers convert to oil via (1 - form_wc), see
+        NetworkOptimizer._create_well_objects."""
         coeffs = self._make_vogel_coeffs_df(n_wells=1)
         result = export_optimization_template(
             coeffs, jp_chars_path="__nonexistent__.csv"
         )
-        assert result.iloc[0]["qwf_bopd"] == coeffs.iloc[0]["qwf"]
+        assert result.iloc[0]["qwf_blpd"] == coeffs.iloc[0]["qwf"]
 
     def test_form_wc_from_vogel_coeffs(self):
         """form_wc should come from the vogel_coeffs."""

@@ -466,6 +466,16 @@ def render_tab():
         return
 
     if not st.button("Run Scenario Analysis", type="primary", use_container_width=True):
+        # Re-render the last run's results — without this, ANY rerun after
+        # the run (including clicking the results CSV download button)
+        # erased the multi-minute analysis from the screen.
+        prev = st.session_state.get("pf_scenario_results")
+        if prev is not None and not prev.empty:
+            st.caption(
+                "Showing results from the last run this session — "
+                "click **Run Scenario Analysis** to recompute."
+            )
+            _render_results(prev)
         return
 
     # ── run analysis ───────────────────────────────────────────────────

@@ -31,7 +31,9 @@ def run_well_database_page():
 
     search = st.text_input("Filter wells", placeholder="e.g. MPH, MPS, MPM-10")
     if search:
-        mask = df["Well"].str.contains(search.strip(), case=False, na=False)
+        # regex=False: str.contains defaults to regex, so typing "(" or "["
+        # raised an uncaught re.error and red-screened the page.
+        mask = df["Well"].str.contains(search.strip(), case=False, na=False, regex=False)
         df = df[mask]
 
     display_cols = [

@@ -30,10 +30,21 @@ def _get_pops_pads() -> set[str]:
 
 
 def _active_pad_scope() -> str | None:
-    """Currently active pad-scope letter, or None when in Field-wide mode."""
-    if st.session_state.get("uw_scope") != "Pad":
+    """Currently active pad-scope letter, or None when in Field-wide mode.
+
+    Reads the live Step-1 widgets when present, falling back to the
+    ``_uw_scope`` / ``_uw_scope_pad`` shadow keys written by the Load
+    handler. The widget keys (``uw_scope`` / ``uw_pad_scope_pad``) are
+    garbage-collected the moment Step 1 stops rendering, so Steps 3/4 read
+    THIS — reading the widget keys directly made Pad mode silently degrade
+    to Field-wide by the time the user reached Configure & Run.
+    """
+    scope = st.session_state.get("uw_scope", st.session_state.get("_uw_scope"))
+    if scope != "Pad":
         return None
-    return st.session_state.get("uw_pad_scope_pad")
+    return st.session_state.get(
+        "uw_pad_scope_pad", st.session_state.get("_uw_scope_pad")
+    )
 
 
 def render_step1():
@@ -86,11 +97,15 @@ def _render_databricks_path():
     # constraint class — coming in Phase 2.
     scope_col, pad_col = st.columns([1, 2])
     with scope_col:
+        # index restores the selection from the shadow key after a step
+        # detour garbage-collects the widget state (Streamlit ignores index
+        # when the widget state survived).
         scope = st.radio(
             "Scope",
             options=["Field-wide", "Pad"],
             horizontal=True,
             key="uw_scope",
+            index=1 if st.session_state.get("_uw_scope") == "Pad" else 0,
             help=(
                 "**Field-wide** = optimize across multiple pads under "
                 "a total-PF cap. **Pad** = optimize all wells on a "
@@ -100,7 +115,10 @@ def _render_databricks_path():
         )
     with pad_col:
         if scope == "Pad":
-            current_choice = st.session_state.get("uw_pad_scope_pad", _PAD_SCOPE_PADS[0])
+            current_choice = st.session_state.get(
+                "uw_pad_scope_pad",
+                st.session_state.get("_uw_scope_pad", _PAD_SCOPE_PADS[0]),
+            )
             available = [p for p in _PAD_SCOPE_PADS if p in all_pads]
             if not available:
                 st.warning(
@@ -165,6 +183,10 @@ def _render_databricks_path():
                 st.session_state[f"uw_pad_{pad}"] = False
             st.rerun()
 
+    # Restore checked pads from the shadow saved at Load time — the checkbox
+    # widget keys are GC'd whenever Step 1 isn't rendered, so without this a
+    # detour to another step unchecked everything.
+    saved_pads = set(st.session_state.get("_uw_selected_pads", []) or [])
     pad_cols = st.columns(min(len(all_pads), 6))
     selected_pads = []
     for i, pad in enumerate(all_pads):
@@ -172,7 +194,7 @@ def _render_databricks_path():
         with pad_cols[i % len(pad_cols)]:
             if st.checkbox(
                 f"Pad {pad} ({len(pad_wells)})",
-                value=False,
+                value=pad in saved_pads,
                 key=f"uw_pad_{pad}",
             ):
                 selected_pads.append(pad)
@@ -186,10 +208,19 @@ def _render_databricks_path():
     # Per-well exclude list — lets the user trim individual wells out of the
     # selected pads before pulling tests. Useful when the non-POPS quick-select
     # pulls in a well or two you don't want in this optimization run.
+    exclude_opts = sorted(filtered_well_names)
     excluded = st.multiselect(
         "Wells to exclude (optional)",
-        options=sorted(filtered_well_names),
-        default=st.session_state.get("uw_well_exclude", []),
+        options=exclude_opts,
+        # Restore from the shadow after widget-state GC; intersect with the
+        # live options so a stale well name can't raise.
+        default=[
+            w
+            for w in st.session_state.get(
+                "uw_well_exclude", st.session_state.get("_uw_well_exclude", [])
+            )
+            if w in exclude_opts
+        ],
         key="uw_well_exclude",
         help="Drop specific wells from the selected pads before loading tests.",
     )
@@ -199,15 +230,21 @@ def _render_databricks_path():
             st.info("All wells excluded — pick fewer exclusions.")
             return
 
-    # Date range
+    # Date range (value= restores from the Load-time shadow after widget GC)
     col_start, col_end = st.columns(2)
     with col_start:
-        default_start = date.today() - timedelta(days=90)
+        default_start = st.session_state.get(
+            "_uw_start_date", date.today() - timedelta(days=90)
+        )
         start_date = st.date_input(
             "Start Date", value=default_start, key="uw_start_date"
         )
     with col_end:
-        end_date = st.date_input("End Date", value=date.today(), key="uw_end_date")
+        end_date = st.date_input(
+            "End Date",
+            value=st.session_state.get("_uw_end_date", date.today()),
+            key="uw_end_date",
+        )
 
     if start_date > end_date:
         st.error("Start date must be before end date.")
@@ -238,6 +275,16 @@ def _render_databricks_path():
             st.session_state["uw_well_test_df"] = df
             st.session_state["uw_dropped_wells"] = dropped_wells
             st.session_state["uw_csv_shortcut"] = False
+            # Shadow the Step-1 selections into non-widget keys — the widget
+            # keys are GC'd when Step 1 stops rendering, which made Pad
+            # scope (and the pad/exclusion/date selections) silently vanish
+            # by Step 3. These shadows are what Steps 3/4 read.
+            st.session_state["_uw_scope"] = scope
+            st.session_state["_uw_scope_pad"] = pad_choice
+            st.session_state["_uw_selected_pads"] = list(selected_pads)
+            st.session_state["_uw_well_exclude"] = list(excluded)
+            st.session_state["_uw_start_date"] = start_date
+            st.session_state["_uw_end_date"] = end_date
             st.session_state["uw_current_step"] = 2
             st.session_state["uw_max_step_reached"] = max(
                 st.session_state.get("uw_max_step_reached", 1), 2

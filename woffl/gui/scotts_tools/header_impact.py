@@ -201,17 +201,27 @@ def _render_pad_pf_editor(pads: list[str]) -> dict[str, int]:
     state. Jet-pump wells inherit their pad's value as the "PF held" default in
     the well table below, overridable per well.
     """
-    resolved = resolve_pad_pf(pads, st.session_state.get("hpi_pad_pf"), default_pad_pf)
-    grid = pd.DataFrame(
-        [
-            {
-                "Pad": p,
-                "PF (psi)": resolved[p],
-                "Source": "default" if resolved[p] == int(default_pad_pf(p)) else "edited",
-            }
-            for p in pads
-        ]
-    )
+    # STABLE editor base, rebuilt only when the pad set changes (CLAUDE.md
+    # data_editor gotcha — feeding the editor its own prior output via
+    # hpi_pad_pf makes a feedback loop). Edits live in the widget state and
+    # are read from the return value into hpi_pad_pf below.
+    tok = tuple(pads)
+    grid = st.session_state.get("hpi_pad_pf_base")
+    if grid is None or st.session_state.get("hpi_pad_pf_base_tok") != tok:
+        resolved = resolve_pad_pf(pads, st.session_state.get("hpi_pad_pf"), default_pad_pf)
+        grid = pd.DataFrame(
+            [
+                {
+                    "Pad": p,
+                    "PF (psi)": resolved[p],
+                    "Source": "default" if resolved[p] == int(default_pad_pf(p)) else "edited",
+                }
+                for p in pads
+            ]
+        )
+        st.session_state["hpi_pad_pf_base"] = grid
+        st.session_state["hpi_pad_pf_base_tok"] = tok
+        st.session_state.pop("hpi_pad_pf_editor", None)
     st.caption(
         "**Power-fluid pressure per pad** — held fixed while the header (WHP) is "
         "swept, so it sets the modeled baseline. Seeded from pad defaults; edit to "
@@ -290,20 +300,35 @@ def _render_pad_header_baseline(
             str(p): float(v) for p, v in w.groupby(idf["Pad"]).mean().items() if pd.notna(v)
         }
 
-    grid = pd.DataFrame(
-        [
-            {
-                "Pad": p,
-                "Header now (psi)": int(round(_base(p))) if _base(p) is not None else None,
-                "WHP now (avg, psi)": int(round(whp_avg[p])) if p in whp_avg else None,
-                "→ WHP after Δ (psi)": (
-                    int(round(whp_avg[p] + delta_p)) if p in whp_avg else None
-                ),
-                "Source": _source(p),
-            }
-            for p in pads
-        ]
+    # STABLE editor base, rebuilt only when its non-editable context changes
+    # (pads / Δ / live header / WHP averages) — never from its own output
+    # (hpi_pad_header), which would make the data_editor feedback loop. User
+    # edits to "Header now" survive a rebuild because _base() reads `saved`.
+    tok = (
+        tuple(pads),
+        int(delta_p),
+        tuple(sorted((str(k), round(float(v), 1)) for k, v in live.items())),
+        tuple(sorted((str(k), round(float(v), 1)) for k, v in whp_avg.items())),
     )
+    grid = st.session_state.get("hpi_pad_hdr_base")
+    if grid is None or st.session_state.get("hpi_pad_hdr_base_tok") != tok:
+        grid = pd.DataFrame(
+            [
+                {
+                    "Pad": p,
+                    "Header now (psi)": int(round(_base(p))) if _base(p) is not None else None,
+                    "WHP now (avg, psi)": int(round(whp_avg[p])) if p in whp_avg else None,
+                    "→ WHP after Δ (psi)": (
+                        int(round(whp_avg[p] + delta_p)) if p in whp_avg else None
+                    ),
+                    "Source": _source(p),
+                }
+                for p in pads
+            ]
+        )
+        st.session_state["hpi_pad_hdr_base"] = grid
+        st.session_state["hpi_pad_hdr_base_tok"] = tok
+        st.session_state.pop("hpi_pad_header_editor", None)
     st.caption(
         f"**Header pressure vs actual WHP per pad**, and where the **Δ {int(delta_p):+d} "
         "psi** lands. *Header now* = latest live manifold reading (editable to model a "
@@ -532,7 +557,15 @@ def _resolve_corr_fits(well: str, token: str, rows_meta: dict, emp_fits: dict):
     slopes = [
         emp_fits[m]["BHP~WHP"].mean_slope
         for m in members
-        if m in emp_fits and emp_fits[m].get("BHP~WHP") is not None
+        # RESPONSIVE members only — a slugging/insufficient well still carries
+        # a numeric mean_slope whenever it has >=1 good day, and _synthetic_fit
+        # hard-codes a responsive classification, so without this filter
+        # rejected wells' slopes get laundered into a "responsive" donor.
+        # Mirrors group_correlation_stats, which only pools responsive wells.
+        if m in emp_fits
+        and emp_fits[m].get("BHP~WHP") is not None
+        and ht.classify_response(emp_fits[m]["BHP~WHP"]) == "responsive"
+        and pd.notna(emp_fits[m]["BHP~WHP"].mean_slope)
     ]
     avg = average_slope(slopes)
     if avg is None:
@@ -705,8 +738,29 @@ def _apply_scenario(blob: dict, all_pads: list[str]) -> None:
     if blob.get("pad_pf"):
         st.session_state["hpi_pad_pf"] = {str(k): int(v) for k, v in blob["pad_pf"].items()}
     if blob.get("input_table"):
-        st.session_state["hpi_input_df"] = pd.DataFrame(blob["input_table"])
-    for k in ("hpi_editor", "hpi_pad_pf_editor", "hpi_results_df", "hpi_pdf_bytes", "hpi_curve"):
+        restored = pd.DataFrame(blob["input_table"])
+        st.session_state["hpi_input_df"] = restored
+        st.session_state["hpi_input_base"] = restored.copy()
+        # Re-baseline the measured-WHP snapshot from the restored table —
+        # without it, "Apply pad header → WHP" silently no-ops (or uses a
+        # stale snapshot from a different pad set) after a scenario load.
+        if {"Well", "WHP now (psi)"}.issubset(restored.columns):
+            st.session_state["hpi_whp_measured"] = dict(
+                zip(restored["Well"], pd.to_numeric(restored["WHP now (psi)"], errors="coerce"))
+            )
+        else:
+            st.session_state.pop("hpi_whp_measured", None)
+        # Stamp the loaded-pads guard from the restored table itself.
+        if "Pad" in restored.columns:
+            st.session_state["hpi_loaded_pads"] = sorted(
+                {str(p) for p in restored["Pad"].dropna()}
+            )
+        elif pads:
+            st.session_state["hpi_loaded_pads"] = pads
+    for k in (
+        "hpi_editor", "hpi_pad_pf_editor", "hpi_pad_pf_base", "hpi_pad_hdr_base",
+        "hpi_pad_header_editor", "hpi_results_df", "hpi_pdf_bytes", "hpi_curve",
+    ):
         st.session_state.pop(k, None)
 
 
@@ -853,6 +907,13 @@ def render_tab() -> None:
             st.warning("No producers with recent allocated tests on the selected pad(s).")
             return
         st.session_state["hpi_input_df"] = input_df
+        # STABLE frame for the data_editor (see CLAUDE.md data_editor gotcha):
+        # the editor's data= must not be its own prior output, so programmatic
+        # replacements set this base and pop the editor's widget key.
+        st.session_state["hpi_input_base"] = input_df.copy()
+        # Stamp which pads this table was loaded for, so changing the pad
+        # multiselect can't silently run the OLD pads' wells.
+        st.session_state["hpi_loaded_pads"] = list(pads)
         # Immutable snapshot of each well's measured WHP — the stable reference for
         # the offset-preserving "Apply pad header" re-baseline (so re-applying or
         # editing the header recomputes cleanly instead of compounding).
@@ -867,6 +928,18 @@ def render_tab() -> None:
         st.info("Click **Load wells** to start.")
         return
 
+    # Stale-pad guard: the well table, results, and Run all operate on the
+    # loaded table — if the pad selection changed since Load, say so and block
+    # the run instead of silently producing results for the old pads.
+    loaded_pads = st.session_state.get("hpi_loaded_pads")
+    pads_stale = loaded_pads is not None and set(loaded_pads) != set(pads)
+    if pads_stale:
+        st.warning(
+            f"Pad selection changed (loaded: {', '.join(sorted(loaded_pads))} → "
+            f"selected: {', '.join(sorted(pads))}) — click **Load wells** to "
+            "refresh the table before running."
+        )
+
     st.caption(
         "All producers on the pad: **JP** → physics, **ESP / gas-lift / flowing** → "
         "empirical (no jet-pump model). **PF held** (JP only) seeds from the per-pad "
@@ -878,12 +951,22 @@ def render_tab() -> None:
         "missing one and lets you assign a like-well / group-average donor, then re-run."
     )
 
+    # Feed the editor the STABLE base frame, never its own prior output —
+    # writing the edited frame back as next render's data= creates a feedback
+    # loop that drops/duplicates cells during mass edits (CLAUDE.md gotcha;
+    # same pattern as _render_coverage_panel). The widget replays edits onto
+    # the stable base each rerun; the merged result lives in hpi_input_df.
+    base_df = st.session_state.get("hpi_input_base")
+    if base_df is None:
+        base_df = input_df.copy()
+        st.session_state["hpi_input_base"] = base_df
+
     config_cols = [c for c in [
         "Well", "Pad", "Lift", "Pump", "Oil (BOPD)", "PF held (psi)",
         "WHP now (psi)", "ResP (psi)", "Formation", "Include",
-    ] if c in input_df.columns]
+    ] if c in base_df.columns]
     edited_cfg = st.data_editor(
-        input_df[config_cols],
+        base_df[config_cols],
         key="hpi_editor",
         hide_index=True,
         use_container_width=True,
@@ -920,9 +1003,9 @@ def render_tab() -> None:
         input_df["Corr donor"].values if "Corr donor" in input_df.columns else OWN_TOKEN
     )
 
-    # Persist edits so they survive reruns and feed the per-well PF map. The
-    # data_editor stores absolute cell values, so re-feeding the edited frame on
-    # the next run is idempotent (no double-apply).
+    # Persist the merged (base + edits) frame as the canonical input the run
+    # reads. hpi_input_base stays untouched — only programmatic replacements
+    # (Load wells, the two Apply buttons, scenario load) reset it.
     st.session_state["hpi_input_df"] = edited_df.copy()
 
     bpf, bhdr = st.columns(2)
@@ -938,6 +1021,7 @@ def render_tab() -> None:
             lambda p: int(pad_pf.get(p, default_pad_pf(p)))
         )
         st.session_state["hpi_input_df"] = df2
+        st.session_state["hpi_input_base"] = df2.copy()
         st.session_state.pop("hpi_editor", None)  # clear stale editor delta
         st.rerun()
     if bhdr.button(
@@ -965,6 +1049,7 @@ def render_tab() -> None:
                 new_whp.append(w)  # no live header / no measured WHP → leave as-is
         df2["WHP now (psi)"] = new_whp
         st.session_state["hpi_input_df"] = df2
+        st.session_state["hpi_input_base"] = df2.copy()
         st.session_state.pop("hpi_editor", None)  # clear stale editor delta
         st.rerun()
 
@@ -991,8 +1076,11 @@ def render_tab() -> None:
     )
 
     run_clicked = st.button(
-        "Run header impact", type="primary", use_container_width=True, key="hpi_run"
+        "Run header impact", type="primary", use_container_width=True, key="hpi_run",
+        disabled=pads_stale,
     ) or st.session_state.pop("hpi_trigger_run", False)
+    if pads_stale:
+        run_clicked = False  # a queued coverage-panel rerun can't bypass the guard
     if not run_clicked:
         results_df = st.session_state.get("hpi_results_df")
         if results_df is not None:
@@ -1205,9 +1293,20 @@ def render_tab() -> None:
             res_now = _solve_at_whp(
                 wc, well_objs, pump["nozzle_no"], pump["throat_ratio"], whp_now, pf_held, fric
             )
+            # Clamp the scenario WHP to the sweep floor — delta_p reaches -500
+            # while typical WHPs run 100-400 psi, and the solver gets garbage
+            # (or dies into the skipped list) below the floor. The sweep
+            # already applies the same clamp via _WHP_FLOOR.
+            whp_scen = whp_now + delta_p
+            if whp_scen < _WHP_FLOOR:
+                errors.append(
+                    f"{wn}: note — scenario WHP {whp_scen:.0f} psi is below the "
+                    f"{_WHP_FLOOR:.0f}-psi floor; solved at the floor instead"
+                )
+                whp_scen = _WHP_FLOOR
             res_scen = _solve_at_whp(
                 wc, well_objs, pump["nozzle_no"], pump["throat_ratio"],
-                whp_now + delta_p, pf_held, fric,
+                whp_scen, pf_held, fric,
             )
             if build_curves:
                 # Capture model BHP (psu) + WHP at each swept point too — the
@@ -1333,12 +1432,46 @@ def _render_header_estimate(results_df: pd.DataFrame, delta_p: float) -> None:
     fit_map = _pad_single_fits(results_df, test_df)
     input_df = st.session_state.get("hpi_input_df")
 
+    # Water cut per well: form_wc → measured water fraction → pad average →
+    # 0.0 (flagged). A silent 0.0 default counted the entire liquid delta as
+    # oil for any well missing form_wc, inflating the field ΔOil rollup.
     wc_map: dict = {}
-    if test_df is not None and {"well", "form_wc", "WtDate"}.issubset(getattr(test_df, "columns", [])):
-        for w, g in test_df.dropna(subset=["form_wc"]).groupby("well"):
-            s = pd.to_numeric(g.sort_values("WtDate")["form_wc"], errors="coerce").dropna()
-            if not s.empty:
-                wc_map[w] = float(s.iloc[-1])
+    if test_df is not None and {"well", "WtDate"}.issubset(getattr(test_df, "columns", [])):
+        cols = set(test_df.columns)
+        for w, g in test_df.groupby("well"):
+            g = g.sort_values("WtDate")
+            if "form_wc" in cols:
+                s = pd.to_numeric(g["form_wc"], errors="coerce").dropna()
+                if not s.empty:
+                    wc_map[w] = float(s.iloc[-1])
+                    continue
+            if {"WtWaterVol", "WtTotalFluid"}.issubset(cols):
+                wat = pd.to_numeric(g["WtWaterVol"], errors="coerce")
+                tot = pd.to_numeric(g["WtTotalFluid"], errors="coerce")
+                frac = (wat / tot).where(tot > 0).dropna()
+                if not frac.empty:
+                    wc_map[w] = float(min(max(frac.iloc[-1], 0.0), 1.0))
+
+    pad_of = dict(
+        zip(
+            results_df["Well"],
+            results_df["Pad"] if "Pad" in results_df.columns else [""] * len(results_df),
+        )
+    )
+    _pad_wcs: dict = {}
+    for w, v in wc_map.items():
+        _pad_wcs.setdefault(pad_of.get(w), []).append(v)
+    pad_avg_wc = {p: sum(v) / len(v) for p, v in _pad_wcs.items() if v}
+    wc_defaulted: list[str] = []
+
+    def _wc_for(w: str) -> float:
+        if w in wc_map:
+            return wc_map[w]
+        pa = pad_avg_wc.get(pad_of.get(w))
+        if pa is not None:
+            return pa
+        wc_defaulted.append(w)
+        return 0.0
 
     # Manual SPECIFIC-WELL overrides from the coverage panel: only a real well token
     # counts (own / group tokens fall through to the auto own→group resolution).
@@ -1365,7 +1498,7 @@ def _render_header_estimate(results_df: pd.DataFrame, delta_p: float) -> None:
             "own_corr": own_corr, "sonic": bool(r.get("Sonic now", False)),
             "lift": r.get("Lift", "?"), "qmax": fit.get("qmax"), "pr": fit.get("pr"),
             "pad": r.get("Pad"), "formation": r.get("Formation"),
-            "bhp_now": r.get("BHP now (psi)"), "wc": wc_map.get(w, 0.0),
+            "bhp_now": r.get("BHP now (psi)"), "wc": _wc_for(w),
             "corr_donor": _specific(corr_tok.get(w)), "ipr_donor": _specific(ipr_tok.get(w)),
         }
     est = estimate_header_impacts(wells, delta_p)
@@ -1391,6 +1524,13 @@ def _render_header_estimate(results_df: pd.DataFrame, delta_p: float) -> None:
         return
 
     st.subheader("Header-Impact Estimate — correlation → IPR → water cut")
+    if wc_defaulted:
+        shown = ", ".join(sorted(set(wc_defaulted))[:8])
+        more = "…" if len(set(wc_defaulted)) > 8 else ""
+        st.caption(
+            f"⚠️ No water cut found for {len(set(wc_defaulted))} well(s) "
+            f"({shown}{more}) — their ΔOil is the full liquid delta (WC=0)."
+        )
     valid = df["ΔOil (BOPD)"].notna()
     field = float(df.loc[valid, "ΔOil (BOPD)"].sum())
     by_conf = df.loc[valid].groupby("Confidence")["ΔOil (BOPD)"].agg(["sum", "count"])
@@ -3419,6 +3559,11 @@ def _render_analog(months_back: int, delta_p: float) -> None:
             )
             if st.button("Reset to flagged gaugeless wells", key="hpi_analog_reset"):
                 st.session_state["hpi_analog_df"] = pd.DataFrame(gaugeless_seed)
+                # Drop the editor's widget state — otherwise it replays the
+                # user's prior edits (incl. added rows) onto the reset frame
+                # and the reset visibly doesn't take.
+                st.session_state.pop("hpi_analog_editor", None)
+                st.rerun()
 
         default = pd.DataFrame(
             gaugeless_seed
@@ -3456,6 +3601,10 @@ def _render_analog(months_back: int, delta_p: float) -> None:
         if not st.button("Compute analog", key="hpi_analog_btn"):
             return
         st.session_state["hpi_analog_df"] = ed
+        # The persisted frame becomes the next render's data= — drop the
+        # widget state so it doesn't replay the same edits onto it (dynamic
+        # rows would duplicate).
+        st.session_state.pop("hpi_analog_editor", None)
 
         end = datetime.now().strftime("%Y-%m-%d")
         start = (datetime.now() - relativedelta(months=int(months_back))).strftime("%Y-%m-%d")

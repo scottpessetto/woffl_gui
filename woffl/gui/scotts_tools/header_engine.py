@@ -378,6 +378,12 @@ def pad_updown_lever(curve: dict | None, pad: str, ref: int = 100) -> tuple[floa
     header drop and a ``ref``-psi rise (BOPD). The two differ when the response is
     nonlinear — e.g. wells choke sonic on the way down, flattening that side. NaN
     where the curve lacks the ±ref or 0 points, or no pad well has data there.
+
+    Each side sums PER-WELL deltas over wells valid at BOTH points (matching
+    ``aggregate_response_curve``). Summing pad totals computed over whichever
+    wells happened to be valid at each index let a well with a NaN'd sweep
+    point (e.g. WHP below the sweep floor at Δ=-ref) dump its entire oil rate
+    into the base total but not the moved one — a phantom pad-sized loss.
     """
     if not curve:
         return (np.nan, np.nan)
@@ -387,21 +393,30 @@ def pad_updown_lever(curve: dict | None, pad: str, ref: int = 100) -> tuple[floa
         return (np.nan, np.nan)
     i0, idn, iup = deltas.index(0), deltas.index(-ref), deltas.index(ref)
 
-    def pad_oil(i: int) -> float:
-        tot, seen = 0.0, False
-        for wd in wells.values():
-            if str(wd.get("pad")) != str(pad):
-                continue
-            o = wd.get("oil", [])
-            if i < len(o) and o[i] is not None and not pd.isna(o[i]):
-                tot += float(o[i])
-                seen = True
-        return tot if seen else np.nan
+    def _val(o: list, i: int) -> float | None:
+        if i < len(o) and o[i] is not None and not pd.isna(o[i]):
+            return float(o[i])
+        return None
 
-    o0, odn, oup = pad_oil(i0), pad_oil(idn), pad_oil(iup)
-    down = (odn - o0) if not (np.isnan(odn) or np.isnan(o0)) else np.nan
-    up = (oup - o0) if not (np.isnan(oup) or np.isnan(o0)) else np.nan
-    return (down, up)
+    down_tot, up_tot = 0.0, 0.0
+    down_seen, up_seen = False, False
+    for wd in wells.values():
+        if str(wd.get("pad")) != str(pad):
+            continue
+        o = wd.get("oil", [])
+        v0 = _val(o, i0)
+        if v0 is None:
+            continue
+        vdn = _val(o, idn)
+        if vdn is not None:
+            down_tot += vdn - v0
+            down_seen = True
+        vup = _val(o, iup)
+        if vup is not None:
+            up_tot += vup - v0
+            up_seen = True
+
+    return (down_tot if down_seen else np.nan, up_tot if up_seen else np.nan)
 
 
 # ── long-horizon back-test (real header move vs the model) ───────────────────

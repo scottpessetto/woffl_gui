@@ -80,20 +80,31 @@ def render_tab(params: SimulationParams, jetpump, wellbore, well_profile, inflow
         prod_label = "Annulus (Production)"
         pf_label = "Tubing (Power Fluid)"
 
-    # Solve for operating point
-    solver_results = run_jetpump_solver(
-        params.surf_pres,
-        params.form_temp,
-        params.rho_pf,
-        params.ppf_surf,
-        jetpump,
-        wellbore,
-        well_profile,
-        inflow,
-        res_mix,
-        field_model=params.field_model,
-        jpump_direction=params.jpump_direction,
-    )
+    # Solve for operating point. The IndexError guard covers
+    # ThroatEntryNoSolution (no valid throat-entry solution — typically GOR
+    # too low); without it a marginal well crashed this whole view even when
+    # the Solver tab had auto-recovered.
+    try:
+        solver_results = run_jetpump_solver(
+            params.surf_pres,
+            params.form_temp,
+            params.rho_pf,
+            params.ppf_surf,
+            jetpump,
+            wellbore,
+            well_profile,
+            inflow,
+            res_mix,
+            field_model=params.field_model,
+            jpump_direction=params.jpump_direction,
+        )
+    except IndexError:
+        st.warning(
+            "Could not compute pressure profiles — no valid throat-entry "
+            "solution at this operating point (GOR or suction pressure may "
+            "be too low). Adjust the sidebar inputs."
+        )
+        return
 
     if not solver_results:
         st.warning("Could not compute pressure profiles — solver did not converge.")

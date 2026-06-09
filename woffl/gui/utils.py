@@ -639,19 +639,24 @@ def _solve_pf_for_actual_lift(
     )
 
     def lift_at(ppf: float) -> float:
-        result = run_jetpump_solver(
-            inputs["model_surf_pres"],
-            float(params.form_temp),
-            float(params.rho_pf),
-            float(ppf),
-            pump,
-            wellbore,
-            well_profile,
-            inputs["ipr_inflow"],
-            inputs["ipr_res_mix"],
-            field_model=params.field_model,
-            jpump_direction=params.jpump_direction,
-        )
+        try:
+            result = run_jetpump_solver(
+                inputs["model_surf_pres"],
+                float(params.form_temp),
+                float(params.rho_pf),
+                float(ppf),
+                pump,
+                wellbore,
+                well_profile,
+                inputs["ipr_inflow"],
+                inputs["ipr_res_mix"],
+                field_model=params.field_model,
+                jpump_direction=params.jpump_direction,
+                quiet=True,  # failed probes are expected — no red error boxes
+            )
+        except ValueError:
+            # ThroatEntryNoSolution et al. — treat as a failed probe (NaN wall)
+            return float("nan")
         if result is None:
             return float("nan")
         _psu, _sonic, _qoil, _fwat, qnz, _mach = result
@@ -1007,16 +1012,29 @@ def run_jetpump_solver(
     res_mix,
     field_model=None,
     jpump_direction="reverse",
+    quiet=False,
 ):
     """Run the jetpump solver and return the results.
 
     This function uses the jetpump_solver from solopump to find a solution for the jetpump system
     that factors in the wellhead pressure and reservoir conditions.
 
+    Args:
+        quiet: suppress the on-page st.error box on solver failure — used by
+            programmatic search loops (PF Auto-match) that deliberately probe
+            failing pressures, which otherwise paint a column of red boxes.
+
     Returns:
         tuple or None: (psu, sonic_status, qoil_std, fwat_bwpd, qnz_bwpd, mach_te) if successful,
                        None if the solver fails
+
+    Raises:
+        ThroatEntryNoSolution: re-raised (it subclasses both ValueError and
+            IndexError) so the Solver tab's GOR auto-recovery — which catches
+            IndexError — still fires. Other call sites guard it explicitly.
     """
+    from woffl.flow.errors import ThroatEntryNoSolution
+
     # Create power fluid properties from field model water
     _, prop_pf, _ = create_pvt_components(field_model)
     prop_pf = prop_pf.condition(0, 60)
@@ -1034,9 +1052,12 @@ def run_jetpump_solver(
             prop_pf=prop_pf,
             jpump_direction=jpump_direction,
         )
+    except ThroatEntryNoSolution:
+        raise
     except ValueError as e:
         # Handle the case where the well cannot lift at max suction pressure
-        st.error(f"Solver error: {str(e)}")
+        if not quiet:
+            st.error(f"Solver error: {str(e)}")
         return None
 
 
@@ -1093,7 +1114,8 @@ def recommend_jetpump(batch_pump, marginal_watercut, water_type="lift"):
     # the theoretical optimal point for closest-match selection.
     if marg_col not in batch_pump.df.columns:
         raise ValueError(
-            f"Marginal column {marg_col!r} not found in batch results"
+            f"Marginal column {marg_col!r} not found in batch results — "
+            "process_results() / curve fitting has not been run"
         )
 
     # Get semi-finalist pumps
@@ -1460,18 +1482,13 @@ def _jp_chars_csv_path() -> str:
 
 
 @st.cache_data(ttl=3600, show_spinner="Loading well properties from Databricks…")
-def load_well_characteristics() -> pd.DataFrame:
-    """Load well characteristics from Databricks, with CSV fallback.
+def _load_well_characteristics_cached() -> tuple[pd.DataFrame, list]:
+    """Cached core for load_well_characteristics — returns (df, missing).
 
-    Wraps the library helper fetch_well_props_enriched() (which joins
-    vw_prop_mech + vw_prop_resvr and computes JP_TVD from local deviation
-    surveys). Falls back to jp_chars.csv if Databricks is unreachable.
-
-    Wells with estimated JP_TVD (no local survey) are flagged in
-    st.session_state["wells_missing_surveys"] for the app-level warning.
-
-    Cache: process-wide via @st.cache_data, TTL 1 hour. On Databricks Apps
-    (single Streamlit process per container) this is shared across all users.
+    The missing-surveys list is RETURNED rather than written to session_state
+    here: st.cache_data skips the function body on a hit, so a session_state
+    write inside it only ever ran for the one session that filled the cache —
+    every other user/session for the next hour never saw the banner.
     """
     from woffl.assembly.databricks_client import fetch_well_props_enriched
 
@@ -1485,13 +1502,35 @@ def load_well_characteristics() -> pd.DataFrame:
             "Properties may be stale."
         )
         try:
-            return pd.read_csv(_jp_chars_csv_path())
+            return pd.read_csv(_jp_chars_csv_path()), []
         except Exception as csv_err:
             st.error(f"Both Databricks and jp_chars.csv failed: {csv_err}")
-            return pd.DataFrame()
+            return pd.DataFrame(), []
 
+    return df, missing
+
+
+def load_well_characteristics() -> pd.DataFrame:
+    """Load well characteristics from Databricks, with CSV fallback.
+
+    Wraps the library helper fetch_well_props_enriched() (which joins
+    vw_prop_mech + vw_prop_resvr and computes JP_TVD from local deviation
+    surveys). Falls back to jp_chars.csv if Databricks is unreachable.
+
+    Wells with estimated JP_TVD (no local survey) are flagged in
+    st.session_state["wells_missing_surveys"] for the app-level warning —
+    set here, OUTSIDE the cache, so every session gets the banner.
+
+    Cache: process-wide via @st.cache_data, TTL 1 hour. On Databricks Apps
+    (single Streamlit process per container) this is shared across all users.
+    """
+    df, missing = _load_well_characteristics_cached()
     st.session_state["wells_missing_surveys"] = missing
     return df
+
+
+# Keep cache-clear call sites working against the wrapped function.
+load_well_characteristics.clear = _load_well_characteristics_cached.clear  # type: ignore[attr-defined]
 
 
 def get_available_wells():

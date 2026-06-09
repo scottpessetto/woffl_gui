@@ -1955,19 +1955,30 @@ def _render_model_vs_actual(
     )
     current_jp = create_jetpump(nozzle, throat, params.ken, params.kth, params.kdi)
 
-    model_results = run_jetpump_solver(
-        model_surf_pres,
-        params.form_temp,
-        params.rho_pf,
-        params.ppf_surf,
-        current_jp,
-        wellbore,
-        well_profile,
-        ipr_inflow,
-        ipr_res_mix,
-        field_model=params.field_model,
-        jpump_direction=params.jpump_direction,
-    )
+    # The MvA solve models the TEST's pump, which can hit a throat-entry
+    # no-solution even when the top-of-tab solve (sidebar pump) succeeded —
+    # guard it so a marginal well doesn't crash the whole page.
+    try:
+        model_results = run_jetpump_solver(
+            model_surf_pres,
+            params.form_temp,
+            params.rho_pf,
+            params.ppf_surf,
+            current_jp,
+            wellbore,
+            well_profile,
+            ipr_inflow,
+            ipr_res_mix,
+            field_model=params.field_model,
+            jpump_direction=params.jpump_direction,
+        )
+    except IndexError:
+        st.warning(
+            f"Model vs Actual unavailable — the test's pump ({nozzle}{throat}) "
+            "has no valid throat-entry solution at this operating point "
+            "(GOR or suction pressure may be too low)."
+        )
+        model_results = None
 
     # 6. Display comparison metrics
     actual_oil = recent_test.get("WtOilVol", None)

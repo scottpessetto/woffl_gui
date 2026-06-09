@@ -23,10 +23,10 @@ from woffl.gui.workflow_page import _clear_downstream
 _DEFAULT_POPS_PADS = ("E", "F", "H", "I", "M", "S")
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def _auto_marginal_wc(pops_tuple: tuple[str, ...],
                        overrides_tuple: tuple[str, ...]) -> dict | None:
-    """Compute the field marginal WC from current Well-Sort data, cached 5 min.
+    """Compute the field marginal WC from current Well-Sort data, cached 1 h.
 
     Hash key is the POPS list + per-well overrides so the cached value
     invalidates correctly when the user changes the POPS settings on the
@@ -38,19 +38,26 @@ def _auto_marginal_wc(pops_tuple: tuple[str, ...],
             build_online_table,
             classify_wells,
             compute_field_marginal_wc,
-            fetch_current_shut_in_history,
-            fetch_mpu_producers,
-            fetch_producer_catalog,
-            fetch_recent_tests,
-            fetch_xv_status,
         )
-        producers = fetch_mpu_producers()
+
+        # Use the CACHED Well-Sort fetchers (warmed by the app's startup
+        # prefetch thread) — the raw well_sort_client functions re-fired
+        # five sequential warehouse queries on every cache expiry.
+        from woffl.gui.scotts_tools.well_sort import (
+            _cached_producer_catalog,
+            _cached_producers,
+            _cached_recent_tests,
+            _cached_shut_in_history,
+            _cached_xv_status,
+        )
+
+        producers = _cached_producers()
         if not producers:
             return None
-        shut_in = fetch_current_shut_in_history()
-        tests = fetch_recent_tests(days=180)
-        catalog = fetch_producer_catalog()
-        xv = fetch_xv_status()
+        shut_in = _cached_shut_in_history()
+        tests = _cached_recent_tests(days=180)
+        catalog = _cached_producer_catalog()
+        xv = _cached_xv_status()
         online_set, _ = classify_wells(
             producers, shut_in, xv_df=xv, trust_xv=True,
         )
@@ -127,15 +134,28 @@ def render_step3():
             key="uw_csv_override",
         )
         if override_file is not None:
-            try:
-                override_df = pd.read_csv(override_file)
-                new_configs = load_wells_from_dataframe(override_df)
-                st.session_state["uw_well_configs"] = new_configs
-                st.session_state["uw_template_df"] = override_df
-                well_configs = new_configs
-                st.success(f"Overrode with {len(new_configs)} wells from CSV")
-            except Exception as e:
-                st.error(f"Error parsing override CSV: {e}")
+            # Process the file ONCE (keyed on its identity). Re-processing on
+            # every rerun re-queried Databricks each interaction and silently
+            # rebuilt the configs — discarding accepted pre-calibration.
+            file_sig = f"{override_file.name}:{override_file.size}"
+            if st.session_state.get("uw_csv_override_sig") != file_sig:
+                try:
+                    override_df = pd.read_csv(override_file)
+                    new_configs = load_wells_from_dataframe(override_df)
+                    # New configs invalidate pre-calibration AND any results.
+                    _clear_downstream(2.5)
+                    st.session_state["uw_well_configs"] = new_configs
+                    st.session_state["uw_template_df"] = override_df
+                    st.session_state["uw_csv_override_sig"] = file_sig
+                    well_configs = new_configs
+                    st.success(f"Overrode with {len(new_configs)} wells from CSV")
+                except Exception as e:
+                    st.error(f"Error parsing override CSV: {e}")
+            else:
+                st.caption(
+                    f"Override CSV **{override_file.name}** is loaded "
+                    f"({len(well_configs)} wells). Remove the file to revert."
+                )
 
     # --- Wells summary ---
     st.write(f"**{len(well_configs)} wells** ready for optimization")
@@ -168,11 +188,12 @@ def render_step3():
     # forbids writes to a widget's key after it renders. Re-seed only when
     # the pad changes so the user can still hand-tune the value within a
     # single pad-mode session.
-    pad_scope = (
-        st.session_state.get("uw_pad_scope_pad")
-        if st.session_state.get("uw_scope") == "Pad"
-        else None
-    )
+    # Read the scope through the shadow-aware helper — the Step-1 widget keys
+    # (uw_scope / uw_pad_scope_pad) are GC'd the moment Step 1 stops
+    # rendering, which made Pad mode silently degrade to Field-wide here.
+    from woffl.gui.workflow_steps.step1_select_wells import _active_pad_scope
+
+    pad_scope = _active_pad_scope()
     pad_limit_for_banner = None
     if pad_scope:
         from woffl.gui.scotts_tools.well_sort import PUMP_LIMIT_PRESETS
@@ -186,6 +207,7 @@ def render_step3():
         last_seeded = st.session_state.get("_uw_pad_scope_seeded_pad")
         if last_seeded != pad_scope:
             st.session_state["uw_total_pf"] = pad_limit_for_banner
+            st.session_state["uw_total_pf_input"] = pad_limit_for_banner
             st.session_state["_uw_pad_scope_seeded_pad"] = pad_scope
         st.info(
             f"**Pad mode: {pad_scope}-Pad** — PF constraint pre-filled from "
@@ -196,14 +218,28 @@ def render_step3():
     else:
         st.session_state.pop("_uw_pad_scope_seeded_pad", None)
 
+    # Two-tier state (logical uw_* + widget uw_*_input) for every config
+    # widget: the old self-referential `value=get(key), key=key` pattern
+    # did NOT survive widget-state GC — a detour to Step 4 and back reset
+    # Total PF / pressure / density to defaults while the on-screen results
+    # were still computed from the user's settings.
+    def _two_tier_number(label: str, key: str, default, cast, **kwargs):
+        widget_key = f"{key}_input"
+        if widget_key not in st.session_state:
+            st.session_state[widget_key] = cast(st.session_state.get(key, default))
+        val = st.number_input(label, key=widget_key, **kwargs)
+        st.session_state[key] = val
+        return val
+
     pf_col1, pf_col2, pf_col3 = st.columns(3)
     with pf_col1:
-        total_pf = st.number_input(
+        total_pf = _two_tier_number(
             "Total PF (bbl/day)",
+            "uw_total_pf",
+            30000,
+            int,
             min_value=0,
-            value=int(st.session_state.get("uw_total_pf", 30000)),
             step=500,
-            key="uw_total_pf",
             help=(
                 f"PF capacity for {pad_scope}-Pad pump (pre-filled from preset)."
                 if pad_scope
@@ -211,22 +247,24 @@ def render_step3():
             ),
         )
     with pf_col2:
-        pf_pressure = st.number_input(
+        pf_pressure = _two_tier_number(
             "PF Pressure (psi)",
+            "uw_pf_pressure",
+            3168,
+            int,
             min_value=1000,
             max_value=5000,
-            value=int(st.session_state.get("uw_pf_pressure", 3168)),
             step=100,
-            key="uw_pf_pressure",
         )
     with pf_col3:
-        rho_pf = st.number_input(
+        rho_pf = _two_tier_number(
             "PF Density (lbm/ft³)",
+            "uw_rho_pf",
+            62.4,
+            float,
             min_value=50.0,
             max_value=70.0,
-            value=float(st.session_state.get("uw_rho_pf", 62.4)),
             step=0.1,
-            key="uw_rho_pf",
         )
 
     # Auto-fill marginal_watercut from Well Sort data (POPS-aware MAX of
@@ -241,33 +279,38 @@ def render_step3():
     auto = _auto_marginal_wc(pops_pads, pops_overrides)
     if auto and not st.session_state.get("uw_marginal_wc_touched", False):
         st.session_state["uw_marginal_wc"] = float(auto["wc"])
+        st.session_state["uw_marginal_wc_input"] = float(auto["wc"])
 
     algo_col1, algo_col2, algo_col3 = st.columns(3)
     with algo_col1:
+        # index restores from the shadow after widget-state GC (Streamlit
+        # ignores index when the widget state survived).
         opt_method = st.selectbox(
             "Algorithm",
             ["milp", "mckp"],
-            index=0,
+            index=1 if st.session_state.get("_uw_opt_method") == "mckp" else 0,
             key="uw_opt_method",
             help=(
                 "MILP: Optimal via scipy linear programming. "
                 "MCKP: Multi-choice knapsack via OR-Tools CP-SAT."
             ),
         )
+        st.session_state["_uw_opt_method"] = opt_method
     with algo_col2:
-        marginal_wc = st.number_input(
+        marginal_wc = _two_tier_number(
             "Marginal Watercut",
+            "uw_marginal_wc",
+            0.94,
+            float,
             min_value=0.0,
             max_value=1.0,
-            value=float(st.session_state.get("uw_marginal_wc", 0.94)),
             step=0.01,
             format="%.2f",
-            key="uw_marginal_wc",
             on_change=_on_marginal_wc_change,
             help=(
                 "Worst well online — for POPS pads put to 100% if room "
-                "on pump for water handling. Threshold for which wells "
-                "qualify in the recommendation."
+                "on pump for water handling. NOTE: currently informational "
+                "— the optimizer does not yet enforce this threshold."
             ),
         )
         if auto:
@@ -284,6 +327,7 @@ def render_step3():
                 ):
                     st.session_state.pop("uw_marginal_wc_touched", None)
                     st.session_state["uw_marginal_wc"] = float(auto["wc"])
+                    st.session_state.pop("uw_marginal_wc_input", None)
                     st.rerun()
         else:
             st.caption("Auto-fill unavailable — using default 0.94.")
@@ -291,7 +335,12 @@ def render_step3():
         has_jp_history = "jp_history_df" in st.session_state
         use_calibration = st.checkbox(
             "Apply Calibration",
-            value=bool(st.session_state.get("uw_use_calibration", True)),
+            value=bool(
+                st.session_state.get(
+                    "uw_use_calibration",
+                    st.session_state.get("_uw_use_calibration", True),
+                )
+            ),
             key="uw_use_calibration",
             help=(
                 "Scale predictions using model-vs-actual on current pump "
@@ -299,24 +348,34 @@ def render_step3():
             ),
             disabled=not has_jp_history,
         )
+        st.session_state["_uw_use_calibration"] = use_calibration
 
     with st.expander("Pump Options to Test", expanded=False):
+        # default= restores from the shadow keys after widget-state GC; the
+        # old self-referential default (reading the widget's own key) fell
+        # back to hardcoded defaults on every step detour.
         nozzle_opts = st.multiselect(
             "Nozzle Sizes",
             NOZZLE_OPTIONS,
             default=st.session_state.get(
-                "uw_nozzle_opts", ["8", "9", "10", "11", "12", "13", "14"]
+                "uw_nozzle_opts",
+                st.session_state.get(
+                    "_uw_nozzle_opts", ["8", "9", "10", "11", "12", "13", "14"]
+                ),
             ),
             key="uw_nozzle_opts",
         )
+        st.session_state["_uw_nozzle_opts"] = list(nozzle_opts)
         throat_opts = st.multiselect(
             "Throat Ratios",
             THROAT_OPTIONS,
             default=st.session_state.get(
-                "uw_throat_opts", ["X", "A", "B", "C", "D"]
+                "uw_throat_opts",
+                st.session_state.get("_uw_throat_opts", ["X", "A", "B", "C", "D"]),
             ),
             key="uw_throat_opts",
         )
+        st.session_state["_uw_throat_opts"] = list(throat_opts)
 
     if not nozzle_opts or not throat_opts:
         st.warning(
@@ -377,14 +436,17 @@ def render_step3():
             status_text.empty()
             st.success(f"Completed batch simulations for {len(wells)} wells")
 
+            # Actual maps — built ONCE and stored unconditionally below, so a
+            # re-run with calibration off can't leave a previous run's maps
+            # feeding Step 4's "Current vs Optimized" comparison.
+            all_tests = st.session_state.get("all_well_tests_df")
+            actual_oil_map, actual_pf_map, actual_bhp_map = _build_actual_maps(
+                opt_well_names, all_tests
+            )
+
             # Calibration
             calibration_results = None
             if use_calibration and current_jp_map and has_jp_history:
-                all_tests = st.session_state.get("all_well_tests_df")
-                actual_oil_map, actual_pf_map, actual_bhp_map = _build_actual_maps(
-                    opt_well_names, all_tests
-                )
-
                 if actual_oil_map:
                     calibration_results = run_calibration(
                         optimizer,
@@ -421,6 +483,11 @@ def render_step3():
                 results = optimize(optimizer, method=opt_method)
 
             if not results:
+                # Drop the PREVIOUS run's results too — leaving them made
+                # "Previous optimization results available" below present
+                # stale numbers as if they matched the inputs on screen.
+                for k in ("uw_opt_results", "uw_optimizer", "uw_calibration_results"):
+                    st.session_state.pop(k, None)
                 st.warning(
                     "Optimization did not produce viable results. "
                     "Try adjusting constraints or pump options."
@@ -435,13 +502,11 @@ def render_step3():
             st.session_state["uw_opt_results"] = results
             st.session_state["uw_calibration_results"] = calibration_results
             st.session_state["uw_current_jp_map"] = current_jp_map
-            # Store actual maps for results page
-            if use_calibration and current_jp_map and has_jp_history:
-                all_tests = st.session_state.get("all_well_tests_df")
-                oil_map, pf_map, bhp_map = _build_actual_maps(opt_well_names, all_tests)
-                st.session_state["uw_actual_oil_map"] = oil_map
-                st.session_state["uw_actual_pf_map"] = pf_map
-                st.session_state["uw_actual_bhp_map"] = bhp_map
+            # Actual maps stored unconditionally (computed above) — keyed to
+            # THIS run's configured wells.
+            st.session_state["uw_actual_oil_map"] = actual_oil_map
+            st.session_state["uw_actual_pf_map"] = actual_pf_map
+            st.session_state["uw_actual_bhp_map"] = actual_bhp_map
 
             st.session_state["uw_current_step"] = 4
             st.session_state["uw_max_step_reached"] = max(

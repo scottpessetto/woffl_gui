@@ -168,11 +168,14 @@ def main():
     if st.session_state.get("_scotts_tools", False):
         modes.append("Scott's Tools")
 
-    # Mode selection
+    # Mode selection. The key matters: without one, the widget identity is
+    # derived from its options, so unlocking Scott's Tools (options change)
+    # created a NEW radio and bounced the user back to Single Well.
     app_mode = st.radio(
         "Select Analysis Mode:",
         modes,
         horizontal=True,
+        key="app_mode_radio",
         help=(
             "Single Well: Analyze one well in detail. "
             "Optimization: Select wells → Review IPR → Optimize → Results. "

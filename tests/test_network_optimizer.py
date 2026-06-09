@@ -336,7 +336,7 @@ class TestCreateWellTemplateCSV:
             "form_temp",
             "JP_TVD",
             "field_model",
-            "qwf_bopd",
+            "qwf_blpd",
             "pwf",
         ]:
             assert col in header

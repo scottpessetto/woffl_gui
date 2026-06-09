@@ -26,6 +26,7 @@ from ._common import (
     friction_coefs_from_chars,
     get_latest_bhp_per_well,
     get_latest_whp_per_well,
+    get_vogel_for_wells,
     pad_from_mp_name,
 )
 
@@ -368,6 +369,10 @@ def render_tab() -> None:
     jp_chars_df = load_well_characteristics()
     jp_chars_dict = jp_chars_df.set_index("Well").to_dict("index")
     whp_map = get_latest_whp_per_well(months_back)
+    # Per-well Vogel IPR from recent tests. Calibrating against the generic
+    # defaults (WC=0.5, GOR=250, qwf=750) made the friction coefficients
+    # absorb the IPR/fluid error — and these coefs get pushed to Databricks.
+    vogel_map = get_vogel_for_wells(selected["Well"].tolist(), months_back)
 
     results = []
     progress = st.progress(0, text="Starting...")
@@ -387,8 +392,9 @@ def render_tab() -> None:
             continue
 
         well_surf = float(whp_map.get(wn, 210.0))
+        vogel_row = vogel_map.get(wn)
         try:
-            wc = build_well_config(wn, jp_chars_dict, None, surf_pres=well_surf)
+            wc = build_well_config(wn, jp_chars_dict, vogel_row, surf_pres=well_surf)
             well_objs = create_well_objects(wc)
         except Exception as e:
             results.append(_failed_row(wn, row, f"setup error: {e}"))
@@ -442,6 +448,7 @@ def render_tab() -> None:
                 "Well": wn,
                 "Pad": row["Pad"],
                 "Pump": row["Pump"],
+                "IPR": "well tests" if vogel_row else "defaults",
                 "TVD": int(round(wc.jpump_tvd)) if wc.jpump_tvd else None,
                 "Actual BHP": int(round(cal.target_bhp)),
                 "Modeled BHP": int(round(cal.best_modeled_bhp)) if cal.converged else None,

@@ -108,12 +108,12 @@ def render_step4():
         display_results = results
         cal_label = ""
 
-    # Pad-mode summary (only when Step 1 set Pad scope)
-    pad_scope = (
-        st.session_state.get("uw_pad_scope_pad")
-        if st.session_state.get("uw_scope") == "Pad"
-        else None
-    )
+    # Pad-mode summary (only when Step 1 set Pad scope). Read through the
+    # shadow-aware helper — the Step-1 widget keys are GC'd by the time the
+    # user is here, which made this panel unreachable.
+    from woffl.gui.workflow_steps.step1_select_wells import _active_pad_scope
+
+    pad_scope = _active_pad_scope()
     if pad_scope:
         _render_pad_summary(pad_scope, display_results)
 
@@ -402,12 +402,21 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None):
         },
     )
 
-    # Field totals
-    total_actual_oil = sum(v for v in actual_oil_map.values())
-    total_actual_pf = sum(v for v in actual_pf_map.values())
+    # Field totals — actuals restricted to wells the optimizer actually
+    # allocated. The maps cover all CONFIGURED wells, so summing them whole
+    # biased "Total Uplift" low whenever the optimizer dropped a well.
+    opt_set = set(opt_wells)
+    total_actual_oil = sum(v for w, v in actual_oil_map.items() if w in opt_set)
+    total_actual_pf = sum(v for w, v in actual_pf_map.items() if w in opt_set)
     total_optimized = sum(cr.predicted_oil_rate for cr in cal_results)
     total_opt_pf = sum(r.allocated_power_fluid for r in results)
     uplift = total_optimized - total_actual_oil
+    n_unallocated = len(set(actual_oil_map) - opt_set)
+    if n_unallocated:
+        st.caption(
+            f"ℹ️ {n_unallocated} configured well(s) received no allocation — "
+            "excluded from the totals below."
+        )
 
     col1, col2, col3 = st.columns(3)
     col1.metric(
@@ -434,23 +443,32 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None):
         f"{total_opt_pf - total_actual_pf:+.0f} BWPD" if total_actual_pf > 0 else "N/A",
     )
 
-    # IPR Comparison PDF
-    pdf_bytes = create_ipr_comparison_pdf(
-        results,
-        optimizer,
-        actual_oil_map,
-        actual_pf_map,
-        actual_bhp_map,
-        current_jp_map,
-        calibration=calibration_results,
-    )
-    st.download_button(
-        label="Download IPR Comparison PDF",
-        data=pdf_bytes,
-        file_name="ipr_comparison.pdf",
-        mime="application/pdf",
+    # IPR Comparison PDF — built ON CLICK (single click = auto-download).
+    # The old eager build re-rendered an N-page matplotlib PDF on every
+    # rerun of this tab just to feed a download button.
+    if st.button(
+        "Generate IPR Comparison PDF",
+        key="uw_ipr_pdf_btn",
         use_container_width=True,
-    )
+        help="Builds a one-page-per-well IPR comparison and downloads it.",
+    ):
+        from woffl.gui.workflow_steps.step2_review_ipr import (
+            _trigger_browser_download,
+        )
+
+        with st.spinner("Building IPR comparison PDF..."):
+            pdf_bytes = create_ipr_comparison_pdf(
+                results,
+                optimizer,
+                actual_oil_map,
+                actual_pf_map,
+                actual_bhp_map,
+                current_jp_map,
+                calibration=calibration_results,
+            )
+        _trigger_browser_download(
+            pdf_bytes, "ipr_comparison.pdf", "application/pdf"
+        )
 
 
 def _render_pf_sensitivity(optimizer):

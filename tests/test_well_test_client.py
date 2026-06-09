@@ -185,7 +185,9 @@ class TestFetchMilneWellTests:
         assert df["well"].iloc[0] == "MPB-28"
 
     @patch("woffl.assembly.well_test_client.execute_query")
-    def test_dropped_wells_tracked(self, mock_query):
+    def test_gaugeless_tests_kept(self, mock_query):
+        """Tests without BHP are kept (nullable BHP) — gaugeless wells still
+        appear in the test history; only Vogel-IPR consumers filter on BHP."""
         mock_query.return_value = pd.DataFrame(
             {
                 "well_name": ["B-028", "E-041"],
@@ -203,7 +205,32 @@ class TestFetchMilneWellTests:
         df, dropped = fetch_milne_well_tests(
             "2024-01-01", "2024-12-31", ["B-028", "E-041"]
         )
+        assert "MPE-41" in df["well"].values
+        assert pd.isna(df[df["well"] == "MPE-41"]["BHP"].iloc[0])
+        assert dropped == []
+
+    @patch("woffl.assembly.well_test_client.execute_query")
+    def test_dropped_wells_tracked(self, mock_query):
+        """A well whose every row lacks a fluid rate is dropped and reported."""
+        mock_query.return_value = pd.DataFrame(
+            {
+                "well_name": ["B-028", "E-041"],
+                "wt_date": pd.to_datetime(["2024-01-15", "2024-02-20"]),
+                "bhp": [800.0, 750.0],
+                "oil_rate": [100.0, None],  # E-041 has no rates at all
+                "fwat_rate": [200.0, None],
+                "fgas_rate": [50.0, None],
+                "whp": [150.0, 140.0],
+                "form_wc": [0.67, 0.67],
+                "fgor": [500, 500],
+                "lift_wat": [300.0, 200.0],
+            }
+        )
+        df, dropped = fetch_milne_well_tests(
+            "2024-01-01", "2024-12-31", ["B-028", "E-041"]
+        )
         assert "MPE-41" in dropped
+        assert "MPE-41" not in df["well"].values
 
     @patch("woffl.assembly.well_test_client.execute_query")
     def test_empty_result(self, mock_query):

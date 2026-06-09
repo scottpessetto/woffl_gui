@@ -13,7 +13,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import pandas as pd
 import streamlit as st
 
-from woffl.assembly.jp_history import get_current_pump
+from woffl.assembly.jp_history import get_current_pump, get_pump_at_date
 from woffl.gui.pf_calibration import calibrate_pf_for_lift
 from woffl.gui.utils import PAD_PF_FALLBACK, default_pad_pf, load_well_characteristics
 
@@ -22,6 +22,7 @@ from ._common import (
     create_well_objects,
     fetch_well_tests_raw,
     friction_coefs_from_chars,
+    get_vogel_for_wells,
     pad_from_mp_name,
     worker_ceiling,
 )
@@ -57,6 +58,11 @@ def _build_scan_input(months_back: int) -> pd.DataFrame | None:
         return None
     jp_chars_dict = jp_chars_df.set_index("Well").to_dict("index")
 
+    # Vogel IPR per well — without it the calibration ran against the
+    # generic WC=0.5/GOR=250/qwf=750 defaults and the PpfRequired numbers
+    # absorbed the IPR error.
+    vogel_map = get_vogel_for_wells(latest["well"].unique().tolist(), months_back)
+
     rows = []
     for _, t in latest.iterrows():
         wn = t["well"]
@@ -66,13 +72,24 @@ def _build_scan_input(months_back: int) -> pd.DataFrame | None:
         chars = jp_chars_dict.get(wn)
         if not chars:
             continue
+        # The lift_wat was measured through the pump installed AT the test —
+        # use it (fall back to the current pump when no record covers the date).
+        pump_at = get_pump_at_date(jp_hist, wn, t["WtDate"])
+        if not (pump_at and pump_at.get("nozzle_no") and pump_at.get("throat_ratio")):
+            pump_at = pump
+        pump_changed = (
+            str(pump_at["nozzle_no"]) != str(pump["nozzle_no"])
+            or str(pump_at["throat_ratio"]) != str(pump["throat_ratio"])
+        )
         whp = float(t["whp"]) if pd.notna(t.get("whp")) else 210.0
         rows.append({
             "Well": wn,
             "Pad": pad_from_mp_name(wn),
-            "Pump": f"{pump['nozzle_no']}{pump['throat_ratio']}",
-            "Nozzle": str(pump["nozzle_no"]),
-            "Throat": str(pump["throat_ratio"]),
+            "Pump": f"{pump_at['nozzle_no']}{pump_at['throat_ratio']}",
+            "Nozzle": str(pump_at["nozzle_no"]),
+            "Throat": str(pump_at["throat_ratio"]),
+            "PumpChangedSinceTest": pump_changed,
+            "_vogel": vogel_map.get(wn),
             "WtDate": t["WtDate"],
             "Oil": float(t.get("WtOilVol") or 0.0),
             "Water": float(t.get("WtWaterVol") or 0.0),
@@ -97,7 +114,9 @@ def _calibrate_one(row_dict: dict) -> dict:
     wn = row_dict["Well"]
     chars = row_dict["_chars"]
     try:
-        wc = build_well_config(wn, {wn: chars}, surf_pres=row_dict["WHP"])
+        wc = build_well_config(
+            wn, {wn: chars}, row_dict.get("_vogel"), surf_pres=row_dict["WHP"]
+        )
         wellbore, well_profile, inflow, res_mix, prop_pf = create_well_objects(wc)
         cur = friction_coefs_from_chars(chars)
         result = calibrate_pf_for_lift(

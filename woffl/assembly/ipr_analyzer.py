@@ -387,6 +387,7 @@ def generate_ipr_curves(
 def export_optimization_template(
     vogel_coeffs: pd.DataFrame,
     jp_chars_path: Optional[str] = None,
+    jp_chars: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Generate a CSV matching the well_optimization_template.csv format.
 
@@ -396,20 +397,28 @@ def export_optimization_template(
     Args:
         vogel_coeffs: DataFrame from compute_vogel_coefficients()
         jp_chars_path: Path to jp_chars.csv. If None, auto-detects.
+        jp_chars: Live well-characteristics DataFrame (e.g. from
+            load_well_characteristics()). Takes precedence over the CSV —
+            the legacy jp_chars.csv is stale and missing newer wells, and
+            its values would clobber the live Databricks data when the
+            template is loaded back via load_wells_from_dataframe.
 
     Returns:
         DataFrame matching the well_optimization_template.csv format
     """
-    # Load jp_chars for well characteristics
-    if jp_chars_path is None:
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        jp_chars_path = os.path.join(current_dir, "..", "jp_data", "jp_chars.csv")
-
-    try:
-        jp_chars = pd.read_csv(jp_chars_path)
+    # Live chars take precedence; the CSV path is the legacy fallback.
+    if jp_chars is not None and not jp_chars.empty and "Well" in jp_chars.columns:
         jp_lookup = jp_chars.set_index("Well").to_dict("index")
-    except FileNotFoundError:
-        jp_lookup = {}
+    else:
+        if jp_chars_path is None:
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            jp_chars_path = os.path.join(current_dir, "..", "jp_data", "jp_chars.csv")
+
+        try:
+            jp_chars_csv = pd.read_csv(jp_chars_path)
+            jp_lookup = jp_chars_csv.set_index("Well").to_dict("index")
+        except FileNotFoundError:
+            jp_lookup = {}
 
     rows = []
     for _, coeff_row in vogel_coeffs.iterrows():
@@ -426,8 +435,12 @@ def export_optimization_template(
             "Well": well,
             "res_pres": coeff_row["ResP"],
             "form_temp": jp_data.get("form_temp", 75 if is_sch else 170),
-            "JP_TVD": jp_data.get("JP_TVD", ""),
-            "JP_MD": jp_data.get("JP_MD", ""),
+            # pd.NA (not "") for missing depths: load_wells_from_dataframe
+            # only skips template cells that fail pd.notna — an empty string
+            # passes that check and CLOBBERED the well's live Databricks
+            # JP_TVD, silently dropping it to the 4000-ft default.
+            "JP_TVD": jp_data.get("JP_TVD", pd.NA),
+            "JP_MD": jp_data.get("JP_MD", pd.NA),
             "out_dia": jp_data.get("out_dia", 4.5),
             "thick": jp_data.get("thick", 0.271),
             "casing_od": 6.875,

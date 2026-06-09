@@ -19,16 +19,19 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from woffl.assembly.jp_history import get_current_pump
+from woffl.assembly.jp_history import get_current_pump, get_pump_at_date
+from woffl.flow.inflow import InFlow
 from woffl.gui.fric_calibration import calibrate_friction_coefs
 from woffl.gui.pf_calibration import calibrate_pf_for_lift
-from woffl.gui.utils import load_well_characteristics
+from woffl.gui.utils import create_pvt_components, load_well_characteristics
+from woffl.pvt.resmix import ResMix
 
 from ._common import (
     build_well_config,
     create_well_objects,
     fetch_well_tests_raw,
     friction_coefs_from_chars,
+    get_vogel_for_wells,
     worker_ceiling,
 )
 
@@ -56,19 +59,31 @@ def _calibrate_well(
     tests_df: pd.DataFrame,
     chars: dict,
     pump: dict,
+    vogel_row: dict | None = None,
 ) -> pd.DataFrame:
     """Run the two-step calibration over every test for one well.
 
     Module-level + Streamlit-free so it can be dispatched via
     ``ProcessPoolExecutor``. The main thread tracks progress at the well
     level via ``as_completed``; this function only returns the result rows.
+
+    Each test calibrates with the pump installed AT THE TEST DATE
+    (``NozzleAtTest``/``ThroatAtTest`` columns added by the task builder;
+    falls back to the current ``pump`` when absent) and with the test's own
+    fluid (WC/GOR) and operating point (oil rate at measured BHP) anchoring
+    the IPR. Before this, every historical test used today's pump geometry
+    and a generic WC=0.5/GOR=250 fluid — the fitted coefficients absorbed
+    those errors, and coef shifts across JPCO lines were geometry artifacts.
     """
     rows: list[dict] = []
-    wc = build_well_config(well_name, {well_name: chars}, surf_pres=210.0)
-    wellbore, wellprof, inflow, res_mix, prop_pf = create_well_objects(wc)
+    wc = build_well_config(well_name, {well_name: chars}, vogel_row, surf_pres=210.0)
+    wellbore, wellprof, _inflow_unused, _resmix_unused, prop_pf = create_well_objects(wc)
+    # One PVT component set per well, shared by the per-test mixtures.
+    oil_pvt, wat_pvt, gas_pvt = create_pvt_components(
+        field_model=wc.field_model, oil_api=wc.oil_api, gas_sg=wc.gas_sg,
+        wat_sg=wc.wat_sg, bubble_point=wc.bubble_point,
+    )
     cur = friction_coefs_from_chars(chars)
-    nozzle = str(pump["nozzle_no"])
-    throat = str(pump["throat_ratio"])
     knz = cur.get("knz", 0.01)
     seed_ken = cur.get("ken", 0.03)
     seed_kth = cur.get("kth", 0.30)
@@ -76,7 +91,31 @@ def _calibrate_well(
 
     for _, test in tests_df.iterrows():
         try:
+            nozzle = str(test.get("NozzleAtTest") or pump["nozzle_no"])
+            throat = str(test.get("ThroatAtTest") or pump["throat_ratio"])
             pwh = float(test["whp"]) if pd.notna(test.get("whp")) else 210.0
+
+            # Per-test fluid: the test's own WC/GOR, falling back to the
+            # well-level (Vogel or default) values when unmeasured.
+            wc_t = test.get("form_wc")
+            if wc_t is None or pd.isna(wc_t):
+                o = float(test.get("WtOilVol") or 0.0)
+                w = float(test.get("WtWaterVol") or 0.0)
+                wc_t = w / (o + w) if (o + w) > 0 else wc.form_wc
+            wc_t = min(max(float(wc_t), 0.0), 0.99)
+            gor_t = test.get("fgor")
+            gor_t = (
+                float(gor_t) if (gor_t is not None and pd.notna(gor_t) and float(gor_t) > 0)
+                else wc.form_gor
+            )
+            res_mix = ResMix(wc=wc_t, fgor=gor_t, oil=oil_pvt, wat=wat_pvt, gas=gas_pvt)
+
+            # IPR anchored on the test's own operating point (oil @ BHP),
+            # reservoir pressure from the Vogel fit / chars.
+            inflow = InFlow(
+                qwf=float(test["WtOilVol"]), pwf=float(test["BHP"]), pres=wc.res_pres
+            )
+
             # Step 1: PF cal
             pf = calibrate_pf_for_lift(
                 well_name=well_name,
@@ -107,8 +146,8 @@ def _calibrate_well(
                 "Oil": float(test["WtOilVol"]),
                 "Water": float(test.get("WtWaterVol") or 0.0),
                 "Gas": float(test.get("WtGasVol") or 0.0),
-                "WC": float(test.get("form_wc") or 0.0),
-                "GOR": float(test.get("fgor") or 0.0),
+                "WC": round(wc_t, 3),
+                "GOR": round(gor_t, 0),
                 "WHP": pwh,
                 "BHP": float(test["BHP"]),
                 "LiftWat": float(test["lift_wat"]),
@@ -476,9 +515,12 @@ def render_tab() -> None:
         else:
             jp_chars_dict = jp_chars_df.set_index("Well").to_dict("index")
             well_tests = _build_well_inputs(to_run, months_back)
+            # Per-well Vogel IPR so reservoir pressure / fluid fall back to
+            # measured fits instead of the generic WC=0.5/GOR=250 defaults.
+            vogel_map = get_vogel_for_wells(to_run, months_back)
 
-            # Build per-well task tuples (well_name, tests_df, chars, pump)
-            tasks: list[tuple[str, pd.DataFrame, dict, dict]] = []
+            # Build per-well task tuples (well_name, tests_df, chars, pump, vogel)
+            tasks: list[tuple[str, pd.DataFrame, dict, dict, dict | None]] = []
             for wn in to_run:
                 if wn not in well_tests:
                     st.warning(
@@ -494,7 +536,29 @@ def render_tab() -> None:
                 if pump is None or not pump.get("nozzle_no") or not pump.get("throat_ratio"):
                     st.warning(f"{wn}: no current JP pump")
                     continue
-                tasks.append((wn, well_tests[wn], dict(chars), dict(pump)))
+
+                # Resolve the pump installed at each test's date so coef
+                # trends across JPCO lines aren't geometry artifacts.
+                tests = well_tests[wn].copy()
+                at_noz, at_thr = [], []
+                for d in tests["WtDate"]:
+                    p = get_pump_at_date(jp_hist, wn, d)
+                    ok = bool(p and p.get("nozzle_no") and p.get("throat_ratio"))
+                    at_noz.append(p["nozzle_no"] if ok else None)
+                    at_thr.append(p["throat_ratio"] if ok else None)
+                tests["NozzleAtTest"] = at_noz
+                tests["ThroatAtTest"] = at_thr
+                n_nopump = int(tests["NozzleAtTest"].isna().sum())
+                if n_nopump:
+                    st.warning(
+                        f"{wn}: {n_nopump} test(s) have no JP install record "
+                        "covering their date — skipped"
+                    )
+                    tests = tests.dropna(subset=["NozzleAtTest", "ThroatAtTest"])
+                if tests.empty:
+                    continue
+
+                tasks.append((wn, tests, dict(chars), dict(pump), vogel_map.get(wn)))
 
             if tasks:
                 n_tasks = len(tasks)
@@ -506,9 +570,9 @@ def render_tab() -> None:
                 done = 0
                 if workers == 1:
                     # Sequential — call directly, no pool overhead.
-                    for wn, tests, chars, pump in tasks:
+                    for wn, tests, chars, pump, vrow in tasks:
                         try:
-                            df = _calibrate_well(wn, tests, chars, pump)
+                            df = _calibrate_well(wn, tests, chars, pump, vrow)
                             st.session_state["jp_fric_trend"][wn] = df
                         except Exception as e:
                             st.error(f"{wn}: calibration loop failed: {e}")
@@ -522,8 +586,8 @@ def render_tab() -> None:
                     # its own well objects (cheap vs the calibration work).
                     with ProcessPoolExecutor(max_workers=workers) as pool:
                         futs = {
-                            pool.submit(_calibrate_well, wn, tests, chars, pump): wn
-                            for wn, tests, chars, pump in tasks
+                            pool.submit(_calibrate_well, wn, tests, chars, pump, vrow): wn
+                            for wn, tests, chars, pump, vrow in tasks
                         }
                         for fut in as_completed(futs):
                             wn = futs[fut]

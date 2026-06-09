@@ -18,6 +18,7 @@ import io
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
+from xml.sax.saxutils import escape as xml_escape
 
 # Matplotlib uses the headless 'Agg' backend so we can render PNGs in a
 # server-side Streamlit process (or a Databricks Apps container) without
@@ -75,35 +76,54 @@ class _PumpIdentity:
     throat: str
     source: str  # "sidebar", "current installed", or "Custom"
     date_set: Optional[pd.Timestamp] = None
+    # Set when the installed pump differs from the modeled (sidebar) pump,
+    # so the cover line can call out the mismatch.
+    installed_nozzle: Optional[str] = None
+    installed_throat: Optional[str] = None
+    installed_date_set: Optional[pd.Timestamp] = None
 
 
 def _resolve_pump_identity(params: SimulationParams) -> _PumpIdentity:
     """Pick the pump the PDF should describe.
 
-    Mirrors the Solver tab's effective-pump logic: prefer the currently
-    installed pump for non-Custom wells with JP history, otherwise the
-    sidebar pump. Test-picker selections are intentionally NOT consulted
-    here — print captures the "today's pump" picture rather than a
-    test-specific replay.
+    The modeled pump is ALWAYS the sidebar pump — the hero solve and the
+    batch sweep run with the JetPump built from ``params.nozzle_no`` /
+    ``params.area_ratio``, so that's what the cover line must claim. (The
+    old behavior labeled sidebar-solved numbers with the installed pump,
+    which misattributed every what-if report.) JP history is consulted only
+    to say whether the sidebar pump IS the installed one, or to note the
+    installed pump it differs from.
     """
     if params.selected_well == "Custom":
         return _PumpIdentity(params.nozzle_no, params.area_ratio, "Custom")
 
     jp_hist = st.session_state.get("jp_history_df")
-    if jp_hist is None:
-        return _PumpIdentity(params.nozzle_no, params.area_ratio, "sidebar")
+    current = None
+    if jp_hist is not None:
+        from woffl.assembly.jp_history import get_current_pump
 
-    from woffl.assembly.jp_history import get_current_pump
+        current = get_current_pump(jp_hist, params.selected_well)
 
-    current = get_current_pump(jp_hist, params.selected_well)
     if not current or not current.get("nozzle_no") or not current.get("throat_ratio"):
         return _PumpIdentity(params.nozzle_no, params.area_ratio, "sidebar")
 
+    same = str(current["nozzle_no"]) == str(params.nozzle_no) and str(
+        current["throat_ratio"]
+    ).strip().upper() == str(params.area_ratio).strip().upper()
+    if same:
+        return _PumpIdentity(
+            params.nozzle_no,
+            params.area_ratio,
+            "current installed",
+            date_set=current.get("date_set"),
+        )
     return _PumpIdentity(
-        nozzle=current["nozzle_no"],
-        throat=current["throat_ratio"],
-        source="current installed",
-        date_set=current.get("date_set"),
+        params.nozzle_no,
+        params.area_ratio,
+        "sidebar",
+        installed_nozzle=current["nozzle_no"],
+        installed_throat=current["throat_ratio"],
+        installed_date_set=current.get("date_set"),
     )
 
 
@@ -572,6 +592,7 @@ def _inputs_table(params: SimulationParams):
 def _hero_table(
     modeled: tuple[float, float, float, float],
     actuals: dict[str, Optional[float]],
+    deltas_valid: bool = True,
 ):
     """4-column hero strip: Oil / Formation Water / PF / Suction Pressure.
 
@@ -579,6 +600,10 @@ def _hero_table(
     content; columns are sized to fit it at 10pt bold plus a wrap cushion.
     Cells are Paragraphs so an unexpectedly wide value (e.g. five-digit
     delta) wraps instead of overflowing.
+
+    ``deltas_valid=False`` blanks the Δ-vs-Actual row — used when the modeled
+    (sidebar) pump differs from the pump installed at the test's date, where
+    a delta would compare two different pumps (mirrors the on-screen hero).
     """
     from reportlab.lib import colors
     from reportlab.lib.units import inch
@@ -615,12 +640,15 @@ def _hero_table(
         V(f"{actuals['pf']:,.0f} BWPD" if actuals.get("pf") is not None else "—"),
         V(f"{actuals['bhp']:,.0f} psig" if actuals.get("bhp") is not None else "—"),
     ]
-    delta_row = [
-        V(_delta_str(qoil_std, actuals.get("oil"), "BOPD")),
-        V("—"),
-        V(_delta_str(qnz_bwpd, actuals.get("pf"), "BWPD")),
-        V(_delta_str(psu, actuals.get("bhp"), "psig")),
-    ]
+    if deltas_valid:
+        delta_row = [
+            V(_delta_str(qoil_std, actuals.get("oil"), "BOPD")),
+            V("—"),
+            V(_delta_str(qnz_bwpd, actuals.get("pf"), "BWPD")),
+            V(_delta_str(psu, actuals.get("bhp"), "psig")),
+        ]
+    else:
+        delta_row = [V("—"), V("—"), V("—"), V("—")]
     rows = [
         [V("")] + headers,
         [L("Modeled")] + modeled_row,
@@ -932,6 +960,24 @@ def generate_report(
     test_row = _latest_test_row(params.selected_well)
     actuals = _actuals_from_test(test_row)
 
+    # Δ-vs-Actual is only meaningful when the modeled (sidebar) pump matches
+    # the pump installed at the test's date — otherwise the delta compares
+    # two different pumps (mirrors the on-screen hero's pump_differs logic).
+    deltas_valid = True
+    pump_at_test = None
+    if test_row is not None and params.selected_well != "Custom":
+        jp_hist = st.session_state.get("jp_history_df")
+        if jp_hist is not None:
+            from woffl.assembly.jp_history import get_pump_at_date
+
+            pump_at_test = get_pump_at_date(
+                jp_hist, params.selected_well, test_row.get("WtDate")
+            )
+        if pump_at_test and pump_at_test.get("nozzle_no") and pump_at_test.get("throat_ratio"):
+            deltas_valid = str(pump_at_test["nozzle_no"]) == str(params.nozzle_no) and str(
+                pump_at_test["throat_ratio"]
+            ).strip().upper() == str(params.area_ratio).strip().upper()
+
     # Solver: fresh run from current params. The hero figures might differ
     # slightly from what's on screen when the user has been tweaking; that's
     # the intended behavior — print captures the current state.
@@ -998,19 +1044,31 @@ def generate_report(
     pump_line = f"Modeling pump <b>{pump.nozzle}{pump.throat}</b> ({pump.source})"
     if pump.date_set is not None and hasattr(pump.date_set, "strftime"):
         pump_line += f" — set {pump.date_set.strftime('%Y-%m-%d')}"
+    if pump.installed_nozzle:
+        pump_line += (
+            f" — differs from installed "
+            f"<b>{pump.installed_nozzle}{pump.installed_throat}</b>"
+        )
+        if pump.installed_date_set is not None and hasattr(
+            pump.installed_date_set, "strftime"
+        ):
+            pump_line += f" (set {pump.installed_date_set.strftime('%Y-%m-%d')})"
     story.append(Paragraph(pump_line, styles["ReportSubtitle"]))
 
     meta_line = f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     if engineer_name.strip():
-        meta_line += f" by <b>{engineer_name.strip()}</b>"
+        # escape: ReportLab parses Paragraph text as markup — a stray <, >,
+        # or & in free text aborts the whole doc.build.
+        meta_line += f" by <b>{xml_escape(engineer_name.strip())}</b>"
     meta_line += f" · Field Model: {params.field_model}"
     story.append(Paragraph(meta_line, styles["Caption"]))
     story.append(Spacer(1, 10))
 
     if notes.strip():
         story.append(Paragraph("Engineer Notes", styles["SectionHeader"]))
-        # Preserve line breaks in the notes block.
-        notes_html = notes.replace("\n", "<br/>").strip()
+        # Escape first (ReportLab parses markup — "WC <5% & PF >3000" would
+        # abort doc.build), then preserve line breaks.
+        notes_html = xml_escape(notes.strip()).replace("\n", "<br/>")
         story.append(Paragraph(notes_html, styles["NotesBody"]))
 
     # Model Inputs
@@ -1027,8 +1085,15 @@ def generate_report(
         psu, _sonic, qoil_std, fwat_bwpd, qnz_bwpd, _mach = solver_results
         story.append(Paragraph("Solver Results", styles["SectionHeader"]))
         story.append(_hero_table(
-            (psu, qoil_std, fwat_bwpd, qnz_bwpd), actuals,
+            (psu, qoil_std, fwat_bwpd, qnz_bwpd), actuals, deltas_valid=deltas_valid,
         ))
+        if not deltas_valid and pump_at_test is not None:
+            story.append(Paragraph(
+                f"Δ vs Actual suppressed — modeling "
+                f"{params.nozzle_no}{params.area_ratio}, but the comparison test "
+                f"ran pump {pump_at_test['nozzle_no']}{pump_at_test['throat_ratio']}.",
+                styles["Caption"],
+            ))
     else:
         story.append(Paragraph("Solver Results", styles["SectionHeader"]))
         story.append(Paragraph(

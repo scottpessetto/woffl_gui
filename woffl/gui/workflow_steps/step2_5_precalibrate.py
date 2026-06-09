@@ -35,6 +35,7 @@ from woffl.gui.scotts_tools._common import (
     worker_ceiling,
 )
 from woffl.gui.utils import load_well_characteristics
+from woffl.gui.workflow_page import _clear_downstream
 
 DEFAULT_TEST_LOOKBACK_MONTHS = 12
 
@@ -197,6 +198,16 @@ def render_step2_5() -> None:
         run_clicked = st.button("Run pre-calibration", type="primary")
     with col_skip:
         if st.button("Skip — use library defaults"):
+            # Actually deliver "library defaults": a previous Accept mutated
+            # the shared WellConfigs in place, so without this reset the old
+            # calibrated overrides silently survived a later Skip.
+            for wc in well_configs:
+                wc.ppf_surf_well = None
+                wc.knz_well = None
+                wc.ken_well = None
+                wc.kth_well = None
+                wc.kdi_well = None
+            _clear_downstream(3)
             st.session_state["uw_current_step"] = 3
             st.session_state["uw_max_step_reached"] = max(
                 st.session_state.get("uw_max_step_reached", 2.5), 3
@@ -365,6 +376,10 @@ def render_step2_5() -> None:
                     wc.ken_well = float(r["ken"])
                     wc.kth_well = float(r["kth"])
                     wc.kdi_well = float(r["kdi"])
+                # The configs just changed — any existing optimization
+                # results were computed WITHOUT these overrides; clear them
+                # so Step 3's "View Results" can't show stale numbers.
+                _clear_downstream(3)
                 st.session_state["uw_current_step"] = 3
                 st.session_state["uw_max_step_reached"] = max(
                     st.session_state.get("uw_max_step_reached", 2.5), 3

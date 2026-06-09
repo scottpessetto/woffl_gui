@@ -254,21 +254,40 @@ def build_well_config(
     if not chars:
         raise ValueError(f"{well_name} not in jp_chars database")
 
+    def _num(key: str, default):
+        """NaN-safe numeric lookup — Databricks chars carry missing values as
+        NaN under a *present* key, so dict.get's default never fires and
+        float(nan) silently poisons the solve (e.g. InFlow(pres=nan))."""
+        v = chars.get(key)
+        if v is None:
+            return default
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            return default
+        return default if pd.isna(fv) else fv
+
     is_sch = chars.get("is_sch", True)
     if isinstance(is_sch, str):
         is_sch = is_sch.lower() in ("true", "1", "yes")
+    elif pd.isna(is_sch):
+        is_sch = True
     fm = "Schrader" if is_sch else "Kuparuk"
 
     casing_od, casing_thk = casing_dims_from_chars(chars)
 
+    jp_tvd = _num("JP_TVD", None)
+    if jp_tvd is None:
+        raise ValueError(f"{well_name} has no JP_TVD in jp_chars")
+
     params = dict(
         well_name=well_name,
-        res_pres=float(chars.get("res_pres", 1800)),
-        form_temp=float(chars.get("form_temp", 75 if is_sch else 170)),
-        jpump_tvd=float(chars["JP_TVD"]),
-        jpump_md=float(chars.get("JP_MD", chars["JP_TVD"])),
-        tubing_od=float(chars.get("out_dia", 4.5)),
-        tubing_thickness=float(chars.get("thick", 0.271)),
+        res_pres=_num("res_pres", 1800.0),
+        form_temp=_num("form_temp", 75.0 if is_sch else 170.0),
+        jpump_tvd=jp_tvd,
+        jpump_md=_num("JP_MD", jp_tvd),
+        tubing_od=_num("out_dia", 4.5),
+        tubing_thickness=_num("thick", 0.271),
         casing_od=casing_od,
         casing_thickness=casing_thk,
         field_model=fm,
@@ -277,6 +296,12 @@ def build_well_config(
         form_gor=250.0,
         qwf=750.0,
         pwf=500.0,
+        # Per-well PVT from vw_prop_resvr (None → field-model preset inside
+        # create_pvt_components) — same treatment as NetworkOptimizer.
+        oil_api=_num("oil_api", None),
+        gas_sg=_num("gas_sg", None),
+        wat_sg=_num("wat_sg", None),
+        bubble_point=_num("bubble_point", None),
     )
 
     # Override with well-test-derived IPR when available
@@ -302,7 +327,15 @@ def create_well_objects(wc: WellConfig):
     oil_qwf = wc.qwf * (1 - wc.form_wc)
     inflow = InFlow(qwf=oil_qwf, pwf=wc.pwf, pres=wc.res_pres)
 
-    oil, water, gas = create_pvt_components(wc.field_model)
+    # Per-well PVT overrides replace the field preset when present — keeps
+    # Scott's Tools calibrations on the same fluid model the optimizer uses.
+    oil, water, gas = create_pvt_components(
+        field_model=wc.field_model,
+        oil_api=wc.oil_api,
+        gas_sg=wc.gas_sg,
+        wat_sg=wc.wat_sg,
+        bubble_point=wc.bubble_point,
+    )
     res_mix = ResMix(wc=wc.form_wc, fgor=wc.form_gor, oil=oil, wat=water, gas=gas)
     prop_pf = water.condition(0, 60)
 

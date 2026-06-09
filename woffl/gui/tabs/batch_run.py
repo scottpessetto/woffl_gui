@@ -730,12 +730,18 @@ def _render_marg_wc_quickfix(params: SimulationParams) -> None:
     with col_water:
         # Water-type selector lives here (not the sidebar) so the graph
         # axis + recommender ratio toggle right next to the threshold
-        # that drives the recommendation.
-        st.radio(
+        # that drives the recommendation. Two-tier state (logical
+        # "water_type" + widget "water_type_input"): binding the logical key
+        # directly as the widget key let Streamlit's widget-state GC silently
+        # snap "formation" back to "total" on any Solver/PF tab detour.
+        if "water_type_input" not in st.session_state:
+            st.session_state["water_type_input"] = st.session_state.get(
+                "water_type", "total"
+            )
+        water_sel = st.radio(
             "Water Type",
             options=["total", "formation"],
-            index=0 if params.water_type != "formation" else 1,
-            key="water_type",
+            key="water_type_input",
             horizontal=True,
             help=(
                 "**Total** = formation + power-fluid water (surface handling). "
@@ -743,6 +749,7 @@ def _render_marg_wc_quickfix(params: SimulationParams) -> None:
                 "performance graph axis and recommender marginal ratio."
             ),
         )
+        st.session_state["water_type"] = water_sel
     with col_status:
         st.caption(" ")
         st.caption(
@@ -1069,6 +1076,18 @@ def render_tab(
             except ValueError:
                 st.warning("No semi-finalist pumps found after applying calibration.")
                 return
+            except (RuntimeError, TypeError):
+                # scipy curve_fit raises RuntimeError (no convergence) or
+                # TypeError (fewer points than parameters — the calibrated
+                # Pareto front can shrink to 1-2 pumps). The table is still
+                # valid; only the fitted optimum curve is lost. Clear stale
+                # pre-calibration coefficients so nothing draws them.
+                batch_pump.coeff_totl = None
+                batch_pump.coeff_lift = None
+                st.warning(
+                    "Curve fit failed on the calibrated semi-finalists — "
+                    "showing results without the fitted optimum curve."
+                )
             # Re-derive mofwr / coeff_form from the calibrated semi-finalists
             # so the formation-water graph + recommender stay in sync.
             _augment_with_formation_marginals(batch_pump)

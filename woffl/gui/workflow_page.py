@@ -95,13 +95,19 @@ def _render_sidebar():
 
         st.divider()
         st.subheader("Data Cache")
-        force_refresh = st.checkbox(
-            "Force fresh Databricks query",
-            value=False,
-            key="uw_force_refresh",
-            help="Clear cached data and re-query Databricks",
-        )
-        if force_refresh:
+        # A BUTTON, not a checkbox: the old checkbox cleared the shared
+        # process-wide caches on EVERY rerun while ticked, degrading every
+        # user of the app to cold Databricks queries until it was unticked.
+        if st.button(
+            "Refresh Databricks data",
+            key="uw_force_refresh_btn",
+            help=(
+                "Clear all cached well-test / BHP / well-property data and "
+                "re-query Databricks on the next action."
+            ),
+            use_container_width=True,
+        ):
+            from woffl.gui.utils import fetch_all_well_tests, load_well_characteristics
             from woffl.gui.well_test_cache import (
                 _cached_bhp_query,
                 _cached_mpu_well_names,
@@ -111,7 +117,19 @@ def _render_sidebar():
             _cached_bhp_query.clear()
             _cached_well_test_query.clear()
             _cached_mpu_well_names.clear()
-            st.success("Cache cleared")
+            fetch_all_well_tests.clear()
+            load_well_characteristics.clear()
+            try:
+                from woffl.gui.scotts_tools._common import (
+                    fetch_well_tests,
+                    fetch_well_tests_raw,
+                )
+
+                fetch_well_tests.clear()
+                fetch_well_tests_raw.clear()
+            except Exception:
+                pass
+            st.success("Caches cleared — data refreshes on the next action.")
 
 
 def run_workflow_page():

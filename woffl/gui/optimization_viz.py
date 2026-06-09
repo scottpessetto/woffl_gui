@@ -377,11 +377,18 @@ def create_ipr_comparison_pdf(
             qwf = well_config.qwf
             pwf = well_config.pwf
 
-            # Vogel IPR curve (convert total liquid to oil rate)
+            # Vogel IPR curve (convert total liquid to oil rate). Guard the
+            # degenerate anchor (pwf at/above reservoir pressure) — the
+            # unguarded division crashed the ENTIRE PDF build for one bad
+            # template row.
             wc = well_config.form_wc
-            qmax = qwf / (1 - 0.2 * (pwf / pres) - 0.8 * (pwf / pres) ** 2)
+            vogel_frac = 1 - 0.2 * (pwf / pres) - 0.8 * (pwf / pres) ** 2
+            if pres <= 0 or pwf >= pres or vogel_frac <= 0:
+                continue
+            qmax = qwf / vogel_frac
+            qmax_oil = qmax * (1 - wc)
             pressures = np.linspace(0, pres, 200)
-            oil_rates = qmax * (1 - wc) * (
+            oil_rates = qmax_oil * (
                 1 - 0.2 * (pressures / pres) - 0.8 * (pressures / pres) ** 2
             )
 
@@ -394,10 +401,17 @@ def create_ipr_comparison_pdf(
             actual_pf = actual_pf_map.get(r.well_name)
             current_jp = current_jp_map.get(r.well_name, "N/A")
 
-            # Use measured BHP if available, otherwise inverse Vogel
+            # Use measured BHP if available, otherwise inverse Vogel — on the
+            # OIL-basis qmax: actual_oil is an oil rate, and dividing it by
+            # the liquid qmax understated the ratio ~1/(1-wc)x, floating the
+            # "Current" point well above the curve for gaugeless wells.
             current_bhp = actual_bhp_map.get(r.well_name)
-            if current_bhp is None and actual_oil is not None and 0 < actual_oil < qmax:
-                disc = 0.04 + 3.2 * (1 - actual_oil / qmax)
+            if (
+                current_bhp is None
+                and actual_oil is not None
+                and 0 < actual_oil < qmax_oil
+            ):
+                disc = 0.04 + 3.2 * (1 - actual_oil / qmax_oil)
                 if disc >= 0:
                     current_bhp = (-0.2 + math.sqrt(disc)) / 1.6 * pres
 
