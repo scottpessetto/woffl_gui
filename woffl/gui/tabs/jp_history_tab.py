@@ -190,6 +190,30 @@ def _fetch_extended_well_tests(
     gauge = get_gauge(well_name)
     disregard = is_disregarding_databricks_bhp(well_name)
 
+    # The daily-BHP series is needed either as the primary trace (no gauge,
+    # not disregarded) or as the disregarded overlay (gauge + disregard).
+    # It's independent of the tests query, so fetch it CONCURRENTLY — a cold
+    # first view costs the slower query instead of the two back-to-back.
+    need_daily = (gauge is None and not disregard) or (gauge is not None and disregard)
+    daily_box: dict = {}
+    daily_thread = None
+    if need_daily:
+        import threading
+
+        from streamlit.runtime.scriptrunner import add_script_run_ctx
+
+        def _daily_worker() -> None:
+            try:
+                daily_box["df"] = _cached_bhp_daily(db_name, start, end)
+            except Exception:
+                daily_box["df"] = None
+
+        daily_thread = threading.Thread(
+            target=_daily_worker, daemon=True, name=f"bhp-daily-{well_name}"
+        )
+        add_script_run_ctx(daily_thread)
+        daily_thread.start()
+
     with st.spinner(f"Fetching tests for {well_name} ({start} to {end})..."):
         try:
             test_df = _cached_extended_tests(db_name, start, end)
@@ -204,21 +228,19 @@ def _fetch_extended_well_tests(
         except Exception as e:
             st.warning(f"Databricks query failed: {e}")
 
+        if daily_thread is not None:
+            daily_thread.join()
+        daily_df = daily_box.get("df")
+
         if gauge is not None:
             primary_bhp_df = daily_bhp_from_gauge(gauge)
             # Show Databricks alongside the gauge when the user has flagged
             # it as bad — visualizes the divergence the auto-detect caught.
             if disregard:
-                try:
-                    overlay_bhp_df = _cached_bhp_daily(db_name, start, end)
-                except Exception:
-                    pass
+                overlay_bhp_df = daily_df
         elif not disregard:
             # No gauge AND not disregarding — normal Databricks path.
-            try:
-                primary_bhp_df = _cached_bhp_daily(db_name, start, end)
-            except Exception:
-                pass
+            primary_bhp_df = daily_df
         # else: disregard only (no gauge) → no BHP shown. User has said
         # the Databricks data is bad and hasn't given us a replacement,
         # so showing nothing is more honest than showing the bad line.

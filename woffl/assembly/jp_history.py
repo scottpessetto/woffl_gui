@@ -96,11 +96,18 @@ def get_current_pump(jp_hist: pd.DataFrame, well_name: str) -> dict | None:
 def get_pump_at_date(jp_hist: pd.DataFrame, well_name: str, date) -> dict | None:
     """Return the pump installed on a well at a given date, or None.
 
-    An install covers [Date Set, Date Pulled); a missing Date Pulled means
-    the install is still current. Used to pair historical well tests with the
-    pump that was actually in the hole at test time — calibrating an old test
-    against today's pump geometry makes the friction coefficients absorb the
-    nozzle/throat area difference.
+    The pump at a date is the install with the LATEST Date Set on or before
+    that date. Date Pulled is deliberately ignored: jet-pump changeouts are
+    same-day slickline runs (pull + set in one visit per the AKIMS well
+    events), so pumps are contiguous set-to-set in reality — but the
+    tracker's Date Pulled column lags/shifts by days-to-weeks, and honoring
+    it created phantom "no pump in hole" windows that wrongly returned None
+    for tests taken in them.
+
+    Used to pair historical well tests with the pump that was actually in
+    the hole at test time — calibrating an old test against today's pump
+    geometry makes the friction coefficients absorb the nozzle/throat area
+    difference.
 
     Args:
         jp_hist: DataFrame from parse_jp_history().
@@ -109,7 +116,7 @@ def get_pump_at_date(jp_hist: pd.DataFrame, well_name: str, date) -> dict | None
 
     Returns:
         Dict with nozzle_no, throat_ratio, tubing_od, date_set, or None when
-        no install record covers the date.
+        the date precedes the well's first recorded install.
     """
     if jp_hist is None or date is None or pd.isna(date):
         return None
@@ -119,10 +126,7 @@ def get_pump_at_date(jp_hist: pd.DataFrame, well_name: str, date) -> dict | None
         return None
 
     when = pd.Timestamp(date)
-    mask = well_df["Date Set"] <= when
-    if "Date Pulled" in well_df.columns:
-        mask &= well_df["Date Pulled"].isna() | (well_df["Date Pulled"] > when)
-    candidates = well_df[mask]
+    candidates = well_df[well_df["Date Set"] <= when]
     if candidates.empty:
         return None
 

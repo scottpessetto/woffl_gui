@@ -389,6 +389,258 @@ def _render_pump_identity_banner(
     st.info(f"Modeling **{model_n}{model_t}** (sidebar pump).")
 
 
+def _render_jp_history_strip(well_name: str) -> None:
+    """The JP History tab's production/BHP/JPCO chart, pinned to the top of
+    the Solver (same figure, reduced height), with a slim pump-install
+    timeline bar underneath.
+
+    Hidden behind a persistent toggle — the choice lives in a two-tier key
+    so it survives the view switcher's widget-state GC. The Databricks
+    fetch only fires while the section is shown.
+    """
+    import pandas as pd
+
+    jp_hist = st.session_state.get("jp_history_df")
+    if jp_hist is None or well_name == "Custom":
+        return
+
+    well_df = (
+        jp_hist[jp_hist["Well Name"] == well_name]
+        .dropna(subset=["Date Set"])
+        .sort_values("Date Set")
+        .reset_index(drop=True)
+    )
+    if well_df.empty:
+        return
+
+    if "sw_jp_strip_input" not in st.session_state:
+        st.session_state["sw_jp_strip_input"] = bool(
+            st.session_state.get("sw_jp_strip", True)
+        )
+    show = st.toggle(
+        "Pump history",
+        key="sw_jp_strip_input",
+        help=(
+            "Production + BHP with jet-pump change lines (same chart as the "
+            "JP History tab) and the install timeline."
+        ),
+    )
+    st.session_state["sw_jp_strip"] = show
+    if not show:
+        return
+
+    # Reuse the JP History tab's own fetch + chart so the two stay identical
+    # by construction (the per-well queries are cached 24 h and pre-warmed by
+    # the JP-history prefetch thread, so this is usually instant).
+    from woffl.gui.tabs.jp_history_tab import (
+        _create_history_chart,
+        _fetch_extended_well_tests,
+    )
+
+    earliest_date = well_df["Date Set"].min()
+    today = pd.Timestamp.today().normalize()
+    # Shared x-range so the colored install segments below line up vertically
+    # with the JPCO dashed lines in the chart above.
+    x_range = [
+        earliest_date - pd.Timedelta(days=15),
+        today + pd.Timedelta(days=15),
+    ]
+
+    test_df, bhp_daily_df, bhp_overlay_df = _fetch_extended_well_tests(
+        well_name, earliest_date
+    )
+
+    def _label(nozzle, throat) -> str:
+        parts = ""
+        if pd.notna(nozzle):
+            try:
+                parts += str(int(nozzle))
+            except (TypeError, ValueError):
+                parts += str(nozzle).strip()
+        if pd.notna(throat):
+            parts += str(throat).strip()
+        return parts or "?"
+
+    # Tenure = THIS install's Date Set → the NEXT install's Date Set (last
+    # one → today). JPCOs are same-day slickline runs (pull + set in one
+    # visit per the AKIMS well events), so pumps are contiguous in reality —
+    # the tracker's Date Pulled column lags/shifts and drawing it produced
+    # phantom "no pump" gaps.
+    rows = []
+    set_dates = list(well_df["Date Set"])
+    for i, (_, r) in enumerate(well_df.iterrows()):
+        start = r["Date Set"]
+        is_last = i == len(set_dates) - 1
+        end = today if is_last else set_dates[i + 1]
+        if end <= start:  # zero/negative spans render invisibly
+            end = start + pd.Timedelta(days=1)
+        rows.append(
+            {
+                "Pump": _label(r.get("Nozzle Number"), r.get("Throat Ratio")),
+                "Start": start,
+                "End": end,
+                "Days": int((end - start).days),
+                "Pulled": "in hole" if is_last else end.strftime("%Y-%m-%d"),
+            }
+        )
+    tl = pd.DataFrame(rows)
+
+    import plotly.express as px
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    palette = px.colors.qualitative.Set2
+    pump_order = list(dict.fromkeys(tl["Pump"]))
+    color_of = {p: palette[i % len(palette)] for i, p in enumerate(pump_order)}
+
+    have_chart = test_df is not None and not test_df.empty
+
+    # ONE figure, two stacked subplots sharing the x-axis — STRUCTURAL
+    # alignment: the same pixel maps to the same date in both rows, so the
+    # JPCO dashed lines pass straight through the matching color boundaries
+    # below. (Two separate figures can never be pinned reliably — plotly
+    # auto-expands margins around axis labels differently per figure.)
+    if have_chart:
+        fig = make_subplots(
+            rows=2,
+            cols=1,
+            shared_xaxes=True,
+            row_heights=[0.84, 0.16],
+            vertical_spacing=0.06,
+            specs=[[{"secondary_y": True}], [{}]],
+        )
+        base = _create_history_chart(
+            well_name,
+            test_df,
+            well_df,
+            bhp_daily_df=bhp_daily_df,
+            bhp_overlay_df=bhp_overlay_df,
+            bhp_from_zero=True,
+        )
+        for tr in base.data:
+            fig.add_trace(
+                tr, row=1, col=1,
+                secondary_y=(getattr(tr, "yaxis", "y") == "y2"),
+            )
+        # JPCO dashed lines + labels are paper-referenced — re-added on the
+        # combined figure they span BOTH rows, visually tying each change
+        # line to its segment boundary in the strip.
+        for shp in base.layout.shapes:
+            fig.add_shape(shp)
+        for ann in base.layout.annotations:
+            fig.add_annotation(ann)
+        strip_xref, strip_yref = "x2", "y3 domain"
+        strip_target = dict(row=2, col=1)
+    else:
+        fig = go.Figure()
+        strip_xref, strip_yref = "x", "y domain"
+        strip_target = {}
+
+    # Strip segments as RECTANGLE SHAPES in real date coordinates — the
+    # px.timeline/go.Bar encoding (numeric millisecond lengths + datetime
+    # base) breaks inside subplots because the strip's axis infers a linear
+    # type from the numeric lengths. Shapes carry actual dates; nothing to
+    # mis-infer.
+    span = x_range[1] - x_range[0]
+    mids, labels, hover_custom = [], [], []
+    for _, seg in tl.iterrows():
+        fig.add_shape(
+            type="rect",
+            x0=seg["Start"],
+            x1=seg["End"],
+            y0=0.06,
+            y1=0.94,
+            xref=strip_xref,
+            yref=strip_yref,
+            fillcolor=color_of[seg["Pump"]],
+            line=dict(width=1, color="white"),
+            # below traces AND below the above-layer JPCO shapes, so the
+            # dashed change lines visibly cross the strip
+            layer="below",
+        )
+        mids.append(seg["Start"] + (seg["End"] - seg["Start"]) / 2)
+        # Only label segments wide enough to carry text — slivers (same-day
+        # JPCOs) keep their hover but stay unlabeled to avoid clutter.
+        wide_enough = (seg["End"] - seg["Start"]) / span > 0.03
+        labels.append(seg["Pump"] if wide_enough else "")
+        hover_custom.append(
+            [seg["Pump"], seg["Start"].strftime("%Y-%m-%d"), seg["Pulled"], seg["Days"]]
+        )
+
+    # Invisible markers + text at segment midpoints provide labels and hover
+    # (shapes themselves don't hover). Datetime x keeps the strip axis typed
+    # as a date axis.
+    fig.add_trace(
+        go.Scatter(
+            x=mids,
+            y=[0.5] * len(mids),
+            mode="markers+text",
+            marker=dict(size=14, opacity=0),
+            text=labels,
+            textposition="middle center",
+            textfont=dict(size=12, color="#1a1a1a"),
+            customdata=hover_custom,
+            hovertemplate=(
+                "<b>%{customdata[0]}</b><br>"
+                "Set %{customdata[1]} → %{customdata[2]}<br>"
+                "%{customdata[3]:,} days<extra></extra>"
+            ),
+            showlegend=False,
+        ),
+        **strip_target,
+    )
+
+    if have_chart:
+        fig.update_layout(
+            height=470,
+            title_text="",
+            hovermode="x unified",
+            margin=dict(t=30, b=8, l=65, r=65),
+            legend=dict(
+                orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
+            ),
+        )
+        # Months render under the CHART row; the strip row has no axis of
+        # its own (shared_xaxes hides upper ticks by default — re-enable).
+        fig.update_xaxes(
+            range=x_range, row=1, col=1, showticklabels=True, title_text=""
+        )
+        fig.update_xaxes(range=x_range, row=2, col=1, visible=False)
+        fig.update_yaxes(title_text="Rate (BPD)", row=1, col=1, secondary_y=False)
+        fig.update_yaxes(
+            title_text="BHP (psi)",
+            rangemode="tozero",
+            showgrid=False,
+            row=1,
+            col=1,
+            secondary_y=True,
+        )
+        fig.update_yaxes(
+            visible=False, fixedrange=True, range=[0, 1], row=2, col=1
+        )
+    else:
+        # Fallback when the test/BHP fetch failed: standalone strip with its
+        # own date axis so it still has a time reference.
+        fig.update_layout(
+            height=110,
+            margin=dict(l=65, r=65, t=4, b=4),
+            showlegend=False,
+            yaxis=dict(visible=False, fixedrange=True, range=[0, 1]),
+            xaxis=dict(side="bottom", fixedrange=True, range=x_range),
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
+
+    st.plotly_chart(fig, use_container_width=True, key="sw_jp_strip_chart")
+
+    cur = tl.iloc[-1]
+    if cur["Pulled"] == "in hole":
+        st.caption(
+            f"Current pump **{cur['Pump']}** — in hole since "
+            f"{cur['Start'].strftime('%Y-%m-%d')} ({cur['Days']:,} days). "
+            f"{len(tl)} install(s) on record."
+        )
+
+
 def render_tab(
     params: SimulationParams, jetpump, wellbore, well_profile, inflow, res_mix
 ) -> None:
@@ -405,6 +657,13 @@ def render_tab(
     import pandas as pd
 
     render_input_summary(params)
+
+    # Glanceable pump-install history (toggle to hide). A PLACEHOLDER is
+    # reserved here and filled at the END of the tab render — Streamlit
+    # paints elements progressively, so this keeps the strip's Databricks
+    # fetch (cold first view of a well) from blocking everything below it;
+    # the chart simply pops into place when ready.
+    _jp_strip_box = st.container()
 
     # Memory-gauge upload + status. Lives near the top so the status banner
     # is unmissable when an override is active; the upload itself is in a
@@ -704,6 +963,11 @@ def render_tab(
     _render_model_vs_actual(
         params, wellbore, well_profile, selected_test_row=selected_test_row
     )
+
+    # Deferred fill of the pump-history placeholder reserved at the top —
+    # everything above has already painted by the time this fetch runs.
+    with _jp_strip_box:
+        _render_jp_history_strip(params.selected_well)
 
 
 def _can_run_fric_cal(params: SimulationParams) -> bool:

@@ -273,6 +273,37 @@ def _render_ipr_review():
         mime="text/csv",
     )
 
+    # IPR review exports — same artifacts as the buttons at the bottom of the
+    # IPR Curves tab, surfaced HERE where the review/export decision is made
+    # (buried in the tab they were effectively undiscoverable; reviewing the
+    # fits well-by-well before optimizing is the whole point of this step).
+    exp1, exp2 = st.columns(2)
+    with exp1:
+        if st.button(
+            f"Download IPR Review PDF — all {len(ipr_curves)} wells",
+            key="uw_export_ipr_pdf",
+            use_container_width=True,
+            help=(
+                "One full-page IPR per well (Vogel fit + test points) for "
+                "reviewing the fits before optimizing."
+            ),
+        ):
+            with st.spinner(f"Generating PDF for {len(ipr_curves)} wells..."):
+                pdf_bytes = create_ipr_pdf(ipr_curves, merged_with_rp)
+            _trigger_browser_download(
+                pdf_bytes, "ipr_review_all_wells.pdf", "application/pdf"
+            )
+    with exp2:
+        if st.button(
+            "Download IPR Grid PNG (all wells)",
+            key="uw_export_ipr_png",
+            use_container_width=True,
+            help="All wells on one high-resolution grid image.",
+        ):
+            with st.spinner(f"Rendering {len(ipr_curves)} wells..."):
+                png_bytes = create_ipr_grid_png(ipr_curves, merged_with_rp, dpi=200)
+            _trigger_browser_download(png_bytes, "ipr_review_grid.png", "image/png")
+
     # --- Upload-edited-template re-visualizer ---
     _render_edited_template_viewer(merged_with_rp)
 
