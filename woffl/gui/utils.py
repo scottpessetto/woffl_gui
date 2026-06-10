@@ -81,7 +81,9 @@ def is_valid_number(val) -> bool:
 DEFAULT_TEST_MONTHS = 6
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+# max_entries: each entry is the FULL field's test history for one lookback
+# window — a handful of distinct windows is plenty to keep in the shared cache.
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_all_well_tests(months_back: int = DEFAULT_TEST_MONTHS):
     """Fetch recent well tests for all MPU wells in one query. Cached 24h per window.
 
@@ -892,8 +894,13 @@ def create_reservoir_mix(
     return ResMix(wc=wc, fgor=gor, oil=oil, wat=water, gas=gas)
 
 
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=64)
 def create_well_profile(field_model=None, jpump_tvd=None):
     """Create a WellProfile object with the given field model and jetpump TVD.
+
+    Cached: WellProfile.__init__ runs a Nelder-Mead survey fit (~0.2-0.5 s),
+    and this used to re-run on EVERY Streamlit rerun of the single-well page.
+    The result is deterministic in (field_model, jpump_tvd).
 
     Args:
         field_model (str, optional): The field model to use ("schrader" or "kuparuk").
@@ -1565,8 +1572,10 @@ def get_well_data(well_name):
     return well_data.iloc[0].to_dict()
 
 
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=128)
 def get_well_survey_data(well_name):
-    """Load deviation survey CSV for specific well.
+    """Load deviation survey CSV for specific well. Cached — this used to be
+    read from disk twice per rerun of the single-well page.
 
     Args:
         well_name (str): Name of the well
@@ -1591,8 +1600,13 @@ def get_well_survey_data(well_name):
         return None
 
 
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=64)
 def create_well_profile_from_survey(well_name, jpump_tvd=None, field_model=None):
     """Create WellProfile using actual survey data instead of defaults.
+
+    Cached: construction re-reads the survey CSV and runs the Nelder-Mead
+    profile fit (~0.2-0.5 s) — this used to execute on every Streamlit rerun
+    of the single-well page. Deterministic in (well_name, jpump_tvd, model).
 
     Args:
         well_name (str): Name of the well

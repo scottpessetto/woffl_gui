@@ -51,6 +51,19 @@ def render_tab() -> None:
         st.warning("Start date must be before end date.")
         return
 
+    # Explicit load gate: st.tabs executes every tool's body on every rerun,
+    # so an unconditional fetch here fired the 3-year, 2-query pull the
+    # moment anyone opened Scott's Tools for a DIFFERENT tool.
+    if not st.session_state.get("pad_wc_loaded"):
+        if st.button("Load pad water-cut history", type="primary", key="pad_wc_load"):
+            st.session_state["pad_wc_loaded"] = True
+            st.rerun()
+        st.info(
+            "Click to query the pad water-cut history for the selected window "
+            "(cached 1 h once loaded)."
+        )
+        return
+
     df = _cached_pad_watercut(start_date.isoformat(), end_date.isoformat())
     if df.empty:
         st.info("No data returned for the selected date range.")

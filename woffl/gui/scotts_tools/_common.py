@@ -62,7 +62,7 @@ from woffl.gui.utils import pad_from_mp_name  # noqa: E402, F401
 # ── IPR from well tests ────────────────────────────────────────────────────
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_well_tests(months_back: int):
     """Fetch well tests with BHP filter. Cached 24h per months_back value."""
     from datetime import datetime
@@ -77,7 +77,7 @@ def fetch_well_tests(months_back: int):
     return df
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_well_tests_raw(months_back: int):
     """Fetch well tests WITHOUT dropping gaugeless rows. Cached 24h."""
     from datetime import datetime

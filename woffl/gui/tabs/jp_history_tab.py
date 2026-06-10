@@ -96,7 +96,7 @@ ORDER BY vbdc.tag_date
 """
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=128)
 def _cached_extended_tests(db_name: str, start_date: str, end_date: str):
     """Fetch well tests for extended date range without requiring BHP. Cached 24h."""
     from woffl.assembly.databricks_client import execute_query
@@ -133,7 +133,7 @@ def _cached_extended_tests(db_name: str, start_date: str, end_date: str):
     return df.sort_values("WtDate")
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=128)
 def _cached_bhp_daily(db_name: str, start_date: str, end_date: str):
     """Fetch daily BHP for all dates (not just well test dates). Cached 24h."""
     from woffl.assembly.databricks_client import execute_query

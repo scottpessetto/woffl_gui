@@ -105,14 +105,66 @@ def main():
     st.title("WOFFL Haus 🧇")
     st.caption("*Built on Kaelin Ellis's WOFFL Jet Pump Model*")
 
-    # Global JP history — fetch from Databricks, fall back to bundled Excel
+    # Global startup prefetch — JP history, recent well tests, and well
+    # properties are three INDEPENDENT Databricks pulls, so warm them
+    # concurrently: a cold start costs the slowest query instead of the sum
+    # (they used to run back-to-back behind three sequential spinners).
+    # Workers only fill the process-wide st.cache_data entries; session_state
+    # writes and fallback handling stay on the main thread below.
     with st.sidebar:
-        if "jp_history_df" not in st.session_state:
-            with st.spinner("Loading JP history from Databricks..."):
+        needs_jp = "jp_history_df" not in st.session_state
+        needs_tests = "all_well_tests_df" not in st.session_state
+        if needs_jp or needs_tests:
+            import threading
+
+            from streamlit.runtime.scriptrunner import add_script_run_ctx
+
+            from woffl.gui.utils import (
+                DEFAULT_TEST_MONTHS,
+                _load_well_characteristics_cached,
+                fetch_all_well_tests,
+            )
+
+            results: dict = {}
+            errors: dict = {}
+
+            def _warm(name, fn, *args):
                 try:
-                    st.session_state["jp_history_df"] = _cached_jp_history()
-                    st.session_state["jp_history_source"] = "Databricks"
+                    results[name] = fn(*args)
                 except Exception as e:
+                    errors[name] = e
+
+            jobs: list[tuple] = [("chars", _load_well_characteristics_cached)]
+            if needs_jp:
+                jobs.append(("jp_history", _cached_jp_history))
+            if needs_tests:
+                # Pass the lookback explicitly: st.cache_data keys on the args
+                # AS PASSED, so the old no-arg call cached under a different
+                # key than get_well_tests_for_well's (months,) call — the
+                # identical full-field query ran twice per day.
+                jobs.append(("well_tests", fetch_all_well_tests, DEFAULT_TEST_MONTHS))
+
+            with st.spinner("Loading well data from Databricks..."):
+                threads = []
+                for name, fn, *args in jobs:
+                    t = threading.Thread(
+                        target=_warm,
+                        args=(name, fn, *args),
+                        daemon=True,
+                        name=f"startup-{name}",
+                    )
+                    add_script_run_ctx(t)
+                    t.start()
+                    threads.append(t)
+                for t in threads:
+                    t.join()
+
+            if needs_jp:
+                if "jp_history" in results:
+                    st.session_state["jp_history_df"] = results["jp_history"]
+                    st.session_state["jp_history_source"] = "Databricks"
+                else:
+                    e = errors.get("jp_history")
                     if _JP_HISTORY_PATH.exists():
                         st.session_state["jp_history_df"] = parse_jp_history(
                             str(_JP_HISTORY_PATH)
@@ -122,20 +174,17 @@ def main():
                     else:
                         st.warning(f"Could not load JP history: {e}")
 
-        if "jp_history_df" in st.session_state:
-            # Pre-fetch all well tests once (cached 24h for all users)
-            if "all_well_tests_df" not in st.session_state:
-                with st.spinner("Fetching recent well tests from Databricks..."):
-                    from woffl.gui.utils import fetch_all_well_tests
+            if needs_tests:
+                if "well_tests" in results:
+                    st.session_state["all_well_tests_df"] = results["well_tests"]
+                else:
+                    st.warning(
+                        f"Could not fetch well tests: {errors.get('well_tests')}"
+                    )
+                    st.session_state["all_well_tests_df"] = None
 
-                    try:
-                        st.session_state["all_well_tests_df"] = fetch_all_well_tests()
-                    except Exception as e:
-                        st.warning(f"Could not fetch well tests: {e}")
-                        st.session_state["all_well_tests_df"] = None
-
-        # Pre-fetch well properties once so the missing-survey warning surfaces
-        # globally rather than only when a page happens to load it.
+        # Well properties — instant when the parallel warm above succeeded;
+        # the wrapper also sets the missing-survey list into session_state.
         from woffl.gui.utils import load_well_characteristics
 
         try:

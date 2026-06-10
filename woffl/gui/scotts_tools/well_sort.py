@@ -188,17 +188,30 @@ def render_tab() -> None:
         "live XV. Reflects the 12-24 h lag in the daily shut-in log.",
     )
 
-    # Bench export (matches MPU_Well_Bench_YYYY_MM_DD.xlsx layout)
+    # Bench export (matches MPU_Well_Bench_YYYY_MM_DD.xlsx layout). Built ON
+    # CLICK with an immediate auto-download — the eager build re-ran the
+    # openpyxl per-cell formatting on every rerun of this page just to feed
+    # the download button.
     from datetime import date
-    xlsx_bytes = export_bench_xlsx(online_df, offline_df, ltsi_df)
-    st.download_button(
+    if st.button(
         f"Download bench xlsx  ({len(online_df)} online, {len(offline_df)} offline, "
         f"{len(ltsi_df)} ltsi)",
-        data=xlsx_bytes,
-        file_name=f"MPU_Well_Bench_{date.today():%Y_%m_%d}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="well_sort_dl_bench",
-    )
+    ):
+        import base64
+
+        import streamlit.components.v1 as components
+
+        xlsx_bytes = export_bench_xlsx(online_df, offline_df, ltsi_df)
+        b64 = base64.b64encode(xlsx_bytes).decode()
+        fname = f"MPU_Well_Bench_{date.today():%Y_%m_%d}.xlsx"
+        mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        components.html(
+            f'<a id="ws_bench_dl" download="{fname}" '
+            f'href="data:{mime};base64,{b64}"></a>'
+            f'<script>document.getElementById("ws_bench_dl").click()</script>',
+            height=0,
+        )
 
     sub_online, sub_off, sub_ltsi, sub_changes = st.tabs(
         [f"Online ({len(online_df)})",

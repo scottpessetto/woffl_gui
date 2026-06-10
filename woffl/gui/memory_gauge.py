@@ -390,7 +390,7 @@ def fetch_databricks_bhp_daily(
 _EXT_TESTS_KEY = "_extended_well_tests"
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=64)
 def _cached_extended_tests_for_well(
     db_well_name: str, start_date: str, end_date: str
 ) -> pd.DataFrame:

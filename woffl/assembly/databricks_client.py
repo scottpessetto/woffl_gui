@@ -8,6 +8,8 @@ Centralized Databricks connectivity module that works in two environments:
 
 import math
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -17,6 +19,18 @@ import pandas as pd
 DEFAULT_WAREHOUSE_ID = "698745db7da46ba3"
 SCHRADER_TVD_CUTOFF = 5500.0
 
+# OAuth token cache (deployed M2M flow). Tokens last ~1 h; minting a fresh one
+# per query added ~0.5-1 s of pure overhead to every warehouse call.
+_TOKEN_LOCK = threading.Lock()
+_TOKEN_CACHE: dict = {"token": None, "expires_at": 0.0}
+
+# Per-thread connection cache. Streamlit reuses its script threads, so keeping
+# one warehouse session per thread skips the ~1-2 s connect handshake on every
+# query. ProcessPool workers each get fresh module state, so this is safe there
+# too. databricks-sql connections are NOT thread-safe — hence thread-local, not
+# a shared pool.
+_CONN_LOCAL = threading.local()
+
 
 def _is_deployed() -> bool:
     return bool(
@@ -24,22 +38,26 @@ def _is_deployed() -> bool:
     )
 
 
-def _query_via_connector(query: str) -> pd.DataFrame:
-    from databricks import sql
+def _oauth_token() -> str:
+    """Return a cached M2M OAuth token, refreshing ~60 s before expiry."""
+    import base64
+    import json
+    import urllib.parse
+    import urllib.request
 
-    if _is_deployed():
-        import base64
-        import json
-        import urllib.parse
-        import urllib.request
+    now = time.time()
+    with _TOKEN_LOCK:
+        if _TOKEN_CACHE["token"] and now < _TOKEN_CACHE["expires_at"] - 60:
+            return _TOKEN_CACHE["token"]
 
         host = os.getenv("DATABRICKS_HOST")
         client_id = os.getenv("DATABRICKS_CLIENT_ID")
         client_secret = os.getenv("DATABRICKS_CLIENT_SECRET")
-        http_path = f"/sql/1.0/warehouses/{DEFAULT_WAREHOUSE_ID}"
 
         # Encode credentials as Basic auth
-        credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        credentials = base64.b64encode(
+            f"{client_id}:{client_secret}".encode()
+        ).decode()
 
         token_url = f"https://{host}/oidc/v1/token"
         data = urllib.parse.urlencode(
@@ -58,47 +76,82 @@ def _query_via_connector(query: str) -> pd.DataFrame:
                 "Content-Type": "application/x-www-form-urlencoded",
             },
         )
-        with urllib.request.urlopen(req) as resp:
-            token = json.loads(resp.read())["access_token"]
+        # timeout: a stalled OIDC endpoint used to hang the whole process
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read())
 
-        connection = sql.connect(
+        _TOKEN_CACHE["token"] = payload["access_token"]
+        _TOKEN_CACHE["expires_at"] = now + float(payload.get("expires_in", 3600))
+        return _TOKEN_CACHE["token"]
+
+
+def _new_connection():
+    from databricks import sql
+
+    if _is_deployed():
+        host = os.getenv("DATABRICKS_HOST")
+        http_path = f"/sql/1.0/warehouses/{DEFAULT_WAREHOUSE_ID}"
+        return sql.connect(
             server_hostname=host,
             http_path=http_path,
-            access_token=token,
-        )
-    else:
-        from dotenv import load_dotenv
-
-        load_dotenv()
-
-        host = os.getenv("bricks_host")
-        token = os.getenv("bricks_token")
-        http_path = (
-            os.getenv("bricks_http") or f"/sql/1.0/warehouses/{DEFAULT_WAREHOUSE_ID}"
+            access_token=_oauth_token(),
         )
 
-        if not all([host, token]):
-            raise RuntimeError(
-                "Missing local Databricks credentials. "
-                "Set bricks_host, bricks_token, and optionally bricks_http in your .env file."
-            )
+    from dotenv import load_dotenv
 
-        connection = sql.connect(
-            server_hostname=host,
-            http_path=http_path,
-            access_token=token,
+    load_dotenv()
+
+    host = os.getenv("bricks_host")
+    token = os.getenv("bricks_token")
+    http_path = (
+        os.getenv("bricks_http") or f"/sql/1.0/warehouses/{DEFAULT_WAREHOUSE_ID}"
+    )
+
+    if not all([host, token]):
+        raise RuntimeError(
+            "Missing local Databricks credentials. "
+            "Set bricks_host, bricks_token, and optionally bricks_http in your .env file."
         )
 
-    try:
-        cursor = connection.cursor()
-        cursor.execute(query)
-        result = cursor.fetchall()
-        columns = [desc[0] for desc in (cursor.description or [])]
-        cursor.close()
-    finally:
-        connection.close()
+    return sql.connect(
+        server_hostname=host,
+        http_path=http_path,
+        access_token=token,
+    )
 
-    return pd.DataFrame(result, columns=columns)
+
+def _query_via_connector(query: str) -> pd.DataFrame:
+    """Execute a query on the per-thread cached connection.
+
+    One retry with a fresh connection (and a forced token refresh) covers the
+    stale-session cases: warehouse idle-stop, network blips, token expiry
+    mid-session. A genuinely bad query fails twice and raises.
+    """
+    last_err: Exception | None = None
+    for attempt in range(2):
+        conn = getattr(_CONN_LOCAL, "conn", None)
+        if conn is None:
+            conn = _new_connection()
+            _CONN_LOCAL.conn = conn
+        try:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(query)
+                result = cursor.fetchall()
+                columns = [desc[0] for desc in (cursor.description or [])]
+            finally:
+                cursor.close()
+            return pd.DataFrame(result, columns=columns)
+        except Exception as e:
+            last_err = e
+            _CONN_LOCAL.conn = None
+            try:
+                conn.close()
+            except Exception:
+                pass
+            with _TOKEN_LOCK:
+                _TOKEN_CACHE["token"] = None  # force refresh on the retry
+    raise last_err  # type: ignore[misc]
 
 
 def execute_query(query: str) -> pd.DataFrame:

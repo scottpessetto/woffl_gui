@@ -975,25 +975,56 @@ def render_tab(
         )
         return
 
-    with st.spinner("Running batch pump simulation..."):
-        batch_pump = run_batch_pump(
-            params.surf_pres,
-            params.form_temp,
-            params.rho_pf,
-            params.ppf_surf,
-            wellbore,
-            well_profile,
-            inflow,
-            res_mix,
-            params.nozzle_batch_options,
-            params.throat_batch_options,
-            wellname=f"{params.field_model} Well",
-            field_model=params.field_model,
-            jpump_direction=params.jpump_direction,
-            ken=params.ken,
-            kth=params.kth,
-            kdi=params.kdi,
-        )
+    # Memoize the sweep on its physical inputs — the full nozzle×throat sweep
+    # used to re-run on EVERY rerun of this view, so each quickfix edit /
+    # checkbox tick below cost the whole sweep again on the shared 2-vCPU
+    # box. On a hit, the BatchPump's dataframe and coefficients are reset
+    # from pristine copies so the calibration toggle below still rescales
+    # from raw values instead of compounding across reruns.
+    sweep_sig = (
+        params.selected_well, params.field_model, params.jpump_direction,
+        params.surf_pres, params.form_temp, params.rho_pf, params.ppf_surf,
+        tuple(params.nozzle_batch_options), tuple(params.throat_batch_options),
+        params.ken, params.kth, params.kdi,
+        params.qwf, params.pwf, params.pres, params.form_wc, params.form_gor,
+        params.oil_api, params.gas_sg, params.wat_sg, params.bubble_point,
+        params.tubing_od, params.tubing_thickness,
+        params.casing_od, params.casing_thickness, params.jpump_tvd,
+    )
+    cached = st.session_state.get("_batch_sweep_cache")
+    if cached is not None and cached.get("sig") == sweep_sig:
+        batch_pump = cached["batch_pump"]
+        batch_pump.df = cached["raw_df"].copy()
+        batch_pump.coeff_totl = cached["raw_coeff_totl"]
+        batch_pump.coeff_lift = cached["raw_coeff_lift"]
+    else:
+        with st.spinner("Running batch pump simulation..."):
+            batch_pump = run_batch_pump(
+                params.surf_pres,
+                params.form_temp,
+                params.rho_pf,
+                params.ppf_surf,
+                wellbore,
+                well_profile,
+                inflow,
+                res_mix,
+                params.nozzle_batch_options,
+                params.throat_batch_options,
+                wellname=f"{params.field_model} Well",
+                field_model=params.field_model,
+                jpump_direction=params.jpump_direction,
+                ken=params.ken,
+                kth=params.kth,
+                kdi=params.kdi,
+            )
+        if batch_pump:
+            st.session_state["_batch_sweep_cache"] = {
+                "sig": sweep_sig,
+                "batch_pump": batch_pump,
+                "raw_df": batch_pump.df.copy(),
+                "raw_coeff_totl": getattr(batch_pump, "coeff_totl", None),
+                "raw_coeff_lift": getattr(batch_pump, "coeff_lift", None),
+            }
 
     if not batch_pump:
         return

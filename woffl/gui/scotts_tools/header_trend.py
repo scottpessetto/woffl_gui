@@ -90,7 +90,7 @@ def _parse_mp_name(mp: str) -> tuple[str, int] | None:
     return (m.group(1), int(m.group(2))) if m else None
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=4)
 def fetch_bhp_tag_map() -> dict[tuple[str, int], dict]:
     """Authoritative well→tag map from mpu.wells.vw_bhp_tags (replaces bhp_dict.csv).
 
@@ -188,7 +188,10 @@ def _resolve_bhp(wide: pd.DataFrame, esp_tag: str | None, other_tag: str | None)
     return best[1] if best else None
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+# max_entries bounds the shared 6 GB process: each entry holds up to 24 months
+# of HOURLY trends for every well in a pad selection, and every distinct
+# (pad-set, window) combination used to accumulate for a full day.
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=8)
 def fetch_header_trends(
     well_names: tuple[str, ...],
     start_date: str,

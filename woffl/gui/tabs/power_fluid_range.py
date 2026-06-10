@@ -397,27 +397,52 @@ def render_tab(
         f"for a total of {total_combinations} combinations."
     )
 
-    with st.spinner("Running comprehensive power fluid range analysis..."):
-        comprehensive_df = run_power_fluid_range_batch(
-            params.surf_pres,
-            params.form_temp,
-            params.rho_pf,
-            params.power_fluid_min,
-            params.power_fluid_max,
-            params.power_fluid_step,
-            wellbore,
-            well_profile,
-            inflow,
-            res_mix,
-            params.nozzle_batch_options,
-            params.throat_batch_options,
-            wellname=f"{params.field_model} Well",
-            field_model=params.field_model,
-            jpump_direction=params.jpump_direction,
-            ken=params.ken,
-            kth=params.kth,
-            kdi=params.kdi,
-        )
+    # Memoize the sweep on its physical inputs — at the defaults this is
+    # ~280 solver runs (10 pressure points × 28 pumps) and it used to
+    # re-execute on EVERY rerun of this view, including reruns triggered by
+    # the quickfix widgets rendered below it (one Auto-match click paid the
+    # full sweep twice on the shared 2-vCPU box).
+    sweep_sig = (
+        params.selected_well, params.field_model, params.jpump_direction,
+        params.surf_pres, params.form_temp, params.rho_pf,
+        params.power_fluid_min, params.power_fluid_max, params.power_fluid_step,
+        tuple(params.nozzle_batch_options), tuple(params.throat_batch_options),
+        params.ken, params.kth, params.kdi,
+        params.qwf, params.pwf, params.pres, params.form_wc, params.form_gor,
+        params.oil_api, params.gas_sg, params.wat_sg, params.bubble_point,
+        params.tubing_od, params.tubing_thickness,
+        params.casing_od, params.casing_thickness, params.jpump_tvd,
+    )
+    cached = st.session_state.get("_pf_range_cache")
+    if cached is not None and cached.get("sig") == sweep_sig:
+        comprehensive_df = cached["df"].copy()
+    else:
+        with st.spinner("Running comprehensive power fluid range analysis..."):
+            comprehensive_df = run_power_fluid_range_batch(
+                params.surf_pres,
+                params.form_temp,
+                params.rho_pf,
+                params.power_fluid_min,
+                params.power_fluid_max,
+                params.power_fluid_step,
+                wellbore,
+                well_profile,
+                inflow,
+                res_mix,
+                params.nozzle_batch_options,
+                params.throat_batch_options,
+                wellname=f"{params.field_model} Well",
+                field_model=params.field_model,
+                jpump_direction=params.jpump_direction,
+                ken=params.ken,
+                kth=params.kth,
+                kdi=params.kdi,
+            )
+        if comprehensive_df is not None and not comprehensive_df.empty:
+            st.session_state["_pf_range_cache"] = {
+                "sig": sweep_sig,
+                "df": comprehensive_df.copy(),
+            }
 
     if comprehensive_df is None or comprehensive_df.empty:
         st.error(
