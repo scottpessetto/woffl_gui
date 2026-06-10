@@ -398,11 +398,6 @@ def derive_lift_type(row: pd.Series) -> str:
 
 # ── composition ────────────────────────────────────────────────────────────
 
-def _latest(group: pd.DataFrame) -> pd.Series | None:
-    if group.empty:
-        return None
-    return group.iloc[-1]
-
 
 def _pct_diff(a: float, b: float) -> float:
     """Percent difference of a vs b, using b as baseline. NaN-safe."""

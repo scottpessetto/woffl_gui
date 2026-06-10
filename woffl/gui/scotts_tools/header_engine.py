@@ -530,7 +530,7 @@ def backpressure_consistency(
     return "depletion-like / BHP flat"               # sb == 0: BHP flat despite WHP move
 
 
-# ── windowed Vogel fits: back into a pseudo-pr that's allowed to deplete ──────
+# ── single Vogel fit: back out a pseudo-pr from a well's tests ───────────────
 
 # Physical ceiling on the backed-out pseudo reservoir pressure, by formation —
 # clustered/sparse tests can otherwise drive the LS fit to an unphysical pr. MPU
@@ -599,59 +599,6 @@ def fit_vogel_ipr(pwf, q, pr_hi: float = PR_MAX_DEFAULT, n_grid: int = 240) -> d
         "n": int(P.size), "pwf_spread": spread,
         "pr_at_bound": bool(abs(pr - grid[-1]) < step),
     }
-
-
-def windowed_ipr_fits(
-    test_well: pd.DataFrame, min_tests: int = 3, min_days: int = 25,
-    max_days: int = 95, pr_hi: float = PR_MAX_DEFAULT, date_col: str = "WtDate",
-    bhp_col: str = "BHP", oil_col: str = "WtOilVol",
-) -> list[dict]:
-    """Fit a Vogel IPR per time window so the curve is allowed to SHIFT over the
-    lookback (depletion), instead of forcing one IPR on 12 months of data.
-
-    Windows grow until they hold ``min_tests`` AND span ``min_days`` (hard-capped at
-    ``max_days`` once they have ≥2 points), so they adapt to test density — ~1 month
-    where tests are frequent, up to ~3 where sparse. Each window backs into a pseudo
-    pr via :func:`fit_vogel_ipr`. The **pr trend across windows is the depletion
-    signal**; points sliding along a single window's curve is the back-pressure
-    response. Returns a time-ordered list of window dicts (start/end/mid/n_window +
-    the fit fields); unfittable windows are dropped.
-    """
-    if test_well is None or test_well.empty or date_col not in test_well.columns:
-        return []
-    if bhp_col not in test_well.columns or oil_col not in test_well.columns:
-        return []
-    d = test_well.dropna(subset=[date_col, bhp_col, oil_col]).sort_values(date_col)
-    n = len(d)
-    if n < 2:
-        return []
-    ts = list(pd.to_datetime(d[date_col]))
-    groups: list[tuple[int, int]] = []
-    start = 0
-    for k in range(1, n):
-        cnt = k - start                       # window = indices [start .. k-1]
-        span = (ts[k - 1] - ts[start]).days
-        if (cnt >= min_tests and span >= min_days) or (span >= max_days and cnt >= 2):
-            groups.append((start, k - 1))
-            start = k
-    groups.append((start, n - 1))
-    # fold a too-small trailing window into its predecessor
-    if len(groups) >= 2 and (groups[-1][1] - groups[-1][0] + 1) < 2:
-        s0 = groups[-2][0]
-        e1 = groups[-1][1]
-        groups = groups[:-2] + [(s0, e1)]
-
-    out = []
-    for s, e in groups:
-        sub = d.iloc[s:e + 1]
-        fit = fit_vogel_ipr(sub[bhp_col].tolist(), sub[oil_col].tolist(), pr_hi=pr_hi)
-        if fit is not None:
-            sd, ed = ts[s], ts[e]
-            out.append(
-                {"start": sd, "end": ed, "mid": sd + (ed - sd) / 2,
-                 "n_window": e - s + 1, **fit}
-            )
-    return out
 
 
 def fit_well_ipr(

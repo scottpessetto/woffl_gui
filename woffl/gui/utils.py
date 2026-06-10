@@ -3,7 +3,6 @@
 This module contains helper functions for the Streamlit GUI.
 """
 
-import math
 import os
 
 import numpy as np
@@ -12,8 +11,6 @@ import streamlit as st
 
 from woffl.assembly.batchpump import BatchPump, exp_model, rev_exp_deriv, validate_water
 from woffl.assembly.solopump import jetpump_solver
-from woffl.flow import jetgraphs as jg
-from woffl.flow import jetplot as jplt
 from woffl.flow.inflow import InFlow
 from woffl.geometry.jetpump import JetPump
 from woffl.geometry.pipe import Pipe, PipeInPipe
@@ -194,21 +191,6 @@ def get_well_tests_for_well(well_name: str) -> pd.DataFrame | None:
         )
 
     return well_df
-
-
-# Column schema for manually-entered provisional tests, aligned with the
-# Databricks well-test frame so injected rows merge cleanly.
-MANUAL_TEST_COLUMNS = [
-    "well",
-    "WtDate",
-    "WtOilVol",
-    "WtWaterVol",
-    "WtTotalFluid",
-    "BHP",
-    "fgor",
-    "lift_wat",
-    "whp",
-]
 
 
 def _append_manual_tests(well_df, well_name: str):
@@ -963,50 +945,6 @@ def create_inflow(qwf, pwf, pres):
     return InFlow(qwf=qwf, pwf=pwf, pres=pres)
 
 
-def generate_choked_figures(
-    form_temp, rho_pf, ppf_surf, jetpump, tube, well_profile, inflow, res_mix
-):
-    """Generate choked figures using the jetgraphs module."""
-    return jg.choked_figures(
-        form_temp, rho_pf, ppf_surf, jetpump, tube, well_profile, inflow, res_mix
-    )
-
-
-def generate_discharge_check(
-    surf_pres,
-    form_temp,
-    rho_pf,
-    ppf_surf,
-    jetpump,
-    wellbore,
-    well_profile,
-    inflow,
-    res_mix,
-):
-    """Generate discharge check using the jetgraphs module."""
-    return jg.discharge_check(
-        surf_pres,
-        form_temp,
-        rho_pf,
-        ppf_surf,
-        jetpump,
-        wellbore,
-        well_profile,
-        inflow,
-        res_mix,
-    )
-
-
-def generate_multi_throat_entry_books(psu_ray, form_temp, ken, ate, inflow, res_mix):
-    """Generate multi throat entry books using the jetplot module."""
-    return jplt.multi_throat_entry_books(psu_ray, form_temp, ken, ate, inflow, res_mix)
-
-
-def generate_multi_suction_graphs(qoil_list, book_list):
-    """Generate multi suction graphs using the jetplot module."""
-    return jplt.multi_suction_graphs(qoil_list, book_list)
-
-
 def run_jetpump_solver(
     surf_pres,
     form_temp,
@@ -1236,48 +1174,6 @@ def _validate_water_type(water_type):
     if water_type in {"formation", "form"}:
         return "formation"
     return validate_water(water_type)
-
-
-def highlight_recommended_pump(ax, recommendation, water_type="lift"):
-    """Highlight the recommended pump on a performance plot
-
-    Args:
-        ax (matplotlib.axes.Axes): The axes object to plot on
-        recommendation (dict): The recommendation dictionary from recommend_jetpump
-        water_type (str): "lift" or "total" depending on the plot type
-    """
-    if recommendation is None:
-        return
-
-    water_type = _validate_water_type(water_type)
-
-    # Extract values from recommendation
-    water_rate = recommendation["water_rate"]
-    oil_rate = recommendation["qoil_std"]
-    pump_label = recommendation["nozzle"] + recommendation["throat"]
-
-    # Highlight the recommended pump with a star marker
-    ax.plot(
-        water_rate,
-        oil_rate,
-        marker="*",
-        markersize=15,
-        markerfacecolor="gold",
-        markeredgecolor="black",
-        markeredgewidth=1.5,
-        linestyle="none",
-        label=f"Recommended: {pump_label}",
-    )
-
-    # Add annotation
-    ax.annotate(
-        f"Recommended: {pump_label}",
-        xy=(water_rate, oil_rate),
-        xytext=(10, 10),
-        textcoords="offset points",
-        bbox=dict(boxstyle="round,pad=0.3", fc="yellow", ec="black", alpha=0.8),
-        arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=.2"),
-    )
 
 
 def run_batch_pump(

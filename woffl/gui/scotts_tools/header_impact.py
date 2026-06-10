@@ -1901,117 +1901,6 @@ def _render_results(results_df: pd.DataFrame, delta_p: float) -> None:
 # ── v2 review surface: sensitivity, per-pad expanders, IPR, sense check ──────
 
 
-def _ipr_grid_fig(pad_df: pd.DataFrame, ipr_rows: dict, test_df: pd.DataFrame | None = None):
-    """Grid of Vogel IPR curves for a pad's wells (JP and ESP/non-JP alike), with:
-    the operating point (oil now @ BHP now, ●), the scenario point (oil scen @ BHP
-    scen, ✕), and the well's actual well-test points overlaid (hover shows the full
-    test detail) so the header lever and the data behind the IPR are both visible.
-    Returns a Figure or None.
-    """
-    from plotly.subplots import make_subplots
-
-    from woffl.flow.inflow import InFlow
-
-    wells = [w for w in pad_df["Well"].tolist() if w in ipr_rows]
-    if not wells:
-        return None
-    cols = int(np.ceil(np.sqrt(len(wells))))
-    rows = int(np.ceil(len(wells) / cols))
-    fig = make_subplots(
-        rows=rows, cols=cols, subplot_titles=wells,
-        vertical_spacing=0.13, horizontal_spacing=0.08,
-        x_title="Oil (BOPD)", y_title="BHP (psi)",
-    )
-    by_well = pad_df.set_index("Well")
-    for i, w in enumerate(wells):
-        r, c = i // cols + 1, i % cols + 1
-        ir = ipr_rows[w]
-        res_pres = float(ir.get("res_pres", 1800.0))
-        form_wc = float(ir.get("form_wc", 0.5))
-        try:
-            inflow = InFlow(
-                qwf=float(ir["qwf"]) * (1.0 - form_wc), pwf=float(ir["pwf"]), pres=res_pres
-            )
-            bhp_grid = np.linspace(0.0, res_pres, 40)
-            oil_grid = [float(inflow.oil_flow(float(b), "vogel")) for b in bhp_grid]
-        except Exception:
-            continue
-        fig.add_trace(
-            go.Scatter(
-                x=oil_grid, y=bhp_grid, mode="lines",
-                line=dict(color="#1f77b4", width=2), showlegend=False,
-                hovertemplate="Oil %{x:.0f} BOPD<br>BHP %{y:.0f} psi<extra></extra>",
-            ),
-            row=r, col=c,
-        )
-        wr = by_well.loc[w] if w in by_well.index else None
-        if wr is not None:
-            o0, b0 = wr.get("Oil now (BOPD)"), wr.get("BHP now (psi)")
-            o1, b1 = wr.get("Oil scen (BOPD)"), wr.get("BHP scen (psi)")
-            if pd.notna(o0) and pd.notna(b0):
-                fig.add_trace(
-                    go.Scatter(
-                        x=[o0], y=[b0], mode="markers",
-                        marker=dict(color="black", size=9, symbol="circle"), showlegend=False,
-                        hovertemplate="now: %{x:.0f} BOPD @ %{y:.0f} psi<extra></extra>",
-                    ),
-                    row=r, col=c,
-                )
-            if pd.notna(o1) and pd.notna(b1):
-                fig.add_trace(
-                    go.Scatter(
-                        x=[o1], y=[b1], mode="markers",
-                        marker=dict(color="crimson", size=10, symbol="x"), showlegend=False,
-                        hovertemplate="scenario: %{x:.0f} BOPD @ %{y:.0f} psi<extra></extra>",
-                    ),
-                    row=r, col=c,
-                )
-        # Actual well-test points (oil vs BHP) with full test detail on hover.
-        if test_df is not None and not getattr(test_df, "empty", True) and "well" in test_df.columns:
-            wt = test_df[test_df["well"] == w]
-            if "BHP" in wt.columns and "WtOilVol" in wt.columns:
-                wt = wt.dropna(subset=["BHP", "WtOilVol"])
-            else:
-                wt = wt.iloc[0:0]
-            if not wt.empty:
-                hover = []
-                for _, t in wt.iterrows():
-                    parts = [str(w)]
-                    if pd.notna(t.get("WtDate")):
-                        parts.append(f"Date: {pd.Timestamp(t['WtDate']).date()}")
-                    if pd.notna(t.get("WtOilVol")):
-                        parts.append(f"Oil: {t['WtOilVol']:.0f} BOPD")
-                    if pd.notna(t.get("WtWaterVol")):
-                        parts.append(f"Water: {t['WtWaterVol']:.0f} BWPD")
-                    if pd.notna(t.get("WtTotalFluid")):
-                        parts.append(f"Fluid: {t['WtTotalFluid']:.0f} BPD")
-                    if pd.notna(t.get("fgor")):
-                        parts.append(f"GOR: {t['fgor']:.0f} scf/bbl")
-                    if pd.notna(t.get("whp")):
-                        parts.append(f"WHP: {t['whp']:.0f} psi")
-                    if pd.notna(t.get("BHP")):
-                        parts.append(f"BHP: {t['BHP']:.0f} psi")
-                    hover.append("<br>".join(parts))
-                fig.add_trace(
-                    go.Scatter(
-                        x=wt["WtOilVol"], y=wt["BHP"], mode="markers",
-                        marker=dict(size=6, color="#777", symbol="circle-open",
-                                    line=dict(width=1, color="#777")),
-                        text=hover, hoverinfo="text", showlegend=False, name=f"{w} tests",
-                    ),
-                    row=r, col=c,
-                )
-    fig.update_layout(
-        height=max(280, rows * 250), showlegend=False,
-        title_text="Vogel IPR — ● now → ✕ scenario",
-        margin=dict(l=60, r=20, t=60, b=55),
-    )
-    fig.update_annotations(font_size=10)
-    fig.update_xaxes(rangemode="tozero")
-    fig.update_yaxes(rangemode="tozero")
-    return fig
-
-
 def _response_curve_fig(agg: dict, pads_to_show: list[str] | None = None, title: str = ""):
     """Line chart of ΔOil vs header change per pad (and the field total)."""
     if not agg or "deltas" not in agg:
@@ -2263,112 +2152,6 @@ def _model_vs_obs_fig(pad_df, well_dfs: dict, curve: dict | None, sense_map: dic
     return fig
 
 
-def _ipr_walk_fig(pad_df, ipr_rows: dict, test_df):
-    """The IPR-walk: each well's modeled Vogel IPR (oil vs BHP) with its ACTUAL
-    well-test operating points overlaid, COLORED BY WHP (back pressure) and joined
-    in date order.
-
-    Petroleum reading: back pressure slides the operating point along a fixed IPR —
-    WHP↑ ⇒ BHP↑ ⇒ oil↓ ⇒ the marker climbs up-left. A clean WHP color gradient
-    marching along the blue curve = the lever is real and the IPR shape is right.
-    Older/low-WHP points sitting OFF (high-rate side of) today's IPR hint the curve
-    has since shifted down — i.e. reservoir depletion, not back pressure. ● now ✕ scen.
-    """
-    from plotly.subplots import make_subplots
-
-    from woffl.flow.inflow import InFlow
-
-    wells = [w for w in pad_df["Well"].tolist() if w in ipr_rows]
-    if not wells:
-        return None
-    cols = int(np.ceil(np.sqrt(len(wells))))
-    rows = int(np.ceil(len(wells) / cols))
-    fig = make_subplots(
-        rows=rows, cols=cols, subplot_titles=wells,
-        vertical_spacing=0.13, horizontal_spacing=0.08,
-        x_title="Oil (BOPD)", y_title="BHP (psi)",
-    )
-    by_well = pad_df.set_index("Well")
-    tdf = test_df if (test_df is not None and not getattr(test_df, "empty", True)) else None
-    showed_scale = False
-    for i, w in enumerate(wells):
-        r, c = i // cols + 1, i % cols + 1
-        ir = ipr_rows[w]
-        res_pres = float(ir.get("res_pres", 1800.0))
-        form_wc = float(ir.get("form_wc", 0.5))
-        try:
-            inflow = InFlow(
-                qwf=float(ir["qwf"]) * (1.0 - form_wc), pwf=float(ir["pwf"]), pres=res_pres
-            )
-            bhp_grid = np.linspace(0.0, res_pres, 40)
-            oil_grid = [float(inflow.oil_flow(float(b), "vogel")) for b in bhp_grid]
-        except Exception:
-            continue
-        fig.add_trace(
-            go.Scatter(
-                x=oil_grid, y=bhp_grid, mode="lines",
-                line=dict(color="#1f77b4", width=2), showlegend=False,
-                hovertemplate="model IPR<br>Oil %{x:.0f}<br>BHP %{y:.0f}<extra></extra>",
-            ),
-            row=r, col=c,
-        )
-        # the actual walk — test operating points, colored by WHP, joined by date
-        if tdf is not None and "well" in tdf.columns:
-            wt = tdf[tdf["well"] == w]
-            need = {"BHP", "WtOilVol", "whp", "WtDate"}
-            wt = wt.dropna(subset=["BHP", "WtOilVol"]).sort_values("WtDate") \
-                if need.issubset(wt.columns) else wt.iloc[0:0]
-            if not wt.empty:
-                hov = [
-                    f"{w}<br>{pd.Timestamp(t.WtDate).date()}<br>Oil {t.WtOilVol:.0f} BOPD<br>"
-                    f"BHP {t.BHP:.0f} psi<br>WHP {t.whp:.0f} psi" for t in wt.itertuples()
-                ]
-                fig.add_trace(
-                    go.Scatter(
-                        x=wt["WtOilVol"], y=wt["BHP"], mode="lines+markers",
-                        line=dict(color="rgba(120,120,120,0.4)", width=1),
-                        marker=dict(
-                            size=7, color=wt["whp"], colorscale="Turbo",
-                            showscale=not showed_scale,
-                            colorbar=dict(title="WHP psi") if not showed_scale else None,
-                            line=dict(width=0.5, color="white"),
-                        ),
-                        text=hov, hovertemplate="%{text}<extra></extra>", showlegend=False,
-                    ),
-                    row=r, col=c,
-                )
-                showed_scale = True
-        wr = by_well.loc[w] if w in by_well.index else None
-        if wr is not None:
-            o0, b0 = wr.get("Oil now (BOPD)"), wr.get("BHP now (psi)")
-            o1, b1 = wr.get("Oil scen (BOPD)"), wr.get("BHP scen (psi)")
-            if pd.notna(o0) and pd.notna(b0):
-                fig.add_trace(
-                    go.Scatter(
-                        x=[o0], y=[b0], mode="markers",
-                        marker=dict(color="black", size=11, symbol="circle"), showlegend=False,
-                        hovertemplate="now %{x:.0f} BOPD @ %{y:.0f} psi<extra></extra>",
-                    ),
-                    row=r, col=c,
-                )
-            if pd.notna(o1) and pd.notna(b1):
-                fig.add_trace(
-                    go.Scatter(
-                        x=[o1], y=[b1], mode="markers",
-                        marker=dict(color="crimson", size=12, symbol="x"), showlegend=False,
-                        hovertemplate="scenario %{x:.0f} BOPD @ %{y:.0f} psi<extra></extra>",
-                    ),
-                    row=r, col=c,
-                )
-    fig.update_layout(
-        height=max(360, rows * 320), showlegend=False,
-        title_text="IPR walk — model IPR (blue) + actual tests colored by WHP; ● now · ✕ scenario",
-        margin=dict(l=60, r=20, t=80, b=60),
-    )
-    fig.update_annotations(font_size=9)
-    return fig
-
-
 def _predict_doil(bhp_then, bhp_now, ir, fit, use_pseudo: bool, wc: float = 0.0):
     """Predicted oil change for the actual BHP move, off an IPR. ``use_pseudo`` → the
     single-fit blue IPR (on TOTAL LIQUID → ΔLiquid × (1−WC) = ΔOil); else the model
@@ -2550,9 +2333,9 @@ def _json_safe(obj):
 
 
 def _build_backtest_export(results_df, delta_p) -> dict:
-    """Assemble the FULL back-test (all pads) + windowed pseudo-Pr fits + config into
-    one JSON-safe dict — the whole result set, reviewable outside the UI so we can
-    iterate on it together."""
+    """Assemble the FULL back-test (all pads) + single-fit pseudo-Pr per well +
+    config into one JSON-safe dict — the whole result set, reviewable outside
+    the UI so we can iterate on it together."""
     from datetime import datetime
 
     test_df = st.session_state.get("hpi_test_df")
@@ -2645,7 +2428,7 @@ def _render_backtest_export(results_df, delta_p) -> None:
                 if cached["wrote"]
                 else " (file write unavailable here — use Download)"
             )
-            + ". This JSON has every well's ΔWHP/ΔBHP/ΔOil actual-vs-pred, the windowed "
+            + ". This JSON has every well's ΔWHP/ΔBHP/ΔOil actual-vs-pred, the per-well "
             "pseudo-Pr fits, and the run config — the shared substrate for tuning the back-test."
         )
         st.download_button(
@@ -2791,8 +2574,8 @@ def _ipr_fit_fig(pad_df, test_df, fit_map: dict):
 
 def _render_pad_review(results_df: pd.DataFrame, delta_p: float) -> None:
     """Per-pad expanders: where the pad sits today, the up/down oil lever, the
-    long-horizon back-test (a real header move vs the model), the windowed-IPR
-    depletion picture (Standing), then correlations, the response curve, and a
+    long-horizon back-test (a real header move vs the model), the single-fit
+    depletion picture, then correlations, the response curve, and a
     drill-down. The intraday BHP↔WHP coupling check sits in a collapsed sub-expander."""
     st.subheader("Per-Pad Review — Where We Sit, Sensitivity & Back-Test")
     ipr_rows = st.session_state.get("hpi_ipr_rows", {}) or {}
@@ -3011,17 +2794,12 @@ def _render_sense_check(results_df: pd.DataFrame) -> None:
 
 def _autodownload(data: bytes, filename: str, dom_id: str, mime: str = "application/pdf") -> None:
     """Trigger an immediate browser download of ``data`` — single-click, no second
-    button. ALL Generate-PDF buttons use this so generating = downloading."""
-    import base64
+    button. ALL Generate-PDF buttons use this so generating = downloading.
+    Thin wrapper preserving this module's historical arg order; the one real
+    implementation lives in woffl.gui.components.download."""
+    from woffl.gui.components.download import autodownload
 
-    import streamlit.components.v1 as components
-
-    b64 = base64.b64encode(data).decode()
-    components.html(
-        f'<a id="{dom_id}" download="{filename}" href="data:{mime};base64,{b64}"></a>'
-        f'<script>document.getElementById("{dom_id}").click()</script>',
-        height=0,
-    )
+    autodownload(data, filename, mime, dom_id)
 
 
 def _render_coverage_panel(results_df: pd.DataFrame) -> None:

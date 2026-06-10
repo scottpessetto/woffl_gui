@@ -16,7 +16,6 @@ from woffl.gui.components.dataframe_display import display_results_table
 from woffl.gui.params import SimulationParams
 from woffl.gui.utils import (
     build_calibration_inputs,
-    highlight_recommended_pump,
     is_valid_number,
     recommend_jetpump,
     render_bhp_calibration_warning,
@@ -416,11 +415,9 @@ def _render_recommender_table(batch_pump, params: SimulationParams, water: str) 
     )
 
 
-def _get_well_tests(well_name: str):
-    """Get tests for a single well, with memory-gauge BHP override applied."""
-    from woffl.gui.utils import get_well_tests_for_well
-
-    return get_well_tests_for_well(well_name)
+# Thin alias — the memory-gauge-aware single-well test fetch lives in utils
+# (this was a duplicated wrapper here and in jetpump_solver).
+from woffl.gui.utils import get_well_tests_for_well as _get_well_tests  # noqa: E402
 
 
 def _compute_batch_calibration(

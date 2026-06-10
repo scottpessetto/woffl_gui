@@ -217,55 +217,6 @@ def test_response_curve_fig_empty_returns_none():
     assert hi._response_curve_fig({}) is None
 
 
-def test_ipr_grid_fig_builds_curve_and_operating_points():
-    pad_df = pd.DataFrame(
-        {
-            "Well": ["MPG-01"],
-            "Oil now (BOPD)": [300.0],
-            "BHP now (psi)": [800.0],
-            "Oil scen (BOPD)": [340.0],
-            "BHP scen (psi)": [740.0],
-        }
-    )
-    ipr_rows = {"MPG-01": {"res_pres": 1800.0, "qwf": 1000.0, "pwf": 800.0, "form_wc": 0.5}}
-    fig = hi._ipr_grid_fig(pad_df, ipr_rows)
-    assert fig is not None
-    # IPR curve + operating point (●) + scenario point (✕) = 3 traces.
-    assert len(fig.data) == 3
-
-
-def test_ipr_grid_fig_none_when_no_jp_rows():
-    pad_df = pd.DataFrame({"Well": ["MPL-09"], "Oil now (BOPD)": [80.0], "BHP now (psi)": [np.nan]})
-    assert hi._ipr_grid_fig(pad_df, ipr_rows={}) is None
-
-
-def test_ipr_grid_fig_overlays_test_points_with_hover():
-    pad_df = pd.DataFrame(
-        {
-            "Well": ["MPG-01"], "Oil now (BOPD)": [300.0], "BHP now (psi)": [800.0],
-            "Oil scen (BOPD)": [340.0], "BHP scen (psi)": [740.0],
-        }
-    )
-    ipr_rows = {"MPG-01": {"res_pres": 1800.0, "qwf": 1000.0, "pwf": 800.0, "form_wc": 0.5}}
-    test_df = pd.DataFrame(
-        {
-            "well": ["MPG-01", "MPG-01"],
-            "BHP": [780.0, 820.0],
-            "WtOilVol": [310.0, 290.0],
-            "WtWaterVol": [100.0, 110.0],
-            "WtTotalFluid": [410.0, 400.0],
-            "WtDate": pd.to_datetime(["2026-01-01", "2026-02-01"]),
-            "fgor": [250.0, 240.0],
-            "whp": [210.0, 215.0],
-        }
-    )
-    fig = hi._ipr_grid_fig(pad_df, ipr_rows, test_df)
-    # IPR curve + operating point + scenario point + test-points = 4 traces
-    assert len(fig.data) == 4
-    test_trace = [t for t in fig.data if getattr(t, "name", "") == "MPG-01 tests"]
-    assert test_trace and "Oil: 310 BOPD" in test_trace[0].text[0]
-
-
 # ── non-JP contribution to the response curve ────────────────────────────────
 
 

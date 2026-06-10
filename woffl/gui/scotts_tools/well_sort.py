@@ -198,19 +198,14 @@ def render_tab() -> None:
         f"{len(ltsi_df)} ltsi)",
         key="well_sort_dl_bench",
     ):
-        import base64
-
-        import streamlit.components.v1 as components
+        from woffl.gui.components.download import autodownload
 
         xlsx_bytes = export_bench_xlsx(online_df, offline_df, ltsi_df)
-        b64 = base64.b64encode(xlsx_bytes).decode()
-        fname = f"MPU_Well_Bench_{date.today():%Y_%m_%d}.xlsx"
-        mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        components.html(
-            f'<a id="ws_bench_dl" download="{fname}" '
-            f'href="data:{mime};base64,{b64}"></a>'
-            f'<script>document.getElementById("ws_bench_dl").click()</script>',
-            height=0,
+        autodownload(
+            xlsx_bytes,
+            f"MPU_Well_Bench_{date.today():%Y_%m_%d}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "ws_bench_dl",
         )
 
     sub_online, sub_off, sub_ltsi, sub_changes = st.tabs(

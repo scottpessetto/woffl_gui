@@ -1,10 +1,7 @@
 """Step 2: Review IPR — run Vogel analysis, review fits, exclude wells, download CSV."""
 
-import base64
-
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as st_components
 
 from woffl.assembly.ipr_analyzer import (
     compute_vogel_coefficients,
@@ -23,21 +20,12 @@ from woffl.gui.workflow_page import _clear_downstream
 
 
 def _trigger_browser_download(data: bytes, filename: str, mime: str) -> None:
-    """Inject a hidden <a download> + auto-click JS so the browser downloads
-    without a second user click.
+    """Single-click download — delegates to the shared implementation in
+    woffl.gui.components.download (kept under this name because step4 also
+    imports it from here)."""
+    from woffl.gui.components.download import autodownload
 
-    Streamlit's ``st.download_button`` requires a user click to trigger;
-    when we already had the user click a "Generate" button, this helper
-    fires the download directly from the rerun that follows. Used in
-    place of the Generate → Download two-step pattern.
-    """
-    b64 = base64.b64encode(data).decode()
-    st_components.html(
-        f'<a id="auto_dl_{filename}" href="data:{mime};base64,{b64}" '
-        f'download="{filename}" style="display:none"></a>'
-        f'<script>document.getElementById("auto_dl_{filename}").click();</script>',
-        height=0,
-    )
+    autodownload(data, filename, mime)
 
 
 def render_step2():

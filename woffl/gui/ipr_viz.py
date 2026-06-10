@@ -471,7 +471,11 @@ def create_ipr_pdf(
                 well_test_data = df[df["well"] == well].copy()
             else:
                 well_test_data = pd.DataFrame()
-            if not well_test_data.empty and "BHP" in well_test_data.columns:
+            if (
+                not well_test_data.empty
+                and "BHP" in well_test_data.columns
+                and "WtTotalFluid" in well_test_data.columns
+            ):
                 well_test_data = well_test_data.dropna(subset=["BHP", "WtTotalFluid"])
                 if not well_test_data.empty:
                     if "days_since" in well_test_data.columns:
@@ -607,7 +611,11 @@ def create_ipr_grid_png(
             well_test_data = df[df["well"] == well].copy()
         else:
             well_test_data = pd.DataFrame()
-        if not well_test_data.empty and "BHP" in well_test_data.columns:
+        if (
+            not well_test_data.empty
+            and "BHP" in well_test_data.columns
+            and "WtTotalFluid" in well_test_data.columns
+        ):
             well_test_data = well_test_data.dropna(subset=["BHP", "WtTotalFluid"])
             if not well_test_data.empty:
                 if "days_since" in well_test_data.columns:

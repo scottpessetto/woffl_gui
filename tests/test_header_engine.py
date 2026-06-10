@@ -470,7 +470,7 @@ def test_backpressure_consistency_classes():
     assert he.backpressure_consistency(105, 90, 150) == "BHP tracks WHP; liquid wrong way"
 
 
-# ── windowed Vogel pseudo-pr fits (Standing back-out) ────────────────────────
+# ── Vogel pseudo-pr fits (Standing back-out) ─────────────────────────────────
 
 
 def _vogel_q(pwf, pr, qmax):
@@ -505,30 +505,6 @@ def test_fit_vogel_ipr_soft_when_clustered():
 def test_fit_vogel_ipr_too_few():
     assert he.fit_vogel_ipr([500], [800]) is None
     assert he.fit_vogel_ipr([], []) is None
-
-
-def test_windowed_ipr_fits_splits_and_tracks_depletion():
-    # 9 monthly tests; pr declines 1850→1650 over the window. Expect ≥2 windows
-    # whose fitted pr trends DOWN (depletion), each fit on a decent pwf spread.
-    dates = pd.to_datetime([f"2025-{m:02d}-15" for m in range(6, 12)]
-                           + [f"2026-{m:02d}-15" for m in range(1, 4)])
-    n = len(dates)
-    prs = np.linspace(1850, 1650, n)
-    # vary pwf within each month so the windows have spread to fit against
-    pwf = [400, 900, 1300, 450, 950, 1350, 500, 1000, 1400]
-    q = [float(_vogel_q(p, pr, 1000.0)) for p, pr in zip(pwf, prs)]
-    tw = pd.DataFrame({"WtDate": dates, "BHP": pwf, "WtOilVol": q})
-    wins = he.windowed_ipr_fits(tw, min_tests=3, min_days=25, max_days=95)
-    assert len(wins) >= 2
-    assert all(w["mid"] is not None for w in wins)
-    # pseudo-pr should trend downward across the ordered windows (depletion)
-    pr_series = [w["pr"] for w in wins]
-    assert pr_series[-1] < pr_series[0]
-
-
-def test_windowed_ipr_fits_too_few():
-    tw = pd.DataFrame({"WtDate": pd.to_datetime(["2025-06-01"]), "BHP": [500], "WtOilVol": [800]})
-    assert he.windowed_ipr_fits(tw) == []
 
 
 def test_pr_hi_for_formation():

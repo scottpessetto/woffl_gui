@@ -788,27 +788,11 @@ def _render_print_section(selected_well: str) -> None:
 
 
 def _auto_download(pdf_bytes: bytes, filename: str) -> None:
-    """Embed a hidden iframe that clicks a download link on render.
+    """Single-click PDF download — delegates to the shared implementation
+    in woffl.gui.components.download."""
+    from woffl.gui.components.download import autodownload
 
-    Streamlit has no API to programmatically trigger a download. We work
-    around it by rendering an HTML component (iframe) that contains a
-    hidden ``<a download href="data:...">`` and a tiny script that calls
-    ``.click()`` on it. ``components.html`` runs JS inside its iframe,
-    and modern browsers honor the ``download`` attribute on a data URL
-    even from a sandboxed iframe.
-    """
-    import base64
-
-    import streamlit.components.v1 as components
-
-    b64 = base64.b64encode(pdf_bytes).decode("ascii")
-    html = (
-        f'<a id="woffl_auto_dl" '
-        f'href="data:application/pdf;base64,{b64}" '
-        f'download="{filename}"></a>'
-        f'<script>document.getElementById("woffl_auto_dl").click();</script>'
-    )
-    components.html(html, height=0)
+    autodownload(pdf_bytes, filename, "application/pdf", "woffl_auto_dl")
 
 
 def _render_power_fluid_range_params() -> tuple[int, int, int]:

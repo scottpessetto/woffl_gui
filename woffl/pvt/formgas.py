@@ -183,27 +183,6 @@ class FormGas:
         cg = 1 / p1 - (z2 - z1) / (z1 * dp)
         return cg
 
-    def hydrate_check(self) -> tuple[bool, float]:
-        """DO NOT USE
-
-        Hydrate Formation Check
-        Checks to see if the specified pressure and temperature is at risk of hydrates.
-        Calculate hydrate formation temperature at specified pressure.
-        Requires a pressure and temperature to be specified.
-
-        Args:
-            None
-
-        Returns:
-            hydrate risk (bool): True or False
-            hydrate temp (float): Return Temperature of hydrate formation at pressure
-
-        References:
-            - Applied Multiphase Flow in Pipes (2017) Al-Safran and Brill Page 176
-        """
-        # placeholder for future work
-        return True, 55
-
     @staticmethod
     def _viscosity_lee(tempr: float, mw: float, rho_gas: float) -> float:
         """Lee et. al Gas Viscosity

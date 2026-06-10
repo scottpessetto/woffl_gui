@@ -6,7 +6,6 @@ can be converted to a Pandas Dataframe or equivalent for analysis.
 """
 
 import os
-from dataclasses import dataclass
 from itertools import product
 
 import matplotlib.colors as mcolors
@@ -22,21 +21,6 @@ from woffl.geometry.jetpump import JetPump
 from woffl.geometry.pipe import PipeInPipe
 from woffl.geometry.wellprofile import WellProfile
 from woffl.pvt import FormWater, ResMix
-
-
-@dataclass(frozen=True)
-class BatchResult:
-    """Code is currently not used"""
-
-    wellname: str
-    nozzle: str
-    throat: str
-    choked: bool
-    qoil_std: float
-    fwat_bwpd: float
-    mach_te: float
-    total_water: float
-    total_wc: float
 
 
 class BatchPump:
@@ -57,8 +41,7 @@ class BatchPump:
     ) -> None:
         """Batch Pump Solver
 
-        Used for iterating across a wide range of different pumps. An adjacent dataclass will
-        be made for storing the results. Could add an optional wellname here if desired?
+        Used for iterating across a wide range of different pumps.
 
         Args:
             pwh (float): Pressure Wellhead, psig

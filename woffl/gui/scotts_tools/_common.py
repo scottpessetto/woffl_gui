@@ -28,11 +28,8 @@ def worker_ceiling() -> int:
         env_max = 1
     return max(1, min(env_max, os.cpu_count() or 1))
 
-from woffl.assembly.network_optimizer import WellConfig, _load_well_profile
-from woffl.flow.inflow import InFlow
-from woffl.geometry.pipe import Pipe, PipeInPipe
-from woffl.gui.utils import create_pvt_components, load_well_characteristics
-from woffl.pvt.resmix import ResMix
+from woffl.assembly.network_optimizer import WellConfig
+from woffl.gui.utils import load_well_characteristics
 
 
 # ── name helpers ───────────────────────────────────────────────────────────
@@ -316,27 +313,13 @@ def build_well_config(
 
 
 def create_well_objects(wc: WellConfig):
-    """Create simulation objects (mirrors NetworkOptimizer._create_well_objects)."""
-    tube = Pipe(out_dia=wc.tubing_od, thick=wc.tubing_thickness)
-    case = Pipe(out_dia=wc.casing_od, thick=wc.casing_thickness)
-    wellbore = PipeInPipe(inn_pipe=tube, out_pipe=case)
+    """Create simulation objects for a WellConfig.
 
-    jpump_md = wc.jpump_md if wc.jpump_md else wc.jpump_tvd
-    well_profile = _load_well_profile(wc.well_name, jpump_md, wc.field_model)
+    Delegates to ``NetworkOptimizer._create_well_objects`` — these used to be
+    mirrored copies that drifted twice (per-well PVT overrides, and before
+    that the IPR handling), so the optimizer's builder is now the single
+    source of truth.
+    """
+    from woffl.assembly.network_optimizer import NetworkOptimizer
 
-    oil_qwf = wc.qwf * (1 - wc.form_wc)
-    inflow = InFlow(qwf=oil_qwf, pwf=wc.pwf, pres=wc.res_pres)
-
-    # Per-well PVT overrides replace the field preset when present — keeps
-    # Scott's Tools calibrations on the same fluid model the optimizer uses.
-    oil, water, gas = create_pvt_components(
-        field_model=wc.field_model,
-        oil_api=wc.oil_api,
-        gas_sg=wc.gas_sg,
-        wat_sg=wc.wat_sg,
-        bubble_point=wc.bubble_point,
-    )
-    res_mix = ResMix(wc=wc.form_wc, fgor=wc.form_gor, oil=oil, wat=water, gas=gas)
-    prop_pf = water.condition(0, 60)
-
-    return wellbore, well_profile, inflow, res_mix, prop_pf
+    return NetworkOptimizer._create_well_objects(wc)

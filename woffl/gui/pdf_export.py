@@ -672,7 +672,7 @@ def _hero_table(
     return tbl
 
 
-def _calibration_block(well_name: str, modeled_oil: Optional[float]) -> list:
+def _calibration_block(well_name: str) -> list:
     """Build flowables for any calibration results present in session_state.
 
     Two possible blocks: rate-scalar (``sw_calibration_result``) and
@@ -1102,8 +1102,7 @@ def generate_report(
         ))
 
     # Calibration block (rate-scalar + friction-coef, when present)
-    modeled_oil = solver_results[2] if solver_results else None
-    story.extend(_calibration_block(params.selected_well, modeled_oil))
+    story.extend(_calibration_block(params.selected_well))
 
     # IPR chart on its own page (gives it room to breathe)
     if ipr_png is not None:

@@ -1280,25 +1280,9 @@ def _get_well_tests(well_name: str):
     return get_well_tests_for_well(well_name)
 
 
-def _latest_actuals(well_name: str) -> dict[str, float | None]:
-    """Most recent test values — kept for back-compat. New code should use
-    :func:`_actuals_from_test` with a specific test row instead, so the test
-    picker on the Solver tab can target any test (not just the latest).
-    """
-    blank = {"oil": None, "bhp": None, "pf": None}
-    if well_name == "Custom":
-        return blank
-    tests = _get_well_tests(well_name)
-    if tests is None or tests.empty:
-        return blank
-    recent = tests.sort_values("WtDate", ascending=False).iloc[0]
-    return _actuals_from_test(recent)
-
-
 def _actuals_from_test(test_row) -> dict[str, float | None]:
     """Extract Oil / BHP / PF actuals from a single well-test row.
 
-    Generalises :func:`_latest_actuals` to any test, not just the most recent.
     Returns all-None when ``test_row`` is None (e.g. no tests available or a
     Custom well).
     """
