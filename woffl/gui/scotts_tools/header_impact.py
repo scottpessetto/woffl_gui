@@ -1429,7 +1429,7 @@ def _render_header_estimate(results_df: pd.DataFrame, delta_p: float) -> None:
     """
     test_df = st.session_state.get("hpi_test_df")
     emp_fits = st.session_state.get("hpi_emp_fits", {}) or {}
-    fit_map = _pad_single_fits(results_df, test_df)
+    fit_map = _pad_single_fits_cached(results_df, test_df)
     input_df = st.session_state.get("hpi_input_df")
 
     # Water cut per well: form_wc → measured water fraction → pad average →
@@ -2565,7 +2565,7 @@ def _build_backtest_export(results_df, delta_p) -> dict:
     rows, fits = [], {}
     for pad in pads:
         pad_df = results_df[results_df["Pad"] == pad]
-        fm = _pad_single_fits(pad_df, test_df)
+        fm = _pad_single_fits_cached(pad_df, test_df)
         bt = _backtest_table(pad_df, test_df, curve, pump_changed, fm, ipr_rows, use_pseudo)
         for rec in bt.to_dict("records"):
             rec["Pad"] = pad
@@ -2593,36 +2593,85 @@ def _build_backtest_export(results_df, delta_p) -> dict:
 def _render_backtest_export(results_df, delta_p) -> None:
     """Write the full back-test result set to a JSON file (for offline review +
     iterating together) and offer it as a download. Best-effort — never breaks the
-    UI if the filesystem is read-only (e.g. on Databricks)."""
+    UI if the filesystem is read-only (e.g. on Databricks).
+
+    Built (and written to disk) ONCE per run token: the payload re-runs the
+    per-pad fits + back-test tables, and it used to rebuild + rewrite the
+    JSON on every rerun of the results surface. The disk write stays (the
+    offline probe tool tools/hpi_backtest_probe.py reads it) but now happens
+    once per run instead of once per interaction.
+    """
     import json
     from pathlib import Path
 
-    try:
-        payload = _build_backtest_export(results_df, delta_p)
-    except Exception as e:
-        st.caption(f"Back-test dump unavailable ({type(e).__name__}: {e}).")
-        return
-    blob = json.dumps(payload, indent=2)
-    wrote = None
-    try:
-        out = Path(__file__).resolve().parents[3] / "temp" / "hpi_backtest_latest.json"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(blob, encoding="utf-8")
-        wrote = str(out)
-    except Exception:
+    # Key includes the post-run widgets the payload depends on — the
+    # pseudo-Pr toggle and the lookback re-render the on-screen back-test
+    # live, and a token-only key would pin the export to their values at
+    # first render (silently disagreeing with the displayed table).
+    dump_key = (
+        st.session_state.get("hpi_run_token", 0),
+        bool(st.session_state.get("hpi_bt_use_pseudo_pr", False)),
+        int(st.session_state.get("hpi_months", 6)),
+    )
+    cached = st.session_state.get("_hpi_bt_dump")
+    if cached is None or cached.get("key") != dump_key:
+        try:
+            payload = _build_backtest_export(results_df, delta_p)
+        except Exception as e:
+            st.caption(f"Back-test dump unavailable ({type(e).__name__}: {e}).")
+            return
+        blob = json.dumps(payload, indent=2)
         wrote = None
+        try:
+            out = Path(__file__).resolve().parents[3] / "temp" / "hpi_backtest_latest.json"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(blob, encoding="utf-8")
+            wrote = str(out)
+        except Exception:
+            wrote = None
+        cached = {
+            "key": dump_key,
+            "blob": blob,
+            "n_wells": payload["n_wells_backtested"],
+            "wrote": wrote,
+        }
+        st.session_state["_hpi_bt_dump"] = cached
+
     with st.expander("🧪 Back-test result dump (for review / iteration)", expanded=False):
         st.caption(
-            f"Captured **{payload['n_wells_backtested']}** back-tested well(s)"
-            + (f" → wrote `{wrote}`" if wrote else " (file write unavailable here — use Download)")
+            f"Captured **{cached['n_wells']}** back-tested well(s)"
+            + (
+                f" → wrote `{cached['wrote']}`"
+                if cached["wrote"]
+                else " (file write unavailable here — use Download)"
+            )
             + ". This JSON has every well's ΔWHP/ΔBHP/ΔOil actual-vs-pred, the windowed "
             "pseudo-Pr fits, and the run config — the shared substrate for tuning the back-test."
         )
         st.download_button(
-            "Download back-test JSON", data=blob.encode("utf-8"),
+            "Download back-test JSON", data=cached["blob"].encode("utf-8"),
             file_name="hpi_backtest_latest.json", mime="application/json",
             key="hpi_bt_dump_dl", use_container_width=True,
         )
+
+
+def _pad_single_fits_cached(pad_df, test_df) -> dict:
+    """Session-memoized ``_pad_single_fits`` keyed on (run token, well set).
+
+    The fit runs a 240-point Vogel grid search per well, and THREE consumers
+    (header estimate, per-pad review, back-test export) each recomputed it on
+    every rerun of the results surface. Entries from previous runs are
+    dropped when the run token changes.
+    """
+    token = st.session_state.get("hpi_run_token", 0)
+    memo = st.session_state.setdefault("_hpi_fit_memo", {})
+    if st.session_state.get("_hpi_fit_memo_token") != token:
+        memo.clear()
+        st.session_state["_hpi_fit_memo_token"] = token
+    key = tuple(pad_df["Well"])
+    if key not in memo:
+        memo[key] = _pad_single_fits(pad_df, test_df)
+    return memo[key]
 
 
 def _pad_single_fits(pad_df, test_df) -> dict:
@@ -2807,7 +2856,7 @@ def _render_pad_review(results_df: pd.DataFrame, delta_p: float) -> None:
                         f"**{brow['Emp/Phys bias'].iloc[0]:.2f}** — {brow['Flag'].iloc[0]}"
                     )
             # ── Long-horizon back-test: the real header move vs the model ────
-            fit_map = _pad_single_fits(pad_df, test_df)
+            fit_map = _pad_single_fits_cached(pad_df, test_df)
             bt = _backtest_table(pad_df, test_df, curve, pump_changed, fit_map,
                                  ipr_rows, use_pseudo)
             if not bt.empty:
@@ -3426,20 +3475,24 @@ def _render_diagnostics() -> None:
     fig = _plot_well_fits(well, well_dfs[well], fits.get(well, {}))
     if fig is not None:
         st.plotly_chart(fig, use_container_width=True)
-        from .header_report import fig_to_png_bytes, well_fit_mpl
-        try:
-            mf = well_fit_mpl(well, well_dfs[well], fits.get(well, {}))
-            if mf is not None:
-                st.download_button(
-                    "Download this plot (PNG)", data=fig_to_png_bytes(mf),
-                    file_name=f"header_fit_{well}.png", mime="image/png",
-                    key="hpi_diag_png",
+        # Built ON CLICK: the eager version re-rendered the matplotlib figure
+        # and PNG bytes on every rerun just to feed the download button.
+        if st.button("Download this plot (PNG)", key="hpi_diag_png"):
+            from .header_report import fig_to_png_bytes, well_fit_mpl
+            try:
+                with st.spinner("Rendering PNG..."):
+                    mf = well_fit_mpl(well, well_dfs[well], fits.get(well, {}))
+                    png = fig_to_png_bytes(mf) if mf is not None else None
+                if png is not None:
+                    _autodownload(
+                        png, f"header_fit_{well}.png",
+                        "hpidiagpng", mime="image/png",
+                    )
+            except Exception as e:
+                st.caption(
+                    f"PNG export unavailable ({type(e).__name__}). Use the chart's "
+                    "camera icon to save instead."
                 )
-        except Exception as e:
-            st.caption(
-                f"PNG export unavailable ({type(e).__name__}). Use the chart's camera "
-                "icon to save instead."
-            )
     else:
         st.info("No usable trend data for this well.")
 
@@ -3465,17 +3518,24 @@ def _render_diagnostics() -> None:
     if gfig is not None:
         used = st.session_state.get("hpi_grid_driver_used", "WHP")
         st.plotly_chart(gfig, use_container_width=True)
-        from .header_report import corr_grid_mpl, fig_to_png_bytes
-        try:
-            mf = corr_grid_mpl(well_dfs, fits, sorted(well_dfs.keys()), used)
-            if mf is not None:
-                st.download_button(
-                    "Download grid PNG", data=fig_to_png_bytes(mf),
-                    file_name=f"header_fit_grid_{used}.png", mime="image/png",
-                    key="hpi_grid_dl",
-                )
-        except Exception as e:
-            st.caption(f"PNG export unavailable ({type(e).__name__}).")
+        # Built ON CLICK: the eager version re-rendered the all-wells
+        # matplotlib grid (thousands of points × dozens of panels) on every
+        # rerun once the grid existed, just to feed the download button.
+        if st.button("Download grid PNG", key="hpi_grid_dl"):
+            from .header_report import corr_grid_mpl, fig_to_png_bytes
+            try:
+                # rasterization (fig_to_png_bytes) is the expensive half —
+                # keep it inside the spinner too
+                with st.spinner("Rendering grid PNG..."):
+                    mf = corr_grid_mpl(well_dfs, fits, sorted(well_dfs.keys()), used)
+                    png = fig_to_png_bytes(mf) if mf is not None else None
+                if png is not None:
+                    _autodownload(
+                        png, f"header_fit_grid_{used}.png",
+                        "hpigridpng", mime="image/png",
+                    )
+            except Exception as e:
+                st.caption(f"PNG export unavailable ({type(e).__name__}).")
 
 
 # ── analog-donor estimate (gaugeless / non-JP wells) ──────────────────────────

@@ -248,8 +248,10 @@ def _render_memory_gauge_section(well_name: str) -> None:
 
         c1, c2 = st.columns(2)
         c1.metric("Samples", f"{preview.sample_count:,}")
-        pr_min = float(preview.raw_df["pressure"].min())
-        pr_max = float(preview.raw_df["pressure"].max())
+        # Raw extremes captured at parse time — raw_df now holds minute
+        # medians, which would filter out the very spikes worth eyeballing.
+        pr_min = float(preview.pressure_min)
+        pr_max = float(preview.pressure_max)
         c2.metric("Pressure range", f"{pr_min:,.0f} – {pr_max:,.0f} psi")
         st.caption(
             f"Coverage: **{preview.start_date.strftime('%Y-%m-%d')}** → "

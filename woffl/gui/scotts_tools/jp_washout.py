@@ -248,10 +248,27 @@ def render_tab() -> None:
             except Exception:
                 pass
             st.session_state.pop("jp_washout_results", None)
+            st.session_state.pop("_jp_washout_scan_input", None)
             st.rerun()
 
+    # Session-memoized scan input: st.tabs runs this tool's body on every
+    # rerun of the Scott's Tools page, and _build_scan_input does per-well
+    # pump lookups + the Vogel IPR fits each time. Refresh (above) and a
+    # lookback change invalidate it.
     try:
-        input_df = _build_scan_input(months_back)
+        memo = st.session_state.get("_jp_washout_scan_input")
+        if memo is not None and memo.get("months") == months_back:
+            input_df = memo["df"]
+        else:
+            input_df = _build_scan_input(months_back)
+            # Memoize SUCCESS only — a None (jp_history not loaded yet /
+            # transient fetch failure) must keep recomputing so the tool
+            # self-heals once the data appears.
+            if input_df is not None and not input_df.empty:
+                st.session_state["_jp_washout_scan_input"] = {
+                    "months": months_back,
+                    "df": input_df,
+                }
     except Exception as e:
         st.error(f"Could not load well tests: {e}")
         return

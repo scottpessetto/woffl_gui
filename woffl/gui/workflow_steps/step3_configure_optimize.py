@@ -431,7 +431,14 @@ def render_step3():
                     progress_bar.progress(current / total)
                     status_text.text(f"Processing {well_name}... ({current}/{total})")
 
-            optimizer.run_all_batch_simulations(progress_callback)
+            # Per-well parallelism, capped by WOFFL_MAX_WORKERS (2 on
+            # Databricks, higher locally) — this loop is the workflow's
+            # dominant runtime and the wells are independent.
+            from woffl.gui.scotts_tools._common import worker_ceiling
+
+            optimizer.run_all_batch_simulations(
+                progress_callback, max_workers=worker_ceiling()
+            )
             progress_bar.empty()
             status_text.empty()
             st.success(f"Completed batch simulations for {len(wells)} wells")

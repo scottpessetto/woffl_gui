@@ -78,11 +78,18 @@ class MemoryGaugeFile:
     """
 
     source_filename: str
-    raw_df: pd.DataFrame  # columns: timestamp, pressure
+    # columns: timestamp, pressure — MINUTE-MEDIAN samples (downsampled at
+    # parse time; see parse_xlsx). Only daily medians are consumed downstream.
+    raw_df: pd.DataFrame
     start_date: pd.Timestamp
     end_date: pd.Timestamp
-    sample_count: int
+    sample_count: int  # RAW (pre-downsample) points in the uploaded file
     uploaded_at: datetime
+    # RAW pressure extremes, captured before downsampling — the upload
+    # preview shows these so sub-minute spikes/dips (gauge pull/install
+    # transients) stay visible to the engineer sanity-checking a file.
+    pressure_min: float = float("nan")
+    pressure_max: float = float("nan")
 
 
 @dataclass
@@ -189,13 +196,34 @@ def parse_xlsx(file_bytes: bytes, source_filename: str) -> MemoryGaugeFile:
     # Sort and dedupe (rare but possible at gauge restart points)
     df = df.sort_values("timestamp").drop_duplicates(subset=["timestamp"])
 
+    raw_count = len(df)
+    start_date = df["timestamp"].min()
+    end_date = df["timestamp"].max()
+    pressure_min = float(df["pressure"].min())
+    pressure_max = float(df["pressure"].max())
+
+    # Downsample to 1-minute medians: gauges sample every ~5 s, so a 90-day
+    # file is ~1.5M rows (~37 MB) that used to sit in session_state for the
+    # whole session — per file, per well, per user, on a shared 6 GB box.
+    # Only the DAILY median is consumed downstream, so minute medians keep
+    # the aggregation effectively identical at ~1/12th the memory.
+    df = (
+        df.set_index("timestamp")["pressure"]
+        .resample("1min")
+        .median()
+        .dropna()
+        .reset_index()
+    )
+
     return MemoryGaugeFile(
         source_filename=source_filename,
-        raw_df=df[["timestamp", "pressure"]].copy(),
-        start_date=df["timestamp"].min(),
-        end_date=df["timestamp"].max(),
-        sample_count=len(df),
+        raw_df=df[["timestamp", "pressure"]],
+        start_date=start_date,
+        end_date=end_date,
+        sample_count=raw_count,
         uploaded_at=datetime.now(),
+        pressure_min=pressure_min,
+        pressure_max=pressure_max,
     )
 
 

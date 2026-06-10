@@ -263,8 +263,13 @@ class NetworkOptimizer:
                 return well
         return None
 
-    def _create_well_objects(self, well: WellConfig):
+    @staticmethod
+    def _create_well_objects(well: WellConfig):
         """Create simulation objects for a well
+
+        Static (uses only the WellConfig) so the module-level ProcessPool
+        worker can reuse it without dragging the whole optimizer across the
+        process boundary.
 
         Args:
             well: Well configuration
@@ -305,75 +310,61 @@ class NetworkOptimizer:
 
         return wellbore, well_profile, inflow, res_mix, prop_pf
 
-    def run_all_batch_simulations(self, progress_callback=None) -> dict[str, BatchPump]:
+    def run_all_batch_simulations(
+        self, progress_callback=None, max_workers: int = 1
+    ) -> dict[str, BatchPump]:
         """Run batch simulations for all wells
 
         Args:
             progress_callback: Optional callback function(current, total, well_name)
                              for tracking progress
+            max_workers: Process-pool size for per-well parallelism. 1 (the
+                default) keeps the historical sequential behavior. Wells are
+                independent, so callers on multi-core hosts can pass e.g.
+                ``worker_ceiling()`` to cut wall-clock roughly by the worker
+                count — this loop is the dominant runtime of a multi-well
+                optimization.
 
         Returns:
             Dictionary mapping well_name to BatchPump objects
         """
         self.batch_results = {}
         total_wells = len(self.wells)
+        workers = max(1, int(max_workers))
 
-        for idx, well in enumerate(self.wells):
-            if progress_callback:
-                progress_callback(idx, total_wells, well.well_name)
+        if workers == 1 or total_wells <= 1:
+            for idx, well in enumerate(self.wells):
+                if progress_callback:
+                    progress_callback(idx, total_wells, well.well_name)
+                self.batch_results[well.well_name] = _simulate_single_well(
+                    well,
+                    self.power_fluid.pressure,
+                    self.nozzle_options,
+                    self.throat_options,
+                )
+        else:
+            from concurrent.futures import ProcessPoolExecutor, as_completed
 
-            # Create well-specific objects
-            wellbore, well_profile, inflow, res_mix, prop_pf = (
-                self._create_well_objects(well)
-            )
-
-            # Per-well calibration overrides (set by the pre-calibration step
-            # in the workflow). When unset, fall back to the field-level PF
-            # pressure and BatchPump's library default friction coefs.
-            ppf_for_well = (
-                well.ppf_surf_well
-                if well.ppf_surf_well is not None
-                else self.power_fluid.pressure
-            )
-            jp_kwargs = {}
-            if well.knz_well is not None:
-                jp_kwargs["knz"] = well.knz_well
-            if well.ken_well is not None:
-                jp_kwargs["ken"] = well.ken_well
-            if well.kth_well is not None:
-                jp_kwargs["kth"] = well.kth_well
-            if well.kdi_well is not None:
-                jp_kwargs["kdi"] = well.kdi_well
-
-            # Create jet pump list with (possibly overridden) friction coefs
-            jp_list = BatchPump.jetpump_list(
-                self.nozzle_options, self.throat_options, **jp_kwargs
-            )
-
-            # Create and run BatchPump
-            batch_pump = BatchPump(
-                pwh=well.surf_pres,
-                tsu=well.form_temp,
-                ppf_surf=ppf_for_well,
-                wellbore=wellbore,
-                wellprof=well_profile,
-                ipr_su=inflow,
-                prop_su=res_mix,
-                prop_pf=prop_pf,
-                wellname=well.well_name,
-            )
-
-            # Run batch simulation (don't raise errors, capture them)
-            batch_pump.batch_run(jp_list, debug=False)
-
-            # Process results
-            try:
-                batch_pump.process_results()
-            except (ValueError, RuntimeError) as e:
-                # If curve fitting fails, that's okay - we can still use raw results
-                print(f"Warning: Curve fitting failed for {well.well_name}: {e}")
-
-            self.batch_results[well.well_name] = batch_pump
+            done = 0
+            with ProcessPoolExecutor(max_workers=min(workers, total_wells)) as pool:
+                futures = {
+                    pool.submit(
+                        _simulate_single_well,
+                        well,
+                        self.power_fluid.pressure,
+                        self.nozzle_options,
+                        self.throat_options,
+                    ): well.well_name
+                    for well in self.wells
+                }
+                for fut in as_completed(futures):
+                    name = futures[fut]
+                    # Propagate worker errors — matches the sequential path,
+                    # where an unexpected per-well failure aborts the run.
+                    self.batch_results[name] = fut.result()
+                    done += 1
+                    if progress_callback:
+                        progress_callback(done, total_wells, name)
 
         if progress_callback:
             progress_callback(total_wells, total_wells, "Complete")
@@ -583,6 +574,69 @@ class NetworkOptimizer:
             )
 
         return pd.DataFrame(data)
+
+
+def _simulate_single_well(
+    well: WellConfig,
+    pf_pressure: float,
+    nozzle_options: list[str],
+    throat_options: list[str],
+) -> BatchPump:
+    """Build well objects and run the full nozzle×throat sweep for ONE well.
+
+    Module-level and argument-pure so ``run_all_batch_simulations`` can
+    dispatch it to ProcessPool workers (everything passed in and returned
+    must pickle). The sequential path calls it directly, so both paths share
+    one implementation.
+    """
+    wellbore, well_profile, inflow, res_mix, prop_pf = (
+        NetworkOptimizer._create_well_objects(well)
+    )
+
+    # Per-well calibration overrides (set by the pre-calibration step in the
+    # workflow). When unset, fall back to the field-level PF pressure and
+    # BatchPump's library default friction coefs.
+    ppf_for_well = (
+        well.ppf_surf_well if well.ppf_surf_well is not None else pf_pressure
+    )
+    jp_kwargs = {}
+    if well.knz_well is not None:
+        jp_kwargs["knz"] = well.knz_well
+    if well.ken_well is not None:
+        jp_kwargs["ken"] = well.ken_well
+    if well.kth_well is not None:
+        jp_kwargs["kth"] = well.kth_well
+    if well.kdi_well is not None:
+        jp_kwargs["kdi"] = well.kdi_well
+
+    # Create jet pump list with (possibly overridden) friction coefs
+    jp_list = BatchPump.jetpump_list(nozzle_options, throat_options, **jp_kwargs)
+
+    batch_pump = BatchPump(
+        pwh=well.surf_pres,
+        tsu=well.form_temp,
+        ppf_surf=ppf_for_well,
+        wellbore=wellbore,
+        wellprof=well_profile,
+        ipr_su=inflow,
+        prop_su=res_mix,
+        prop_pf=prop_pf,
+        wellname=well.well_name,
+    )
+
+    # Run batch simulation (don't raise errors, capture them)
+    batch_pump.batch_run(jp_list, debug=False)
+
+    # Process results. TypeError included: scipy's curve_fit raises it when
+    # a marginal well yields fewer semi-finalists than fit parameters — it
+    # used to escape this catch and abort the entire multi-well run.
+    try:
+        batch_pump.process_results()
+    except (ValueError, RuntimeError, TypeError) as e:
+        # If curve fitting fails, that's okay - we can still use raw results
+        print(f"Warning: Curve fitting failed for {well.well_name}: {e}")
+
+    return batch_pump
 
 
 def _load_well_profile(

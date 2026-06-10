@@ -416,7 +416,20 @@ def render_tab() -> None:
             return False
         return bool(p) and bool(p.get("nozzle_no")) and bool(p.get("throat_ratio"))
 
-    jp_wells = [w for w in all_wells if _has_valid_jp(w)]
+    # Session-memoized: get_current_pump filters + sorts the whole JP-history
+    # frame per well (~150×), and st.tabs re-ran this scan on every rerun of
+    # the Scott's Tools page. Keyed on the candidate list + history size so a
+    # reloaded history invalidates it.
+    _jp_key = (tuple(all_wells), len(jp_hist))
+    _jp_memo = st.session_state.get("_jp_fric_trend_jp_wells")
+    if _jp_memo is not None and _jp_memo.get("key") == _jp_key:
+        jp_wells = _jp_memo["wells"]
+    else:
+        jp_wells = [w for w in all_wells if _has_valid_jp(w)]
+        st.session_state["_jp_fric_trend_jp_wells"] = {
+            "key": _jp_key,
+            "wells": jp_wells,
+        }
 
     c1, c2, c3, c4 = st.columns([2.5, 1.2, 1.2, 1.1])
     with c1:

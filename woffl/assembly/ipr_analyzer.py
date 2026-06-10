@@ -40,41 +40,29 @@ def _calculate_global_sse(
     if n < 2:
         return float("inf")
 
-    best_sse = float("inf")
+    # Vectorized: the original pure-Python anchor×point double loop ran
+    # ~1M scalar iterations per well across the RP grid search (50 tests ×
+    # 400 candidates), grinding for tens of seconds on a full-field fetch.
+    bhp = np.asarray(bhp_values, dtype=float)
+    fluid = np.asarray(fluid_values, dtype=float)
 
-    for anchor_idx in range(n):
-        anchor_bhp = bhp_values[anchor_idx]
-        anchor_fluid = fluid_values[anchor_idx]
+    ratio = bhp / pres
+    vogel = 1.0 - 0.2 * ratio - 0.8 * ratio**2
 
-        # Skip if anchor BHP >= candidate RP (invalid for Vogel)
-        if anchor_bhp >= pres or anchor_fluid <= 0:
-            continue
+    # Valid anchors: BHP below the candidate RP, positive rate, positive
+    # Vogel denominator (the denom guard mirrors the original loop).
+    valid_anchor = (bhp < pres) & (fluid > 0) & (vogel > 0)
+    if not valid_anchor.any():
+        return float("inf")
 
-        try:
-            # Compute qmax from this anchor point
-            ratio = anchor_bhp / pres
-            denom = 1.0 - 0.2 * ratio - 0.8 * ratio**2
-            if denom <= 0:
-                continue
-            qmax = anchor_fluid / denom
+    valid_j = bhp < pres  # points predictable by the curve
 
-            # Predict fluid rate for all points and compute SSE
-            sse = 0.0
-            for j in range(n):
-                if bhp_values[j] >= pres:
-                    sse += 1e8  # Penalty for BHP >= RP
-                    continue
-                ratio_j = bhp_values[j] / pres
-                predicted = qmax * (1.0 - 0.2 * ratio_j - 0.8 * ratio_j**2)
-                sse += (predicted - fluid_values[j]) ** 2
+    qmax = fluid[valid_anchor] / vogel[valid_anchor]  # (m,)
+    predicted = np.outer(qmax, np.where(valid_j, vogel, 0.0))  # (m, n)
+    err2 = (predicted - fluid[None, :]) ** 2
+    err2[:, ~valid_j] = 1e8  # penalty for BHP >= RP, same as the original
 
-            if sse < best_sse:
-                best_sse = sse
-
-        except (ValueError, ZeroDivisionError):
-            continue
-
-    return best_sse
+    return float(err2.sum(axis=1).min())
 
 
 def _calculate_r_squared(

@@ -37,10 +37,23 @@ class ResMix:
         self.rho_oil_std = oil.condition(pstd, tstd).density
         self.rho_wat_std = wat.condition(pstd, tstd).density
         self.rho_gas_std = gas.condition(pstd, tstd).density
+        self._cache: dict = {}
 
     def __repr__(self) -> str:
         # return(f'Mixture with {self.oil.oil_api} API Oil')
         return f"Mixture at {100 * self.wc}% Watercut and {self.fgor} SCF/STB FGOR"
+
+    def _cached(self, key, fn):
+        """Per-condition memo (cleared by condition()) — mirrors BlackOil.
+
+        One throat-entry iteration reads volm_fract/rho_mix/cmix several
+        times at the SAME (press, temp); recomputing the whole fraction
+        chain each read was the dominant avoidable Python overhead in a
+        batch sweep.
+        """
+        if key not in self._cache:
+            self._cache[key] = fn()
+        return self._cache[key]
 
     def condition(self, press: float, temp: float):
         """Set condition of evaluation
@@ -64,6 +77,7 @@ class ResMix:
         # input temp in deg F
         self._pressa = self.press + 14.7  # convert psig to psia
         self._tempr = self.temp + 459.67  # convert fahr to rankine
+        self._cache = {}
         return self
 
     def rho_comp(self) -> tuple[float, float, float]:
@@ -80,10 +94,10 @@ class ResMix:
             rho_wat (float): density of water, lbm/ft3
             rho_gas (float): density of gas, lbm/ft3
         """
-        rho_oil = self.oil.density
-        rho_wat = self.wat.density
-        rho_gas = self.gas.density
-        return rho_oil, rho_wat, rho_gas
+        return self._cached(
+            "rho_comp",
+            lambda: (self.oil.density, self.wat.density, self.gas.density),
+        )
 
     def rho_two(self) -> tuple[float, float]:
         """Density of Two Phases, Liquid and Gas
@@ -114,10 +128,15 @@ class ResMix:
         Returns:
             pmix (float): density of mixture, lbm/ft3
         """
-        xoil, xwat, xgas = self.mass_fract()
-        rho_oil, rho_wat, rho_gas = self.rho_comp()
-        rho_mix = self._homogenous_density(xoil, xwat, xgas, rho_oil, rho_wat, rho_gas)
-        return rho_mix
+
+        def _compute() -> float:
+            xoil, xwat, xgas = self.mass_fract()
+            rho_oil, rho_wat, rho_gas = self.rho_comp()
+            return self._homogenous_density(
+                xoil, xwat, xgas, rho_oil, rho_wat, rho_gas
+            )
+
+        return self._cached("rho_mix", _compute)
 
     def visc_comp(self) -> tuple[float, float, float]:
         """Viscosity Components
@@ -199,10 +218,10 @@ class ResMix:
             cw (float): compressibility of oil, psi**-1
             cg (float): compressibility of oil, psi**-1
         """
-        co = self.oil.compress
-        cw = self.wat.compress
-        cg = self.gas.compress
-        return co, cw, cg
+        return self._cached(
+            "comp_comp",
+            lambda: (self.oil.compress, self.wat.compress, self.gas.compress),
+        )
 
     def mass_fract(self) -> tuple[float, float, float]:
         """Mass Fractions
@@ -222,16 +241,19 @@ class ResMix:
         References:
             Derivations from Kaelin available on request
         """
-        # use static method from below to run the calcs
-        xoil, xwat, xgas = self._owg_mass_fraction(
-            self.wc,
-            self.fgor,
-            self.oil.gas_solubility(),
-            self.rho_oil_std,
-            self.rho_wat_std,
-            self.rho_gas_std,
-        )
-        return xoil, xwat, xgas
+
+        def _compute() -> tuple[float, float, float]:
+            # use static method from below to run the calcs
+            return self._owg_mass_fraction(
+                self.wc,
+                self.fgor,
+                self.oil.gas_solubility(),
+                self.rho_oil_std,
+                self.rho_wat_std,
+                self.rho_gas_std,
+            )
+
+        return self._cached("mass_fract", _compute)
 
     def volm_fract(self) -> tuple[float, float, float]:
         """Volume Fractions
@@ -247,15 +269,21 @@ class ResMix:
             ywat (float): volume fraction of water in the mixture
             ygas (float): volume fraction of gas in the mixture
         """
-        xoil, xwat, xgas = self.mass_fract()
-        rho_oil, rho_wat, rho_gas = self.rho_comp()
-        rho_mix = self._homogenous_density(xoil, xwat, xgas, rho_oil, rho_wat, rho_gas)
 
-        yoil = xoil * rho_mix / rho_oil
-        ywat = xwat * rho_mix / rho_wat
-        ygas = xgas * rho_mix / rho_gas
+        def _compute() -> tuple[float, float, float]:
+            xoil, xwat, xgas = self.mass_fract()
+            rho_oil, rho_wat, rho_gas = self.rho_comp()
+            rho_mix = self._homogenous_density(
+                xoil, xwat, xgas, rho_oil, rho_wat, rho_gas
+            )
 
-        return yoil, ywat, ygas
+            yoil = xoil * rho_mix / rho_oil
+            ywat = xwat * rho_mix / rho_wat
+            ygas = xgas * rho_mix / rho_gas
+
+            return yoil, ywat, ygas
+
+        return self._cached("volm_fract", _compute)
 
     def nslh(self) -> float:
         """No Slip Liquid Holdup
@@ -287,15 +315,18 @@ class ResMix:
         References:
             Sound Speed in the Mixture Water-Air D.Himr (2009)
         """
-        co, cw, cg = self.comp_comp()  # isothermal compressibility
-        yoil, ywat, ygas = self.volm_fract()  # volume fractions
-        rho_s = self.rho_mix()
-        cs = self._homogenous_mixture(
-            yoil, ywat, ygas, co, cw, cg
-        )  # mixture compressibility
-        ks = 1 / cs  # mixture bulk modulus of elasticity
-        snd_mix = math.sqrt(32.174 * 144 * ks / rho_s)  # speed of sound, ft/s
-        return snd_mix
+
+        def _compute() -> float:
+            co, cw, cg = self.comp_comp()  # isothermal compressibility
+            yoil, ywat, ygas = self.volm_fract()  # volume fractions
+            rho_s = self.rho_mix()
+            cs = self._homogenous_mixture(
+                yoil, ywat, ygas, co, cw, cg
+            )  # mixture compressibility
+            ks = 1 / cs  # mixture bulk modulus of elasticity
+            return math.sqrt(32.174 * 144 * ks / rho_s)  # speed of sound, ft/s
+
+        return self._cached("cmix", _compute)
 
     def insitu_volm_flow(self, qoil_std: float) -> tuple[float, float, float]:
         """Insitu Volumetric Flow of Components
