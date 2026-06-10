@@ -16,22 +16,28 @@ if TYPE_CHECKING:
     from woffl.assembly.network_optimizer import NetworkOptimizer, OptimizationResult
 
 
-def milp_optimization(optimizer: "NetworkOptimizer") -> list["OptimizationResult"]:
+def milp_optimization(
+    optimizer: "NetworkOptimizer", water_key: str = "lift_wat"
+) -> list["OptimizationResult"]:
     """Optimal allocation via mixed-integer linear programming.
 
     Formulates pump selection as a multiple-choice knapsack problem and
     solves it exactly using MILP.  Each well may be assigned at most one
     pump configuration (nozzle/throat).  The solver maximizes total oil
-    production subject to the power-fluid budget constraint.
+    production subject to the water-budget constraint.
 
     Args:
         optimizer: NetworkOptimizer instance with batch results already run
+        water_key: Which water stream the budget constrains. "lift_wat"
+            (power fluid only — PF-only POPS pads, where formation water
+            passes through to the plant) or "totl_wat" (lift + formation —
+            full-POPS pads whose pad pump handles the entire stream).
 
     Returns:
         List of OptimizationResult objects
 
     Raises:
-        ValueError: If batch results haven't been run
+        ValueError: If batch results haven't been run or water_key unknown
     """
     from scipy.optimize import Bounds, LinearConstraint, milp
     from scipy.sparse import csc_array
@@ -41,6 +47,17 @@ def milp_optimization(optimizer: "NetworkOptimizer") -> list["OptimizationResult
 
     if not optimizer.batch_results:
         raise ValueError("Must run batch simulations before optimization")
+
+    try:
+        perf_key = {"lift_wat": "lift_water", "totl_wat": "total_water"}[water_key]
+        marg_key = {
+            "lift_wat": "marginal_oil_lift_water",
+            "totl_wat": "marginal_oil_total_water",
+        }[water_key]
+    except KeyError:
+        raise ValueError(
+            f"Unknown water_key: {water_key}. Use 'lift_wat' or 'totl_wat'"
+        ) from None
 
     # ── Build decision-variable list ──────────────────────────────────────
     # Each variable x[k] ∈ {0,1} represents selecting config k for a well.
@@ -89,8 +106,10 @@ def milp_optimization(optimizer: "NetworkOptimizer") -> list["OptimizationResult
         vals.append(1.0)
     A_well = csc_array((vals, (row_ids, col_ids)), shape=(n_wells, n))
 
-    # ── Constraint 2: Σ pf[k]*x[k] ≤ budget ─────────────────────────────
-    pf_vals = np.array([[cfg["perf"]["lift_water"] for cfg in configs]])
+    # ── Constraint 2: Σ water[k]*x[k] ≤ budget ──────────────────────────
+    # water_key picks the constrained stream: lift water (PF budget) or
+    # lift + formation (full-POPS pad pump limit).
+    pf_vals = np.array([[cfg["perf"][perf_key] for cfg in configs]])
     A_pf = csc_array(pf_vals)
 
     A = sp_vstack([A_well, A_pf], format="csc")
@@ -126,7 +145,7 @@ def milp_optimization(optimizer: "NetworkOptimizer") -> list["OptimizationResult
                 predicted_formation_water=perf["formation_water"],
                 predicted_lift_water=perf["lift_water"],
                 suction_pressure=perf["suction_pressure"],
-                marginal_oil_rate=perf["marginal_oil_lift_water"],
+                marginal_oil_rate=perf[marg_key],
                 sonic_status=perf["sonic_status"],
                 mach_te=perf["mach_te"],
             )
@@ -136,7 +155,9 @@ def milp_optimization(optimizer: "NetworkOptimizer") -> list["OptimizationResult
     return results
 
 
-def mckp_optimization(optimizer: "NetworkOptimizer") -> list["OptimizationResult"]:
+def mckp_optimization(
+    optimizer: "NetworkOptimizer", water_key: str = "lift_wat"
+) -> list["OptimizationResult"]:
     """Optimal allocation via Multi-Choice Knapsack (OR-Tools CP-SAT).
 
     Bridges the GUI's NetworkOptimizer interface to Kaelin's upstream
@@ -176,7 +197,7 @@ def mckp_optimization(optimizer: "NetworkOptimizer") -> list["OptimizationResult
     mckp_df = optimize_jet_pumps(
         well_list=batch_pumps,
         qpf_tot=optimizer.power_fluid.total_rate,
-        water_key="lift_wat",
+        water_key=water_key,
         allow_shutin=False,
     )
 
@@ -213,13 +234,15 @@ def mckp_optimization(optimizer: "NetworkOptimizer") -> list["OptimizationResult
 
 
 def optimize(
-    optimizer: "NetworkOptimizer", method: str = "milp"
+    optimizer: "NetworkOptimizer", method: str = "milp", water_key: str = "lift_wat"
 ) -> list["OptimizationResult"]:
     """Main optimization dispatcher
 
     Args:
         optimizer: NetworkOptimizer instance
         method: Optimization method ('milp' or 'mckp')
+        water_key: Constrained water stream — 'lift_wat' (PF-only budget)
+            or 'totl_wat' (lift + formation, full-POPS pad pump limit)
 
     Returns:
         List of OptimizationResult objects
@@ -228,8 +251,8 @@ def optimize(
         ValueError: If method is not recognized
     """
     if method == "milp":
-        return milp_optimization(optimizer)
+        return milp_optimization(optimizer, water_key=water_key)
     elif method == "mckp":
-        return mckp_optimization(optimizer)
+        return mckp_optimization(optimizer, water_key=water_key)
     else:
         raise ValueError(f"Unknown optimization method: {method}. Use 'milp' or 'mckp'")

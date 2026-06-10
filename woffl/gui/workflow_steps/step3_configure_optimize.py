@@ -195,9 +195,14 @@ def render_step3():
 
     pad_scope = _active_pad_scope()
     pad_limit_for_banner = None
+    pad_stream = None  # "lift" | "total" when pad scope is active
     if pad_scope:
-        from woffl.gui.scotts_tools.well_sort import PUMP_LIMIT_PRESETS
+        from woffl.gui.scotts_tools.well_sort import (
+            POPS_PUMP_HANDLES,
+            PUMP_LIMIT_PRESETS,
+        )
 
+        pad_stream = POPS_PUMP_HANDLES.get(pad_scope, "lift")
         pad_limit_for_banner = int(
             st.session_state.get(
                 f"_pad_pump_limit_{pad_scope}",
@@ -209,11 +214,24 @@ def render_step3():
             st.session_state["uw_total_pf"] = pad_limit_for_banner
             st.session_state["uw_total_pf_input"] = pad_limit_for_banner
             st.session_state["_uw_pad_scope_seeded_pad"] = pad_scope
+        if pad_stream == "total":
+            stream_note = (
+                "full-POPS pad: the pad pump handles **lift + formation "
+                "water** (on-pad disposal), so the optimizer constrains "
+                "TOTAL produced water"
+            )
+        else:
+            stream_note = (
+                "PF-only POPS pad: the pad pump separates **lift water "
+                "only** (formation water passes through to CFP), so the "
+                "optimizer constrains lift water"
+            )
         st.info(
-            f"**Pad mode: {pad_scope}-Pad** — PF constraint pre-filled from "
-            f"the pad's pump limit (**{pad_limit_for_banner:,} BWPD**). "
-            "Edit below to override for this run; change the preset on the "
-            "Marginal WC tab to make it stick."
+            f"**Pad mode: {pad_scope}-Pad** — {stream_note}. Budget "
+            f"pre-filled from the pad's pump limit "
+            f"(**{pad_limit_for_banner:,} BWPD**). Edit below to override "
+            "for this run; change the preset on the Marginal WC tab to "
+            "make it stick."
         )
     else:
         st.session_state.pop("_uw_pad_scope_seeded_pad", None)
@@ -231,20 +249,32 @@ def render_step3():
         st.session_state[key] = val
         return val
 
+    if pad_stream == "total":
+        budget_label = "Pad water limit (bbl/day)"
+        budget_help = (
+            f"{pad_scope}-Pad pump capacity on TOTAL produced water "
+            "(lift + formation), pre-filled from the pad preset."
+        )
+    elif pad_scope:
+        budget_label = "Pad PF limit (bbl/day)"
+        budget_help = (
+            f"{pad_scope}-Pad pump capacity on lift water only "
+            "(pre-filled from the pad preset)."
+        )
+    else:
+        budget_label = "Total PF (bbl/day)"
+        budget_help = "Total power fluid available across all wells."
+
     pf_col1, pf_col2, pf_col3 = st.columns(3)
     with pf_col1:
         total_pf = _two_tier_number(
-            "Total PF (bbl/day)",
+            budget_label,
             "uw_total_pf",
             30000,
             int,
             min_value=0,
             step=500,
-            help=(
-                f"PF capacity for {pad_scope}-Pad pump (pre-filled from preset)."
-                if pad_scope
-                else "Total power fluid available across all wells."
-            ),
+            help=budget_help,
         )
     with pf_col2:
         pf_pressure = _two_tier_number(
@@ -484,10 +514,14 @@ def render_step3():
                         st.pyplot(fig_cal)
                         plt.close()
 
-            # Run optimization
+            # Run optimization. The constrained stream follows the pad's
+            # plumbing: full-POPS pads (M/F/E) cap TOTAL water, PF-only pads
+            # (S/H/I) and field-wide runs cap lift water.
+            water_key = "totl_wat" if pad_stream == "total" else "lift_wat"
+            st.session_state["uw_water_key"] = water_key
             st.write("### Running Optimization")
             with st.spinner(f"Running {opt_method} optimization..."):
-                results = optimize(optimizer, method=opt_method)
+                results = optimize(optimizer, method=opt_method, water_key=water_key)
 
             if not results:
                 # Drop the PREVIOUS run's results too — leaving them made

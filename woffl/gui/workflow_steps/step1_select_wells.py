@@ -16,11 +16,15 @@ from woffl.gui.workflow_page import _clear_downstream
 # truth across the app.
 _DEFAULT_POPS_PADS = ("E", "F", "H", "I", "M", "S")
 
-# Pads supported by the Phase 1 pad-scope optimization. These are the
-# PF-only POPs pads — their pad pump only handles lift water, which maps
-# directly to the existing PowerFluidConstraint in NetworkOptimizer. Full
-# POPs pads (E, F, M) need a TotalWaterConstraint we haven't built yet.
-_PAD_SCOPE_PADS = ["I", "H", "S"]
+# Pads supported by pad-scope optimization: every POPS pad (self-contained
+# pad water handling). The constrained stream differs by pad —
+# well_sort.POPS_PUMP_HANDLES says whether the pad pump sees lift water only
+# (S/H/I: formation water passes through to CFP) or lift + formation
+# (M/F/E: full on-pad handling with disposal/injection) — and Step 3 passes
+# the matching water_key to the optimizer. CFP pads (J/G/C/B) are NOT here:
+# they share plant water-handling capacity and must be optimized together
+# (the planned CFP joint mode), not pad-by-pad.
+_PAD_SCOPE_PADS = ["E", "F", "H", "I", "M", "S"]
 
 
 def _get_pops_pads() -> set[str]:

@@ -34,7 +34,28 @@ def _render_pad_summary(pad: str, results) -> None:
         )
     )
 
-    total_pf_used = float(sum(r.allocated_power_fluid for r in results))
+    # Compare the stream the pad pump actually handles against its limit:
+    # lift water only (S/H/I) or lift + formation (M/F/E full POPS).
+    from woffl.gui.scotts_tools.well_sort import POPS_PUMP_HANDLES
+
+    pad_stream = POPS_PUMP_HANDLES.get(pad, "lift")
+    if pad_stream == "total":
+        used_label = "Projected Pad Water"
+        used_help = (
+            "Sum of lift + formation water across all optimized wells — "
+            "the full stream this pad's pump must handle."
+        )
+        total_pf_used = float(
+            sum(r.predicted_lift_water + r.predicted_formation_water for r in results)
+        )
+    else:
+        used_label = "Projected Total PF"
+        used_help = (
+            "Sum of allocated PF across all optimized wells. Formation "
+            "water passes through to CFP and does not count against this "
+            "pad's pump."
+        )
+        total_pf_used = float(sum(r.allocated_power_fluid for r in results))
     headroom = pad_limit - total_pf_used
 
     # Projected pad marginal WC = max(PFWC) where PFWC = lift / (lift + oil)
@@ -50,17 +71,25 @@ def _render_pad_summary(pad: str, results) -> None:
 
     st.markdown(f"### Pad Summary: {pad}-Pad")
     cols = st.columns(4)
-    cols[0].metric("PF Pump Limit", f"{pad_limit:,} BWPD")
+    cols[0].metric(
+        "Pad Pump Limit",
+        f"{pad_limit:,} BWPD",
+        help=(
+            "Capacity on TOTAL produced water (full POPS)."
+            if pad_stream == "total"
+            else "Capacity on lift (power-fluid) water only."
+        ),
+    )
     cols[1].metric(
-        "Projected Total PF",
+        used_label,
         f"{total_pf_used:,.0f} BWPD",
-        help="Sum of allocated PF across all optimized wells on the pad.",
+        help=used_help,
     )
     if headroom >= 0:
         cols[2].metric(
             "Headroom",
             f"{headroom:+,.0f} BWPD",
-            delta=f"{headroom:,.0f} BWPD PF available to allocate",
+            delta=f"{headroom:,.0f} BWPD pump capacity remaining",
             delta_color="normal",
         )
     else:

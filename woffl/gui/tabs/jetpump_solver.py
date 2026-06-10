@@ -1280,6 +1280,60 @@ def _get_well_tests(well_name: str):
     return get_well_tests_for_well(well_name)
 
 
+def _render_ipr_rate_calculator(params: SimulationParams, res_pres: float) -> None:
+    """Inline what-if under the IPR chart: type a flowing BHP, read the
+    rates off the SAME Vogel curve the chart draws.
+
+    Anchored exactly like everything else on this tab: sidebar qwf (OIL,
+    BOPD) at sidebar pwf, sidebar/anchor reservoir pressure, sidebar WC for
+    the oil↔liquid split. No solver run — pure IPR arithmetic.
+    """
+
+    def _vogel_frac(p: float, pr: float) -> float:
+        r = max(0.0, min(p / pr, 1.0))
+        return 1.0 - 0.2 * r - 0.8 * r * r
+
+    pr = float(res_pres)
+    oil_anchor = float(params.qwf)
+    pwf_anchor = float(params.pwf)
+    wc = min(max(float(params.form_wc), 0.0), 0.99)
+    anchor_frac = _vogel_frac(pwf_anchor, pr)
+    if pr <= 0 or oil_anchor <= 0 or anchor_frac <= 0:
+        return
+
+    st.markdown("##### Rate at a given BHP")
+    c1, c2, c3, c4 = st.columns([1.3, 1, 1, 1])
+    with c1:
+        bhp_in = st.number_input(
+            "Flowing BHP (psi)",
+            min_value=0,
+            value=int(round(pwf_anchor)),
+            step=25,
+            key="sw_ipr_calc_bhp",
+            help=(
+                "Reads liquid/oil/water off the Vogel curve above "
+                "(sidebar-anchored IPR, sidebar WC)."
+            ),
+        )
+    qmax_oil = oil_anchor / anchor_frac
+    oil = qmax_oil * _vogel_frac(float(bhp_in), pr)
+    liquid = oil / (1.0 - wc)
+    water = liquid - oil
+    c2.metric("Liquid", f"{liquid:,.0f} BLPD")
+    c3.metric("Oil", f"{oil:,.0f} BOPD")
+    c4.metric("Water", f"{water:,.0f} BWPD")
+    if float(bhp_in) >= pr:
+        st.caption(
+            f"BHP ≥ reservoir pressure ({pr:.0f} psi) — no inflow at this drawdown."
+        )
+    else:
+        st.caption(
+            f"Vogel anchored at **{oil_anchor:,.0f} BOPD @ {pwf_anchor:,.0f} psi**, "
+            f"ResP **{pr:,.0f} psi** · WC **{wc:.2f}** "
+            f"(oil = liquid × {1.0 - wc:.2f})."
+        )
+
+
 def _actuals_from_test(test_row) -> dict[str, float | None]:
     """Extract Oil / BHP / PF actuals from a single well-test row.
 
@@ -2166,6 +2220,7 @@ def _render_model_vs_actual(
             show_jp_labels=show_jp_labels,
         )
         st.plotly_chart(fig, use_container_width=True)
+        _render_ipr_rate_calculator(params, model_res_p)
 
     # 6. Modeled vs Actual + calibration sections need at least 1 test.
     if n_tests == 0:
