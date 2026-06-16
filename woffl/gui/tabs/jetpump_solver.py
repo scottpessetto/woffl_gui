@@ -213,55 +213,71 @@ def _render_memory_gauge_section(well_name: str) -> None:
             f"_mg_upload_counter_{well_name}", 0
         )
         upload_label = (
-            "Upload another gauge file"
+            "Upload more gauge files"
             if gauge is not None
-            else "Memory gauge XLSX"
+            else "Memory gauge XLSX file(s)"
         )
         uploaded = st.file_uploader(
             upload_label,
             type=["xlsx"],
+            accept_multiple_files=True,
             key=f"mg_upload_{well_name}_{upload_counter}",
+            help=(
+                "Drop one or more files at once — each gauge run is combined "
+                "into a single daily-median BHP history for the well."
+            ),
         )
-        if uploaded is None:
+        if not uploaded:
             return
 
-        # Parse on every render while a file is in the uploader. Cheap
-        # (~100 ms for ~9k rows). Each parse returns a single MemoryGaugeFile;
-        # add_file_to_gauge combines it with any already-loaded files.
-        try:
-            preview = parse_xlsx(uploaded.getvalue(), uploaded.name)
-        except Exception as e:
-            st.error(f"Could not parse memory gauge file: {e}")
+        # Parse every dropped file. Each parse is cheap (~100 ms for ~9k rows)
+        # and returns a single MemoryGaugeFile. Skip files already loaded (by
+        # filename) or duplicated within this batch; collect per-file errors so
+        # one bad file doesn't block the good ones.
+        existing_names = (
+            {f.source_filename for f in gauge.files} if gauge is not None else set()
+        )
+        parsed: list = []
+        batch_names: set = set()
+        skipped: list[str] = []
+        errors: list[str] = []
+        for uf in uploaded:
+            if uf.name in existing_names:
+                skipped.append(f"`{uf.name}` (already loaded)")
+                continue
+            if uf.name in batch_names:
+                skipped.append(f"`{uf.name}` (duplicate in this batch)")
+                continue
+            try:
+                parsed.append(parse_xlsx(uf.getvalue(), uf.name))
+                batch_names.add(uf.name)
+            except Exception as e:
+                errors.append(f"`{uf.name}`: {e}")
+
+        for msg in errors:
+            st.error(f"Could not parse {msg}")
+        if skipped:
+            st.info("Skipped " + ", ".join(skipped))
+        if not parsed:
             return
 
-        # Warn on duplicate filename — Streamlit's uploader can keep the
-        # same file across reruns, and silently double-adding would inflate
-        # the sample count. Filename match is good enough for now.
-        if gauge is not None and any(
-            f.source_filename == preview.source_filename for f in gauge.files
-        ):
-            st.warning(
-                f"`{preview.source_filename}` is already loaded — "
-                "click Remove on it above first if you want to replace it."
-            )
-            return
-
-        c1, c2 = st.columns(2)
-        c1.metric("Samples", f"{preview.sample_count:,}")
-        # Raw extremes captured at parse time — raw_df now holds minute
-        # medians, which would filter out the very spikes worth eyeballing.
-        pr_min = float(preview.pressure_min)
-        pr_max = float(preview.pressure_max)
-        c2.metric("Pressure range", f"{pr_min:,.0f} – {pr_max:,.0f} psi")
-        st.caption(
-            f"Coverage: **{preview.start_date.strftime('%Y-%m-%d')}** → "
-            f"**{preview.end_date.strftime('%Y-%m-%d')}**"
+        # Combined preview across the newly-parsed files in this batch.
+        total_samples = sum(f.sample_count for f in parsed)
+        new_start = min(f.start_date for f in parsed)
+        new_end = max(f.end_date for f in parsed)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("New files", f"{len(parsed)}")
+        c2.metric("Samples", f"{total_samples:,}")
+        c3.metric(
+            "Coverage",
+            f"{new_start.strftime('%Y-%m-%d')} → {new_end.strftime('%Y-%m-%d')}",
         )
 
+        n = len(parsed)
         button_label = (
-            f"Add file to {well_name} gauge"
+            f"Add {n} file{'s' if n != 1 else ''} to {well_name} gauge"
             if gauge is not None
-            else f"Apply gauge to {well_name}"
+            else f"Apply {n} file{'s' if n != 1 else ''} to {well_name}"
         )
         if st.button(
             button_label,
@@ -269,14 +285,17 @@ def _render_memory_gauge_section(well_name: str) -> None:
             key=f"mg_apply_btn_{well_name}",
             use_container_width=True,
         ):
-            # Combine the new file into the well's gauge (creates one if
-            # none exists). The resulting MemoryGaugeData carries the
-            # union daily-median series across all files.
-            new_gauge = add_file_to_gauge(well_name, preview)
+            # Combine every new file into the well's gauge (creates one if none
+            # exists). The resulting MemoryGaugeData carries the union daily-
+            # median series across ALL files; new_gauge after the loop is the
+            # final combined gauge.
+            new_gauge = None
+            for pf in parsed:
+                new_gauge = add_file_to_gauge(well_name, pf)
 
-            # Network fetches keyed off the COMBINED window — that way
-            # extended tests + divergence checks cover the full coverage
-            # span, not just the newly-added file's window.
+            # Network fetches keyed off the COMBINED window — done ONCE after
+            # all files are added, so extended tests + the divergence check
+            # cover the full coverage span, not each file's window.
             with st.spinner(
                 f"Fetching well tests + Databricks BHP "
                 f"{new_gauge.start_date.strftime('%Y-%m-%d')} → today…"
@@ -296,9 +315,8 @@ def _render_memory_gauge_section(well_name: str) -> None:
                     "3-month cache will pick up gauge BHPs."
                 )
 
-            # Auto-divergence vs Databricks across the combined window.
-            # Each Add re-checks because the wider gauge can shift the
-            # comparison. Auto-set ON only; once on, the user owns it.
+            # Auto-divergence vs Databricks across the combined window. Auto-set
+            # ON only; once on, the user owns it.
             delta = compute_databricks_vs_gauge_delta(db_bhp_df, new_gauge)
             if delta is not None and delta["divergent"]:
                 set_disregard_databricks_bhp(well_name, True)
@@ -317,9 +335,8 @@ def _render_memory_gauge_section(well_name: str) -> None:
                     f"Uncheck *Disregard Databricks BHP* below to override."
                 )
 
-            # Reset the uploader by bumping its key counter — the next
-            # render renders a fresh empty file_uploader, ready for the
-            # next file.
+            # Reset the uploader by bumping its key counter — the next render
+            # renders a fresh empty file_uploader, ready for more files.
             st.session_state[f"_mg_upload_counter_{well_name}"] = (
                 upload_counter + 1
             )
@@ -389,6 +406,19 @@ def _render_pump_identity_banner(
     st.info(f"Modeling **{model_n}{model_t}** (sidebar pump).")
 
 
+def _is_valid_pump_code(nozzle, throat) -> bool:
+    """True when (nozzle, throat) are recognized National pump codes.
+
+    Guards against corrupt JP-history records — e.g. S-17 has a throat letter
+    ('D') in the Nozzle Number column. Such a record must NOT be treated as a
+    real "test pump" (it would blank the model-vs-actual deltas and crash
+    ``JetPump('D', ...)``); callers fall back to the sidebar pump instead.
+    """
+    from woffl.gui.params import NOZZLE_OPTIONS, THROAT_OPTIONS
+
+    return str(nozzle) in NOZZLE_OPTIONS and str(throat) in THROAT_OPTIONS
+
+
 def _render_jp_history_strip(well_name: str) -> None:
     """The JP History tab's production/BHP/JPCO chart, pinned to the top of
     the Solver (same figure, reduced height), with a slim pump-install
@@ -410,8 +440,9 @@ def _render_jp_history_strip(well_name: str) -> None:
         .sort_values("Date Set")
         .reset_index(drop=True)
     )
-    if well_df.empty:
-        return
+    # No JP installs on record (e.g. S-67) is fine — we still show the test/BHP
+    # time-series trend below, just without JP-change lines or an install bar.
+    no_history = well_df.empty
 
     if "sw_jp_strip_input" not in st.session_state:
         st.session_state["sw_jp_strip_input"] = bool(
@@ -436,6 +467,19 @@ def _render_jp_history_strip(well_name: str) -> None:
         _create_history_chart,
         _fetch_extended_well_tests,
     )
+
+    # No JP installs on record (S-67): the well may still have tests, so show the
+    # oil/BHP time-series alone (empty JP-changes -> no install lines/timeline).
+    if no_history:
+        fallback_start = pd.Timestamp.today().normalize() - pd.DateOffset(years=5)
+        t_df, bhp_d, bhp_o = _fetch_extended_well_tests(well_name, fallback_start)
+        if t_df is None or t_df.empty:
+            st.caption(f"No JP-install history or tests on record for {well_name}.")
+            return
+        fig = _create_history_chart(well_name, t_df, well_df, bhp_d, bhp_o)
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("No JP-install history on record — showing the test / BHP trend only.")
+        return
 
     earliest_date = well_df["Date Set"].min()
     today = pd.Timestamp.today().normalize()
@@ -675,6 +719,13 @@ def render_tab(
     if msg:
         st.warning(msg)
 
+    # Surface the one-shot confirmation from a prior "Match test oil rate"
+    # back-solve (it seeds the sidebar then reruns, so the note has to be
+    # replayed on the following render).
+    _bm_msg = st.session_state.pop("_oil_backmatch_msg", None)
+    if _bm_msg:
+        st.success(_bm_msg, icon="🎯")
+
     # Test picker FIRST — its selection determines which pump the solver
     # uses on this run (pump-at-test-date overrides sidebar when a test is
     # selected). Default = most recent test; matches the pre-picker
@@ -711,8 +762,8 @@ def render_tab(
             pump_at_test = _pump_at_test_date(
                 jp_hist_for_pump, params.selected_well, td_raw
             )
-            if pump_at_test and pump_at_test.get("nozzle_no") and pump_at_test.get(
-                "throat_ratio"
+            if pump_at_test and _is_valid_pump_code(
+                pump_at_test.get("nozzle_no"), pump_at_test.get("throat_ratio")
             ):
                 test_pump = (
                     pump_at_test["nozzle_no"],
@@ -959,6 +1010,15 @@ def render_tab(
             "Try adjusting the input values."
         )
 
+    # Oil-rate back-match — rendered REGARDLESS of whether the current solve
+    # converged. It's most useful precisely when it DIDN'T: for a gaugeless well
+    # it searches for the flowing BHP / IPR that makes the pump reproduce the
+    # known test oil rate (a consistent, converging operating point). Self-gates
+    # to gaugeless wells with a known test oil rate, so it's a no-op otherwise.
+    _render_oil_rate_backmatch(
+        params, wellbore, well_profile, selected_test_row=selected_test_row
+    )
+
     # Model vs Actual comparison (requires JP history + non-Custom well)
     _render_model_vs_actual(
         params, wellbore, well_profile, selected_test_row=selected_test_row
@@ -1188,6 +1248,131 @@ def _render_fric_cal_action_bar(
             st.error(err)
         else:
             st.rerun()
+
+
+def _render_oil_rate_backmatch(
+    params: SimulationParams,
+    wellbore,
+    well_profile,
+    *,
+    selected_test_row=None,
+) -> None:
+    """Button to infer flowing BHP from a KNOWN test oil rate (gaugeless wells).
+
+    The engineer knows the test's oil rate and the installed pump but has no
+    BHP gauge, so they can't anchor the IPR. Hand-tweaking qwf/pwf/ResP to make
+    the modeled pump match the test rate is painful and often lands on a
+    non-convergent IPR. This button does it numerically: it finds the pwf such
+    that the pump installed at the test's date — at the test's conditions —
+    reproduces the test oil rate, then seeds the sidebar IPR
+    (qwf / pwf / res_pres) with that consistent solution.
+
+    Only shown when the selected test has a known oil rate but no measured BHP.
+    Uses :func:`woffl.gui.utils.build_calibration_inputs` to mirror the exact
+    solver inputs the friction calibration builds (installed test pump, test
+    WHP, ResMix from sidebar WC/GOR), but feeds a TRIAL IPR instead of the
+    sidebar one. Reservoir pressure is held at the sidebar value (``params.pres``).
+    """
+    from woffl.gui.utils import build_calibration_inputs
+
+    if params.selected_well == "Custom":
+        return
+
+    actuals = _actuals_from_test(selected_test_row)
+    oil_test = actuals.get("oil")
+    if oil_test is None or oil_test <= 0:
+        return  # nothing to match against
+    if actuals.get("bhp") is not None:
+        return  # gauge present — the normal BHP calibration path applies
+
+    # Build the test-conditioned solver inputs (installed pump + test WHP).
+    inputs = build_calibration_inputs(
+        params, wellbore, well_profile, selected_test_row=selected_test_row,
+    )
+    if inputs is None:
+        return  # no JP history / test data — can't identify the pump
+    nozzle = inputs["nozzle"]
+    throat = inputs["throat"]
+    # Corrupt / forward pump record (S-17, 'D' in the nozzle column): model the
+    # sidebar pump instead of crashing on JetPump('D').
+    if not _is_valid_pump_code(nozzle, throat):
+        nozzle, throat = params.nozzle_no, params.area_ratio
+
+    st.markdown("##### Match test oil rate (infer BHP)")
+    st.caption(
+        f"No BHP gauge on this test, but the oil rate is known "
+        f"(**{oil_test:,.0f} BOPD**) and the pump installed at the test "
+        f"(**{nozzle}{throat}**) is known. Infer the flowing BHP that makes "
+        f"{nozzle}{throat} model that oil rate at PF "
+        f"**{params.ppf_surf:,.0f} psi**, then seed the sidebar IPR with the "
+        "consistent solution — no hand-tweaking."
+    )
+
+    if st.button(
+        "🎯 Match test oil rate (infer BHP)",
+        type="primary",
+        key="sw_oil_backmatch_btn",
+        use_container_width=True,
+        help=(
+            "Finds the flowing BHP (pwf) such that the test's installed pump, "
+            "at the test's conditions and the sidebar reservoir pressure, "
+            "reproduces the known test oil rate. Seeds qwf / pwf / Reservoir "
+            "Pressure into the sidebar so every view stays consistent."
+        ),
+    ):
+        from woffl.gui.ipr_backmatch import match_oil_rate
+        from woffl.gui.sidebar import clamp_seed
+
+        pres = float(params.pres)
+        with st.spinner(
+            f"Inferring flowing BHP so {nozzle}{throat} matches "
+            f"{oil_test:,.0f} BOPD..."
+        ):
+            result = match_oil_rate(
+                qoil_test=float(oil_test),
+                pres=pres,
+                nozzle=nozzle,
+                throat=throat,
+                surf_pres=inputs["model_surf_pres"],
+                form_temp=float(params.form_temp),
+                rho_pf=float(params.rho_pf),
+                ppf_surf=float(params.ppf_surf),
+                wellbore=wellbore,
+                well_profile=well_profile,
+                form_wc=float(params.form_wc),
+                form_gor=float(params.form_gor),
+                ken=float(params.ken),
+                kth=float(params.kth),
+                kdi=float(params.kdi),
+                field_model=params.field_model,
+                jpump_direction=params.jpump_direction,
+            )
+
+        if not result.ok or result.pwf is None:
+            # Pump-limited / no-bracket: explain, do NOT touch the sidebar.
+            st.warning(result.message, icon="⚠️")
+            return
+
+        # Seed the sidebar IPR with the consistent solution. Follow the
+        # documented logical-key + pop-widget-key + rerun dance (the sidebar
+        # already rendered this run), and clamp every seed into its widget's
+        # bounds. Respect the per-well GOR floor if a marginal-well recovery
+        # set one (we don't change GOR, but keep parity with the other seeders).
+        seed_qwf = clamp_seed("qwf", int(round(result.qwf_oil)))
+        seed_pwf = clamp_seed("pwf", int(round(result.pwf)))
+        seed_res = clamp_seed("res_pres", int(round(result.pres)))
+        for k, v in (("qwf", seed_qwf), ("pwf", seed_pwf), ("res_pres", seed_res)):
+            st.session_state[k] = v
+            st.session_state.pop(f"{k}_input", None)
+
+        st.session_state["_oil_backmatch_msg"] = (
+            f"Inferred flowing BHP = {seed_pwf:,} psi so {nozzle}{throat} "
+            f"matches {result.qwf_oil:,.0f} BOPD (modeled "
+            f"{result.modeled_oil:,.0f} BOPD). Seeded the sidebar IPR "
+            f"(qwf {seed_qwf:,} BOPD · pwf {seed_pwf:,} psi · ResP "
+            f"{seed_res:,} psi). Edit any field in the sidebar to override."
+        )
+        st.rerun()
 
 
 def _render_fric_calibration_section(
@@ -1946,23 +2131,39 @@ def _render_model_vs_actual(
     if pump_info is None:
         pump_info = get_current_pump(jp_hist, params.selected_well)
 
-    if pump_info is None:
-        st.info(f"No JP history for {params.selected_well}")
-        return
-
-    nozzle = pump_info["nozzle_no"]
-    throat = pump_info["throat_ratio"]
-    if not nozzle or not throat:
-        st.warning(
-            f"JP history for {params.selected_well} is missing nozzle or throat data."
-        )
-        return
-
-    install_date_str = (
-        pump_info["date_set"].strftime("%Y-%m-%d")
-        if pump_info.get("date_set") is not None
-        else "N/A"
+    # Pump to MODEL: prefer the install at the test's date. But a well with NO JP
+    # history (S-67) or a corrupt / forward-circulating record (S-17, 'D' in the
+    # nozzle column) must STILL show its tests, IPR trend, and BHP — so fall back
+    # to the sidebar pump and note it, instead of bailing out of the whole section.
+    valid_hist = (
+        pump_info is not None
+        and pump_info.get("nozzle_no")
+        and pump_info.get("throat_ratio")
+        and _is_valid_pump_code(pump_info["nozzle_no"], pump_info["throat_ratio"])
     )
+    if valid_hist:
+        nozzle = pump_info["nozzle_no"]
+        throat = pump_info["throat_ratio"]
+        install_date_str = (
+            pump_info["date_set"].strftime("%Y-%m-%d")
+            if pump_info.get("date_set") is not None
+            else "N/A"
+        )
+    else:
+        if pump_info is None:
+            reason = "no JP history"
+        else:
+            reason = (
+                f"an unrecognized pump record "
+                f"(`{pump_info.get('nozzle_no')}{pump_info.get('throat_ratio')}`)"
+            )
+        st.info(
+            f"**{params.selected_well}** has {reason} — modeling the sidebar pump "
+            f"**{params.nozzle_no}{params.area_ratio}** against the tests "
+            "(tests, IPR trend, and BHP still shown)."
+        )
+        nozzle, throat = params.nozzle_no, params.area_ratio
+        install_date_str = "N/A"
 
     # 2. Get well tests from pre-fetched cache (includes any session-only
     # manual/provisional tests injected by get_well_tests_for_well).

@@ -1097,3 +1097,562 @@ def _render_pad_marginal_wc_section() -> None:
             ),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Triage (beta) — keep / SI / BOL decision view
+# ---------------------------------------------------------------------------
+#
+# Experimental decision layer that sits ALONGSIDE the original Wells tab
+# (left untouched for back-to-back comparison). Driving rule, per Scott: a
+# well's water cut vs the field MARGINAL WC sets the lean —
+#   * online well, WC above marginal  -> shut-in (SI) candidate
+#   * shut well,   WC below marginal  -> bring-on-line (BOL) candidate
+# A poor LATEST test against a healthy recent HISTORY is deliberately NOT
+# acted on: it's flagged to verify / BOL-trial, because a single bad test
+# often recovers (Scott BOLs these to check). The history signal reuses what
+# the engine already computes — the 2-month outlier deviation (online) and
+# the 90-day near-last-test average (shut).
+
+
+def _effective_wc(row) -> float:
+    """Total WC if present, else form WC, else NaN."""
+    for key in ("TotalWC", "WC"):
+        v = row.get(key)
+        if pd.notna(v):
+            return float(v)
+    return float("nan")
+
+
+def add_online_decision(online_df: pd.DataFrame, marginal_wc: float) -> pd.DataFrame:
+    """Augment the online table with a keep/SI decision vs the marginal WC.
+
+    Adds: Decision (emoji-tagged string), Why (plain-language reason),
+    WCvsMarginal (Total WC − marginal), and a hidden ``_rank`` for sorting.
+
+    Rule:
+      POPS-pad well                              -> ⚪ POPS (own handling)
+      stale / no test                            -> ⚠️ Verify (unknown state)
+      WC ≤ marginal                              -> ✅ Keep online
+      WC > marginal AND latest oil outlier-low   -> ⚠️ Verify before SI
+      WC > marginal otherwise                    -> 🔴 SI candidate
+    """
+    from woffl.assembly.well_sort_client import OUTLIER_PCT
+
+    df = online_df.copy()
+    if df.empty:
+        for c in ("WCvsMarginal", "_rank"):
+            df[c] = pd.Series(dtype="float")
+        for c in ("Decision", "Why"):
+            df[c] = pd.Series(dtype="object")
+        return df
+
+    decisions, whys, deltas, ranks = [], [], [], []
+    for _, r in df.iterrows():
+        wc = _effective_wc(r)
+        deltas.append(wc - marginal_wc if pd.notna(wc) else float("nan"))
+        pops = bool(r.get("PopsPad"))
+        stale = bool(r.get("StaleTest"))
+        oil_dev = r.get("OilDev")
+        if pops:
+            decisions.append("⚪ POPS (own handling)")
+            whys.append(
+                "On a POPs pad — water separated on-pad; judge with the "
+                "per-pad Marginal WC calc, not the field line."
+            )
+            ranks.append(4)
+        elif pd.isna(wc) or stale:
+            decisions.append("⚠️ Verify — stale/no test")
+            whys.append("No recent representative test; re-test before any SI call.")
+            ranks.append(1)
+        elif wc <= marginal_wc:
+            decisions.append("✅ Keep online")
+            whys.append(
+                f"WC {wc * 100:.0f}% ≤ marginal {marginal_wc * 100:.0f}% — worth its water."
+            )
+            ranks.append(2)
+        else:
+            oil_down = pd.notna(oil_dev) and float(oil_dev) < -OUTLIER_PCT
+            if oil_down:
+                decisions.append("⚠️ Verify before SI")
+                whys.append(
+                    f"WC {wc * 100:.0f}% > marginal {marginal_wc * 100:.0f}%, but latest "
+                    f"oil is {abs(float(oil_dev)) * 100:.0f}% below the 2-mo avg — confirm "
+                    "with a re-test before SI (may recover)."
+                )
+                ranks.append(1)
+            else:
+                decisions.append("🔴 SI candidate")
+                whys.append(
+                    f"WC {wc * 100:.0f}% > marginal {marginal_wc * 100:.0f}% — "
+                    "water not worth the oil."
+                )
+                ranks.append(0)
+    df["WCvsMarginal"] = deltas
+    df["Decision"] = decisions
+    df["Why"] = whys
+    df["_rank"] = ranks
+    return df
+
+
+def add_shut_decision(shut_df: pd.DataFrame, marginal_wc: float) -> pd.DataFrame:
+    """Augment the shut-in (offline) table with a BOL decision vs marginal WC.
+
+    Adds: Decision, Why, WCvsMarginal, NearAvgWC (90-day form-WC history),
+    and a hidden ``_rank``.
+
+    Rule:
+      no test                                       -> ⚠️ Verify (no test)
+      last WC ≤ marginal                            -> 🟢 BOL candidate
+      last WC > marginal BUT 90-day hist WC ≤ marg  -> 🔬 BOL trial (recovery?)
+      last WC > marginal and history also high      -> ⏸️ Leave shut
+    """
+    df = shut_df.copy()
+    if df.empty:
+        for c in ("WCvsMarginal", "NearAvgWC", "_rank"):
+            df[c] = pd.Series(dtype="float")
+        for c in ("Decision", "Why"):
+            df[c] = pd.Series(dtype="object")
+        return df
+
+    decisions, whys, deltas, near_wcs, ranks = [], [], [], [], []
+    for _, r in df.iterrows():
+        wc = _effective_wc(r)
+        deltas.append(wc - marginal_wc if pd.notna(wc) else float("nan"))
+        # Form-based 90-day near-last-test WC: the "was it healthy recently?"
+        # signal that protects against condemning a well on one bad test.
+        na_oil, na_wat = r.get("NearAvgOil"), r.get("NearAvgWater")
+        if (
+            pd.notna(na_oil) and pd.notna(na_wat)
+            and (float(na_oil) + float(na_wat)) > 0
+        ):
+            nwc = float(na_wat) / (float(na_oil) + float(na_wat))
+        else:
+            nwc = float("nan")
+        near_wcs.append(nwc)
+
+        if pd.isna(wc):
+            decisions.append("⚠️ Verify — no test")
+            whys.append("No usable test on record; test before BOL.")
+            ranks.append(2)
+        elif wc <= marginal_wc:
+            decisions.append("🟢 BOL candidate")
+            whys.append(
+                f"Last WC {wc * 100:.0f}% ≤ marginal {marginal_wc * 100:.0f}% — "
+                "worth bringing on."
+            )
+            ranks.append(0)
+        elif pd.notna(nwc) and nwc <= marginal_wc:
+            decisions.append("🔬 BOL trial")
+            whys.append(
+                f"Last WC {wc * 100:.0f}% > marginal, but the 90-day history WC "
+                f"{nwc * 100:.0f}% was below — BOL to see if the oil rate has recovered."
+            )
+            ranks.append(1)
+        else:
+            decisions.append("⏸️ Leave shut")
+            whys.append(
+                f"WC {wc * 100:.0f}% > marginal {marginal_wc * 100:.0f}% (history too) — "
+                "water not worth it."
+            )
+            ranks.append(3)
+    df["WCvsMarginal"] = deltas
+    df["NearAvgWC"] = near_wcs
+    df["Decision"] = decisions
+    df["Why"] = whys
+    df["_rank"] = ranks
+    return df
+
+
+_TRIAGE_ONLINE_COMPACT = [
+    "Decision", "Why", "Well", "Pad", "Oil", "TotalWC", "WCvsMarginal",
+    "GOR", "DaysSinceTest", "StaleTest", "FlagOutlier", "PopsPad",
+]
+_TRIAGE_ONLINE_DETAIL = _TRIAGE_ONLINE_COMPACT + [
+    "Reservoir", "LiftType", "Water", "LiftWater", "TotalWater", "Gas",
+    "TotalGas", "Oil_2moAvg", "OilDev", "BHP", "WHP", "ProdXV", "XVTime",
+    "TestDate", "Allocated", "FallbackUsed",
+]
+
+_TRIAGE_SHUT_COMPACT = [
+    "Decision", "Why", "Well", "Pad", "Oil", "TotalWC", "WCvsMarginal",
+    "NearAvgWC", "NearAvgOil", "ShutInSince", "CurrentCode", "CurrentReason",
+    "LastTestDate",
+]
+_TRIAGE_SHUT_DETAIL = _TRIAGE_SHUT_COMPACT + [
+    "Reservoir", "LiftType", "Water", "Gas", "LiftWater", "TotalWater",
+    "NearAvgWater", "NTestsNear", "Notes", "DownHours", "LastOnlineDate",
+    "ProdXV",
+]
+
+
+def _triage_online_cfg(marginal_wc: float, stale_days: int) -> dict:
+    return {
+        "Decision": st.column_config.TextColumn("Decision", pinned="left", width="medium"),
+        "Why": st.column_config.TextColumn("Why", width="large"),
+        "Well": st.column_config.TextColumn("Well", pinned="left"),
+        "Pad": st.column_config.TextColumn("Pad"),
+        "Reservoir": st.column_config.TextColumn("Reservoir"),
+        "LiftType": st.column_config.TextColumn("Lift Type"),
+        "Oil": st.column_config.NumberColumn("Oil (BOPD)", format="%.0f"),
+        "Water": st.column_config.NumberColumn("Form Water (BWPD)", format="%.0f"),
+        "LiftWater": st.column_config.NumberColumn("Lift Water (BWPD)", format="%.0f"),
+        "TotalWater": st.column_config.NumberColumn("Total Water (BWPD)", format="%.0f"),
+        "Gas": st.column_config.NumberColumn("Gas (MCFD)", format="%.0f"),
+        "TotalGas": st.column_config.NumberColumn("Total Gas (MCFD)", format="%.0f"),
+        "TotalWC": st.column_config.NumberColumn(
+            "Total WC (%)", format="%.1f",
+            help="Latest-test total water cut (%). Compared to the marginal line.",
+        ),
+        "WCvsMarginal": st.column_config.NumberColumn(
+            "WC − Marg (pp)", format="%+.1f",
+            help=f"Total WC minus the marginal WC, in percentage points. "
+            f"Positive = above the line (SI lean). Marginal = {marginal_wc * 100:.0f}%.",
+        ),
+        "GOR": st.column_config.NumberColumn("GOR (scf/bbl)", format="%.0f"),
+        "DaysSinceTest": st.column_config.NumberColumn("Days since", format="%.0f"),
+        "StaleTest": st.column_config.CheckboxColumn(
+            "Stale?", help=f"Latest test older than {stale_days} days",
+        ),
+        "FlagOutlier": st.column_config.CheckboxColumn(
+            "Outlier?",
+            help="Latest test deviates >25% from the 2-month average on oil or water",
+        ),
+        "PopsPad": st.column_config.CheckboxColumn(
+            "POPS?", help="Pad has on-pad water separation",
+        ),
+        "Oil_2moAvg": st.column_config.NumberColumn("Oil 2mo avg", format="%.0f"),
+        "OilDev": st.column_config.NumberColumn("Oil Δ vs 2mo (%)", format="%.0f"),
+        "BHP": st.column_config.NumberColumn("BHP (psi)", format="%.0f"),
+        "WHP": st.column_config.NumberColumn("WHP (psi)", format="%.0f"),
+        "ProdXV": st.column_config.NumberColumn(
+            "Prod XV", format="%.0f", help="1=open, 0=closed",
+        ),
+        "XVTime": st.column_config.DatetimeColumn("XV Time", format="MM-DD HH:mm"),
+        "TestDate": st.column_config.DatetimeColumn("Test Date", format="YYYY-MM-DD"),
+        "Allocated": st.column_config.CheckboxColumn("Alloc."),
+        "FallbackUsed": st.column_config.CheckboxColumn("Fallback"),
+    }
+
+
+def _triage_shut_cfg(marginal_wc: float) -> dict:
+    return {
+        "Decision": st.column_config.TextColumn("Decision", pinned="left", width="medium"),
+        "Why": st.column_config.TextColumn("Why", width="large"),
+        "Well": st.column_config.TextColumn("Well", pinned="left"),
+        "Pad": st.column_config.TextColumn("Pad"),
+        "Reservoir": st.column_config.TextColumn("Reservoir"),
+        "LiftType": st.column_config.TextColumn("Lift Type"),
+        "Oil": st.column_config.NumberColumn(
+            "Last Oil (BOPD)", format="%.0f", help="Oil from the last test on record",
+        ),
+        "Water": st.column_config.NumberColumn("Last Form Water (BWPD)", format="%.0f"),
+        "LiftWater": st.column_config.NumberColumn("Last Lift Water (BWPD)", format="%.0f"),
+        "TotalWater": st.column_config.NumberColumn("Last Total Water (BWPD)", format="%.0f"),
+        "Gas": st.column_config.NumberColumn("Last Gas (MCFD)", format="%.0f"),
+        "TotalWC": st.column_config.NumberColumn("Last Total WC (%)", format="%.1f"),
+        "WCvsMarginal": st.column_config.NumberColumn(
+            "WC − Marg (pp)", format="%+.1f",
+            help=f"Last-test Total WC minus the marginal WC, in percentage points. "
+            f"Negative = below the line (BOL lean). Marginal = {marginal_wc * 100:.0f}%.",
+        ),
+        "NearAvgWC": st.column_config.NumberColumn(
+            "90-day Hist WC (%)", format="%.1f",
+            help="Form WC (%) averaged over tests within 90 days of the last test — "
+            "the 'was it healthy recently' signal behind BOL-trial.",
+        ),
+        "NearAvgOil": st.column_config.NumberColumn("90-day Avg Oil", format="%.0f"),
+        "NearAvgWater": st.column_config.NumberColumn("90-day Avg Water", format="%.0f"),
+        "NTestsNear": st.column_config.NumberColumn("# Near Tests", format="%.0f"),
+        "ShutInSince": st.column_config.DateColumn("Shut-In Since"),
+        "LastOnlineDate": st.column_config.DateColumn("Last Online"),
+        "LastTestDate": st.column_config.DatetimeColumn("Last Test", format="YYYY-MM-DD"),
+        "CurrentCode": st.column_config.TextColumn("Code"),
+        "CurrentReason": st.column_config.TextColumn("Reason"),
+        "Notes": st.column_config.TextColumn("Notes"),
+        "DownHours": st.column_config.NumberColumn("Down hrs", format="%.1f"),
+        "ProdXV": st.column_config.NumberColumn("Prod XV", format="%.0f"),
+    }
+
+
+def _render_triage_online(
+    df: pd.DataFrame, marginal_wc: float, stale_days: int,
+    only_action: bool, show_all: bool,
+) -> None:
+    if df.empty:
+        st.info("No online wells.")
+        return
+    work = df.copy()
+    if only_action:
+        work = work[work["_rank"].isin([0, 1])]
+    if work.empty:
+        st.success("No online wells above the marginal WC — nothing to review.")
+        return
+    work = work.sort_values(
+        ["_rank", "WCvsMarginal"], ascending=[True, False]
+    ).reset_index(drop=True)
+    cols = _TRIAGE_ONLINE_DETAIL if show_all else _TRIAGE_ONLINE_COMPACT
+    cols = [c for c in cols if c in work.columns]
+    disp = work[cols].copy()
+    for c in ("TotalWC", "WCvsMarginal"):
+        if c in disp.columns:
+            disp[c] = disp[c] * 100
+    if "OilDev" in disp.columns:
+        disp["OilDev"] = disp["OilDev"] * 100
+    st.dataframe(
+        disp, use_container_width=True, hide_index=True,
+        column_config=_triage_online_cfg(marginal_wc, stale_days),
+    )
+    st.download_button(
+        "Download Online triage CSV",
+        data=work.drop(columns=["_rank"], errors="ignore")
+            .to_csv(index=False, float_format="%.4f").encode("utf-8"),
+        file_name="well_sort_triage_online.csv",
+        mime="text/csv",
+        key="triage_dl_online",
+    )
+
+
+def _render_triage_shut(
+    df: pd.DataFrame, marginal_wc: float, only_action: bool, show_all: bool,
+) -> None:
+    if df.empty:
+        st.info("No shut-in (offline) wells.")
+        return
+    work = df.copy()
+    if only_action:
+        work = work[work["_rank"].isin([0, 1, 2])]
+    if work.empty:
+        st.success("No shut-in wells below the marginal WC — no BOL candidates.")
+        return
+    work = work.sort_values(
+        ["_rank", "WCvsMarginal"], ascending=[True, True]
+    ).reset_index(drop=True)
+    cols = _TRIAGE_SHUT_DETAIL if show_all else _TRIAGE_SHUT_COMPACT
+    cols = [c for c in cols if c in work.columns]
+    disp = work[cols].copy()
+    for c in ("TotalWC", "WCvsMarginal", "NearAvgWC"):
+        if c in disp.columns:
+            disp[c] = disp[c] * 100
+    st.dataframe(
+        disp, use_container_width=True, hide_index=True,
+        column_config=_triage_shut_cfg(marginal_wc),
+    )
+    st.download_button(
+        "Download Shut/BOL triage CSV",
+        data=work.drop(columns=["_rank"], errors="ignore")
+            .to_csv(index=False, float_format="%.4f").encode("utf-8"),
+        file_name="well_sort_triage_shut.csv",
+        mime="text/csv",
+        key="triage_dl_shut",
+    )
+
+
+def render_triage_tab() -> None:
+    """Beta keep/SI/BOL decision view, driven by each well's WC vs the marginal.
+
+    Sits alongside the original Wells tab (untouched) for back-to-back
+    comparison. Reuses the same cached fetchers, classification, and POPs-pad
+    settings as the Wells tab — only the decision layer + decluttered display
+    are new.
+    """
+    from woffl.assembly.well_sort_client import (
+        apply_pops_pad,
+        build_online_table,
+        build_shut_in_table,
+        classify_wells,
+        split_offline_ltsi,
+    )
+
+    st.header("Well Sort — Triage (beta)")
+    st.caption(
+        "Experimental decision view. Each well's water cut is compared to the "
+        "field **marginal WC**: online wells above the line are shut-in (SI) "
+        "candidates; shut wells below the line are bring-on-line (BOL) "
+        "candidates. A poor latest test over a healthy recent history is "
+        "flagged to **verify / BOL-trial** rather than acted on. The original "
+        "**Wells** tab is unchanged — compare the two and tell me when this is "
+        "ready to take over. POPs-pad settings are shared with the Wells tab."
+    )
+
+    c1, c2, c3, c4 = st.columns([1.1, 1.7, 1.5, 1.5])
+    with c1:
+        if st.button(
+            "Refresh data", key="triage_refresh",
+            help="Clear cache and re-query Databricks",
+        ):
+            for fn in (
+                _cached_shut_in_history, _cached_recent_tests, _cached_producers,
+                _cached_producer_catalog, _cached_last_tests_ever, _cached_xv_status,
+            ):
+                fn.clear()
+            st.rerun()
+    with c2:
+        threshold = st.number_input(
+            "Marginal WC buffer (% of field water)",
+            min_value=0.0, max_value=100.0, value=2.0, step=0.5, format="%.1f",
+            key="triage_marg_threshold",
+            help="Noise buffer on the marginal WC. Skips the worst-WC wells that "
+            "make up this % of the field's water before reading the marginal — so "
+            "one tiny 99%-WC stripper doesn't set the line. 0 = use the literal "
+            "worst well; bigger buffer → lower marginal WC. Typical 1–3%.",
+        )
+    with c3:
+        stale_days = st.slider(
+            "Stale-test threshold (days)", 14, 180, 60, key="triage_stale_days",
+            help="Wells whose latest test is older than this are sent to 'verify'.",
+        )
+    with c4:
+        only_action = st.toggle(
+            "Only wells needing a decision", value=True, key="triage_only_action",
+            help="Hide healthy 'keep' / 'leave shut' wells; show only "
+            "SI / BOL / verify candidates.",
+        )
+        show_all = st.toggle(
+            "Show all columns", value=False, key="triage_show_all",
+            help="Expand from the triage columns to the full detail set.",
+        )
+
+    shut_in_hist = _cached_shut_in_history()
+    tests = _cached_recent_tests(180)
+    producers = _cached_producers()
+    catalog = _cached_producer_catalog()
+    last_tests = _cached_last_tests_ever()
+    xv = _cached_xv_status()
+
+    if not producers:
+        st.error("No producers returned from vw_well_header.")
+        return
+
+    # Inherit POPs-pad config from the Wells tab (same session keys).
+    pops_pads = list(
+        st.session_state.get("well_sort_pops_pads", ["E", "F", "H", "I", "M", "S"])
+    )
+    force_true = st.session_state.get("well_sort_pops_force_true", [])
+    overrides = {w: True for w in force_true}
+
+    online_set, shut_set = classify_wells(
+        producers, shut_in_hist, xv_df=xv, trust_xv=True
+    )
+    online_df = build_online_table(
+        tests, shut_in_hist, producers, mode="allocated",
+        stale_days=stale_days, xv_df=xv, online_wells=online_set, catalog_df=catalog,
+    )
+    shut_df = build_shut_in_table(
+        shut_in_hist, tests, xv_df=xv, shut_in_wells=shut_set,
+        catalog_df=catalog, last_tests_df=last_tests,
+    )
+    online_df = apply_pops_pad(online_df, set(pops_pads), overrides)
+    shut_df = apply_pops_pad(shut_df, set(pops_pads), overrides)
+    offline_df, _ltsi_df = split_offline_ltsi(shut_df)
+
+    marg = compute_field_marginal_wc(threshold_pct=threshold)
+    if marg is None:
+        st.warning(
+            "Can't compute the field marginal WC (no online non-POPs wells with "
+            "valid water data). Check the Wells tab."
+        )
+        return
+    marginal_wc = marg["marginal_wc"]
+
+    online_dec = add_online_decision(online_df, marginal_wc)
+    offline_dec = add_shut_decision(offline_df, marginal_wc)
+
+    n_si = int((online_dec["_rank"] == 0).sum()) if not online_dec.empty else 0
+    n_verify = int((online_dec["_rank"] == 1).sum()) if not online_dec.empty else 0
+    n_bol = int((offline_dec["_rank"] == 0).sum()) if not offline_dec.empty else 0
+    n_trial = int((offline_dec["_rank"] == 1).sum()) if not offline_dec.empty else 0
+
+    # Raw (no-buffer) marginal = the single worst-WC well — usually a tiny
+    # stripper. Shown next to the buffered marginal so the buffer's effect is
+    # obvious ("94% instead of 99% because one small well was online").
+    ranked = marg.get("ranked_df")
+    raw_wc = raw_well = None
+    raw_water = 0.0
+    if ranked is not None and not ranked.empty:
+        raw_row = ranked.iloc[0]  # list is sorted by TotalWC desc
+        raw_wc = float(raw_row["TotalWC"])
+        raw_well = str(raw_row["Well"])
+        raw_water = float(raw_row["TotalWater"])
+
+    mc1, mc2, mc3 = st.columns(3)
+    mc1.metric(
+        "Marginal WC (cut line)", f"{marginal_wc * 100:.0f}%",
+        delta=f"set by {marg['well']} ({marg['pad']})", delta_color="off",
+        help="The decision line, AFTER the buffer. Online wells above it lean SI; "
+        "shut wells below it lean BOL.",
+    )
+    mc2.metric(
+        "Buffer", f"{threshold:.1f}% of field water",
+        help="Set in the box above. Skips the worst-WC wells making up this % of "
+        "field water before reading the marginal — stops one tiny high-WC well "
+        "from setting the line.",
+    )
+    if raw_wc is not None:
+        mc3.metric(
+            "Worst single well (no buffer)", f"{raw_wc * 100:.0f}%",
+            delta=f"{raw_well} · {raw_water:,.0f} BWPD", delta_color="off",
+            help="What the line would be with NO buffer — usually a small stripper. "
+            "The buffer skips past it.",
+        )
+    else:
+        mc3.metric("Worst single well (no buffer)", "—")
+
+    if raw_wc is not None and raw_well != marg["well"]:
+        st.caption(
+            f"With a **{threshold:.1f}%** buffer the marginal WC is "
+            f"**{marginal_wc * 100:.0f}%** (set by {marg['well']}) instead of "
+            f"**{raw_wc * 100:.0f}%** from {raw_well} — a small well making only "
+            f"{raw_water:,.0f} BWPD. Lower the buffer toward 0 to follow the worst "
+            "well; raise it to lean on bigger-volume wells."
+        )
+    elif raw_wc is not None:
+        st.caption(
+            f"The {threshold:.1f}% buffer isn't skipping any wells yet — the "
+            f"marginal WC ({marginal_wc * 100:.0f}%) is still set by the worst "
+            f"well {marg['well']}. Raise the buffer to skip small high-WC wells."
+        )
+
+    st.markdown("**Decisions**")
+    h2, h3, h4, h5 = st.columns(4)
+    h2.metric(
+        "🔴 SI candidates", n_si,
+        help="Online, WC above marginal, latest test looks representative.",
+    )
+    h3.metric(
+        "⚠️ Verify", n_verify,
+        help="WC above marginal but latest oil is an outlier-low, or stale/no test "
+        "— confirm before SI.",
+    )
+    h4.metric(
+        "🟢 BOL candidates", n_bol,
+        help="Shut, last WC below marginal — worth bringing on.",
+    )
+    h5.metric(
+        "🔬 BOL trials", n_trial,
+        help="Shut, last test poor but recent history was good — BOL to confirm recovery.",
+    )
+
+    with st.expander("What the decisions mean"):
+        st.markdown(
+            "- ✅ **Keep online** — WC at/below marginal; water is worth the oil.\n"
+            "- 🔴 **SI candidate** — online, WC above marginal, and the latest test looks real.\n"
+            "- ⚠️ **Verify** — WC above marginal but the latest oil dropped sharply vs the "
+            "2-month average (or no recent test). Often recovers — re-test or BOL-trial before SI.\n"
+            "- 🟢 **BOL candidate** — shut, last WC below marginal; bring it on.\n"
+            "- 🔬 **BOL trial** — shut, last test poor but the 90-day history WC was below "
+            "marginal; BOL to see if the rate recovered.\n"
+            "- ⏸️ **Leave shut** — shut, WC above marginal on both the last test and the history.\n"
+            "- ⚪ **POPS (own handling)** — pad separates its own water; the field marginal line "
+            "doesn't apply. Use the **Marginal WC** tab's per-pad calc.\n\n"
+            "LTSI wells (long-term shut-in / mechanical) are out of scope here — see the Wells tab."
+        )
+
+    sub_online, sub_shut = st.tabs(
+        [f"Online — SI review ({len(online_dec)})",
+         f"Shut — BOL review ({len(offline_dec)})"]
+    )
+    with sub_online:
+        _render_triage_online(online_dec, marginal_wc, stale_days, only_action, show_all)
+    with sub_shut:
+        _render_triage_shut(offline_dec, marginal_wc, only_action, show_all)

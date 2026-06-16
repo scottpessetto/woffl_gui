@@ -211,6 +211,7 @@ def main():
     modes = [
         "Single Well Analysis",
         "Optimization Workflow",
+        "S-Pad Optimization",
         "Well Database",
         "Well Sort",
     ]
@@ -237,6 +238,11 @@ def main():
         from woffl.gui.workflow_page import run_workflow_page
 
         run_workflow_page()
+
+    elif app_mode == "S-Pad Optimization":
+        from woffl.gui.s_pad_page import run_s_pad_page
+
+        run_s_pad_page()
 
     elif app_mode == "Well Database":
         from woffl.gui.well_database_page import run_well_database_page

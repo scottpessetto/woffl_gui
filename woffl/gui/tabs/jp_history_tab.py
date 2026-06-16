@@ -249,10 +249,19 @@ def _fetch_extended_well_tests(
 
 
 def _format_jp(nozzle, throat) -> str:
-    """Format nozzle + throat into a string like '12B'."""
+    """Format nozzle + throat into a string like '12B'.
+
+    Tolerant of non-numeric / already-formatted nozzle values — some
+    JP-history rows carry odd data (e.g. a throat letter landed in the
+    Nozzle Number column for S-17), and the strip must render those rather
+    than crash on ``int('D')``.
+    """
     parts = ""
     if pd.notna(nozzle):
-        parts += str(int(nozzle))
+        try:
+            parts += str(int(float(nozzle)))
+        except (ValueError, TypeError):
+            parts += str(nozzle).strip()
     if pd.notna(throat):
         parts += str(throat).strip()
     return parts or "?"

@@ -362,6 +362,14 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _well_selector_key() -> str:
+    """Versioned key for the well dropdown. Bumping ``_well_sel_nonce`` makes the
+    selectbox a FRESH widget that re-reads its ``index`` from ``selected_well`` —
+    the reliable way to advance the dropdown programmatically (the S-Pad review
+    queue's Save & next). Popping the widget key alone proved unreliable."""
+    return f"well_selector_{st.session_state.get('_well_sel_nonce', 0)}"
+
+
 def _on_well_change() -> None:
     """Callback function when well selection changes.
 
@@ -369,7 +377,7 @@ def _on_well_change() -> None:
     results immediately without scrolling back up to click Run. Custom mode
     still requires the explicit Run button (sidebar values aren't yet set).
     """
-    new_well = st.session_state.well_selector
+    new_well = st.session_state[_well_selector_key()]
     st.session_state.selected_well = new_well
     if hasattr(st.session_state, "well_data"):
         del st.session_state.well_data
@@ -417,10 +425,15 @@ def _render_test_lookback_controls() -> None:
         )
 
 
-def _render_well_selection() -> tuple[str, dict | None]:
-    """Render well selection widgets and return selected well + data."""
+def _render_well_selection(well_filter: list[str] | None = None) -> tuple[str, dict | None]:
+    """Render well selection widgets and return selected well + data.
+
+    When ``well_filter`` is provided (the pad-scoped optimization review loop),
+    the dropdown is restricted to that list of well names — no "Custom" entry,
+    so the review flow always operates on a real, characterized well.
+    """
     st.subheader("Well Selection")
-    available_wells = get_available_wells()
+    available_wells = list(well_filter) if well_filter else get_available_wells()
 
     if "selected_well" not in st.session_state:
         st.session_state.selected_well = "Custom"
@@ -434,7 +447,7 @@ def _render_well_selection() -> tuple[str, dict | None]:
             else 0
         ),
         help="Choose a well to auto-populate parameters, or select 'Custom' for manual entry",
-        key="well_selector",
+        key=_well_selector_key(),
         on_change=_on_well_change,
     )
 
@@ -499,22 +512,34 @@ def _render_jetpump_params() -> tuple[str, str, str]:
 
     col1, col2 = st.columns(2)
     with col1:
-        if "nozzle_no" not in st.session_state:
-            st.session_state.nozzle_no = "12"
+        # Coerce/validate so a stray value (e.g. a nozzle read back from CSV as
+        # the float '10.0') can't crash NOZZLE_OPTIONS.index(...). Tolerate the
+        # '10.0' form, else fall back to the default.
+        nz = str(st.session_state.get("nozzle_no", "12"))
+        if nz not in NOZZLE_OPTIONS:
+            try:
+                nz = str(int(float(nz)))
+            except (TypeError, ValueError):
+                pass
+            if nz not in NOZZLE_OPTIONS:
+                nz = "12"
+        st.session_state.nozzle_no = nz
         nozzle_no = st.selectbox(
             "Nozzle",
             NOZZLE_OPTIONS,
-            index=NOZZLE_OPTIONS.index(st.session_state.nozzle_no),
+            index=NOZZLE_OPTIONS.index(nz),
             key="nozzle_no_input",
         )
         st.session_state.nozzle_no = nozzle_no
     with col2:
-        if "area_ratio" not in st.session_state:
-            st.session_state.area_ratio = "B"
+        ar = str(st.session_state.get("area_ratio", "B"))
+        if ar not in THROAT_OPTIONS:
+            ar = "B"
+        st.session_state.area_ratio = ar
         area_ratio = st.selectbox(
             "Throat",
             THROAT_OPTIONS,
-            index=THROAT_OPTIONS.index(st.session_state.area_ratio),
+            index=THROAT_OPTIONS.index(ar),
             key="area_ratio_input",
         )
         st.session_state.area_ratio = area_ratio
@@ -529,7 +554,7 @@ def _render_loss_coefs() -> tuple[float, float, float]:
         key="ken",
         default=0.03,
         min_value=0.001,
-        max_value=0.20,
+        max_value=0.40,  # widened to match fric_calibration.KEN_BOUNDS upper
         step=0.005,
         format="%.3f",
     )
@@ -822,7 +847,7 @@ def _render_power_fluid_range_params() -> tuple[int, int, int]:
 # ---------------------------------------------------------------------------
 
 
-def render_sidebar() -> tuple[bool, SimulationParams]:
+def render_sidebar(well_filter: list[str] | None = None) -> tuple[bool, SimulationParams]:
     """Render the complete sidebar and collect all parameters.
 
     Inputs are grouped from most-edited (top) to least-edited (Advanced expander):
@@ -832,6 +857,9 @@ def render_sidebar() -> tuple[bool, SimulationParams]:
       4. Inflow & Formation (expanded by default)
       5. Geometry (collapsed; auto-populated)
       6. Advanced — loss coefs, PVT overrides, batch ranges, PF range (collapsed)
+
+    ``well_filter`` (optional) restricts the well dropdown to a subset — used by
+    the pad-scoped optimization review loop to scope the picker to one pad.
     """
     with st.sidebar:
         run_button = st.button(
@@ -844,7 +872,7 @@ def render_sidebar() -> tuple[bool, SimulationParams]:
         )
 
         # Well selection — auto-run hooks fire from its on_change
-        selected_well, well_data = _render_well_selection()
+        selected_well, well_data = _render_well_selection(well_filter)
 
         # Field model
         if "field_model_index" not in st.session_state:

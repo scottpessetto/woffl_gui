@@ -541,10 +541,19 @@ def build_calibration_inputs(
         float(test_whp) if is_valid_number(test_whp) else float(params.surf_pres)
     )
 
-    ipr_inflow = create_inflow(oil_qwf, pwf_for_inflow, model_res_p)
-    ipr_res_mix = create_reservoir_mix(
-        wc_for_resmix, model_gor, params.form_temp, params.field_model
-    )
+    # InFlow raises when pwf >= reservoir pressure (common on gaugeless wells
+    # whose sidebar pwf isn't seeded below ResP). Return None — every caller
+    # already handles it — instead of letting the exception bubble up and halt
+    # the whole Solver render (which would wipe the BHP-calibration section and
+    # the plots below it). Protects the friction cal, PF auto-match, and the
+    # oil-rate back-match alike.
+    try:
+        ipr_inflow = create_inflow(oil_qwf, pwf_for_inflow, model_res_p)
+        ipr_res_mix = create_reservoir_mix(
+            wc_for_resmix, model_gor, params.form_temp, params.field_model
+        )
+    except (ValueError, ZeroDivisionError):
+        return None
 
     test_date = recent.get("WtDate")
     test_date_str = (

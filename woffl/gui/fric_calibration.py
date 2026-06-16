@@ -27,10 +27,12 @@ from scipy.optimize import minimize
 from woffl.assembly.solopump import jetpump_solver
 from woffl.geometry.jetpump import JetPump
 
-# Bounds for each varied parameter. ken is typically smaller than kth/kdi
-# in field practice (entrance loss is geometry-dominated), so its range is
-# tighter to keep the optimizer focused.
-KEN_BOUNDS = (0.005, 0.20)
+# Bounds for each varied parameter. ken (entrance loss) is geometry-dominated
+# and usually small, but on hard-to-match wells it's allowed up to 0.40 so the
+# optimizer can lean on it when kth/kdi alone can't reach the target BHP. Keep
+# the sidebar ``ken`` widget max in sync (sidebar._render_loss_coefs) or a
+# calibrated ken > the widget max gets silently reset.
+KEN_BOUNDS = (0.005, 0.40)
 KTH_BOUNDS = (0.05, 1.0)
 KDI_BOUNDS = (0.05, 1.0)
 ALL_BOUNDS = [KEN_BOUNDS, KTH_BOUNDS, KDI_BOUNDS]
@@ -45,12 +47,16 @@ GOOD_PSI = 25.0
 FAIR_PSI = 75.0
 # Strategic seed points spanning the 3D bound box — covers fully-clean,
 # discharge-only-loss, suction-only-loss, and fully-degraded regimes so
-# multi-start can escape local minima.
+# multi-start can escape local minima. The high-ken seeds (0.30) only get
+# tried when the first pass misses by > MULTISTART_THRESHOLD, so ken is the
+# last lever pulled — used to rescue a match when kth/kdi alone can't.
 ALT_STARTS = [
     (0.01, 0.10, 0.10),  # all clean
     (0.10, 0.10, 0.10),  # suction loss only
     (0.01, 0.80, 0.80),  # discharge loss only
     (0.10, 0.80, 0.80),  # all degraded
+    (0.30, 0.30, 0.30),  # high entrance loss, moderate discharge
+    (0.30, 0.80, 0.80),  # high entrance loss + degraded discharge (last resort)
 ]
 
 

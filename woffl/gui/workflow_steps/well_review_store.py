@@ -1,0 +1,384 @@
+"""Per-well reviewed-state store for the pad optimization workflow.
+
+The pad-scoped "Review & Calibrate Wells" step lets an engineer step through
+every well on a pad in the single-well Solver, verify/adjust the match, and
+**Save** the reviewed state. This module is the pure-data backbone for that:
+
+  - ``snapshot_from_params`` captures the sidebar ``SimulationParams`` (+ the
+    calibrated friction coefficients + provenance) into one serializable
+    per-well entry dict.
+  - ``to_well_config`` turns an entry into the optimizer's ``WellConfig``.
+  - ``store_to_dataframe`` / ``dataframe_to_store`` round-trip the whole store
+    to/from a CSV the engineer can download and re-upload for future reruns
+    or edits (the eventual Databricks save target shares this schema).
+
+No Streamlit here — session-state hydration lives in the step module so this
+stays unit-testable.
+
+UNIT GOTCHA (verified against the live code, do not "simplify" away):
+  - The sidebar/Solver ``qwf`` is **OIL** rate (BOPD). ``InFlow.qwf`` is oil
+    (``woffl/flow/inflow.py``: "The oil rate is used in conjunction with a
+    reservoir mixture's wc and gor to calculate other components"), and the
+    Solver feeds ``params.qwf`` straight in.
+  - ``WellConfig.qwf`` is **TOTAL LIQUID** (BLPD); ``NetworkOptimizer`` converts
+    it back to oil via ``oil = qwf * (1 - form_wc)``
+    (``network_optimizer.py``: "convert total fluid IPR rate to oil rate").
+  So a snapshot must convert OIL -> TOTAL LIQUID (``qwf / (1 - wc)``); the
+  optimizer's reverse conversion then reproduces the exact IPR the engineer
+  reviewed. ``OIL_RATE_FIELD`` preserves the as-reviewed oil rate for display
+  and provenance so the round-trip is auditable.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Optional
+
+import pandas as pd
+
+from woffl.assembly.network_optimizer import WellConfig
+
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+
+# WellConfig-bound fields carried verbatim into the optimizer's WellConfig.
+_WELLCONFIG_FLOAT_FIELDS = (
+    "res_pres",
+    "form_temp",
+    "jpump_tvd",
+    "tubing_od",
+    "tubing_thickness",
+    "casing_od",
+    "casing_thickness",
+    "form_wc",
+    "form_gor",
+    "surf_pres",
+    "qwf",  # TOTAL LIQUID (BLPD) — see module docstring
+    "pwf",
+)
+
+# Optional floats: missing/NaN must round-trip to None (not 0.0), so the
+# library falls back to its field_model presets / defaults.
+_OPTIONAL_FLOAT_FIELDS = (
+    "jpump_md",
+    "oil_api",
+    "gas_sg",
+    "wat_sg",
+    "bubble_point",
+    "ppf_surf_well",
+    "knz_well",
+    "ken_well",
+    "kth_well",
+    "kdi_well",
+)
+
+# As-reviewed oil rate (BOPD) kept alongside the total-liquid qwf for audit.
+OIL_RATE_FIELD = "qwf_oil_review"
+
+_STRING_FIELDS = (
+    "well_name",
+    "field_model",
+    "review_nozzle",
+    "review_throat",
+    "ipr_source",
+    "bhp_source",
+    "gauge_note",
+    "notes",
+)
+
+_BOOL_FIELDS = ("is_hypothetical", "reviewed", "offline")
+
+# Provenance vocabularies (kept small + explicit so the UI can badge them).
+IPR_SOURCES = ("vogel", "single_test", "forced", "hypothetical")
+BHP_SOURCES = ("gauged", "assumed")
+
+# Ordered CSV columns. well_name first; provenance/meta last.
+CSV_COLUMNS = (
+    ("well_name",)
+    + _WELLCONFIG_FLOAT_FIELDS
+    + (OIL_RATE_FIELD,)
+    + _OPTIONAL_FLOAT_FIELDS
+    + ("field_model", "review_nozzle", "review_throat",
+       "ipr_source", "bhp_source", "gauge_note",
+       "is_hypothetical", "reviewed", "offline", "notes")
+)
+
+# WellConfig hard validation bounds (mirror network_optimizer.WellConfig.__post_init__)
+# so a snapshot can never construct an invalid config.
+_WELLCONFIG_BOUNDS = {
+    "res_pres": (400.0, 5000.0),
+    "form_temp": (32.0, 350.0),
+    "jpump_tvd": (2500.0, 8000.0),
+    "form_wc": (0.0, 1.0),
+}
+
+# Guard against div-by-zero when WC -> 1.0 (a ~100% water well produces no oil
+# and would never be an optimization candidate, but the snapshot must not blow
+# up). Caps the oil->liquid blow-up at 100x.
+_MIN_OIL_FRACTION = 0.01
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _opt_float(raw: Any) -> Optional[float]:
+    """Coerce a CSV cell to float, mapping None/NaN/blank/non-numeric -> None."""
+    if raw is None:
+        return None
+    try:
+        if pd.isna(raw):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(raw, str) and not raw.strip():
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _str(raw: Any, default: str = "") -> str:
+    if raw is None:
+        return default
+    try:
+        if pd.isna(raw):
+            return default
+    except (TypeError, ValueError):
+        pass
+    return str(raw)
+
+
+def _nozzle_str(raw: Any) -> str:
+    """Normalize a nozzle label that may have been read from CSV as a float
+    ('10.0' -> '10'), so it matches the integer-string NOZZLE_OPTIONS."""
+    s = _str(raw).strip()
+    if not s:
+        return ""
+    try:
+        f = float(s)
+        if f == int(f):
+            return str(int(f))
+    except (TypeError, ValueError):
+        pass
+    return s
+
+
+def _bool(raw: Any, default: bool = False) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return default
+    try:
+        if pd.isna(raw):
+            return default
+    except (TypeError, ValueError):
+        pass
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"true", "1", "yes", "y"}
+    try:
+        return bool(int(raw))
+    except (TypeError, ValueError):
+        return default
+
+
+# ---------------------------------------------------------------------------
+# Snapshot: SimulationParams -> store entry
+# ---------------------------------------------------------------------------
+
+
+def snapshot_from_params(
+    params,
+    *,
+    ipr_source: str,
+    bhp_source: str = "gauged",
+    is_hypothetical: bool = False,
+    offline: bool = False,
+    gauge_note: str = "",
+    jpump_md: Optional[float] = None,
+    pin_pf_pressure: bool = True,
+    notes: str = "",
+) -> dict:
+    """Snapshot the reviewed sidebar state into a serializable per-well entry.
+
+    Args:
+        params: the live ``SimulationParams`` for the well being reviewed.
+        ipr_source: provenance tag (see ``IPR_SOURCES``) — how the IPR anchor
+            was established (Vogel fit, single test, forced best-guess, or a
+            fully synthetic hypothetical well).
+        bhp_source: ``"gauged"`` (a measured BHP backed the match) or
+            ``"assumed"`` (no gauge — pwf is an engineering estimate).
+        is_hypothetical: a future/what-if well with no Databricks backing.
+        jpump_md: jet-pump measured depth if known (defaults to TVD downstream).
+        pin_pf_pressure: when True (default) the reviewed surface PF pressure is
+            stored as the well's ``ppf_surf_well`` override, pinning the well to
+            the pressure it was matched at. The Phase-B pad pump curve overrides
+            this pad-wide with the common header pressure; the reviewed
+            ``ken/kth/kdi`` are always kept.
+        notes: free-text engineer note carried into the CSV.
+
+    Returns:
+        A plain dict keyed by ``CSV_COLUMNS``.
+    """
+    if ipr_source not in IPR_SOURCES:
+        raise ValueError(f"ipr_source must be one of {IPR_SOURCES}, got {ipr_source!r}")
+    if bhp_source not in BHP_SOURCES:
+        raise ValueError(f"bhp_source must be one of {BHP_SOURCES}, got {bhp_source!r}")
+
+    wc = float(params.form_wc)
+    oil_fraction = max(1.0 - wc, _MIN_OIL_FRACTION)
+    qwf_oil = float(params.qwf)
+    qwf_liquid = qwf_oil / oil_fraction  # OIL (BOPD) -> TOTAL LIQUID (BLPD)
+
+    return {
+        "well_name": params.selected_well,
+        "res_pres": float(params.pres),
+        "form_temp": float(params.form_temp),
+        "jpump_tvd": float(params.jpump_tvd),
+        "tubing_od": float(params.tubing_od),
+        "tubing_thickness": float(params.tubing_thickness),
+        "casing_od": float(params.casing_od),
+        "casing_thickness": float(params.casing_thickness),
+        "form_wc": wc,
+        "form_gor": float(params.form_gor),
+        "surf_pres": float(params.surf_pres),
+        "qwf": qwf_liquid,
+        "pwf": float(params.pwf),
+        OIL_RATE_FIELD: qwf_oil,
+        "jpump_md": float(jpump_md) if jpump_md is not None else None,
+        "oil_api": params.oil_api,
+        "gas_sg": params.gas_sg,
+        "wat_sg": params.wat_sg,
+        "bubble_point": params.bubble_point,
+        # Per-well calibration overrides. knz is fixed (0.01) in the friction
+        # calibration and has no sidebar field, so it stays None (library default).
+        "ppf_surf_well": float(params.ppf_surf) if pin_pf_pressure else None,
+        "knz_well": None,
+        "ken_well": float(params.ken),
+        "kth_well": float(params.kth),
+        "kdi_well": float(params.kdi),
+        # Review metadata. The optimizer re-chooses nozzle/throat, so the
+        # reviewed pump is informational (drives the "reviewed vs optimized"
+        # comparison in Results), not a constraint.
+        "field_model": params.field_model,
+        "review_nozzle": params.nozzle_no,
+        "review_throat": params.area_ratio,
+        "ipr_source": ipr_source,
+        "bhp_source": bhp_source,
+        # Free-text provenance, e.g. "Gauge-backed IPR — <window>, <n> samples".
+        # Non-empty ⇒ the BHP/IPR was created from memory-gauge data.
+        "gauge_note": gauge_note,
+        "is_hypothetical": bool(is_hypothetical),
+        # offline = pulled / down: kept in the store (accounted for) but excluded
+        # from the optimization run by the host page.
+        "offline": bool(offline),
+        "reviewed": True,
+        "notes": notes,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Entry -> WellConfig (for the optimizer)
+# ---------------------------------------------------------------------------
+
+
+def to_well_config(entry: dict) -> WellConfig:
+    """Build the optimizer's ``WellConfig`` from a reviewed entry.
+
+    Float fields with hard library bounds are clamped so a slightly-out-of-range
+    reviewed value (or an edited CSV) can't trip ``WellConfig.__post_init__``.
+    """
+    clamped = {}
+    for fld in _WELLCONFIG_FLOAT_FIELDS:
+        val = float(entry[fld])
+        if fld in _WELLCONFIG_BOUNDS:
+            lo, hi = _WELLCONFIG_BOUNDS[fld]
+            val = _clamp(val, lo, hi)
+        clamped[fld] = val
+
+    return WellConfig(
+        well_name=entry["well_name"],
+        res_pres=clamped["res_pres"],
+        form_temp=clamped["form_temp"],
+        jpump_tvd=clamped["jpump_tvd"],
+        jpump_md=entry.get("jpump_md"),
+        tubing_od=clamped["tubing_od"],
+        tubing_thickness=clamped["tubing_thickness"],
+        casing_od=clamped["casing_od"],
+        casing_thickness=clamped["casing_thickness"],
+        form_wc=clamped["form_wc"],
+        form_gor=clamped["form_gor"],
+        field_model=entry["field_model"],
+        surf_pres=clamped["surf_pres"],
+        qwf=clamped["qwf"],
+        pwf=clamped["pwf"],
+        oil_api=entry.get("oil_api"),
+        gas_sg=entry.get("gas_sg"),
+        wat_sg=entry.get("wat_sg"),
+        bubble_point=entry.get("bubble_point"),
+        ppf_surf_well=entry.get("ppf_surf_well"),
+        knz_well=entry.get("knz_well"),
+        ken_well=entry.get("ken_well"),
+        kth_well=entry.get("kth_well"),
+        kdi_well=entry.get("kdi_well"),
+    )
+
+
+def store_to_well_configs(store: dict[str, dict]) -> list[WellConfig]:
+    """Convert a whole store ({well_name: entry}) into a WellConfig list."""
+    return [to_well_config(entry) for entry in store.values()]
+
+
+def active_entries(store: dict[str, dict]) -> dict[str, dict]:
+    """Entries that should feed the optimizer — excludes offline/pulled wells."""
+    return {k: v for k, v in store.items() if not v.get("offline")}
+
+
+# ---------------------------------------------------------------------------
+# CSV round-trip
+# ---------------------------------------------------------------------------
+
+
+def store_to_dataframe(store: dict[str, dict]) -> pd.DataFrame:
+    """Serialize the store to a DataFrame with stable ``CSV_COLUMNS`` order."""
+    rows = [{col: entry.get(col) for col in CSV_COLUMNS} for entry in store.values()]
+    return pd.DataFrame(rows, columns=list(CSV_COLUMNS))
+
+
+def dataframe_to_store(df: pd.DataFrame) -> dict[str, dict]:
+    """Parse an uploaded CSV/DataFrame back into a store keyed by well_name.
+
+    Tolerant of missing optional columns and NaN cells (optional floats and
+    blank strings come back as None/"" rather than NaN). ``well_name`` is
+    required; rows without one are skipped.
+    """
+    store: dict[str, dict] = {}
+    for _, row in df.iterrows():
+        well_name = _str(row.get("well_name")).strip()
+        if not well_name:
+            continue
+
+        entry: dict[str, Any] = {"well_name": well_name}
+        for fld in _WELLCONFIG_FLOAT_FIELDS:
+            entry[fld] = float(_opt_float(row.get(fld)) or 0.0)
+        entry[OIL_RATE_FIELD] = _opt_float(row.get(OIL_RATE_FIELD))
+        for fld in _OPTIONAL_FLOAT_FIELDS:
+            entry[fld] = _opt_float(row.get(fld))
+        entry["field_model"] = _str(row.get("field_model"), "Schrader") or "Schrader"
+        entry["review_nozzle"] = _nozzle_str(row.get("review_nozzle"))
+        entry["review_throat"] = _str(row.get("review_throat")).strip()
+        entry["ipr_source"] = _str(row.get("ipr_source"), "vogel") or "vogel"
+        entry["bhp_source"] = _str(row.get("bhp_source"), "gauged") or "gauged"
+        entry["gauge_note"] = _str(row.get("gauge_note"))
+        entry["is_hypothetical"] = _bool(row.get("is_hypothetical"))
+        entry["offline"] = _bool(row.get("offline"))
+        entry["reviewed"] = _bool(row.get("reviewed"), default=True)
+        entry["notes"] = _str(row.get("notes"))
+        store[well_name] = entry
+    return store

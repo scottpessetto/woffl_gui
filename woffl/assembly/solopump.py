@@ -12,7 +12,7 @@ from woffl.flow import InFlow
 from woffl.flow import jetflow as jf
 from woffl.flow import outflow as of
 from woffl.flow import singlephase as sp
-from woffl.flow.errors import ConvergenceError
+from woffl.flow.errors import ConvergenceError, ThroatEntryNoSolution
 from woffl.geometry import JetPump, PipeInPipe, WellProfile
 from woffl.pvt import FormWater, ResMix
 
@@ -309,14 +309,167 @@ def jetpump_solver(
         # this provides a quick fix in the try statement in batch run
         raise ValueError("well cannot lift at max suction pressure")
 
-    # start secant hunting for the answer, in between the two points
-    psu_list = [psu_min, psu_max]
-    res_list = [res_min, res_max]
-
     psu_diff = 5  # converged when successive psu guesses are this close, psi
     res_tol = 10  # and the discharge residual is driven this close to zero, psid
-    n = 0  # loop counter
 
+    # The root is bracketed in [psu_min, psu_max] (res_min <= 0, res_max >= 0).
+    # Primary attempt uses the original bracket-end pair so every solve that
+    # already converged returns the identical psu/oil it did before (additive
+    # change only). If that secant stalls on a marginal well, the robustness
+    # path below re-seeds and/or bisects.
+    try:
+        return _secant_solve(
+            (psu_min, psu_max),
+            res_min,
+            res_max,
+            psu_min,
+            psu_max,
+            pwh,
+            tsu,
+            ppf_surf,
+            jpump,
+            wellbore,
+            wellprof,
+            ipr_su,
+            prop_su,
+            prop_pf,
+            jpump_direction,
+            psu_diff,
+            res_tol,
+        )
+    except ConvergenceError:
+        pass
+
+    # Fallback 1 — re-seed the secant from the well's known/measured flowing BHP
+    # (ipr_su.pwf, clamped into the bracket). For a producing well the system
+    # root sits in that neighborhood, so starting the iteration there (paired
+    # with the upper bracket end for the residual sign) lands on/near the real
+    # answer where the bracket-spanning pair stalled. Skip if pwf collapses onto
+    # a bracket end (the primary attempt already used that pair).
+    psu_seed = min(max(ipr_su.pwf, psu_min), psu_max)
+    if abs(psu_seed - psu_max) > psu_diff and abs(psu_seed - psu_min) > psu_diff:
+        try:
+            return _secant_solve(
+                (psu_max, psu_seed),
+                res_min,
+                res_max,
+                psu_min,
+                psu_max,
+                pwh,
+                tsu,
+                ppf_surf,
+                jpump,
+                wellbore,
+                wellprof,
+                ipr_su,
+                prop_su,
+                prop_pf,
+                jpump_direction,
+                psu_diff,
+                res_tol,
+            )
+        except ConvergenceError:
+            pass
+
+    # Fallback 2 — robust bisection on the bracketed root. Guaranteed to converge
+    # when the residual changes sign across [psu_min, psu_max]; only raise
+    # ConvergenceError if the root is somehow not bracketed.
+    if res_min * res_max <= 0:
+        return _bisection_solve(
+            psu_min,
+            psu_max,
+            res_min,
+            res_max,
+            pwh,
+            tsu,
+            ppf_surf,
+            jpump,
+            wellbore,
+            wellprof,
+            ipr_su,
+            prop_su,
+            prop_pf,
+            jpump_direction,
+            res_tol,
+        )
+    raise ConvergenceError("Suction Pressure for Overall System did not converge")
+
+
+def _secant_solve(
+    seed_pair: tuple[float, float],
+    res_min: float,
+    res_max: float,
+    psu_min: float,
+    psu_max: float,
+    pwh: float,
+    tsu: float,
+    ppf_surf: float,
+    jpump: JetPump,
+    wellbore: PipeInPipe,
+    wellprof: WellProfile,
+    ipr_su: InFlow,
+    prop_su: ResMix,
+    prop_pf: FormWater,
+    jpump_direction: str,
+    psu_diff: float,
+    res_tol: float,
+) -> tuple[float, bool, float, float, float, float]:
+    """Secant Hunt for the Discharge Residual Root
+
+    Drives the discharge residual to zero by secant iteration on suction
+    pressure, clamping every overshoot back into the bracketed [psu_min,
+    psu_max]. Raises ConvergenceError if it does not settle within the cap so
+    jetpump_solver can fall back to bisection.
+
+    Args:
+        seed_pair (tuple): Starting (psu, psu) pair for the secant, psig
+        res_min (float): Discharge residual at psu_min, psid
+        res_max (float): Discharge residual at psu_max, psid
+        psu_min (float): Lower suction-pressure bracket, psig
+        psu_max (float): Upper suction-pressure bracket, psig
+        pwh (float): Pressure Wellhead, psig
+        tsu (float): Temperature Suction, deg F
+        ppf_surf (float): Pressure Power Fluid Surface, psig
+        jpump (JetPump): Jet Pump Class
+        wellbore (PipeInPipe): Wellbore Geometry of Tubing and Casing
+        wellprof (WellProfile): Well Profile Class
+        ipr_su (InFlow): Inflow Performance Class
+        prop_su (ResMix): Reservoir Mixture Conditions
+        prop_pf (FormWater): Power Fluid Properties
+        jpump_direction (str): Jet Pump Direction, "forward" or "reverse"
+        psu_diff (float): Successive-psu convergence criterion, psi
+        res_tol (float): Discharge residual convergence criterion, psid
+
+    Returns:
+        Same tuple as jetpump_solver: (psu, sonic_status, qoil_std, fwat_bwpd,
+        qnz_bwpd, mach_te)
+    """
+    psu_list = list(seed_pair)
+    # match each seed psu to its already-known residual where possible so a
+    # bracket-end seed reuses res_min / res_max instead of re-evaluating
+    res_lookup = {psu_min: res_min, psu_max: res_max}
+    res_list: list[float] = []
+    qoil_std = fwat_bwpd = qnz_bwpd = mach_te = 0.0
+    for psu in psu_list:
+        if psu in res_lookup:
+            res_list.append(res_lookup[psu])
+        else:
+            res_seed, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = discharge_residual(
+                psu,
+                pwh,
+                tsu,
+                ppf_surf,
+                jpump,
+                wellbore,
+                wellprof,
+                ipr_su,
+                prop_su,
+                prop_pf,
+                jpump_direction,
+            )
+            res_list.append(res_seed)
+
+    n = 0  # loop counter
     while abs(psu_list[-2] - psu_list[-1]) > psu_diff or abs(res_list[-1]) > res_tol:
         # secant on the LAST TWO iterates; the root stays bracketed between
         # psu_min (res <= 0) and psu_max (res >= 0), so clamp overshoots back in
@@ -345,3 +498,105 @@ def jetpump_solver(
                 "Suction Pressure for Overall System did not converge"
             )
     return psu_list[-1], False, qoil_std, fwat_bwpd, qnz_bwpd, mach_te
+
+
+def _bisection_solve(
+    psu_lo: float,
+    psu_hi: float,
+    res_lo: float,
+    res_hi: float,
+    pwh: float,
+    tsu: float,
+    ppf_surf: float,
+    jpump: JetPump,
+    wellbore: PipeInPipe,
+    wellprof: WellProfile,
+    ipr_su: InFlow,
+    prop_su: ResMix,
+    prop_pf: FormWater,
+    jpump_direction: str,
+    res_tol: float,
+) -> tuple[float, bool, float, float, float, float]:
+    """Bisection Fallback for the Discharge Residual Root
+
+    Guaranteed-convergence fallback for jetpump_solver's suction-pressure solve.
+    The discharge residual is bracketed on [psu_lo, psu_hi] (res_lo <= 0 at the
+    sonic-choke floor, res_hi >= 0 at psu_max), so a bisection always narrows in
+    on the root even when the secant overshoots/stalls on a marginal well.
+
+    Args:
+        psu_lo (float): Lower suction-pressure bracket (psu_min), psig
+        psu_hi (float): Upper suction-pressure bracket (psu_max), psig
+        res_lo (float): Discharge residual at psu_lo (<= 0), psid
+        res_hi (float): Discharge residual at psu_hi (>= 0), psid
+        pwh (float): Pressure Wellhead, psig
+        tsu (float): Temperature Suction, deg F
+        ppf_surf (float): Pressure Power Fluid Surface, psig
+        jpump (JetPump): Jet Pump Class
+        wellbore (PipeInPipe): Wellbore Geometry of Tubing and Casing
+        wellprof (WellProfile): Well Profile Class
+        ipr_su (InFlow): Inflow Performance Class
+        prop_su (ResMix): Reservoir Mixture Conditions
+        prop_pf (FormWater): Power Fluid Properties
+        jpump_direction (str): Jet Pump Direction, "forward" or "reverse"
+        res_tol (float): Residual tolerance to stop on, psid
+
+    Returns:
+        Same tuple as jetpump_solver: (psu, sonic_status, qoil_std, fwat_bwpd,
+        qnz_bwpd, mach_te)
+    """
+    # orient so lo carries the negative residual and hi the positive one
+    if res_lo > res_hi:
+        psu_lo, psu_hi = psu_hi, psu_lo
+        res_lo, res_hi = res_hi, res_lo
+
+    psu_diff = 1.5  # tighter than the secant's 5 psi since bisection is cheap-ish
+    psu_mid = (psu_lo + psu_hi) / 2
+    # carry the most recent evaluation out so the final return uses the mid point
+    res_mid, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = discharge_residual(
+        psu_mid,
+        pwh,
+        tsu,
+        ppf_surf,
+        jpump,
+        wellbore,
+        wellprof,
+        ipr_su,
+        prop_su,
+        prop_pf,
+        jpump_direction,
+    )
+
+    n = 0
+    while (psu_hi - psu_lo) / 2 > psu_diff and abs(res_mid) > res_tol:
+        if res_mid < 0:
+            psu_lo = psu_mid
+        else:
+            psu_hi = psu_mid
+        psu_mid = (psu_lo + psu_hi) / 2
+        try:
+            res_mid, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = discharge_residual(
+                psu_mid,
+                pwh,
+                tsu,
+                ppf_surf,
+                jpump,
+                wellbore,
+                wellprof,
+                ipr_su,
+                prop_su,
+                prop_pf,
+                jpump_direction,
+            )
+        except ThroatEntryNoSolution:
+            # Shouldn't occur inside [psu_min, psu_max] (psu_min is the
+            # feasibility floor), but if a probe point has no throat-entry
+            # solution treat it as the low-psu (too-low) side and keep bisecting.
+            psu_lo = psu_mid
+            psu_mid = (psu_lo + psu_hi) / 2
+        n += 1
+        if n == 60:
+            raise ConvergenceError(
+                "Suction Pressure for Overall System did not converge (bisection)"
+            )
+    return psu_mid, False, qoil_std, fwat_bwpd, qnz_bwpd, mach_te

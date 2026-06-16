@@ -1,0 +1,41 @@
+{
+  "equipment": "S-Pad booster pumps P-800 B-1/B-2/B-3",
+  "model": "Weatherford/Borets ESPi675TJ-12000 (675 series)",
+  "configuration": "tandem 41-stage + 38-stage = 79 stages in series per unit",
+  "n_stages": 79,
+  "n_pumps_parallel": 3,
+  "speed_rpm": 3500,
+  "speed_note": "fixed 60 Hz (no VFD); nameplate 3570 RPM, field performs on 3500-normalized curve",
+  "specific_gravity": 1.0,
+  "suction_psi": 220.0,
+  "ft_to_psi": 0.4329004329004329,
+  "units": {
+    "flow": "BPD",
+    "head": "ft",
+    "pressure": "psi",
+    "power": "BHP"
+  },
+  "recommended_flow_per_pump_bpd": [
+    7650,
+    18360
+  ],
+  "bep_flow_per_pump_bpd": 12000,
+  "head_per_stage_poly": {
+    "form": "head_ft_per_stage = c3*Q^3 + c2*Q^2 + c1*Q + c0, Q in BPD per pump, valid 0-21000",
+    "c3": -3.867646778059496e-12,
+    "c2": -4.557184603974567e-08,
+    "c1": -0.00036333360428150995,
+    "c0": 107.22128868404283
+  },
+  "bhp_per_stage_poly": {
+    "form": "bhp_per_stage = c3*Q^3 + c2*Q^2 + c1*Q + c0, Q in BPD per pump",
+    "c3": -3.505560158491784e-13,
+    "c2": 6.361293991469625e-09,
+    "c1": 0.0003478302405478312,
+    "c0": 5.49354336433901
+  },
+  "compute": "dP_psi = head_per_stage(Q) * n_stages * SG / 2.31; discharge = suction_psi + dP_psi",
+  "parallel": "all 3 in parallel: same dP, flows add -> per_pump_flow = total_flow / 3",
+  "source": "fit of 2012 Borets section tests WO13579(38stg)/WO13580(41stg) @3500RPM, per stage",
+  "validated": "matches S-Pad SCADA within ~1% (e.g. 30,694 BPD total -> ~3460 psi discharge)"
+}
