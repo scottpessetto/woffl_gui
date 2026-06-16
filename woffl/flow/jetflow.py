@@ -536,9 +536,56 @@ def throat_discharge(
 
         n += 1
         if n == 15:
-            raise ConvergenceError("throat mixture did not converge")
+            # Secant stalled — it oscillates on the compressible throat mixture
+            # for marginal configs (small throat ratio + high water cut), where
+            # rho_tm(ptm) is strongly nonlinear near the bubble point. Fall back
+            # to a bracketed root-find on the SAME momentum-balance residual,
+            # which is guaranteed to converge whenever the balance changes sign
+            # over ptm (it virtually always does — the -ptm term dominates at
+            # high pressure). Mirrors the solopump psu bisection fallback; the
+            # secant fast-path above is untouched, so already-converging cases
+            # are bit-identical. [LIBRARY change -> upstream PR to kwellis/woffl]
+            def _bal(p):
+                p = max(p, 15.0)
+                rho = prop_tm.condition(p, tte).rho_mix()
+                v = sp.velocity(mtm / rho, ath)
+                m_tm, m_fr = throat_outlet_momentum(kth, v, ath, rho)
+                return throat_momentum_balance(
+                    pte, p, mom_nz, mom_te, m_tm, m_fr, ath
+                )
+
+            return _throat_discharge_bracketed(_bal, pte)
 
     return ptm_list[-1]
+
+
+def _throat_discharge_bracketed(bal_fn, pte: float) -> float:
+    """Bracketed fallback for :func:`throat_discharge` when the secant stalls.
+
+    Scans the throat-discharge pressure ``ptm`` over a generous range for a sign
+    change in the momentum-balance residual, then refines with Brent's method.
+    Returns the validated ``ptm`` root. Raises :class:`ConvergenceError` only if
+    no sign change exists in range (a genuinely non-physical configuration), so
+    callers' existing failure handling is preserved.
+    """
+    from scipy.optimize import brentq
+
+    lo = 15.0
+    # The discharge sits a little above the throat-entry pressure for a working
+    # pump (initial secant guesses were 2*pte, 3*pte); scan well past that.
+    for hi in (max(6.0 * pte, 300.0), max(15.0 * pte, 1500.0)):
+        grid = np.linspace(lo, hi, 60)
+        prev_p = grid[0]
+        prev_v = bal_fn(prev_p)
+        for p in grid[1:]:
+            v = bal_fn(p)
+            if prev_v == 0.0:
+                return float(prev_p)
+            if (prev_v < 0.0) != (v < 0.0):  # sign change -> root bracketed
+                return float(brentq(bal_fn, prev_p, p, xtol=1e-2, rtol=1e-8,
+                                    maxiter=200))
+            prev_p, prev_v = p, v
+    raise ConvergenceError("throat mixture did not converge")
 
 
 def throat_wc(qoil_std: float, wc_su: float, qwat_nz: float) -> tuple[float, float]:

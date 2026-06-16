@@ -226,6 +226,63 @@ def discharge_residual(
     return res_di, qoil_std, fwat_bwpd, qnz_bwpd, mach_te
 
 
+def _residual_walk_inward(
+    psu_start: float,
+    psu_toward: float,
+    pwh: float,
+    tsu: float,
+    ppf_surf: float,
+    jpump: JetPump,
+    wellbore: PipeInPipe,
+    wellprof: WellProfile,
+    ipr_su: InFlow,
+    prop_su: ResMix,
+    prop_pf: FormWater,
+    jpump_direction: str,
+) -> tuple[float, float, tuple[float, float, float, float]]:
+    """Discharge residual at ``psu_start``, walking inward if it's infeasible.
+
+    The inner throat-mixture solve has no solution at some suction pressures for
+    marginal pumps (small throat ratio + high water cut). When ``psu_start`` (a
+    bracket endpoint) is such a point, the outer solve would historically abort.
+    Instead, step the suction toward ``psu_toward`` and return the FIRST feasible
+    suction's residual, so the outer search retains a valid, bracketed root — the
+    well does flow inside the range.
+
+    The probe fractions are dense near the endpoint (most rescues are only a few
+    psi in) and extend to ~95% of the way to ``psu_toward`` — some pumps are
+    feasible only in a thin band right against the far suction bound (e.g. a 13B
+    at 99% water cut feasible only in the top ~13 psi below reservoir pressure),
+    and a half-range walk would miss them.
+
+    The first probe is ``psu_start`` itself, so a feasible endpoint is returned
+    unchanged and already-converging solves stay bit-identical. Only the
+    throat-mixture :class:`ConvergenceError` is walked past; other exceptions
+    (notably ``ThroatEntryNoSolution``, which drives the GUI's GOR recovery)
+    propagate unchanged. Raises :class:`ConvergenceError` if no feasible suction
+    is found within range.
+
+    Returns ``(psu, residual, (qoil_std, fwat_bwpd, qnz_bwpd, mach_te))``.
+    [LIBRARY change -> upstream PR to kwellis/woffl]
+    """
+    span = psu_toward - psu_start
+    fracs = (0.0, 0.005, 0.01, 0.02, 0.04, 0.07, 0.11, 0.16, 0.22,
+             0.30, 0.40, 0.52, 0.66, 0.82, 0.95)
+    for fr in fracs:
+        psu = psu_start + span * fr
+        try:
+            res, qoil, fwat, qnz, mach = discharge_residual(
+                psu, pwh, tsu, ppf_surf, jpump, wellbore, wellprof,
+                ipr_su, prop_su, prop_pf, jpump_direction,
+            )
+            return psu, res, (qoil, fwat, qnz, mach)
+        except ConvergenceError:
+            continue  # infeasible throat mixture at this suction — step inward
+    raise ConvergenceError(
+        "no feasible suction pressure for the inner throat solve"
+    )
+
+
 def jetpump_solver(
     pwh: float,
     tsu: float,
@@ -267,18 +324,22 @@ def jetpump_solver(
     psu_min, qoil_std, te_book = jf.psu_minimize(
         tsu=tsu, ken=jpump.ken, ate=jpump.ate, ipr_su=ipr_su, prop_su=prop_su
     )
-    res_min, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = discharge_residual(
-        psu_min,
-        pwh,
-        tsu,
-        ppf_surf,
-        jpump,
-        wellbore,
-        wellprof,
-        ipr_su,
-        prop_su,
-        prop_pf,
-        jpump_direction,
+    psu_max = ipr_su.pres - 10  # max suction pressure that can be used
+
+    # Lower-bracket residual. The inner throat-mixture solve can be infeasible
+    # right AT psu_min for marginal pumps (small throat ratio + high water cut).
+    # The well still flows — the discharge residual crosses zero just inside the
+    # feasible suction range — but historically the whole solve ABORTED here
+    # because discharge_residual raised at the endpoint. Walk psu inward to the
+    # nearest feasible suction so the outer search keeps a valid bracket. When
+    # the endpoint is already feasible (the overwhelming majority) the first
+    # probe returns it unchanged, so converged solves stay bit-identical.
+    # [LIBRARY change -> upstream PR to kwellis/woffl]
+    psu_min, res_min, (qoil_std, fwat_bwpd, qnz_bwpd, mach_te) = (
+        _residual_walk_inward(
+            psu_min, psu_max, pwh, tsu, ppf_surf, jpump, wellbore, wellprof,
+            ipr_su, prop_su, prop_pf, jpump_direction,
+        )
     )
 
     # if the jetpump (available) discharge is above the outflow (required) discharge at lowest suction
@@ -287,19 +348,9 @@ def jetpump_solver(
         sonic_status = True
         return psu_min, sonic_status, qoil_std, fwat_bwpd, qnz_bwpd, mach_te
 
-    psu_max = ipr_su.pres - 10  # max suction pressure that can be used
-    res_max, *etc = discharge_residual(
-        psu_max,
-        pwh,
-        tsu,
-        ppf_surf,
-        jpump,
-        wellbore,
-        wellprof,
-        ipr_su,
-        prop_su,
-        prop_pf,
-        jpump_direction,
+    psu_max, res_max, _ = _residual_walk_inward(
+        psu_max, psu_min, pwh, tsu, ppf_surf, jpump, wellbore, wellprof,
+        ipr_su, prop_su, prop_pf, jpump_direction,
     )
 
     # if the jetpump (available) discharge is below the outflow (required) discharge at highest suction

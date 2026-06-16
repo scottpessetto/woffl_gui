@@ -726,6 +726,13 @@ def render_tab(
     if _bm_msg:
         st.success(_bm_msg, icon="🎯")
 
+    # Same one-shot replay for the joint oil + PF auto-match (it seeds several
+    # sidebar fields then reruns). dict carries text + status so we can color it.
+    _jm = st.session_state.pop("_joint_automatch_msg", None)
+    if _jm:
+        _icon = "🎯" if _jm.get("ok") else "⚠️"
+        (st.success if _jm.get("ok") else st.warning)(_jm["text"], icon=_icon)
+
     # Test picker FIRST — its selection determines which pump the solver
     # uses on this run (pump-at-test-date overrides sidebar when a test is
     # selected). Default = most recent test; matches the pre-picker
@@ -1016,6 +1023,13 @@ def render_tab(
     # known test oil rate (a consistent, converging operating point). Self-gates
     # to gaugeless wells with a known test oil rate, so it's a no-op otherwise.
     _render_oil_rate_backmatch(
+        params, wellbore, well_profile, selected_test_row=selected_test_row
+    )
+
+    # Joint oil + PF auto-match — the headline calibration: find IPR + JP params
+    # so the model reproduces BOTH the test oil AND power-fluid rate at once.
+    # Self-gates to wells whose selected test has both a known oil and PF rate.
+    _render_joint_automatch(
         params, wellbore, well_profile, selected_test_row=selected_test_row
     )
 
@@ -1372,6 +1386,159 @@ def _render_oil_rate_backmatch(
             f"(qwf {seed_qwf:,} BOPD · pwf {seed_pwf:,} psi · ResP "
             f"{seed_res:,} psi). Edit any field in the sidebar to override."
         )
+        st.rerun()
+
+
+def _render_joint_automatch(
+    params: SimulationParams,
+    wellbore,
+    well_profile,
+    *,
+    selected_test_row=None,
+) -> None:
+    """Button: auto-match BOTH the test oil rate AND power-fluid rate.
+
+    This is the headline per-well calibration. The engineer knows the test's oil
+    rate, PF (lift-water) rate, and the installed pump, and wants the model to
+    reproduce *both* before trusting it in the optimizer. Hand-tweaking the IPR +
+    friction to hit two targets at once is impractical, so this does it
+    numerically: it searches the IPR productivity, PF surface pressure, and
+    friction coefs (ken/kth/kdi) for the combination that makes the installed
+    pump model the test's oil AND PF, then seeds those into the sidebar.
+
+    When the test also has a measured BHP, it's added as a third target (the
+    friction coefs reconcile it). For a gaugeless well the flowing BHP falls out
+    of the match (seeded as pwf). If the targets can't both be hit, the result
+    explains WHY (PF-limited / pump-capacity-limited / etc.) instead of silently
+    seeding a bad point — see :mod:`woffl.gui.joint_match`.
+    """
+    from woffl.gui.utils import build_calibration_inputs
+
+    if params.selected_well == "Custom":
+        return
+
+    actuals = _actuals_from_test(selected_test_row)
+    oil_test = actuals.get("oil")
+    pf_test = actuals.get("pf")
+    if not oil_test or oil_test <= 0 or not pf_test or pf_test <= 0:
+        return  # need BOTH an oil and a PF target
+    bhp_test = actuals.get("bhp")  # optional third target
+
+    inputs = build_calibration_inputs(
+        params, wellbore, well_profile, selected_test_row=selected_test_row,
+    )
+    if inputs is not None:
+        nozzle, throat = inputs["nozzle"], inputs["throat"]
+        model_surf_pres = inputs["model_surf_pres"]
+        if not _is_valid_pump_code(nozzle, throat):
+            nozzle, throat = params.nozzle_no, params.area_ratio
+        pump_src = "installed"
+    else:
+        # No JP history (e.g. S-67: tests but no installs) — model the SIDEBAR
+        # pump against the test. We can still match oil + PF; the engineer chose
+        # the pump. Mirrors Model-vs-Actual's sidebar-pump fallback so the button
+        # isn't hidden just because the well lacks install records.
+        nozzle, throat = params.nozzle_no, params.area_ratio
+        model_surf_pres = float(params.surf_pres)
+        pump_src = "sidebar"
+
+    st.markdown("##### Auto-match oil + power fluid")
+    _bhp_note = (
+        f" and BHP **{bhp_test:,.0f} psi**" if bhp_test else " (BHP inferred)"
+    )
+    st.caption(
+        f"Find the IPR + jet-pump params (productivity, PF pressure, ken/kth/kdi) "
+        f"that make the {pump_src} pump **{nozzle}{throat}** reproduce this test's "
+        f"oil **{oil_test:,.0f} BOPD** and power fluid **{pf_test:,.0f} BWPD**"
+        f"{_bhp_note}, then seed the sidebar with the consistent solution. If both "
+        "targets can't be hit, it explains the physical limit."
+    )
+
+    if st.button(
+        "🎯 Auto-match oil + PF",
+        type="primary",
+        key="sw_joint_automatch_btn",
+        use_container_width=True,
+        help=(
+            "Numerically searches IPR productivity, PF surface pressure, and "
+            "friction coefs so the installed pump models BOTH the test oil and PF "
+            "rate. Seeds qwf / pwf / ResP / ppf_surf / ken / kth / kdi into the "
+            "sidebar. Edit any field afterward to override."
+        ),
+    ):
+        from woffl.gui.joint_match import joint_match
+        from woffl.gui.sidebar import clamp_seed
+
+        with st.spinner(
+            f"Searching IPR + JP params so {nozzle}{throat} matches "
+            f"{oil_test:,.0f} BOPD oil and {pf_test:,.0f} BWPD PF…"
+        ):
+            r = joint_match(
+                oil_target=float(oil_test),
+                pf_target=float(pf_test),
+                pres=float(params.pres),
+                nozzle=nozzle,
+                throat=throat,
+                surf_pres=model_surf_pres,
+                form_temp=float(params.form_temp),
+                rho_pf=float(params.rho_pf),
+                ppf_surf0=float(params.ppf_surf),
+                wellbore=wellbore,
+                well_profile=well_profile,
+                form_wc=float(params.form_wc),
+                form_gor=float(params.form_gor),
+                ken0=float(params.ken),
+                kth0=float(params.kth),
+                kdi0=float(params.kdi),
+                field_model=params.field_model,
+                jpump_direction=params.jpump_direction,
+                bhp_target=(float(bhp_test) if bhp_test else None),
+            )
+
+        # Seed the sidebar with the matched params — even on a PARTIAL match we
+        # seed (it's the closest consistent point) but flag it. Logical key +
+        # pop widget key + rerun, every value clamped to its widget bounds.
+        seeds = {
+            "qwf": clamp_seed("qwf", int(round(r.qwf_oil))),
+            "pwf": clamp_seed("pwf", int(round(r.pwf))),
+            "res_pres": clamp_seed("res_pres", int(round(r.pres))),
+            "ppf_surf": clamp_seed("ppf_surf", int(round(r.ppf_surf))),
+            "ken": clamp_seed("ken", round(float(r.ken), 4)),
+            "kth": clamp_seed("kth", round(float(r.kth), 4)),
+            "kdi": clamp_seed("kdi", round(float(r.kdi), 4)),
+        }
+        for k, v in seeds.items():
+            st.session_state[k] = v
+            st.session_state.pop(f"{k}_input", None)
+
+        ppf_moved = abs(r.ppf_surf - float(params.ppf_surf))
+        ppf_note = (
+            f" ⚠️ PF pressure moved {ppf_moved:,.0f} psi to {r.ppf_surf:,.0f} "
+            f"(from {params.ppf_surf:,.0f}) — sanity-check against the known "
+            "header pressure."
+            if ppf_moved > 500 else ""
+        )
+        if r.ok:
+            text = (
+                f"Matched {nozzle}{throat}: oil {r.modeled_oil:,.0f} BOPD "
+                f"({r.oil_err_pct:+.0f}%) · PF {r.modeled_pf:,.0f} BWPD "
+                f"({r.pf_err_pct:+.0f}%)"
+                + (f" · BHP {r.modeled_bhp:,.0f} psi ({r.bhp_err_pct:+.0f}%)"
+                   if r.bhp_err_pct is not None else f" · BHP {r.modeled_bhp:,.0f} psi")
+                + f". Seeded qwf {seeds['qwf']:,} · pwf {seeds['pwf']:,} · "
+                f"ResP {seeds['res_pres']:,} · PF {seeds['ppf_surf']:,} psi · "
+                f"ken {seeds['ken']:.3f}/kth {seeds['kth']:.3f}/kdi {seeds['kdi']:.3f}."
+                + ppf_note
+            )
+        else:
+            text = (
+                f"Could not match both targets for {nozzle}{throat} "
+                f"(closest: oil {r.modeled_oil:,.0f} BOPD {r.oil_err_pct:+.0f}%, "
+                f"PF {r.modeled_pf:,.0f} BWPD {r.pf_err_pct:+.0f}%). "
+                f"**Why:** {r.diagnostic} Seeded the closest consistent point — "
+                "adjust the pump or inputs per the diagnosis." + ppf_note
+            )
+        st.session_state["_joint_automatch_msg"] = {"text": text, "ok": r.ok}
         st.rerun()
 
 

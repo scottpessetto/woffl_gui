@@ -43,6 +43,9 @@ SEED_BOUNDS = {
     "form_temp": (32, 350),
     "surf_pres": (10, 600),
     "ppf_surf": (800, 5500),
+    "ken": (0.001, 0.40),  # match _render_loss_coefs widget bounds
+    "kth": (0.05, 1.0),
+    "kdi": (0.05, 1.0),
     "jpump_tvd": (2500, 8000),
     "oil_api": (11.0, 39.0),
     "bubble_point": (1001.0, 2999.0),

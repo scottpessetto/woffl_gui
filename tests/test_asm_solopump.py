@@ -6,6 +6,7 @@ direction, and wellbore geometry effects.
 """
 
 import woffl.assembly.solopump as so
+import woffl.flow.jetflow as _jf
 from woffl.flow.inflow import InFlow
 from woffl.geometry.jetpump import JetPump
 from woffl.geometry.pipe import Pipe, PipeInPipe
@@ -105,6 +106,83 @@ class TestCirculationDirection:
         # direction of difference TBD, log both for inspection
         print(f"\nReverse: {qoil_rev:.1f} bopd, Forward: {qoil_fwd:.1f} bopd")
         assert qoil_rev != qoil_fwd
+
+
+class TestMarginalConvergence:
+    """Marginal pumps (small throat / high water cut) must still converge.
+
+    Regression guard for the ``_residual_walk_inward`` fix. For these configs the
+    inner throat-mixture solve is infeasible right AT the lower suction bracket
+    endpoint (``psu_min``), so ``jetpump_solver`` historically aborted with
+    ``ConvergenceError: throat mixture did not converge`` — even though the well
+    demonstrably flows (the discharge residual crosses zero just inside the
+    feasible suction range). The fix walks the suction inward to the nearest
+    feasible point so the outer search keeps a valid bracket. These are realistic
+    Milne Point conditions (12B at ~94% WC, ~2000 psi reservoir), i.e. the
+    "pump is in the well and working, but won't converge in the model" case.
+
+    Setup is independent of the module's E-41 fixtures (whose 1400 psi reservoir
+    doesn't reach the infeasible-endpoint regime).
+    """
+
+    pwh_m, tsu_m, ppf_m, pres_m = 250, 120, 3000, 2000
+    res_marginal = ResMix(wc=0.94, fgor=800, oil=mpu_oil, wat=mpu_wat, gas=mpu_gas)
+    # IPR with qmax ~1000 BOPD anchored at half-reservoir drawdown.
+    _vf = 1 - 0.2 * 0.5 - 0.8 * 0.25  # Vogel factor at pwf = 0.5*pres
+    ipr_marginal = InFlow(qwf=1000 * _vf, pwf=0.5 * pres_m, pres=pres_m)
+
+    def _solve_marginal(self, jpump):
+        return so.jetpump_solver(
+            self.pwh_m, self.tsu_m, self.ppf_m, jpump, wbore, profile,
+            self.ipr_marginal, self.res_marginal, mpu_wat, "reverse",
+        )
+
+    def test_marginal_pump_converges(self):
+        """12B at 94% WC / 2000 psi reservoir solves (used to abort)."""
+        psu, sonic, qoil, fwat, lwat, mach = self._solve_marginal(JetPump("12", "B"))
+        assert qoil > 0 and lwat > 0
+        assert 50 < qoil < 600  # sane oil rate, not a degenerate/NaN result
+        assert 2000 < lwat < 4000
+
+    def test_marginal_endpoint_is_actually_infeasible(self):
+        """Precondition: the inner solve really is infeasible at raw psu_min, so
+        the test above genuinely exercises the walk-inward path (not a no-op)."""
+        from woffl.flow.errors import ConvergenceError
+
+        jp = JetPump("12", "B")
+        psu_min, _q, _te = _jf.psu_minimize(
+            tsu=self.tsu_m, ken=jp.ken, ate=jp.ate,
+            ipr_su=self.ipr_marginal, prop_su=self.res_marginal,
+        )
+        raised = False
+        try:
+            so.discharge_residual(
+                psu_min, self.pwh_m, self.tsu_m, self.ppf_m, jp, wbore, profile,
+                self.ipr_marginal, self.res_marginal, mpu_wat, "reverse",
+            )
+        except ConvergenceError:
+            raised = True
+        assert raised, "expected throat-mixture infeasibility at raw psu_min"
+
+    def test_several_marginal_pumps_converge(self):
+        """A spread of small-throat / high-WC pumps all converge now."""
+        for nozzle, throat in (("11", "A"), ("11", "B"), ("12", "A"), ("12", "B")):
+            _psu, _s, qoil, _f, lwat, _m = self._solve_marginal(JetPump(nozzle, throat))
+            assert qoil > 0 and lwat > 0, f"{nozzle}{throat} failed to converge"
+
+    def test_thin_upper_band_feasibility_converges(self):
+        """13B at 99% WC, high productivity: the throat is feasible only in a
+        thin suction band right against reservoir pressure (top ~13 psi). The
+        adaptive walk must reach it — a half-range walk stopped at the midpoint
+        and falsely reported the well unconvergeable, even though the discharge
+        residual crosses zero in that band (a real, if marginal, solution)."""
+        res_hi = ResMix(wc=0.99, fgor=400, oil=mpu_oil, wat=mpu_wat, gas=mpu_gas)
+        ipr_hi = InFlow(qwf=3000 * self._vf, pwf=0.5 * self.pres_m, pres=self.pres_m)
+        psu, sonic, qoil, fwat, lwat, mach = so.jetpump_solver(
+            self.pwh_m, self.tsu_m, self.ppf_m, JetPump("13", "B"), wbore, profile,
+            ipr_hi, res_hi, mpu_wat, "reverse",
+        )
+        assert qoil > 0 and lwat > 0  # marginal well, but it does flow
 
 
 class TestWellboreGeometry:
