@@ -212,6 +212,8 @@ def main():
         "Single Well Analysis",
         "Optimization Workflow",
         "S-Pad Optimization",
+        "I-Pad Optimization",
+        "M-Pad Optimization",
         "Well Database",
         "Well Sort",
     ]
@@ -243,6 +245,16 @@ def main():
         from woffl.gui.s_pad_page import run_s_pad_page
 
         run_s_pad_page()
+
+    elif app_mode == "I-Pad Optimization":
+        from woffl.gui.i_pad_page import run_i_pad_page
+
+        run_i_pad_page()
+
+    elif app_mode == "M-Pad Optimization":
+        from woffl.gui.m_pad_page import run_m_pad_page
+
+        run_m_pad_page()
 
     elif app_mode == "Well Database":
         from woffl.gui.well_database_page import run_well_database_page

@@ -382,11 +382,11 @@ def _render_pump_identity_banner(
         tn, tt = test_pump
         date_part = f" {test_str}" if test_str else ""
         st.warning(
-            f"Modeling **{model_n}{model_t}** \u2014 **differs from the pump in the "
-            f"well at the{date_part} test** you're matching to (**{tn}{tt}**). "
-            "The vs-actual deltas below compare a different pump against that "
-            f"test, so they're greyed out. Set the sidebar pump to **{tn}{tt}** "
-            "to compare against this test, or use the Model-vs-Actual section "
+            f"**Not a pump match.** Modeling **{model_n}{model_t}**, but the well "
+            f"had **{tn}{tt}** at the{date_part} test you're comparing to \u2014 so the "
+            "vs-actual deltas are **greyed out / paused** (a different pump against "
+            f"that test isn't apples-to-apples). Set the sidebar pump to **{tn}{tt}** "
+            "to compare against this test, or read the Model-vs-Actual section "
             f"below (it models {tn}{tt} for the proper comparison).",
             icon="\u26a0\ufe0f",
         )
@@ -395,9 +395,9 @@ def _render_pump_identity_banner(
     # Modeled pump matches the test's pump \u2192 the deltas are like-for-like.
     if test_pump is not None and test_str:
         st.success(
-            f"Modeling **{model_n}{model_t}** \u2014 matches the pump in the well at "
-            f"the **{test_str}** test, so the vs-actual deltas below are a "
-            "like-for-like comparison."
+            f"**Pump match.** Modeling **{model_n}{model_t}**, the same pump the "
+            f"well had at the **{test_str}** test \u2014 so the vs-actual deltas below "
+            "are a like-for-like comparison."
         )
         return
 
@@ -686,7 +686,8 @@ def _render_jp_history_strip(well_name: str) -> None:
 
 
 def render_tab(
-    params: SimulationParams, jetpump, wellbore, well_profile, inflow, res_mix
+    params: SimulationParams, jetpump, wellbore, well_profile, inflow, res_mix,
+    *, hero_container=None, jp_strip_container=None,
 ) -> None:
     """Render the Jetpump Solver Results tab.
 
@@ -697,6 +698,18 @@ def render_tab(
         well_profile: WellProfile object
         inflow: InFlow object
         res_mix: ResMix object
+        hero_container: Optional Streamlit container into which the hero strip
+            (pump-identity banner, the gauge caveat, and the vs-actual Oil /
+            Water / Power-Fluid / Suction metrics) is rendered. The pad-review
+            page passes a container placed right under the "Save review — WELL"
+            title so the difference shows at the top. When ``None`` (the
+            Single-Well Solver) the hero renders inline here, unchanged.
+        jp_strip_container: Optional container into which the pump-history strip
+            (production / BHP / JPCO chart + pump-install timeline) is rendered.
+            The pad-review page passes a container placed ABOVE
+            ``hero_container`` (both under the title) so the history plot sits
+            right above the hero. When ``None`` it renders inline at the top of
+            the Solver, unchanged.
     """
     import pandas as pd
 
@@ -706,8 +719,12 @@ def render_tab(
     # reserved here and filled at the END of the tab render — Streamlit
     # paints elements progressively, so this keeps the strip's Databricks
     # fetch (cold first view of a well) from blocking everything below it;
-    # the chart simply pops into place when ready.
-    _jp_strip_box = st.container()
+    # the chart simply pops into place when ready. The pad-review page passes
+    # its own container (placed above the hero, under the title) so the history
+    # plot sits right above the hero; otherwise it renders inline here.
+    _jp_strip_box = (
+        jp_strip_container if jp_strip_container is not None else st.container()
+    )
 
     # Memory-gauge upload + status. Lives near the top so the status banner
     # is unmissable when an override is active; the upload itself is in a
@@ -782,13 +799,21 @@ def render_tab(
         and (effective_nozzle, effective_throat) != test_pump
     )
 
-    _render_pump_identity_banner(
-        params,
-        effective_pump=(effective_nozzle, effective_throat),
-        selected_test_date=test_date_for_pump,
-        test_pump=test_pump,
-        pump_differs=pump_differs,
-    )
+    # The hero strip (pump-identity banner, gauge caveat, and the vs-actual
+    # metrics) can be hoisted into a caller-supplied container so it renders at
+    # the TOP of the page — the pad review places it right under the "Save
+    # review — WELL" title so the engineer sees the difference first. With no
+    # container (the Single-Well Solver) it renders inline here, as before.
+    _hero = hero_container if hero_container is not None else st.container()
+
+    with _hero:
+        _render_pump_identity_banner(
+            params,
+            effective_pump=(effective_nozzle, effective_throat),
+            selected_test_date=test_date_for_pump,
+            test_pump=test_pump,
+            pump_differs=pump_differs,
+        )
 
     # The hero models the sidebar pump (effective == sidebar), so reuse the
     # JetPump already built from the sidebar inputs.
@@ -869,14 +894,15 @@ def render_tab(
                         "the modeled oil rate aligns. That's the calibration "
                         "path for wells without a gauge."
                     )
-            st.warning(
-                f"**No BHP gauge data for {params.selected_well} in the "
-                "test-window cache.** Modeled values below reflect the "
-                "sidebar's reservoir/IPR inputs, not a Vogel fit to this "
-                "well. Treat the hero metrics as a sidebar-driven "
-                "what-if; the suction-pressure number in particular is "
-                "not an estimate of the well's actual BHP." + oil_msg
-            )
+            with _hero:
+                st.warning(
+                    f"**No BHP gauge data for {params.selected_well} in the "
+                    "test-window cache.** Modeled values below reflect the "
+                    "sidebar's reservoir/IPR inputs, not a Vogel fit to this "
+                    "well. Treat the hero metrics as a sidebar-driven "
+                    "what-if; the suction-pressure number in particular is "
+                    "not an estimate of the well's actual BHP." + oil_msg
+                )
 
         def _delta(modeled: float, actual: float | None, suffix: str) -> str | None:
             if actual is None:
@@ -900,29 +926,54 @@ def render_tab(
         # delta in grey rather than red/green.
         _dcolor = "off" if pump_differs else "normal"
 
-        h1, h2, h3, h4 = st.columns(4)
-        with h1:
-            d = _delta(qoil_std, actuals["oil"], "vs actual")
-            st.metric(
-                _label("Oil Rate", actuals["oil"]), f"{qoil_std:,.0f} BOPD",
-                delta=d, delta_color="off" if d is None else _dcolor,
-            )
-        with h2:
-            # Formation Water has no actuals counterpart (we don't track it
-            # in actuals dict), so it's always modeled — label accordingly.
-            st.metric("Formation Water (modeled)", f"{fwat_bwpd:,.0f} BWPD")
-        with h3:
-            d = _delta(qnz_bwpd, actuals["pf"], "vs actual")
-            st.metric(
-                _label("Power Fluid", actuals["pf"]), f"{qnz_bwpd:,.0f} BWPD",
-                delta=d, delta_color="off" if d is None else _dcolor,
-            )
-        with h4:
-            d = _delta(psu, actuals["bhp"], "vs actual")
-            st.metric(
-                _label("Suction Pressure", actuals["bhp"]), f"{psu:,.0f} psig",
-                delta=d, delta_color="off" if d is None else _dcolor,
-            )
+        with _hero:
+            h1, h2, h3, h4 = st.columns(4)
+            with h1:
+                d = _delta(qoil_std, actuals["oil"], "vs actual")
+                st.metric(
+                    _label("Oil Rate", actuals["oil"]), f"{qoil_std:,.0f} BOPD",
+                    delta=d, delta_color="off" if d is None else _dcolor,
+                )
+            with h2:
+                # Formation Water has no actuals counterpart (we don't track it
+                # in actuals dict), so it's always modeled — label accordingly.
+                st.metric("Formation Water (modeled)", f"{fwat_bwpd:,.0f} BWPD")
+            with h3:
+                d = _delta(qnz_bwpd, actuals["pf"], "vs actual")
+                st.metric(
+                    _label("Power Fluid", actuals["pf"]), f"{qnz_bwpd:,.0f} BWPD",
+                    delta=d, delta_color="off" if d is None else _dcolor,
+                )
+            with h4:
+                d = _delta(psu, actuals["bhp"], "vs actual")
+                st.metric(
+                    _label("Suction Pressure", actuals["bhp"]), f"{psu:,.0f} psig",
+                    delta=d, delta_color="off" if d is None else _dcolor,
+                )
+
+            # Footer the hero with the exact test the deltas are measured against
+            # (date), so the difference is always attributable to a specific test
+            # — and restate the pump-match status crisply next to the numbers
+            # (the banner above carries the full explanation).
+            _cmp_date = None
+            if selected_test_row is not None:
+                _wt = selected_test_row.get("WtDate")
+                if pd.notna(_wt):
+                    try:
+                        _cmp_date = pd.Timestamp(_wt).strftime("%Y-%m-%d")
+                    except (TypeError, ValueError):
+                        _cmp_date = None
+            if has_any_actual:
+                _cmp = (
+                    f"the **{_cmp_date}** well test"
+                    if _cmp_date else "the most recent well test"
+                )
+                if pump_differs:
+                    st.caption(
+                        f"Δ vs {_cmp} — **paused (not a pump match)**; see the note above."
+                    )
+                else:
+                    st.caption(f"Δ vs {_cmp}.")
 
         # When the modeled (sidebar) pump differs from the test's pump, the
         # vs-actual checks below (PF-rate match, BHP calibration) would compare
@@ -962,13 +1013,12 @@ def render_tab(
             # BHP red flag (only meaningful once PF is right — otherwise the BHP
             # delta is mostly explained by the wrong PF, not friction).
             if not pf_blocked:
-                warned = render_bhp_calibration_warning(
+                # The hero footer (top, by the metrics) already states the
+                # comparison test + date; just surface the BHP-calibration flag
+                # here when it applies.
+                render_bhp_calibration_warning(
                     psu, actuals["bhp"], on_solver_view=True
                 )
-                if not warned and any(v is not None for v in actuals.values()):
-                    st.caption(
-                        "Deltas compare modeled values to the most recent well test."
-                    )
 
             # Compact calibration action bar — buttons live here so they're
             # visible without scrolling. Run is disabled while PF mismatch is
@@ -1447,11 +1497,19 @@ def _render_joint_automatch(
         f" and BHP **{bhp_test:,.0f} psi**" if bhp_test else " (BHP inferred)"
     )
     st.caption(
-        f"Find the IPR + jet-pump params (productivity, PF pressure, ken/kth/kdi) "
-        f"that make the {pump_src} pump **{nozzle}{throat}** reproduce this test's "
-        f"oil **{oil_test:,.0f} BOPD** and power fluid **{pf_test:,.0f} BWPD**"
-        f"{_bhp_note}, then seed the sidebar with the consistent solution. If both "
-        "targets can't be hit, it explains the physical limit."
+        f"Hold the measured PF pressure (**{params.ppf_surf:,.0f} psi**) and match "
+        f"the {pump_src} pump **{nozzle}{throat}** to this test's oil "
+        f"**{oil_test:,.0f} BOPD**{_bhp_note} by fitting the IPR, then seed the "
+        f"sidebar. The PF-rate gap vs the measured **{pf_test:,.0f} BWPD** is "
+        "reported honestly (it reflects nozzle/area uncertainty), not hidden by "
+        "dropping pressure."
+    )
+    float_pf = st.checkbox(
+        "Let PF pressure float to also match the PF rate (advanced)",
+        value=False, key="sw_joint_float_pf",
+        help="Off (default): hold the real PF pressure, match oil, report the PF "
+             "residual. On: let the matcher lower PF pressure to also hit the PF "
+             "rate — it can land below the real header, so use only to explore.",
     )
 
     if st.button(
@@ -1493,6 +1551,7 @@ def _render_joint_automatch(
                 field_model=params.field_model,
                 jpump_direction=params.jpump_direction,
                 bhp_target=(float(bhp_test) if bhp_test else None),
+                pin_ppf=not float_pf,
             )
 
         # Seed the sidebar with the matched params — even on a PARTIAL match we
@@ -1511,32 +1570,44 @@ def _render_joint_automatch(
             st.session_state[k] = v
             st.session_state.pop(f"{k}_input", None)
 
-        ppf_moved = abs(r.ppf_surf - float(params.ppf_surf))
-        ppf_note = (
-            f" ⚠️ PF pressure moved {ppf_moved:,.0f} psi to {r.ppf_surf:,.0f} "
-            f"(from {params.ppf_surf:,.0f}) — sanity-check against the known "
-            "header pressure."
-            if ppf_moved > 500 else ""
+        pinned = not float_pf
+        ppf_note = "" if pinned else (
+            f" ⚠️ PF pressure moved "
+            f"{abs(r.ppf_surf - float(params.ppf_surf)):,.0f} psi to {r.ppf_surf:,.0f} "
+            f"(from {params.ppf_surf:,.0f}) — sanity-check vs the known header."
+            if abs(r.ppf_surf - float(params.ppf_surf)) > 500 else ""
         )
-        if r.ok:
+        seeded = (
+            f"Seeded qwf {seeds['qwf']:,} · pwf {seeds['pwf']:,} · ResP {seeds['res_pres']:,}"
+            + ("" if pinned else f" · PF {seeds['ppf_surf']:,} psi")
+            + f" · ken {seeds['ken']:.3f}/kth {seeds['kth']:.3f}/kdi {seeds['kdi']:.3f}."
+        )
+        bhp_txt = (f" · BHP {r.modeled_bhp:,.0f} psi ({r.bhp_err_pct:+.0f}%)"
+                   if r.bhp_err_pct is not None else f" · BHP {r.modeled_bhp:,.0f} psi")
+        if pinned and r.ok:
+            text = (
+                f"**{nozzle}{throat} · PF pressure held at {seeds['ppf_surf']:,} psi.** "
+                f"Oil matched {r.modeled_oil:,.0f} BOPD ({r.oil_err_pct:+.0f}%){bhp_txt}. "
+                f"PF reads {r.modeled_pf:,.0f} vs measured {pf_test:,.0f} BWPD "
+                f"({r.pf_err_pct:+.0f}%) — left as nozzle/area uncertainty. " + seeded
+            )
+        elif pinned:
+            text = (
+                f"PF held at {seeds['ppf_surf']:,} psi but couldn't match oil for "
+                f"{nozzle}{throat}. **Why:** {r.diagnostic} " + seeded
+            )
+        elif r.ok:
             text = (
                 f"Matched {nozzle}{throat}: oil {r.modeled_oil:,.0f} BOPD "
                 f"({r.oil_err_pct:+.0f}%) · PF {r.modeled_pf:,.0f} BWPD "
-                f"({r.pf_err_pct:+.0f}%)"
-                + (f" · BHP {r.modeled_bhp:,.0f} psi ({r.bhp_err_pct:+.0f}%)"
-                   if r.bhp_err_pct is not None else f" · BHP {r.modeled_bhp:,.0f} psi")
-                + f". Seeded qwf {seeds['qwf']:,} · pwf {seeds['pwf']:,} · "
-                f"ResP {seeds['res_pres']:,} · PF {seeds['ppf_surf']:,} psi · "
-                f"ken {seeds['ken']:.3f}/kth {seeds['kth']:.3f}/kdi {seeds['kdi']:.3f}."
-                + ppf_note
+                f"({r.pf_err_pct:+.0f}%){bhp_txt}. " + seeded + ppf_note
             )
         else:
             text = (
                 f"Could not match both targets for {nozzle}{throat} "
                 f"(closest: oil {r.modeled_oil:,.0f} BOPD {r.oil_err_pct:+.0f}%, "
                 f"PF {r.modeled_pf:,.0f} BWPD {r.pf_err_pct:+.0f}%). "
-                f"**Why:** {r.diagnostic} Seeded the closest consistent point — "
-                "adjust the pump or inputs per the diagnosis." + ppf_note
+                f"**Why:** {r.diagnostic} Seeded the closest point." + ppf_note
             )
         st.session_state["_joint_automatch_msg"] = {"text": text, "ok": r.ok}
         st.rerun()

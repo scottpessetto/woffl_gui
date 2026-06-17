@@ -1,0 +1,110 @@
+{
+  "site": "Milne Point Unit, Mod 32 (I-Pad)",
+  "service": "produced-water / power-fluid injection booster train (LP feeds HP, in series)",
+  "train_flow_path": "Power Fluid Separator (~217 psig) -> P-1021 LP Booster (~2104 psig) -> P-0901 HP Booster (~3408 psig) -> Power Fluid Wells",
+  "specific_gravity_note": "Summit selection sheet used SG 1.01; live SCADA dP implies effective SG ~1.04. Tables/CSV use 1.04. Head in feet is SG-independent; only the psi conversion uses SG.",
+  "stage": {
+    "manufacturer": "Summit ESP (Halliburton)",
+    "stage_type": "SN35000 XRC CCW",
+    "series_housing": "950 series, 10 in housing (NO17)",
+    "ref_speed_rpm": 3500,
+    "ref_speed_note": "coefficient curve normalized to 3500 RPM == 60 Hz; both units are VFD driven, scale with affinity laws",
+    "bep_flow_bpd": 41250,
+    "recommended_operating_range_bpd": [33000, 49500],
+    "min_continuous_flow_bpd": 12400,
+    "max_valid_flow_bpd": 60000,
+    "head_per_stage_poly": {
+      "form": "head_ft_per_stage = sum(c[i] * Q**i), Q in BPD, i=0..5, at 60 Hz",
+      "c0": 234.54721351548812,
+      "c1": 0.00043309847256577496,
+      "c2": -2.2391072811100842e-07,
+      "c3": 8.680180936347262e-12,
+      "c4": -1.4153512331671955e-16,
+      "c5": 7.456825288912087e-22
+    },
+    "bhp_per_stage_poly": {
+      "form": "bhp_per_stage (water, SG 1.0) = sum(c[i] * Q**i), Q in BPD, i=0..5, at 60 Hz",
+      "c0": 40.941833711456006,
+      "c1": 0.00021488490810450935,
+      "c2": -2.915862139501158e-09,
+      "c3": 1.0169040687618772e-12,
+      "c4": -2.5604472660718523e-17,
+      "c5": 1.7240302812350535e-22
+    },
+    "source": "Summit selection-tool coefficients, P-0901 HP Booster/Equipment Data/SN35000 Coeff.xlsx"
+  },
+  "pumps": {
+    "P-0901_HP_Booster": {
+      "scada_tag": "PUMP-32-0901 / P-32-0901",
+      "description": "single 17-stage SN35000CCW HPS unit (high-pressure / final stage of the injection train)",
+      "summit_assembly": "HPS H2K25MOD 1250HP 017STG SN35000CCW (top part 103036058), pump P/N 103034969",
+      "n_stages": 17,
+      "motor_hp": 1250,
+      "motor_volts": 4160,
+      "motor_make": "TMEIC, VFD driven",
+      "discharge_flange": "6 in CL2500 RTJ",
+      "intake_flange": "8 in CL1500 RTJ",
+      "motor_current_limits_A": {
+        "fla_and_trip": 154,
+        "note": "TMEIC trips at 154 A with short time delay"
+      },
+      "amps_per_bhp_est": 0.1487,
+      "amps_per_bhp_note": "amps ~= 0.1487 * water-BHP, calibrated to the live point below; PF/eff drift away from operating region",
+      "live_operating_point_2026-06-16": {
+        "freq_hz": 59.3,
+        "flow_bpd": 32363,
+        "intake_psig": 2082,
+        "discharge_psig": 3408,
+        "dP_psid": 1326,
+        "motor_amps": 140.6,
+        "amp_headroom_to_154A": "~13 A (~9 percent); BHP ceiling ~1036 hp",
+        "first_in_alarm": "DISCHARGE PRESS HIHI",
+        "pic_32_0903_setpoint_psig": 3400
+      }
+    },
+    "P-1021_LP_Booster": {
+      "scada_tag": "PUMP-32-1021 / P-32-1021",
+      "description": "26-stage SN35000CCW HPS unit, TANDEM 17-stage + 9-stage sections on one shaft (low-pressure / first stage of the injection train)",
+      "summit_assembly": "Horizontal Pump System SN35000CCW 26 STAGE 1500HP (GA D01968990 A, order H3777), pump P/N 103048789",
+      "n_stages": 26,
+      "tandem_sections": [17, 9],
+      "motor_hp": 1500,
+      "motor_volts": 4160,
+      "motor_frame": "5812USS, WPII, C1D2, VSD rated",
+      "seal": "Flowserve UHTW 2250 / DHTW 2250 double cartridge, 1.5 shaft, CW",
+      "coupling": "PSC1358 7 in spacer",
+      "discharge_flange": "6 in CL1500 RTJ",
+      "intake_flange": "8 in CL1500 RTJ",
+      "motor_current_limits_A": {
+        "vfd_drive_limit": 192,
+        "trip": 209,
+        "motor_fla_ifix": 216,
+        "note": "VFD limits current to 192 A; TMEIC trips at 209 A; motor FLA / iFix temp limit 216 A"
+      },
+      "amps_per_bhp_est": 0.1435,
+      "amps_per_bhp_note": "amps ~= 0.1435 * water-BHP, calibrated to the live point below",
+      "live_operating_point_2026-06-16": {
+        "freq_hz": 57.3,
+        "flow_bpd": 32869,
+        "intake_psig": 217,
+        "discharge_psig": 2104,
+        "dP_psid": 1887,
+        "motor_amps": 190.9,
+        "constraint": "AMP-LIMITED: 190.9 A is at the 192 A VFD drive limit. At 60 Hz this point would need ~219 A, so the drive holds it near 57.3 Hz. Cannot make more flow/head without exceeding the limit.",
+        "first_in_alarm": "PUMP OUT OF CURVE",
+        "pic_32_1023_setpoint_psig": 2100
+      }
+    }
+  },
+  "compute": {
+    "head_ft_total": "n_stages * head_per_stage(Q_60hz)",
+    "dP_psi": "head_ft_total * SG / 2.31   (SG = 1.04)",
+    "discharge_psi": "intake_psi + dP_psi",
+    "bhp_total_water": "n_stages * bhp_per_stage(Q_60hz)   (multiply by SG ~1.04 for actual shaft power)",
+    "motor_amps_est": "amps_per_bhp_est * bhp_total_water  (then compare to motor_current_limits)",
+    "affinity_to_other_speed": "Q = Q60*(Hz/60); head = head60*(Hz/60)^2; BHP and amps ~ (Hz/60)^3",
+    "specific_gravity_used_in_tables": 1.04
+  },
+  "validated": "Matches live SCADA 6/16/2026 within ~1 percent at SG 1.04: LP dP model 1874 vs 1887 psid live; HP dP model 1336 vs 1326 psid live. Series train confirmed by SCADA (LP discharge 2104 ~ HP intake 2082 psig). Shut-off head/stage 234.5 ft matches 2021 factory section tests (242 & 228 ft, avg 235). Reproduces Summit's own HPS selection sheet (57 Hz / 34,000 BPD).",
+  "prepared": "2026-06-16"
+}

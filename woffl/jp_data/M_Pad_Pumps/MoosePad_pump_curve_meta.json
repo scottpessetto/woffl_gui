@@ -1,0 +1,102 @@
+{
+  "site": "Milne Point Unit, Mod 42 (Moose Pad)",
+  "service": "produced-water disposal / injection / power-fluid pumping",
+  "architecture": "TWO banks: LP bank (3x A pump, parallel) lifts to a ~1,400 psig common header feeding Disposal + Kuparuk injection headers AND the HP bank suction; HP bank (3x B pump, parallel) boosts that ~1,400 psig to ~3,500 psig Power Fluid header. Banks are in SERIES (LP->HP); pumps within a bank are in PARALLEL.",
+  "specific_gravity_note": "Schlumberger DESIGN SG = 1.05; FIELD produced water ~1.02-1.04 (operator). CSV uses 1.03. Head stored in feet (SG-INDEPENDENT) -- this is the real pump curve; boost_psi = head_ft * SG / 2.31. For the optimizer/system curves, ingest head_ft and apply your own SG.",
+  "field_head_factor": {
+    "value": 0.91,
+    "range": [0.87, 0.96],
+    "basis": "live SCADA 2026-06-16 at SG 1.03; field dP / as-new-curve dP, all 6 pumps, drawing on-curve power",
+    "interpretation": "installed pumps make ~9% less head than as-new at on-curve power = efficiency loss; operator handles heavy SOLIDS, so erosive stage wear is the likely cause. The polynomials are AS-NEW; multiply head_ft by this factor for current field performance.",
+    "verify_before_concluding": "produced-water SG, discharge/suction transmitter calibration, and a witnessed single-pump performance test"
+  },
+  "system_curve_guidance": "To build system curves: (1) use head_ft(Q) per pump at 60 Hz as the AS-NEW pump curve; (2) affinity-scale to actual Hz; (3) apply field_head_factor (~0.91) for the worn/current curve; (4) convert head_ft to psi with field SG (1.02-1.04); (5) within a bank the 3 pumps are PARALLEL (same dP, sum flow); the LP bank discharge is the HP bank suction (SERIES). Static head + friction define the system curve; intersection with the (derated) pump curve sets the operating point.",
+  "manufacturer": "Schlumberger REDA HPS (horizontal pumping system)",
+  "common_motor": "TOSHIBA 1500 HP, 4160 V, 2-pole (3569 RPM @ 60 Hz), 5811/12 frame, WPII, VFD/ASD driven",
+  "motor_current_limits_A": {
+    "fla_nameplate": 178,
+    "design_draw": 183,
+    "trip": 195.8,
+    "note": "from Moosepad HPS set-up sheets; trip = 120% of running amps"
+  },
+  "pumps": {
+    "A_LP_4220": {
+      "role": "low-pressure bank (3 pumps parallel) -> ~1,400 psig header",
+      "tags": "P-4220A / P-4220B / P-4220C",
+      "model": "REDA N1400N-A, 1000/1000 series (10 in housing), mixed-flow",
+      "stages": 13,
+      "shaft": "higher-strength Monel 1.75 in",
+      "thrust_chamber": "3-bearing G3A, 18,000 lbf",
+      "seal": "48V w/ segmented bushing, max 850 psig, Plan 11",
+      "intake_flange": "8 in CL600 RF (MAWP 1200 psi)",
+      "discharge_flange": "8 in CL1500 RTJ (MAWP 3000 psi)",
+      "nominal_freq_hz": 61,
+      "freq_range_hz": [55, 62],
+      "design_point_60hz_SG1.05": {
+        "flow_stb_d": 50000, "suction_psig": 400, "discharge_psig": 1654.2,
+        "boost_psi": 1254.17, "power_hp": 1350.7, "efficiency_pct": 79.0,
+        "shut_in_psig": 1987.8, "tdh_ft": 2755.2
+      },
+      "recommended_flow_bpd_60hz": [14276, 65262],
+      "bep_flow_bpd_60hz": 49791,
+      "head_ft_poly_60hz": {"form": "head_ft = c3*Q^3+c2*Q^2+c1*Q+c0, Q in BPD",
+        "c3": -3.166675e-12, "c2": -2.796207e-08, "c1": -5.711101e-03, "c0": 3493.744},
+      "bhp_poly_60hz": {"form": "bhp = c3*Q^3+c2*Q^2+c1*Q+c0, Q in BPD",
+        "c3": -2.789893e-12, "c2": 3.245156e-07, "c1": 1.626390e-03, "c0": 810.6112},
+      "amps_per_hp_est": 0.13549
+    },
+    "B_HP_4230": {
+      "role": "high-pressure bank (3 pumps parallel), suction = LP header ~1,400 psig -> ~3,500 psig Power Fluid",
+      "tags": "P-4230A / P-4230B / P-4230C",
+      "model": "REDA M675-A, 862 series (8.62 in housing)",
+      "stages": 41,
+      "shaft": "Inconel 718",
+      "thrust_chamber": "3-bearing, 18,000 lbf",
+      "seal": "8610 w/ segmented bushing, max 2900 psig, Plan 11",
+      "intake_flange": "8 in CL1500 RTJ",
+      "discharge_flange": "6 in CL2500 RTJ (410-13CR SS)",
+      "nominal_freq_hz": 60,
+      "freq_range_hz": [51, 61],
+      "design_point_60hz_SG1.05": {
+        "flow_stb_d": 32000, "suction_psig": 1500, "discharge_psig": 3501.5,
+        "boost_psi": 2001.53, "power_hp": 1396.8, "efficiency_pct": 78.2,
+        "shut_in_psig": 4470.7, "tdh_ft": 4396.95,
+        "note": "shut-in 4470.7 > 4400 psig rating; set discharge trip to not exceed ~4000 psig"
+      },
+      "recommended_flow_bpd_60hz": [8351, 34798],
+      "bep_flow_bpd_60hz": 27708,
+      "head_ft_poly_60hz": {"form": "head_ft = c3*Q^3+c2*Q^2+c1*Q+c0, Q in BPD",
+        "c3": -2.859001e-11, "c2": -1.786390e-07, "c1": -3.232443e-02, "c0": 6535.052},
+      "bhp_poly_60hz": {"form": "bhp = c3*Q^3+c2*Q^2+c1*Q+c0, Q in BPD",
+        "c3": -2.789838e-11, "c2": 1.481445e-06, "c1": 1.260881e-03, "c0": 756.4934},
+      "amps_per_hp_est": 0.13101
+    }
+  },
+  "compute": {
+    "boost_psi": "head_ft(Q60) * SG / 2.31",
+    "discharge_psig": "suction_psig + boost_psi",
+    "affinity_to_other_speed": "Q = Q60*(Hz/60); head = head60*(Hz/60)^2; BHP and amps ~ (Hz/60)^3",
+    "motor_amps_est": "amps_per_hp_est * bhp(Q60)  (then scale by (Hz/60)^3 for reduced speed); compare to trip 195.8 A",
+    "specific_gravity_field": 1.03,
+    "specific_gravity_design": 1.05
+  },
+  "scada_snapshot_2026-06-16_1009": {
+    "note": "Full per-pump operator screens (speed, flow, suction, discharge, amps). Discharge controlled by PIC-4221 (LP, SP 1400) and PIC-4231 (HP, SP 3500).",
+    "headers": {"power_fluid_psig": 3489, "disposal_psig": 1380, "kuparuk_inj_psig": 1393, "psv_v4222_pct": 28},
+    "amp_limits_A": {"fla": 178, "trip": 195.8},
+    "pumps": {
+      "P-4220A": {"hz": 55.0, "flow_bpd": 18456, "suction_psig": 289, "discharge_psig": 1399, "dP_psid": 1109, "amps": 98.4, "alarm": "PUMP HIHI DIFF PRESSURE CURVE S/D"},
+      "P-4220B": {"hz": 54.7, "flow_bpd": 19509, "suction_psig": 287, "discharge_psig": 1400, "dP_psid": 1113, "amps": 92.2, "alarm": "DISCHARGE FLOW LOLO"},
+      "P-4220C": {"hz": 53.1, "flow_bpd": 20643, "suction_psig": 304, "discharge_psig": 1398, "dP_psid": 1092, "amps": 99.3, "alarm": "DISCHARGE FLOW LOLO"},
+      "P-4230A": {"hz": 57.9, "flow_bpd": 16512, "suction_psig": 1392, "discharge_psig": 3495, "dP_psid": 2102, "amps": 125.0, "alarm": "PSD LEVEL 3"},
+      "P-4230B": {"hz": 57.6, "flow_bpd": 18047, "suction_psig": 1392, "discharge_psig": 3498, "dP_psid": 2106, "amps": 123.3, "alarm": "PSD LEVEL 3"},
+      "P-4230C": {"hz": 55.9, "flow_bpd": 17588, "suction_psig": 1391, "discharge_psig": 3499, "dP_psid": 2108, "amps": 119.2, "alarm": "PSD LEVEL 3"}
+    },
+    "series_staging_confirmed": "LP discharge header 1398-1400 psig = HP suction 1391-1392 psig.",
+    "amps_vs_model": "Motor amps match the as-new catalog BHP within ~1-7 A (amps ~= 0.13 * catalog BHP). Plenty of amp headroom: 92-125 A vs 178 A FLA / 195.8 A trip.",
+    "head_vs_curve_FINDING": "At the displayed flow & speed, every pump makes ~10% LESS differential than its as-new curve (field/curve dP ratio mean 0.895, range 0.86-0.94) WHILE drawing on-curve power. Lower head at on-curve power = reduced efficiency, consistent with stage WEAR. Not an SG effect (SG scales head and power together) nor a flow-meter offset (that moves head and power oppositely). Verify produced-water SG and discharge/suction transmitter calibration, and consider a witnessed performance check, before concluding wear.",
+    "operating_context": "Both banks run far LEFT of their 60 Hz BEP (LP ~18-21k vs 49,791; HP ~16-18k vs 27,708) at 53-58 Hz. LP P-4220A is at its high-diff-pressure curve shutdown limit; LP B/C show discharge-flow LOLO."
+  },
+  "validated": "Curve fits reproduce Schlumberger's own data-sheet/set-up-sheet points (shut-in, BEP, design power) to <0.5%. Live SCADA (6/16/2026, all 6 pumps): amps match catalog BHP within ~1-7 A; LP->HP series staging confirmed (LP discharge ~1,400 = HP suction ~1,392). NOTE: field differential runs ~10% below the as-new curves at displayed flow/speed (see head_vs_curve_FINDING) -- as-new curve is the reference; deviation flags possible wear / instrument cal.",
+  "prepared": "2026-06-16"
+}

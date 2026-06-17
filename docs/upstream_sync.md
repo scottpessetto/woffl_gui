@@ -54,6 +54,17 @@ bubble point; already-converging solves are untouched.
 suite (it rescues secant stalls around a real root; the walk-inward in #1 handles
 infeasible endpoints).
 
+### 3. `woffl/assembly/network_optimizer.py` — process-pool serial fallback
+`run_all_batch_simulations` wraps the `ProcessPoolExecutor` path in a
+`BrokenProcessPool` guard: if a worker dies abruptly (an OOM kill on the 2-vCPU/
+6 GB Databricks app, or spawn/resource flakiness with `WOFFL_MAX_WORKERS=10`
+locally), it falls back to **serial in-process execution** so the match check,
+optimizer, and scenario comparator complete instead of failing. Additive — the
+normal serial/parallel paths are unchanged; the fallback only fires on a broken
+pool. (⚠ Verify whether `network_optimizer.py` actually ships in upstream
+`kwellis/woffl` — it may be a fork-added multi-well optimizer, in which case this
+is a local-only change with no merge-clobber risk and no PR needed.)
+
 ---
 
 ## NOT upstream — safe to change freely

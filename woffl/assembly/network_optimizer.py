@@ -332,7 +332,7 @@ class NetworkOptimizer:
         total_wells = len(self.wells)
         workers = max(1, int(max_workers))
 
-        if workers == 1 or total_wells <= 1:
+        def _run_serial():
             for idx, well in enumerate(self.wells):
                 if progress_callback:
                     progress_callback(idx, total_wells, well.well_name)
@@ -342,29 +342,46 @@ class NetworkOptimizer:
                     self.nozzle_options,
                     self.throat_options,
                 )
+
+        if workers == 1 or total_wells <= 1:
+            _run_serial()
         else:
             from concurrent.futures import ProcessPoolExecutor, as_completed
+            from concurrent.futures.process import BrokenProcessPool
 
-            done = 0
-            with ProcessPoolExecutor(max_workers=min(workers, total_wells)) as pool:
-                futures = {
-                    pool.submit(
-                        _simulate_single_well,
-                        well,
-                        self.power_fluid.pressure,
-                        self.nozzle_options,
-                        self.throat_options,
-                    ): well.well_name
-                    for well in self.wells
-                }
-                for fut in as_completed(futures):
-                    name = futures[fut]
-                    # Propagate worker errors — matches the sequential path,
-                    # where an unexpected per-well failure aborts the run.
-                    self.batch_results[name] = fut.result()
-                    done += 1
-                    if progress_callback:
-                        progress_callback(done, total_wells, name)
+            try:
+                done = 0
+                with ProcessPoolExecutor(max_workers=min(workers, total_wells)) as pool:
+                    futures = {
+                        pool.submit(
+                            _simulate_single_well,
+                            well,
+                            self.power_fluid.pressure,
+                            self.nozzle_options,
+                            self.throat_options,
+                        ): well.well_name
+                        for well in self.wells
+                    }
+                    for fut in as_completed(futures):
+                        name = futures[fut]
+                        # Propagate worker errors — matches the sequential path,
+                        # where an unexpected per-well failure aborts the run.
+                        self.batch_results[name] = fut.result()
+                        done += 1
+                        if progress_callback:
+                            progress_callback(done, total_wells, name)
+            except BrokenProcessPool:
+                # A worker process died abruptly. Causes seen in the field:
+                #   - OOM kill on a memory-constrained host (the 2-vCPU/6 GB
+                #     Databricks app spawning multiple workers), or
+                #   - spawn / resource flakiness with many workers locally
+                #     (WOFFL_MAX_WORKERS=10), or a single worker segfault.
+                # Fall back to SERIAL in-process execution: no pool, no spawn,
+                # far less memory — so the run completes (just slower) instead
+                # of failing the match check / optimizer / scenario comparator.
+                # [LIBRARY change -> upstream PR to kwellis/woffl]
+                self.batch_results = {}
+                _run_serial()
 
         if progress_callback:
             progress_callback(total_wells, total_wells, "Complete")

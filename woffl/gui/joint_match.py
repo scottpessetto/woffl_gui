@@ -164,9 +164,16 @@ def joint_match(
     jpump_direction: str = "reverse",
     bhp_target: Optional[float] = None,
     tune_friction: bool = True,
+    pin_ppf: bool = False,
     max_nfev: int = 120,
 ) -> JointMatchResult:
-    """Find IPR + JP params so the model reproduces oil_target AND pf_target."""
+    """Find IPR + JP params so the model reproduces oil_target AND pf_target.
+
+    ``pin_ppf`` (GUI default): hold the measured PF surface pressure and match OIL
+    only (via the IPR), reporting the PF-rate residual instead of dropping
+    pressure to fake a PF match. The PF gap then reflects real nozzle/area
+    uncertainty rather than an unphysical low pressure.
+    """
     from scipy.optimize import least_squares
 
     res_mix = create_reservoir_mix(form_wc, form_gor, form_temp, field_model)
@@ -202,8 +209,40 @@ def joint_match(
 
     n_pen = 3 if bhp_target else 2
 
-    # ── Stage 1: 2-knob match (qmax, ppf) ────────────────────────────────
     qmax_lo, qmax_hi = max(oil_target, 10.0), oil_target * 12.0 + 1000.0
+
+    # ── Pin-PF mode: hold the measured PF surface pressure, match OIL via the
+    # IPR only, and report the PF-rate residual rather than bending pressure to
+    # hide it. PF pressure is the trustworthy measured number; the PF gap is left
+    # as-is (nozzle/area uncertainty). Oil increases monotonically with qmax, so
+    # a 1-D root-find on qmax matches the oil at the held pressure. ──────────────
+    if pin_ppf:
+        from scipy.optimize import brentq
+
+        ppf = float(np.clip(ppf_surf0, _PPF_LO, _PPF_HI))
+
+        def _oil_err(qmax):
+            m = model(qmax, ppf, ken0, kth0, kdi0)
+            return (m["oil"] - oil_target) if m is not None else 1e12
+
+        lo_e, hi_e = _oil_err(qmax_lo), _oil_err(qmax_hi)
+        if abs(lo_e) < 1e11 and abs(hi_e) < 1e11 and lo_e * hi_e <= 0:
+            try:
+                qbest = float(brentq(_oil_err, qmax_lo, qmax_hi,
+                                     xtol=1.0, rtol=1e-4, maxiter=80))
+            except Exception:
+                qbest = qmax_hi
+        else:
+            qbest = qmax_hi  # can't reach the oil target at this pressure (pump-limited)
+        bm = model(qbest, ppf, ken0, kth0, kdi0)
+        matched = (bm is not None
+                   and abs(bm["oil"] - oil_target) / max(oil_target, 1.0) <= _MATCH_TOL)
+        return _build_result(
+            bm, qbest, ppf, ken0, kth0, kdi0, pres, oil_target, pf_target,
+            bhp_target, matched, state["n"], qmax_hi, {}, pinned=True,
+        )
+
+    # ── Stage 1: 2-knob match (qmax, ppf) ────────────────────────────────
 
     def resid2(x):
         m = model(x[0], x[1], ken0, kth0, kdi0)
@@ -297,7 +336,7 @@ def _within(m, oil_t, pf_t, bhp_t) -> bool:
 
 
 def _build_result(m, qmax, ppf, ken, kth, kdi, pres, oil_t, pf_t, bhp_t,
-                  matched, iters, qmax_hi, probes=None) -> JointMatchResult:
+                  matched, iters, qmax_hi, probes=None, pinned=False) -> JointMatchResult:
     if m is None:
         return JointMatchResult(
             ok=False, status="failed", qwf_oil=oil_t, pwf=0.5 * pres, pres=pres,
@@ -313,7 +352,18 @@ def _build_result(m, qmax, ppf, ken, kth, kdi, pres, oil_t, pf_t, bhp_t,
     pf_err = (m["pf"] - pf_t) / max(pf_t, 1.0)
     bhp_err = ((m["bhp"] - bhp_t) / max(bhp_t, 1.0)) if bhp_t else None
     status = "matched" if matched else "partial"
-    diag = diagnose(m, oil_err, pf_err, ppf, oil_t, pf_t, matched, probes or {})
+    if pinned:
+        # PF pressure held at the measured value; oil matched via the IPR; the
+        # PF-rate gap is reported honestly (nozzle/area uncertainty), not hidden.
+        diag = (
+            f"PF pressure HELD at {ppf:,.0f} psi (measured). Oil matched to "
+            f"{m['oil']:,.0f} BOPD ({oil_err * 100:+.0f}%). Modeled PF "
+            f"{m['pf']:,.0f} vs measured {pf_t:,.0f} BWPD ({pf_err * 100:+.0f}%) — "
+            "PF gap left as-is (nozzle/area uncertainty), not corrected by "
+            "lowering pressure."
+        )
+    else:
+        diag = diagnose(m, oil_err, pf_err, ppf, oil_t, pf_t, matched, probes or {})
     return JointMatchResult(
         ok=matched, status=status,
         qwf_oil=float(m["oil"]),        # anchor the sidebar IPR at the modeled oil
