@@ -65,6 +65,7 @@ def _build_simulation_objects(params: SimulationParams):
         gas_sg=params.gas_sg,
         wat_sg=params.wat_sg,
         bubble_point=params.bubble_point,
+        model_as_water=params.model_as_water,
     )
 
     if params.selected_well != "Custom":

@@ -65,13 +65,55 @@ pool. (⚠ Verify whether `network_optimizer.py` actually ships in upstream
 `kwellis/woffl` — it may be a fork-added multi-well optimizer, in which case this
 is a local-only change with no merge-clobber risk and no PR needed.)
 
+### 4. `woffl/pvt/resmix.py` — zero-oil (100% water cut) guard
+`_static_insitu_volm_flow` computes `qtot = qoil / yoil` to recover the total
+insitu flow from the oil rate. At **100% water cut** the oil volume fraction
+`yoil` is exactly zero, so this raised a bare **`ZeroDivisionError`** — which is
+**not** a `ValueError`, so it escaped every `except ValueError` solver handler
+(including `run_jetpump_solver`) and crashed the Streamlit page. (Observed
+running **S-03**, a ~100% WC well.) The guard raises a typed **`ValueError`**
+with a clear message instead, so the existing GUI / batch handlers catch it and
+show a normal solver-error box. Additive — the `yoil > 0` path is bit-identical.
+
+**Guarded by:** `tests/test_pvt_resmix.py::test_full_watercut_raises_valueerror`
+(+ `test_near_full_watercut_still_solves` confirms the guard is specific to the
+degenerate case). Goes red if a sync drops the guard — `ZeroDivisionError` is
+not a `ValueError`, so `pytest.raises(ValueError)` fails.
+
+### 5. Water-pump (dewatering) mode — opt-in 100%-water solve
+Spans three shared files; **additive and gated by an explicit
+`ResMix(model_as_water=...)` flag (default `False`)**, so the oil path is
+bit-identical and the #4 guard still raises when the flag is off. Reuses the IPR
+as the well's water deliverability. Lets a 100%-water (watered-out / source) well
+be modeled to see what suction + power fluid it takes to flow it; water is
+~incompressible, so the throat stays subsonic (won't choke).
+
+- `woffl/pvt/resmix.py` — `model_as_water` ctor flag + `_static_insitu_volm_flow_water`
+  (anchors total insitu flow on **water** when there's no oil); `insitu_volm_flow`
+  branches to it.
+- `woffl/flow/jetflow.py` — `throat_wc` 100%-WC branch (water rate is the anchor,
+  no ÷(1−wc)); `jetpump_base_calcs` propagates the flag into its internal `prop_tm`.
+- `woffl/assembly/solopump.py` — `discharge_residual` propagates the flag into
+  **its** `prop_tm` (a **second** throat-mixture site — missing it makes the solve
+  raise the #4 guard mid-solve; the e2e test below catches that).
+
+GUI wiring (sidebar toggle, params, dedicated result block) is under `woffl/gui/`
+and is **not** upstreamed. Full design: `docs/water_pump_mode_plan.md`.
+
+**Guarded by:** `tests/test_asm_solopump.py::TestWaterPumpMode`
+(`test_water_pump_solve_converges`, `test_water_mode_off_still_raises_at_full_wc`),
+`tests/test_asm_solopump.py::test_throat_wc_water_branch`, and
+`tests/test_pvt_resmix.py::test_water_mode_anchors_on_water`. The
+"off still raises" test is the tripwire that the oil path / #4 guard survived.
+
 ---
 
 ## NOT upstream — safe to change freely
 The joint oil + power-fluid auto-match (`woffl/gui/joint_match.py`), its per-well
 **🎯 Auto-match oil + PF** button, the batch core, and everything else under
 `woffl/gui/` are **GUI** — ours, never upstreamed. The bulk of the auto-match work
-lives there; only the **two** solver files above touch the shared library.
+lives there; only the solver + PVT files above (`solopump.py`, `jetflow.py`,
+`resmix.py`) touch the shared library.
 
 ---
 

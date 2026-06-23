@@ -873,8 +873,13 @@ def create_reservoir_mix(
     gas_sg=None,
     wat_sg=None,
     bubble_point=None,
+    model_as_water=False,
 ):
-    """Create a ResMix object with the given parameters."""
+    """Create a ResMix object with the given parameters.
+
+    model_as_water (bool): opt-in water-pump mode for a 100%-water (no-oil)
+        well; passed through to ResMix. Default False = oil-anchored behavior.
+    """
     oil, water, gas = create_pvt_components(
         field_model=field_model,
         oil_api=oil_api,
@@ -882,7 +887,9 @@ def create_reservoir_mix(
         wat_sg=wat_sg,
         bubble_point=bubble_point,
     )
-    return ResMix(wc=wc, fgor=gor, oil=oil, wat=water, gas=gas)
+    return ResMix(
+        wc=wc, fgor=gor, oil=oil, wat=water, gas=gas, model_as_water=model_as_water
+    )
 
 
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=64)

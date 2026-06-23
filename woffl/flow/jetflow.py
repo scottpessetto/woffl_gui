@@ -603,6 +603,14 @@ def throat_wc(qoil_std: float, wc_su: float, qwat_nz: float) -> tuple[float, flo
         wc_tm (float): Watercut at throat, decimal
         qwat_su (float): Formation Water at Suction, bwpd"""
 
+    # Water-pump mode: at 100% suction water cut the anchor rate IS the
+    # formation water (no oil), so skip the oil-basis algebra (which would
+    # divide by 1 - wc_su = 0). The throat mixture stays 100% water.
+    # [LIBRARY change -> upstream PR to kwellis/woffl]
+    if wc_su >= 1.0:
+        qwat_su = qoil_std  # the suction "oil" slot carries the water rate
+        return 1.0, qwat_su
+
     qwat_su = qoil_std * wc_su / (1 - wc_su)
     qwat_tot = qwat_nz + qwat_su
     wc_tm = qwat_tot / (qwat_tot + qoil_std)
@@ -747,7 +755,13 @@ def jetpump_base_calcs(
 
     wc_tm, fwat_bwpd = throat_wc(qoil_std, prop_su.wc, qnz_bwpd)
 
-    prop_tm = ResMix(wc_tm, prop_su.fgor, prop_su.oil, prop_su.wat, prop_su.gas)
+    # Propagate water-pump mode into the internally-built throat mixture so a
+    # 100%-water solve stays water-anchored through the diffuser.
+    # [LIBRARY change -> upstream PR to kwellis/woffl]
+    prop_tm = ResMix(
+        wc_tm, prop_su.fgor, prop_su.oil, prop_su.wat, prop_su.gas,
+        model_as_water=prop_su.model_as_water,
+    )
     ptm = throat_discharge(pte, tsu, kth, vnz, anz, rho_ni, vte, ate, rho_te, prop_tm)
     vtm, pdi = diffuser_discharge(ptm, tsu, kdi, ath, adi, qoil_std, prop_tm)
     return pte, ptm, pdi, qoil_std, fwat_bwpd, qnz_bwpd, mach_te, prop_tm

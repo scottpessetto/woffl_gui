@@ -153,5 +153,63 @@ def test_mixture_density() -> None:
     np.testing.assert_allclose(hymix["rho_mix"], pymix["rho_mix"], rtol=0.04)
 
 
+def _dry_mix(wc: float) -> ResMix:
+    return ResMix(
+        wc=wc,
+        fgor=500,
+        oil=BlackOil(oil_api=22, bubblepoint=2000, gas_sg=0.55),
+        wat=FormWater(wat_sg=1.0),
+        gas=FormGas(gas_sg=0.55),
+    ).condition(1500, 100)
+
+
+def test_full_watercut_raises_valueerror() -> None:
+    """100% water cut -> zero oil volume fraction.
+
+    insitu_volm_flow must raise a typed ValueError (caught by the GUI's
+    run_jetpump_solver and the batch solvers), NOT a bare ZeroDivisionError
+    that escapes every `except ValueError` and crashes the Streamlit page.
+
+    Tripwire for the local library guard in
+    ``ResMix._static_insitu_volm_flow`` (see docs/upstream_sync.md). If an
+    upstream sync drops the guard, ``qtot = qoil / yoil`` raises
+    ZeroDivisionError (not a ValueError) and this test goes red.
+    """
+    mix = _dry_mix(1.0)
+    yoil, _, _ = mix.volm_fract()
+    assert yoil == 0  # 100% water cut => no oil by volume
+    with pytest.raises(ValueError):
+        mix.insitu_volm_flow(qoil_std=100)
+
+
+def test_near_full_watercut_still_solves() -> None:
+    """Just below 100% WC keeps a tiny nonzero oil fraction and must NOT raise
+    — the guard is specific to the degenerate yoil == 0 case."""
+    qoil, qwat, qgas = _dry_mix(0.99).insitu_volm_flow(qoil_std=100)
+    assert qoil > 0 and qwat > 0
+
+
+def test_water_mode_anchors_on_water() -> None:
+    """Opt-in water-pump mode: with model_as_water=True a 100% WC mixture
+    anchors insitu flow on WATER (the input rate is water bwpd) instead of
+    raising — oil=0, water>0, gas=0, and the flow scales linearly with rate."""
+    mix = ResMix(
+        wc=1.0,
+        fgor=500,
+        oil=BlackOil(oil_api=22, bubblepoint=2000, gas_sg=0.55),
+        wat=FormWater(wat_sg=1.0),
+        gas=FormGas(gas_sg=0.55),
+        model_as_water=True,
+    ).condition(1500, 100)
+
+    qoil, qwat, qgas = mix.insitu_volm_flow(qoil_std=500)  # input is WATER bwpd
+    assert qoil == 0.0
+    assert qwat > 0
+    assert qgas == 0.0
+    # doubling the water rate doubles the insitu water flow (linear anchor)
+    _qoil2, qwat2, _qgas2 = mix.insitu_volm_flow(qoil_std=1000)
+    assert abs(qwat2 - 2 * qwat) < 1e-9
+
+
 if __name__ == "__main__":
     plot_resmix_compare(hymix, pymix)

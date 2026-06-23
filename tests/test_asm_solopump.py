@@ -5,6 +5,8 @@ Tests pump sizing response, power fluid pressure sensitivity, circulation
 direction, and wellbore geometry effects.
 """
 
+import pytest
+
 import woffl.assembly.solopump as so
 import woffl.flow.jetflow as _jf
 from woffl.flow.inflow import InFlow
@@ -183,6 +185,52 @@ class TestMarginalConvergence:
             ipr_hi, res_hi, mpu_wat, "reverse",
         )
         assert qoil > 0 and lwat > 0  # marginal well, but it does flow
+
+
+def test_throat_wc_water_branch():
+    """throat_wc at 100% suction WC returns the anchor rate as formation water
+    and a 100% throat-mixture WC, without dividing by (1 - wc_su) = 0."""
+    wc_tm, qwat_su = _jf.throat_wc(qoil_std=800, wc_su=1.0, qwat_nz=500)
+    assert qwat_su == 800
+    assert wc_tm == 1.0
+
+
+class TestWaterPumpMode:
+    """Opt-in 100%-water (dewatering) mode.
+
+    A no-oil well must solve when model_as_water=True (water-anchored path), and
+    the oil path must be untouched when it's off (wc=1.0 still raises). Regression
+    guard for resmix._static_insitu_volm_flow_water + jetflow.throat_wc water
+    branch + the model_as_water flag. See docs/water_pump_mode_plan.md and
+    docs/upstream_sync.md.
+    """
+
+    pwh_w, tsu_w, ppf_w, pres_w = 250, 120, 3000, 2000
+    _vf = 1 - 0.2 * 0.5 - 0.8 * 0.25  # Vogel factor at pwf = 0.5*pres
+    # qwf is the WATER deliverability at pwf (IPR reused as a water inflow curve).
+    ipr_water = InFlow(qwf=1500 * _vf, pwf=0.5 * pres_w, pres=pres_w)
+    res_water = ResMix(
+        wc=1.0, fgor=600, oil=mpu_oil, wat=mpu_wat, gas=mpu_gas, model_as_water=True
+    )
+
+    def test_water_pump_solve_converges(self):
+        """A 100%-water well solves and lifts water (no oil)."""
+        psu, sonic, qwater, fwat, lwat, mach = so.jetpump_solver(
+            self.pwh_w, self.tsu_w, self.ppf_w, JetPump("12", "B"), wbore, profile,
+            self.ipr_water, self.res_water, mpu_wat, "reverse",
+        )
+        # the "oil" slot carries the formation water rate in water mode
+        assert qwater > 0 and fwat > 0 and lwat > 0
+        assert psu > 0
+
+    def test_water_mode_off_still_raises_at_full_wc(self):
+        """Sanity: WITHOUT the flag, wc=1.0 still raises (oil path unchanged)."""
+        res_no_flag = ResMix(wc=1.0, fgor=600, oil=mpu_oil, wat=mpu_wat, gas=mpu_gas)
+        with pytest.raises(ValueError):
+            so.jetpump_solver(
+                self.pwh_w, self.tsu_w, self.ppf_w, JetPump("12", "B"), wbore,
+                profile, self.ipr_water, res_no_flag, mpu_wat, "reverse",
+            )
 
 
 class TestWellboreGeometry:

@@ -198,7 +198,13 @@ def discharge_residual(
     qnz_bwpd = qpf_list[-1]
     wc_tm, fwat_bwpd = jf.throat_wc(qoil_std, prop_su.wc, qnz_bwpd)
 
-    prop_tm = ResMix(wc_tm, prop_su.fgor, prop_su.oil, prop_su.wat, prop_su.gas)
+    # Propagate water-pump mode into the throat mixture so a 100%-water solve
+    # stays water-anchored through the diffuser discharge.
+    # [LIBRARY change -> upstream PR to kwellis/woffl]
+    prop_tm = ResMix(
+        wc_tm, prop_su.fgor, prop_su.oil, prop_su.wat, prop_su.gas,
+        model_as_water=prop_su.model_as_water,
+    )
     ptm = jf.throat_discharge(
         pte,
         tsu,

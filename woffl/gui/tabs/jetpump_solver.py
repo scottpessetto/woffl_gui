@@ -824,38 +824,106 @@ def render_tab(
     if _cal and _cal.well_name != params.selected_well:
         st.session_state.pop("sw_calibration_result", None)
 
-    with st.spinner("Running jetpump solver..."):
-        try:
-            solver_results = run_jetpump_solver(
-                params.surf_pres,
-                params.form_temp,
-                params.rho_pf,
-                params.ppf_surf,
-                effective_jetpump,
-                wellbore,
-                well_profile,
-                inflow,
-                res_mix,
-                field_model=params.field_model,
-                jpump_direction=params.jpump_direction,
+    # 100% water cut => zero oil volume fraction. The solver is oil-anchored
+    # (formation water is carried as a multiple of the oil rate), so a no-oil
+    # mixture is undefined and the library raises a ValueError. UNLESS water-pump
+    # mode is on (model_as_water), in which case the solver is water-anchored and
+    # we run it. Otherwise pre-empt the generic "Solver error: ..." box with a
+    # clear, specific message and skip the solve.
+    if params.form_wc >= 1.0 and not params.model_as_water:
+        st.warning(
+            "**100% water cut** — the selected test/input has no oil, and the "
+            "jet pump **oil** model can't solve a zero-oil mixture. Lower the "
+            "**Water Cut** below 100% in the sidebar (or pick a different "
+            "IPR-anchor test) to model this well. _(To model a 100%-water "
+            'dewatering pump, tick "Model as 100% water" in the sidebar.)_'
+        )
+        solver_results = None
+    else:
+        _spin = (
+            "Running dewatering solve..."
+            if params.model_as_water
+            else "Running jetpump solver..."
+        )
+        with st.spinner(_spin):
+            try:
+                solver_results = run_jetpump_solver(
+                    params.surf_pres,
+                    params.form_temp,
+                    params.rho_pf,
+                    params.ppf_surf,
+                    effective_jetpump,
+                    wellbore,
+                    well_profile,
+                    inflow,
+                    res_mix,
+                    field_model=params.field_model,
+                    jpump_direction=params.jpump_direction,
+                )
+            except IndexError:
+                if params.model_as_water:
+                    # Water mode has no GOR to recover (gas is zero at 100%
+                    # water); surface a clear failure instead of GOR-resetting.
+                    solver_results = None
+                    st.error(
+                        "Dewatering solve found no throat-entry solution — try a "
+                        "higher power-fluid pressure or a different throat size."
+                    )
+                else:
+                    # Throat-entry iteration produced no valid points — typically
+                    # caused by an unrealistically low GOR for the well's PVT.
+                    # Reset the sidebar GOR to GOR_AUTO_RECOVERY_VALUE (250) and
+                    # remember a per-well GOR floor, so the re-solve — and every
+                    # view, which all read the sidebar GOR now — uses the
+                    # recovered value.
+                    #
+                    # Streamlit forbids writing to a widget's state key after the
+                    # widget has rendered (and the sidebar already rendered above
+                    # the tabs). So we set the logical key and DELETE the widget
+                    # key — the _number_input helper will re-initialize the widget
+                    # from the logical key on the next run.
+                    _trigger_gor_reset(
+                        params.selected_well,
+                        params.form_gor,
+                        reason="throat-entry iteration produced no valid points",
+                    )
+
+    # Water-pump (dewatering) mode renders its own compact result block — the
+    # oil hero below (test-vs-actual deltas, calibration, pump identity) doesn't
+    # apply to a no-oil well. Show what it takes to flow/dewater, then stop.
+    if params.model_as_water:
+        if solver_results:
+            psu, sonic_status, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = solver_results
+            water_rate = fwat_bwpd  # formation water lifted (oil = 0 here)
+            st.success(
+                f"**Dewatering solve** — {params.selected_well} modeled as 100% "
+                "water (no oil)."
             )
-        except IndexError:
-            # Throat-entry iteration produced no valid points — typically caused
-            # by an unrealistically low GOR for the well's PVT. Reset the sidebar
-            # GOR to GOR_AUTO_RECOVERY_VALUE (250) and remember a per-well GOR
-            # floor, so the re-solve — and every view, which all read the sidebar
-            # GOR now — uses the recovered value.
-            #
-            # Streamlit forbids writing to a widget's state key after the widget
-            # has rendered (and the sidebar already rendered above the tabs).
-            # So we set the logical key and DELETE the widget key — the
-            # _number_input helper will re-initialize the widget from the
-            # logical key on the next run.
-            _trigger_gor_reset(
-                params.selected_well,
-                params.form_gor,
-                reason="throat-entry iteration produced no valid points",
+            w1, w2, w3, w4 = st.columns(4)
+            w1.metric(
+                "Suction Pressure", f"{psu:,.0f} psig",
+                help="Bottomhole pressure the pump pulls — the dewatering drawdown.",
             )
+            w2.metric(
+                "Water Rate", f"{water_rate:,.0f} BWPD",
+                help="Formation water lifted at the solved suction (from the IPR).",
+            )
+            w3.metric(
+                "Power Fluid", f"{qnz_bwpd:,.0f} BWPD",
+                help="Power-fluid (water) rate required to drive the pump.",
+            )
+            w4.metric(
+                "PF Surface Pressure", f"{params.ppf_surf:,.0f} psig",
+                help="Power-fluid pressure supplied at surface (sidebar).",
+            )
+            _sonic = "Sonic (choked)" if sonic_status else "Subsonic"
+            st.caption(
+                f"Throat: **{_sonic}** (Mach {mach_te:.2f}). Total water handled "
+                f"≈ {water_rate + qnz_bwpd:,.0f} BWPD (formation + power fluid). "
+                "Water is near-incompressible, so a water pump typically won't "
+                "choke the way a gassy oil well does."
+            )
+        return
 
     if solver_results:
         psu, sonic_status, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = solver_results

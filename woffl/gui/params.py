@@ -71,6 +71,10 @@ class SimulationParams:
     form_gor: int = 250
     form_temp: int = 70
     field_model: str = "Schrader"
+    # Water-pump (dewatering) mode: model a 100%-water, no-oil well to see what
+    # suction / power fluid it takes to flow it. When True the sidebar forces
+    # form_wc = 1.0 and qwf is the well's WATER deliverability. Default False.
+    model_as_water: bool = False
 
     # PVT overrides (None = use field_model preset)
     oil_api: Optional[float] = None

@@ -907,6 +907,27 @@ def render_sidebar(well_filter: list[str] | None = None) -> tuple[bool, Simulati
                 pres,
             ) = _render_formation_inflow(well_data)
 
+            # Backup dewatering mode — model a 100%-water (no-oil) well to see
+            # what suction / power fluid it takes to flow it. Forces WC to 100%
+            # and reinterprets qwf as the well's water deliverability. Default
+            # off keeps the normal oil workflow untouched.
+            model_as_water = st.checkbox(
+                "Model as 100% water (dewatering)",
+                value=st.session_state.get("sw_model_as_water", False),
+                key="sw_model_as_water",
+                help=(
+                    "Backup mode for a watered-out / source well: model the jet "
+                    "pump on a 100%-water (no-oil) fluid to see what suction and "
+                    "power fluid it takes to flow it and dewater. Water cut is "
+                    "forced to 100%, and the inflow rate (qwf) is treated as the "
+                    "well's WATER deliverability."
+                ),
+            )
+            if model_as_water:
+                st.caption(
+                    "⚙️ Water-pump mode — water cut forced to 100%, qwf = water rate."
+                )
+
         # Geometry — auto-populated, rarely edited
         with st.expander("Geometry", expanded=False):
             jpump_tvd, rho_pf = _render_geometry(well_data)
@@ -956,7 +977,8 @@ def render_sidebar(well_filter: list[str] | None = None) -> tuple[bool, Simulati
         tubing_thickness=tubing_thickness,
         casing_od=casing_od,
         casing_thickness=casing_thickness,
-        form_wc=form_wc,
+        form_wc=1.0 if model_as_water else form_wc,
+        model_as_water=model_as_water,
         form_gor=form_gor,
         form_temp=form_temp,
         field_model=field_model,

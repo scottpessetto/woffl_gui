@@ -7,7 +7,13 @@ from woffl.pvt.formwat import FormWater
 
 class ResMix:
     def __init__(
-        self, wc: float, fgor: float, oil: BlackOil, wat: FormWater, gas: FormGas
+        self,
+        wc: float,
+        fgor: float,
+        oil: BlackOil,
+        wat: FormWater,
+        gas: FormGas,
+        model_as_water: bool = False,
     ) -> None:
         """Reservoir Mixture
 
@@ -20,6 +26,11 @@ class ResMix:
             oil (BlackOil): Class with Oil_API, Gas_SG, Bubblepoint
             wat (FormWater): Class with Water SG
             gas (FormGas): Class with Gas SG
+            model_as_water (bool): Opt-in water-pump mode. At 100% water cut
+                (no oil) the insitu flow is anchored on the WATER rate instead
+                of oil, so a no-oil well can be modeled (dewatering). Default
+                False keeps the oil-anchored behavior bit-identical.
+                [LIBRARY change -> upstream PR to kwellis/woffl]
 
         Returns:
             Self
@@ -30,6 +41,7 @@ class ResMix:
         self.oil = oil
         self.wat = wat
         self.gas = gas
+        self.model_as_water = model_as_water
 
         # store standard densities so you don't have to call continually
         pstd = 0  # psig standard pressure
@@ -342,6 +354,15 @@ class ResMix:
             qgas (float): Gas Volumetric Flow, Insitu ft3/s
         """
         yoil, ywat, ygas = self.volm_fract()
+        # Water-pump mode (opt-in): at 100% water cut there is no oil to anchor
+        # on, so interpret the input as the WATER standard rate and recover total
+        # insitu flow from water instead of oil. Default behavior — including the
+        # zero-oil guard in _static_insitu_volm_flow — is unchanged.
+        # [LIBRARY change -> upstream PR to kwellis/woffl]
+        if self.model_as_water and yoil == 0:
+            return self._static_insitu_volm_flow_water(
+                qoil_std, self.rho_wat_std, self.wat.density, ywat, ygas
+            )
         qoil, qwat, qgas = self._static_insitu_volm_flow(
             qoil_std, self.rho_oil_std, self.oil.density, yoil, ywat, ygas
         )
@@ -380,8 +401,60 @@ class ResMix:
         moil = qoil_cfs * rho_oil_std  # mass flow of oil
         qoil = moil / rho_oil  # actual flow, ft3/s
 
+        # Oil volume fraction is zero only at 100% water cut, where recovering
+        # the total insitu flow from the oil rate (qtot = qoil / yoil) is
+        # undefined. Raise a typed ValueError instead of a bare ZeroDivisionError
+        # so solver callers — and the GUI's `except ValueError` in
+        # run_jetpump_solver — treat it as a normal "can't model this well"
+        # failure rather than letting an uncaught ZeroDivisionError crash the
+        # Streamlit page (observed running a ~100% water-cut well).
+        # [LIBRARY change -> upstream PR to kwellis/woffl]
+        if yoil == 0:
+            raise ValueError(
+                "Oil volume fraction is zero (water cut = 100%); the jet pump "
+                "oil model requires a water cut below 100%."
+            )
         qtot = qoil / yoil  # oil flow divided by oil total fraction
         qwat = ywat * qtot
+        qgas = ygas * qtot
+        return qoil, qwat, qgas
+
+    @staticmethod
+    def _static_insitu_volm_flow_water(
+        qwat_std: float,
+        rho_wat_std: float,
+        rho_wat: float,
+        ywat: float,
+        ygas: float,
+    ) -> tuple[float, float, float]:
+        """Insitu Volumetric Flow anchored on WATER (water-pump mode).
+
+        Mirror of _static_insitu_volm_flow for a no-oil (100% water cut)
+        mixture: the standard rate is water, total insitu flow is recovered from
+        the water fraction, and there is no oil. Used only when the ResMix was
+        built with model_as_water=True (see insitu_volm_flow).
+
+        Args:
+            qwat_std (float): Water Rate, BWPD
+            rho_wat_std (float): Density Water at Std Cond, lbm/ft3
+            rho_wat (float): Density Water Insitu Cond, lbm/ft3
+            ywat (float): Volm Fraction Water Insitu Cond, ft3/ft3
+            ygas (float): Volm Fraction Gas Insitu Cond, ft3/ft3
+
+        Returns:
+            qoil (float): Oil Volumetric Flow, Insitu ft3/s (zero — no oil)
+            qwat (float): Water Volumetric Flow, Insitu ft3/s
+            qgas (float): Gas Volumetric Flow, Insitu ft3/s
+
+        References:
+            [LIBRARY change -> upstream PR to kwellis/woffl]
+        """
+        # 42 gal/bbl, 7.48052 gal/ft3, 24 hr/day, 60min/hour, 60sec/min
+        qwat_cfs = qwat_std * 42 / (24 * 60 * 60 * 7.48052)  # ft3/s at std cond
+        mwat = qwat_cfs * rho_wat_std  # mass flow of water
+        qwat = mwat / rho_wat  # actual flow, ft3/s
+        qtot = qwat / ywat  # water flow divided by water total fraction
+        qoil = 0.0
         qgas = ygas * qtot
         return qoil, qwat, qgas
 
