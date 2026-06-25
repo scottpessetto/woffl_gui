@@ -750,15 +750,35 @@ def render_tab(
         _icon = "🎯" if _jm.get("ok") else "⚠️"
         (st.success if _jm.get("ok") else st.warning)(_jm["text"], icon=_icon)
 
-    # Test picker FIRST — its selection determines which pump the solver
-    # uses on this run (pump-at-test-date overrides sidebar when a test is
-    # selected). Default = most recent test; matches the pre-picker
-    # behaviour.
+    # IPR-anchor selector + comparison-test picker FIRST — hoisted to the TOP of
+    # the tab so the *driving test* is chosen right where the solve happens. A
+    # watered-out or otherwise bad most-recent test no longer dead-ends the
+    # solver: pick an earlier oil-bearing test in the IPR-anchor selector and the
+    # sidebar (qwf/pwf/ResP/WC/GOR) reseeds and the solver re-runs against it.
+    # The selector seeds the sidebar (single source of truth) and returns its
+    # Vogel fit so Model-vs-Actual can reuse it below without recomputing.
     test_df = _get_well_tests(params.selected_well)
-    # By default the comparison test is synced to the IPR anchor (chosen in
-    # Model vs Actual below). The decouple checkbox there sets sw_ipr_decouple_*;
-    # Streamlit commits a widget's value before the rerun, so we can read it here
-    # even though the checkbox renders later in the same run.
+
+    # Same gate Model-vs-Actual uses for its anchor control: oil workflow, JP
+    # history loaded, non-Custom, 2+ tests. Water mode is the explicit
+    # watered-out fallback and has no oil anchor to seed; Custom has no tests.
+    n_tests_now = 0 if test_df is None or test_df.empty else len(test_df)
+    anchor_selector_shown = (
+        st.session_state.get("jp_history_df") is not None
+        and params.selected_well != "Custom"
+        and not params.model_as_water
+        and n_tests_now >= 2
+    )
+    if anchor_selector_shown:
+        anchor_fit = _render_ipr_anchor_and_seed(params, test_df)
+    else:
+        anchor_fit = (None, None, None)
+
+    # The comparison-test picker is slaved to the IPR anchor by default; the
+    # "Use a different test for comparison" checkbox (rendered by the anchor
+    # selector just above) frees it. That checkbox renders earlier in THIS run,
+    # so its value is already committed when we read it here. Default = most
+    # recent test, matching the pre-picker behaviour.
     _decoupled = st.session_state.get(
         f"sw_ipr_decouple_{params.selected_well}", False
     )
@@ -831,12 +851,24 @@ def render_tab(
     # we run it. Otherwise pre-empt the generic "Solver error: ..." box with a
     # clear, specific message and skip the solve.
     if params.form_wc >= 1.0 and not params.model_as_water:
+        if anchor_selector_shown:
+            _water_fix = (
+                "Anchor the IPR on an earlier **oil-bearing** test using the "
+                "**IPR anchor** selector at the top of this tab (set it to "
+                "*Specific test* and pick a test with oil) — the sidebar reseeds "
+                "and the solver re-runs against it. Or lower the **Water Cut** "
+                "below 100% in the sidebar."
+            )
+        else:
+            _water_fix = (
+                "Lower the **Water Cut** below 100% in the sidebar to model "
+                "this well."
+            )
         st.warning(
             "**100% water cut** — the selected test/input has no oil, and the "
-            "jet pump **oil** model can't solve a zero-oil mixture. Lower the "
-            "**Water Cut** below 100% in the sidebar (or pick a different "
-            "IPR-anchor test) to model this well. _(To model a 100%-water "
-            'dewatering pump, tick "Model as 100% water" in the sidebar.)_'
+            "jet pump **oil** model can't solve a zero-oil mixture. "
+            f"{_water_fix} _(For a genuinely watered-out well with no oil test "
+            'to fall back to, tick "Model as 100% water" in the sidebar.)_'
         )
         solver_results = None
     else:
@@ -1151,9 +1183,12 @@ def render_tab(
         params, wellbore, well_profile, selected_test_row=selected_test_row
     )
 
-    # Model vs Actual comparison (requires JP history + non-Custom well)
+    # Model vs Actual comparison (requires JP history + non-Custom well). The
+    # IPR-anchor fit was already computed + seeded at the top of the tab; pass
+    # it down so MvA reuses it for its chart instead of recomputing.
     _render_model_vs_actual(
-        params, wellbore, well_profile, selected_test_row=selected_test_row
+        params, wellbore, well_profile,
+        selected_test_row=selected_test_row, anchor_fit=anchor_fit,
     )
 
     # Deferred fill of the pump-history placeholder reserved at the top —
@@ -2021,9 +2056,9 @@ def _render_test_picker(well_name: str, test_df, *, synced: bool = False):
             key=key,
             disabled=True,
             help=(
-                "Synced to the IPR anchor (in Model vs Actual below). Check "
-                "'Use a different test for comparison' under the IPR anchor to "
-                "pick the comparison test independently."
+                "Synced to the IPR anchor selector just above. Check 'Use a "
+                "different test for comparison' under the IPR anchor to pick "
+                "the comparison test independently."
             ),
         )
         return sorted_tests.iloc[tgt_idx]
@@ -2123,8 +2158,8 @@ def _render_ipr_anchor_control(well_name: str, test_df):
                 "reservoir pressure to the whole test cloud (default). 'Median "
                 "test' / 'Specific test' anchor the curve on that test and "
                 "re-fit reservoir pressure for the best fit through it. "
-                "The 'Test to compare against' picker above syncs to this by "
-                "default (toggle below to unsync)."
+                "The 'Test to compare against' picker just below syncs to this "
+                "by default (toggle below to unsync)."
             ),
         )
     mode = label_to_mode[sel]
@@ -2180,21 +2215,21 @@ def _render_ipr_anchor_control(well_name: str, test_df):
         ad = sorted_tests.iloc[date_opts.index(picked)].get("WtDate")
         anchor_date = ad if pd.notna(ad) else None
 
-    # Decouple toggle. By default the top "Test to compare against" picker is
-    # slaved to this IPR anchor (so the model is compared against the same test
-    # the IPR is built on). Checking this frees the comparison picker to select
-    # any test. render_tab reads this key at the top of the run — Streamlit
-    # commits it before the rerun, so toggling takes effect immediately. (It
-    # resets to synced after a tab detour, which keeps the test selection
-    # consistent since the anchor itself persists.)
+    # Decouple toggle. By default the "Test to compare against" picker just below
+    # is slaved to this IPR anchor (so the model is compared against the same
+    # test the IPR is built on). Checking this frees the comparison picker to
+    # select any test. This control renders at the top of the tab, just BEFORE
+    # render_tab reads this key for the picker — so toggling takes effect on the
+    # same run. (It resets to synced after a tab detour, which keeps the test
+    # selection consistent since the anchor itself persists.)
     st.checkbox(
         "Use a different test for comparison (un-sync from the IPR anchor)",
         key=f"sw_ipr_decouple_{well_name}",
         help=(
-            "By default the 'Test to compare against' picker at the top of the "
-            "tab matches the IPR anchor test selected here, so the model is "
-            "compared against the same test the IPR is built on. Check this to "
-            "choose the comparison test independently."
+            "By default the 'Test to compare against' picker just below matches "
+            "the IPR anchor test selected here, so the model is compared against "
+            "the same test the IPR is built on. Check this to choose the "
+            "comparison test independently."
         ),
     )
 
@@ -2301,6 +2336,129 @@ def _sync_chosen_ipr_to_sidebar(
     st.rerun()
 
 
+def _render_ipr_anchor_and_seed(params: SimulationParams, test_df):
+    """Render the IPR-anchor test selector at the TOP of the Solver tab, fit the
+    chosen test's Vogel curve, and seed the sidebar from it — BEFORE the solve.
+
+    Hoisted out of Model-vs-Actual so the engineer picks the *driving test*
+    right where the solve happens. The most-recent test is no longer a dead end:
+    if it's watered-out or otherwise bad, pick an earlier oil-bearing test here
+    and the sidebar (qwf/pwf/ResP/WC/GOR) reseeds via
+    :func:`_sync_chosen_ipr_to_sidebar` and the solver re-runs against it.
+
+    Mirrors the single-source-of-truth design — this only *seeds* the sidebar;
+    the sidebar stays the truth the solve, Batch Run, PF Range, and
+    Model-vs-Actual all read.
+
+    The caller gates this on ``anchor_selector_shown`` (JP history loaded, oil
+    workflow, non-Custom, 2+ tests), so by the time we're here the anchor
+    control is appropriate to show.
+
+    Returns ``(coeff_row, vogel_coeffs, merged_with_rp)`` so Model-vs-Actual can
+    reuse the same fit for its chart without recomputing. ``coeff_row`` /
+    ``vogel_coeffs`` are ``None`` only when the Vogel fit genuinely fails (e.g.
+    every test row lacks BHP) — Model-vs-Actual then falls back to its
+    synthetic-IPR path, exactly as before.
+    """
+    import pandas as pd
+
+    anchor_mode, anchor_date = _render_ipr_anchor_control(
+        params.selected_well, test_df
+    )
+
+    # One-shot confirmation from the prior run's sidebar seed. The seed reruns
+    # the app, so the note replays on the following render — shown here at the
+    # top, right next to the selector that triggered it.
+    _ipr_sync_msg = st.session_state.pop("_ipr_sync_msg", None)
+    if _ipr_sync_msg:
+        st.success(_ipr_sync_msg, icon="✅")
+
+    coeff_row = None
+    vogel_coeffs = None
+    merged_with_rp = None
+
+    if anchor_mode in ("median", "specific"):
+        # Anchored fit: hold the chosen test as the Vogel anchor and re-fit
+        # reservoir pressure for the best fit through it (GUI-layer helper, no
+        # upstream-library change).
+        from woffl.gui.ipr_anchor import compute_anchored_vogel
+
+        field_max_rp = (
+            3000 if str(params.field_model).lower() == "kuparuk" else 1800
+        )
+        anchored = compute_anchored_vogel(
+            test_df,
+            well_name=params.selected_well,
+            anchor_mode=anchor_mode,
+            anchor_date=anchor_date,
+            field_max_rp=field_max_rp,
+        )
+        if anchored is not None:
+            coeff_row = pd.Series(anchored)
+            vogel_coeffs = pd.DataFrame([anchored])
+            merged_with_rp = test_df
+            st.caption(
+                f"IPR anchored on **{anchored['anchor_label']}** · reservoir "
+                f"pressure re-fit to **{anchored['ResP']:,} psi** for best "
+                f"fit through that test (R² = {anchored['R2']})."
+            )
+        else:
+            st.warning(
+                "Anchored IPR fit unavailable (no test with both BHP and "
+                "rate); falling back to the most-recent global fit."
+            )
+
+    if coeff_row is None:
+        # Most-recent / global least-squares fit (unchanged library path).
+        from woffl.assembly.ipr_analyzer import (
+            compute_vogel_coefficients,
+            estimate_reservoir_pressure,
+        )
+
+        try:
+            merged_with_rp = estimate_reservoir_pressure(test_df)
+            vogel_coeffs = compute_vogel_coefficients(merged_with_rp)
+        except Exception as e:
+            st.warning(
+                f"Vogel IPR fit failed ({e}); falling back to a single-point "
+                "IPR with sidebar reservoir pressure."
+            )
+            vogel_coeffs = None
+
+        # Vogel may return an empty DataFrame when every test row for this well
+        # is missing BHP (e.g. S-pad wells whose recent tests have no coincident
+        # gauge). Fall through to the no-IPR path in MvA in that case.
+        if (
+            vogel_coeffs is not None
+            and not vogel_coeffs.empty
+            and "Well" in vogel_coeffs.columns
+        ):
+            well_coeffs = vogel_coeffs[
+                vogel_coeffs["Well"] == params.selected_well
+            ]
+            if not well_coeffs.empty:
+                coeff_row = well_coeffs.iloc[0]
+
+    # Seed the chosen test's IPR + fluid into the sidebar so Batch Run, PF Range,
+    # and the Solver all use it (the engineer can then override any field in the
+    # sidebar — see _sync_chosen_ipr_to_sidebar). No-op unless the anchor-test
+    # selection actually changed; when it did, this reruns the app so the picker
+    # + solve below run against the freshly-seeded sidebar values.
+    if coeff_row is not None:
+        _sync_chosen_ipr_to_sidebar(
+            params.selected_well,
+            anchor_mode=anchor_mode,
+            anchor_date=anchor_date,
+            qwf_oil=float(coeff_row["qwf"]) * (1 - float(coeff_row["form_wc"])),
+            pwf=float(coeff_row["pwf"]),
+            res_p=float(coeff_row["ResP"]),
+            form_wc=float(coeff_row["form_wc"]),
+            fgor=float(coeff_row["fgor"]),
+        )
+
+    return coeff_row, vogel_coeffs, merged_with_rp
+
+
 def _render_manual_test_entry(well_name: str) -> None:
     """Expander to add provisional well tests not yet in Databricks.
 
@@ -2391,6 +2549,7 @@ def _render_model_vs_actual(
     well_profile,
     *,
     selected_test_row=None,
+    anchor_fit=(None, None, None),
 ) -> None:
     """Render the Model vs Actual comparison section.
 
@@ -2404,6 +2563,13 @@ def _render_model_vs_actual(
         looks up the install on or before the selected test's date.
       * the row that gets compared — the metrics show modeled vs **that
         test's** Oil / BHP / PF, not the most recent test.
+
+    ``anchor_fit`` is the ``(coeff_row, vogel_coeffs, merged_with_rp)`` tuple
+    already computed + seeded at the TOP of the tab by
+    :func:`_render_ipr_anchor_and_seed`. We reuse it here for the IPR chart +
+    comparison rather than re-rendering the anchor control or re-running the
+    Vogel fit. It's ``(None, None, None)`` for the 0/1-test or Vogel-failed
+    cases, which fall through to the synthetic-IPR path below.
     """
     jp_hist = st.session_state.get("jp_history_df")
     if jp_hist is None or params.selected_well == "Custom":
@@ -2411,11 +2577,7 @@ def _render_model_vs_actual(
 
     import pandas as pd
 
-    from woffl.assembly.ipr_analyzer import (
-        compute_vogel_coefficients,
-        estimate_reservoir_pressure,
-        generate_ipr_curves,
-    )
+    from woffl.assembly.ipr_analyzer import generate_ipr_curves
     from woffl.assembly.jp_history import get_current_pump
     from woffl.flow.inflow import InFlow
     from woffl.gui.ipr_viz import create_ipr_plotly
@@ -2480,103 +2642,14 @@ def _render_model_vs_actual(
     # Databricks tests can still be modeled once a manual test is added).
     _render_manual_test_entry(params.selected_well)
 
-    # IPR anchor selector (≥2 tests). Separate from the comparison picker: it
-    # controls which test the Vogel curve is anchored on and re-fits reservoir
-    # pressure through it. Writes session keys consumed by
-    # build_calibration_inputs so calibration targets the same operating point.
-    anchor_mode, anchor_date = "recent", None
-    if n_tests >= 2:
-        anchor_mode, anchor_date = _render_ipr_anchor_control(
-            params.selected_well, test_df
-        )
-
-    # One-shot confirmation from the prior run's sidebar sync. The sync reruns
-    # the app, so the note has to be surfaced on the following render.
-    _ipr_sync_msg = st.session_state.pop("_ipr_sync_msg", None)
-    if _ipr_sync_msg:
-        st.success(_ipr_sync_msg, icon="✅")
-
-    # 3. Try Vogel fit (≥2 tests). With 0 or 1 tests we fall through to a
-    # single-point synthetic IPR anchored on sidebar ResP — chart still
-    # renders so the user can see the model's expected operating envelope.
-    coeff_row = None
-    merged_with_rp = None
-    vogel_coeffs = None
-    if n_tests >= 2:
-        if anchor_mode in ("median", "specific"):
-            # Anchored fit: hold the chosen test as the Vogel anchor and re-fit
-            # reservoir pressure for the best fit through it (GUI-layer helper,
-            # no upstream-library change).
-            from woffl.gui.ipr_anchor import compute_anchored_vogel
-
-            field_max_rp = (
-                3000 if str(params.field_model).lower() == "kuparuk" else 1800
-            )
-            anchored = compute_anchored_vogel(
-                test_df,
-                well_name=params.selected_well,
-                anchor_mode=anchor_mode,
-                anchor_date=anchor_date,
-                field_max_rp=field_max_rp,
-            )
-            if anchored is not None:
-                coeff_row = pd.Series(anchored)
-                vogel_coeffs = pd.DataFrame([anchored])
-                merged_with_rp = test_df
-                st.caption(
-                    f"IPR anchored on **{anchored['anchor_label']}** · reservoir "
-                    f"pressure re-fit to **{anchored['ResP']:,} psi** for best "
-                    f"fit through that test (R² = {anchored['R2']})."
-                )
-            else:
-                st.warning(
-                    "Anchored IPR fit unavailable (no test with both BHP and "
-                    "rate); falling back to the most-recent global fit."
-                )
-
-        if coeff_row is None:
-            # Most-recent / global least-squares fit (unchanged library path).
-            try:
-                merged_with_rp = estimate_reservoir_pressure(test_df)
-                vogel_coeffs = compute_vogel_coefficients(merged_with_rp)
-            except Exception as e:
-                st.warning(
-                    f"Vogel IPR fit failed ({e}); falling back to a single-point "
-                    "IPR with sidebar reservoir pressure."
-                )
-                vogel_coeffs = None
-
-            # Vogel may return an empty DataFrame when every test row for this
-            # well is missing BHP (e.g. S-pad wells whose recent tests have no
-            # coincident gauge). Fall through to the no-IPR path in that case.
-            if (
-                vogel_coeffs is not None
-                and not vogel_coeffs.empty
-                and "Well" in vogel_coeffs.columns
-            ):
-                well_coeffs = vogel_coeffs[
-                    vogel_coeffs["Well"] == params.selected_well
-                ]
-                if not well_coeffs.empty:
-                    coeff_row = well_coeffs.iloc[0]
-
-    # Seed the chosen test's IPR + fluid into the sidebar so Batch Run, PF
-    # Range, and the top Solver all use it (the engineer can then override any
-    # field in the sidebar — see _sync_chosen_ipr_to_sidebar). No-op unless the
-    # anchor-test selection actually changed. Done before the chart so a
-    # selection change reruns immediately and the chart/solver below read the
-    # freshly-seeded sidebar values.
-    if coeff_row is not None:
-        _sync_chosen_ipr_to_sidebar(
-            params.selected_well,
-            anchor_mode=anchor_mode,
-            anchor_date=anchor_date,
-            qwf_oil=float(coeff_row["qwf"]) * (1 - float(coeff_row["form_wc"])),
-            pwf=float(coeff_row["pwf"]),
-            res_p=float(coeff_row["ResP"]),
-            form_wc=float(coeff_row["form_wc"]),
-            fgor=float(coeff_row["fgor"]),
-        )
+    # IPR anchor selection, Vogel fit, and the sidebar seed all happen at the TOP
+    # of the tab now (see _render_ipr_anchor_and_seed), before the solve, so a
+    # bad most-recent test can't dead-end the solver. Reuse that fit here for the
+    # chart + comparison rather than re-rendering the control or recomputing.
+    # coeff_row / vogel_coeffs / merged_with_rp are None for the 0/1-test or
+    # Vogel-failed cases, which fall through to the synthetic-IPR path below
+    # exactly as before.
+    coeff_row, vogel_coeffs, merged_with_rp = anchor_fit
 
     # 4. Resolve the comparison test row + its surface pressure for the chart
     # and the modeled-vs-actual solver below. WC / GOR / ResP now come from the
