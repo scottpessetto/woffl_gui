@@ -222,8 +222,11 @@ def create_ipr_plotly(
         title=dict(text=f"<b>{well_name}</b> — Vogel IPR", font=dict(size=16)),
         xaxis_title="Total Fluid Rate (BPD)",
         yaxis_title="Bottom Hole Pressure (psi)",
-        xaxis=dict(range=[0, None], gridcolor="lightgray"),
-        yaxis=dict(range=[0, None], gridcolor="lightgray"),
+        # rangemode="tozero" anchors the axis at 0 and autoscales the upper
+        # bound; range=[0, None] silently falls back to full autorange (so the
+        # axis did NOT start at 0 as intended — documented Plotly quirk).
+        xaxis=dict(rangemode="tozero", gridcolor="lightgray"),
+        yaxis=dict(rangemode="tozero", gridcolor="lightgray"),
         plot_bgcolor="white",
         hovermode="closest",
         height=500,
@@ -409,15 +412,17 @@ def create_ipr_grid_plotly(
         title_font_size=18,
     )
 
-    # Set axis ranges
+    # Set axis ranges. rangemode="tozero" anchors at 0 and autoscales the max;
+    # range=[0, None] silently falls back to full autorange (axis wouldn't start
+    # at 0 as intended — documented Plotly quirk).
     for i in range(1, num_wells + 1):
         fig.update_xaxes(
-            range=[0, None],
+            rangemode="tozero",
             row=(i - 1) // num_columns + 1,
             col=(i - 1) % num_columns + 1,
         )
         fig.update_yaxes(
-            range=[0, None],
+            rangemode="tozero",
             row=(i - 1) // num_columns + 1,
             col=(i - 1) % num_columns + 1,
         )

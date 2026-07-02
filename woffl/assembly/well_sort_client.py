@@ -22,6 +22,7 @@ whenever the injector side is idle, even if the producer is running.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Literal
 
@@ -29,6 +30,8 @@ import numpy as np
 import pandas as pd
 
 from woffl.assembly.databricks_client import execute_query
+
+logger = logging.getLogger(__name__)
 
 FULL_DAY_HOURS_THRESHOLD = 20.0
 NOTABLE_DOWN_HOURS = 8.0  # default "down day" threshold for the events view
@@ -237,6 +240,10 @@ def _normalize_well_name(name: str) -> str:
     if not match:
         return name
     well = match.group(1)
+    # DB names are 3-digit zero-padded (B-028, B-008). Strip ONE leading zero so
+    # the GUI form is 2-digit zero-padded to match jp_chars (B-028 -> MPB-28,
+    # B-008 -> MPB-08). Do NOT strip all zeros — jp_chars keys single-digit wells
+    # as e.g. MPH-08, so MPB-8 would not join.
     well = re.sub(r"-(0)(?=\d+)", "-", well)
     if not well.startswith("MP"):
         well = "MP" + well
@@ -288,8 +295,20 @@ def fetch_xv_status() -> pd.DataFrame:
 
     Caveat: SSSV open != well flowing. A closed XV reliably indicates the
     well is not producing; an open XV is necessary but not sufficient.
+
+    Soft-fails to an empty frame on a query error: XV status reads the
+    ``reporting`` historian catalog, which the hosted Databricks App's service
+    principal may lack access to (it works locally with the engineer's creds).
+    An empty frame flows through ``_xv_lookup`` -> ``{}`` so Well Sort still
+    renders from the shut-in log alone (ProdXV/PFXV blank) instead of crashing.
     """
-    df = execute_query(XV_STATUS_QUERY)
+    try:
+        df = execute_query(XV_STATUS_QUERY)
+    except Exception as exc:
+        logger.warning(
+            "XV/safety-valve status unavailable (returning empty frame): %s", exc
+        )
+        return pd.DataFrame()
     if df.empty:
         return df
     df = df.rename(columns={"well_name": "well"})
@@ -741,8 +760,14 @@ def build_shut_in_table(
                 "hrs": np.nan,
             })
         else:
-            streak_start = max_date
-            expected = max_date
+            # Seed the streak walk from THIS well's own latest log date, not the
+            # field-wide max_date. For an XV-injected / stale-log well whose most
+            # recent row precedes the global max, anchoring on max_date broke the
+            # walk on the first row and reported "shut in since today". grp is
+            # already sorted dtdate-desc, so iloc[0] is the well's latest row.
+            well_latest = grp.iloc[0]["dtdate"]
+            streak_start = well_latest
+            expected = well_latest
             for _, r in grp.iterrows():
                 if r["dtdate"] == expected and r["hrs"] >= FULL_DAY_HOURS_THRESHOLD:
                     streak_start = r["dtdate"]
@@ -798,6 +823,12 @@ def build_shut_in_table(
         row.update(_bench_cols())
         rows.append(row)
 
+    # rows can be empty even when shut_in_df isn't: e.g. every currently-logged
+    # shut well was rescued to online by an open prod XV, so shut_in_wells is an
+    # empty set. Guard before sort_values, which would otherwise KeyError on the
+    # missing "ShutInSince" column of an empty frame.
+    if not rows:
+        return pd.DataFrame()
     return pd.DataFrame(rows).sort_values("ShutInSince", ascending=False).reset_index(drop=True)
 
 

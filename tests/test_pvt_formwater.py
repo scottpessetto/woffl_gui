@@ -20,3 +20,11 @@ def test_water_compressibility() -> None:
 
 def test_water_tension() -> None:
     assert water.tension == pytest.approx(0.005, rel=0.01)  # lbf/ft
+
+
+def test_wat_sg_bounds_inclusive() -> None:
+    # Tripwire for the inclusive-bounds library patch (docstring range 0.5-1.5).
+    FormWater(wat_sg=0.5)
+    FormWater(wat_sg=1.5)
+    with pytest.raises(ValueError):
+        FormWater(wat_sg=1.6)

@@ -18,6 +18,7 @@ the corners of the bound box so we don't get stuck in the wrong basin.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from typing import Optional
 
@@ -368,7 +369,14 @@ def compute_bhp_decomposition(
     # ── Production column ──────────────────────────────────────────────
     # Build the throat-mixed fluid the production column actually carries
     wc_tm, _ = jf.throat_wc(qoil_std, prop_su.wc, qpf)
-    prop_tm = ResMix(wc_tm, prop_su.fgor, prop_su.oil, prop_su.wat, prop_su.gas)
+    # Build prop_tm from COPIES of prop_su's child PVT objects. ResMix.condition
+    # mutates its children in place, so sharing prop_su.oil/wat/gas here would
+    # re-condition the CALLER's prop_su (stale derived props if it's reused after
+    # this diagnostic).
+    prop_tm = ResMix(
+        wc_tm, prop_su.fgor,
+        copy.deepcopy(prop_su.oil), copy.deepcopy(prop_su.wat), copy.deepcopy(prop_su.gas),
+    )
 
     _md_seg, prs_ray, _slh_ray = of.production_top_down_press(
         pwh, tsu, qoil_std, prop_tm, wellbore, wellprof, production_flowpath

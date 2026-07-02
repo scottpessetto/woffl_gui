@@ -105,14 +105,42 @@ def test_oil_compressibility_above() -> None:
 
 
 def test_oil_compressibility_below() -> None:
-    # McCain SPE-15664 Eq. 5 takes temperature in deg R; the old expected
+    # McCain SPE-15664 Eq. 5 takes temperature in deg R; an earlier expected
     # value (2.5762e-05) locked in a deg F implementation bug (fixed 2026-06).
-    # Below-bubblepoint co is 1-2 orders of magnitude above the above-pbp
-    # value because of gas coming out of solution — 2.16e-4 psi^-1 is in the
-    # range McCain's paper reports.
+    # The correlation is defined with Rsb — solution GOR AT THE BUBBLE POINT —
+    # not Rs at the current pressure; passing Rsb (fixed 2026-06, library patch)
+    # raised the previous 2.16e-4 (Rs(p)) to 2.40e-4 psi^-1, both within the
+    # range McCain's paper reports. Below-bubblepoint co is 1-2 orders of
+    # magnitude above the above-pbp value because of gas coming out of solution.
+    # Tripwire for the Rsb library patch — reverts to ~2.16e-4 if it's lost.
     oil = BlackOil.test_oil()
     oil.condition(1000, 80)
-    assert oil.compress == pytest.approx(2.1645e-04, rel=0.01)
+    assert oil.compress == pytest.approx(2.3968e-04, rel=0.01)
+
+
+def test_validation_bounds_inclusive() -> None:
+    # Boundary inputs must be ACCEPTED (docstrings say inclusive "10 to 40",
+    # etc). Tripwire for the inclusive-bounds library patch — reverts to raising
+    # if the strict < comes back.
+    BlackOil(oil_api=10, bubblepoint=1000, gas_sg=0.5)
+    BlackOil(oil_api=40, bubblepoint=3000, gas_sg=1.2)
+
+
+def test_validation_rejects_out_of_range() -> None:
+    with pytest.raises(ValueError):
+        BlackOil(oil_api=9, bubblepoint=1750, gas_sg=0.65)
+    with pytest.raises(ValueError):
+        BlackOil(oil_api=22, bubblepoint=1750, gas_sg=1.3)
+
+
+def test_solubility_negative_abs_pressure_raises() -> None:
+    # Tripwire for the real pabs<=0 guard that replaced the dead np.errstate
+    # (which is a no-op on Python-float math): a negative absolute pressure must
+    # raise, not silently return a complex.
+    with pytest.raises(ValueError):
+        BlackOil.solubility_kartoatmodjo(
+            press=-20.0, temp=120.0, oil_api=22.0, gas_sg=0.65
+        )
 
 
 if __name__ == "__main__":

@@ -215,6 +215,13 @@ class NetworkOptimizer:
         self.optimization_results: Optional[list[OptimizationResult]] = None
         self.calibration_factors: dict[str, float] = {}
 
+        # Drop accounting, filled by optimization_algorithms for the UI:
+        # configs excluded by the marginal-watercut gate (well -> count), wells
+        # whose EVERY config was excluded, and MCKP's no-semi-finalist skips.
+        self.mwc_excluded: dict[str, int] = {}
+        self.mwc_excluded_wells: list[str] = []
+        self.mckp_skipped: list[str] = []
+
     def set_calibration(self, calibration: dict) -> None:
         """Store calibration factors from CalibrationResult objects.
 
@@ -613,9 +620,7 @@ def _simulate_single_well(
     # Per-well calibration overrides (set by the pre-calibration step in the
     # workflow). When unset, fall back to the field-level PF pressure and
     # BatchPump's library default friction coefs.
-    ppf_for_well = (
-        well.ppf_surf_well if well.ppf_surf_well is not None else pf_pressure
-    )
+    ppf_for_well = well.ppf_surf_well if well.ppf_surf_well is not None else pf_pressure
     jp_kwargs = {}
     if well.knz_well is not None:
         jp_kwargs["knz"] = well.knz_well
@@ -712,6 +717,107 @@ def _load_well_profile(
     return well_profile
 
 
+def reconcile_wells(optimizer: "NetworkOptimizer", results) -> pd.DataFrame:
+    """Per-well accounting across the pipeline: configured → simulated →
+    allocated — so a well can never silently vanish from a pad/field plan.
+
+    Drops happen at four uncoordinated layers (failed sweep, marginal-WC gate,
+    MCKP's no-semi skip, MILP's implicit shut-in under the budget); this rolls
+    them into one table the UI can always show. (P0-5 / B-1 in
+    docs/code_review_2026-07-01.md.)
+
+    Args:
+        optimizer: NetworkOptimizer after run_all_batch_simulations. Pass the
+            optimize() output as ``results`` — or [] for a pre-optimize view.
+        results: list[OptimizationResult] or [].
+
+    Returns:
+        DataFrame with one row per configured well — Well / Status /
+        Configs OK / Configs Failed / Detail — problem rows first. Status is
+        one of: allocated, simulated (pre-optimize), failed simulation,
+        not simulated, above marginal WC, no semi-finalists, not allocated.
+    """
+    allocated = {r.well_name for r in (results or [])}
+    mwc_wells = set(getattr(optimizer, "mwc_excluded_wells", []) or [])
+    mckp_skipped = set(getattr(optimizer, "mckp_skipped", []) or [])
+
+    rows = []
+    for well in optimizer.wells:
+        wn = well.well_name
+        bp = optimizer.batch_results.get(wn)
+        if bp is None:
+            rows.append(
+                {
+                    "Well": wn,
+                    "Status": "not simulated",
+                    "Configs OK": 0,
+                    "Configs Failed": 0,
+                    "Detail": "no batch results — the simulation never ran",
+                }
+            )
+            continue
+        df = bp.df
+        ok = int(df["qoil_std"].notna().sum()) if "qoil_std" in df.columns else 0
+        failed = int(len(df)) - ok
+        detail = ""
+        if failed and "error" in df.columns and "qoil_std" in df.columns:
+            errs = [
+                e
+                for e in df.loc[df["qoil_std"].isna(), "error"].astype(str)
+                if e and e not in ("nan", "None")
+            ]
+            if errs:
+                detail = f"first error: {errs[0][:120]}"
+
+        if wn in allocated:
+            status = "allocated"
+        elif ok == 0:
+            status = "failed simulation"
+            detail = detail or "every pump combination failed to converge"
+        elif wn in mwc_wells:
+            status = "above marginal WC"
+            n = (getattr(optimizer, "mwc_excluded", {}) or {}).get(wn, 0)
+            detail = f"all {n} viable config(s) above the marginal-WC threshold"
+        elif wn in mckp_skipped:
+            status = "no semi-finalists"
+            detail = detail or "no Pareto semi-finalists (MCKP searches only those)"
+        elif results:
+            status = "not allocated"
+            detail = (
+                "solver left the well out under the water budget (implicit shut-in)"
+            )
+        else:
+            status = "simulated"
+        rows.append(
+            {
+                "Well": wn,
+                "Status": status,
+                "Configs OK": ok,
+                "Configs Failed": failed,
+                "Detail": detail,
+            }
+        )
+
+    out = pd.DataFrame(
+        rows, columns=["Well", "Status", "Configs OK", "Configs Failed", "Detail"]
+    )
+    order = {
+        "failed simulation": 0,
+        "not simulated": 1,
+        "above marginal WC": 2,
+        "no semi-finalists": 3,
+        "not allocated": 4,
+        "simulated": 5,
+        "allocated": 6,
+    }
+    out["_order"] = out["Status"].map(order).fillna(9)
+    return (
+        out.sort_values(["_order", "Well"])
+        .drop(columns="_order")
+        .reset_index(drop=True)
+    )
+
+
 def load_jp_chars(jp_chars_path: Optional[str] = None) -> dict:
     """Load jet pump characteristics database.
 
@@ -733,7 +839,9 @@ def load_jp_chars(jp_chars_path: Optional[str] = None) -> dict:
             if not df.empty:
                 return df.set_index("Well").to_dict("index")
         except Exception as e:
-            print(f"Warning: Databricks well-props fetch failed ({e}); falling back to jp_chars.csv")
+            print(
+                f"Warning: Databricks well-props fetch failed ({e}); falling back to jp_chars.csv"
+            )
 
         current_dir = os.path.dirname(os.path.abspath(__file__))
         jp_chars_path = os.path.join(current_dir, "..", "jp_data", "jp_chars.csv")
@@ -744,6 +852,41 @@ def load_jp_chars(jp_chars_path: Optional[str] = None) -> dict:
     except FileNotFoundError:
         print(f"Warning: jp_chars.csv not found at {jp_chars_path}")
         return {}
+
+
+def _first_valid(*values, default=None):
+    """First value that is neither None nor NaN, else ``default``.
+
+    NaN-safe replacement for ``a or b`` fallback chains: NaN is *truthy*, so
+    ``cfg.get("out_dia") or 4.5`` kept a Databricks null instead of falling
+    back — the NaN survived WellConfig, failed every pump combo, and the well
+    silently vanished from the optimizer (P0-4, docs/code_review_2026-07-01.md).
+    """
+    for v in values:
+        if v is None:
+            continue
+        try:
+            if pd.isna(v):
+                continue
+        except (TypeError, ValueError):
+            pass
+        return v
+    return default
+
+
+# Plausible physical ranges for the WellConfig fields the library does not
+# validate itself. NaN fails every comparison, so a null that slipped past the
+# fallbacks is caught here with a named well instead of an all-NaN sweep.
+_LOAD_FIELD_BOUNDS = (
+    ("tubing_od", 1.0, 20.0),
+    ("tubing_thickness", 0.05, 2.0),
+    ("casing_od", 2.0, 30.0),
+    ("casing_thickness", 0.05, 2.0),
+    ("form_gor", 0.0, 50000.0),
+    ("surf_pres", 0.0, 5000.0),
+    ("qwf", 1.0, 100000.0),
+    ("pwf", 1.0, 10000.0),
+)
 
 
 def load_wells_from_dataframe(
@@ -790,81 +933,117 @@ def load_wells_from_dataframe(
                 if col != "Well" and col != "comments" and pd.notna(row[col]):
                     base_config[col] = row[col]
 
-            # Map database fields to WellConfig parameters with proper defaults
-            # Check for required fields first
-            if "res_pres" not in base_config:
+            # Map database fields to WellConfig parameters. All fallbacks go
+            # through _first_valid so a Databricks null (NaN) falls back to
+            # the default instead of riding through as NaN.
+            res_pres = _first_valid(base_config.get("res_pres"))
+            if res_pres is None:
                 raise ValueError(
-                    f"res_pres is required but not found in database or DataFrame"
+                    "res_pres is required but missing/null in database and DataFrame"
                 )
-            if "JP_TVD" not in base_config and "jpump_tvd" not in base_config:
+            jp_tvd = _first_valid(
+                base_config.get("JP_TVD"), base_config.get("jpump_tvd")
+            )
+            if jp_tvd is None:
                 raise ValueError(
-                    f"JP_TVD is required but not found in database or DataFrame"
+                    "JP_TVD is required but missing/null in database and DataFrame"
                 )
+
+            def _opt(key):
+                """Optional PVT override: null -> None (field_model preset)."""
+                v = _first_valid(base_config.get(key))
+                return float(v) if v is not None else None
 
             config_params = {
                 "well_name": well_name,
-                "res_pres": float(base_config["res_pres"]),
-                "form_temp": float(base_config.get("form_temp", 70)),
-                "jpump_tvd": float(
-                    base_config.get("JP_TVD") or base_config.get("jpump_tvd", 4000)
+                "res_pres": float(res_pres),
+                "form_temp": float(
+                    _first_valid(base_config.get("form_temp"), default=70)
                 ),
+                "jpump_tvd": float(jp_tvd),
                 "jpump_md": float(
-                    base_config.get("JP_MD")
-                    or base_config.get("JP_TVD")
-                    or base_config.get("jpump_tvd", 4000)
+                    _first_valid(base_config.get("JP_MD"), default=jp_tvd)
                 ),
                 "tubing_od": float(
-                    base_config.get("out_dia") or base_config.get("tubing_od", 4.5)
+                    _first_valid(
+                        base_config.get("out_dia"),
+                        base_config.get("tubing_od"),
+                        default=4.5,
+                    )
                 ),
                 "tubing_thickness": float(
-                    base_config.get("thick")
-                    or base_config.get("tubing_thickness", 0.271)
+                    _first_valid(
+                        base_config.get("thick"),
+                        base_config.get("tubing_thickness"),
+                        default=0.271,
+                    )
                 ),
-                "casing_od": float(base_config.get("casing_od", 6.875)),
+                "casing_od": float(
+                    _first_valid(base_config.get("casing_od"), default=6.875)
+                ),
                 "casing_thickness": float(
-                    base_config.get("casing_thick")
-                    or base_config.get("casing_thickness", 0.5)
+                    _first_valid(
+                        base_config.get("casing_thick"),
+                        base_config.get("casing_thickness"),
+                        default=0.5,
+                    )
                 ),
-                "form_wc": float(base_config.get("form_wc", 0.5)),
-                "form_gor": float(base_config.get("form_gor", 250)),
+                "form_wc": float(_first_valid(base_config.get("form_wc"), default=0.5)),
+                "form_gor": float(
+                    _first_valid(base_config.get("form_gor"), default=250)
+                ),
+                # A null is_sch must fall to the default, not classify as Kuparuk.
                 "field_model": (
                     "Schrader"
-                    if base_config.get(
-                        "is_sch", base_config.get("field_model", "Schrader")
+                    if _first_valid(
+                        base_config.get("is_sch"),
+                        base_config.get("field_model"),
+                        default="Schrader",
                     )
                     in [True, "TRUE", "True", "Schrader"]
                     else "Kuparuk"
                 ),
-                "surf_pres": float(base_config.get("surf_pres", 210)),
-                "qwf": float(
-                    base_config.get("qwf_blpd")
-                    or base_config.get("qwf_bopd")
-                    or base_config.get("qwf", 750)
+                "surf_pres": float(
+                    _first_valid(base_config.get("surf_pres"), default=210)
                 ),
-                "pwf": float(base_config.get("pwf", 500)),
+                "qwf": float(
+                    _first_valid(
+                        base_config.get("qwf_blpd"),
+                        base_config.get("qwf_bopd"),
+                        base_config.get("qwf"),
+                        default=750,
+                    )
+                ),
+                "pwf": float(_first_valid(base_config.get("pwf"), default=500)),
                 # PVT overrides from Databricks vw_prop_resvr (None falls back
                 # to field_model preset in create_pvt_components)
-                "oil_api": (
-                    float(base_config["oil_api"])
-                    if base_config.get("oil_api") is not None
-                    else None
-                ),
-                "gas_sg": (
-                    float(base_config["gas_sg"])
-                    if base_config.get("gas_sg") is not None
-                    else None
-                ),
-                "wat_sg": (
-                    float(base_config["wat_sg"])
-                    if base_config.get("wat_sg") is not None
-                    else None
-                ),
-                "bubble_point": (
-                    float(base_config["bubble_point"])
-                    if base_config.get("bubble_point") is not None
-                    else None
-                ),
+                "oil_api": _opt("oil_api"),
+                "gas_sg": _opt("gas_sg"),
+                "wat_sg": _opt("wat_sg"),
+                "bubble_point": _opt("bubble_point"),
             }
+
+            # Physical sanity the library doesn't check — fail at load time
+            # with a named well, not as an all-NaN sweep silently dropped by
+            # the optimizer.
+            for fld, lo, hi in _LOAD_FIELD_BOUNDS:
+                v = config_params[fld]
+                if not (lo <= v <= hi):  # False for NaN too
+                    raise ValueError(
+                        f"{fld}={v} is outside the plausible range [{lo}, {hi}]"
+                    )
+            if config_params["tubing_od"] >= config_params["casing_od"]:
+                raise ValueError(
+                    f"tubing_od={config_params['tubing_od']} must be smaller than "
+                    f"casing_od={config_params['casing_od']}"
+                )
+            if config_params["pwf"] >= config_params["res_pres"]:
+                raise ValueError(
+                    f"pwf={config_params['pwf']:.0f} must be below "
+                    f"res_pres={config_params['res_pres']:.0f} — a degenerate IPR "
+                    "would fail every pump combo and the well would silently "
+                    "drop out of the optimization"
+                )
 
             # Create WellConfig (validation happens in __post_init__)
             config = WellConfig(**config_params)

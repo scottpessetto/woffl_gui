@@ -284,6 +284,8 @@ def _build_ipr_figure(
         plot_points is not None
         and not plot_points.empty
         and "well" in plot_points.columns
+        and "BHP" in plot_points.columns
+        and "WtTotalFluid" in plot_points.columns
     ):
         scatter_df = plot_points[plot_points["well"] == params.selected_well].copy()
         scatter_df = scatter_df.dropna(subset=["BHP", "WtTotalFluid"])

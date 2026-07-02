@@ -98,9 +98,18 @@ CSV_COLUMNS = (
     + _WELLCONFIG_FLOAT_FIELDS
     + (OIL_RATE_FIELD,)
     + _OPTIONAL_FLOAT_FIELDS
-    + ("field_model", "review_nozzle", "review_throat",
-       "ipr_source", "bhp_source", "gauge_note",
-       "is_hypothetical", "reviewed", "offline", "notes")
+    + (
+        "field_model",
+        "review_nozzle",
+        "review_throat",
+        "ipr_source",
+        "bhp_source",
+        "gauge_note",
+        "is_hypothetical",
+        "reviewed",
+        "offline",
+        "notes",
+    )
 )
 
 # WellConfig hard validation bounds (mirror network_optimizer.WellConfig.__post_init__)
@@ -112,10 +121,13 @@ _WELLCONFIG_BOUNDS = {
     "form_wc": (0.0, 1.0),
 }
 
-# Guard against div-by-zero when WC -> 1.0 (a ~100% water well produces no oil
-# and would never be an optimization candidate, but the snapshot must not blow
-# up). Caps the oil->liquid blow-up at 100x.
-_MIN_OIL_FRACTION = 0.01
+# The oil optimizer converts qwf (liquid) back to oil via oil = qwf * (1 - wc);
+# above this water cut the round trip degenerates (at wc=1.0 the well's oil is
+# identically zero and every config NaNs — the well then LOOKS "optimizer shut
+# in" when really it was never modelable). Such wells must be saved offline
+# (dewatering) instead of silently corrupting the plan. See P0-2 in
+# docs/code_review_2026-07-01.md (the S-03 bug).
+MAX_MODELABLE_WC = 0.99
 
 
 # ---------------------------------------------------------------------------
@@ -232,9 +244,25 @@ def snapshot_from_params(
         raise ValueError(f"bhp_source must be one of {BHP_SOURCES}, got {bhp_source!r}")
 
     wc = float(params.form_wc)
-    oil_fraction = max(1.0 - wc, _MIN_OIL_FRACTION)
     qwf_oil = float(params.qwf)
-    qwf_liquid = qwf_oil / oil_fraction  # OIL (BOPD) -> TOTAL LIQUID (BLPD)
+    if wc > MAX_MODELABLE_WC:
+        if not offline:
+            raise ValueError(
+                f"{params.selected_well}: water cut {wc:.0%} is above the "
+                f"{MAX_MODELABLE_WC:.0%} the oil optimizer can model — its oil "
+                "rate degenerates to zero and the well would falsely show as "
+                "'optimizer shut in'. Save it as Offline (dewatering) to keep it "
+                "accounted for on the pad, or lower the water cut."
+            )
+        # Offline dewatering well: in water-pump-mode reviews the sidebar qwf IS
+        # the water/total rate, so carry it as the liquid rate (oil ~ 0). Never
+        # fed to the optimizer (active_entries filters offline).
+        qwf_liquid = qwf_oil
+    else:
+        # OIL (BOPD) -> TOTAL LIQUID (BLPD). Exact inverse of the optimizer's
+        # oil = qwf * (1 - wc), so the engineer's reviewed oil rate survives the
+        # round trip bit-for-bit.
+        qwf_liquid = qwf_oil / (1.0 - wc)
 
     return {
         "well_name": params.selected_well,
@@ -294,6 +322,14 @@ def to_well_config(entry: dict) -> WellConfig:
     Float fields with hard library bounds are clamped so a slightly-out-of-range
     reviewed value (or an edited CSV) can't trip ``WellConfig.__post_init__``.
     """
+    wc_val = float(entry["form_wc"])
+    if wc_val > MAX_MODELABLE_WC and not entry.get("offline"):
+        raise ValueError(
+            f"{entry.get('well_name', '?')}: water cut {wc_val:.0%} exceeds the "
+            f"{MAX_MODELABLE_WC:.0%} the oil optimizer can model — mark the well "
+            "offline (dewatering) or lower the water cut."
+        )
+
     clamped = {}
     for fld in _WELLCONFIG_FLOAT_FIELDS:
         val = float(entry[fld])
@@ -340,6 +376,89 @@ def active_entries(store: dict[str, dict]) -> dict[str, dict]:
     return {k: v for k, v in store.items() if not v.get("offline")}
 
 
+def validate_store(store: dict[str, dict]) -> dict[str, list[str]]:
+    """Per-well issues for a loaded/edited store, rendered after a CSV upload
+    so holes can't silently become plausible defaults (P0-10): a missing
+    res_pres used to coerce to 0.0 and then clamp to 400 psi in
+    ``to_well_config`` — the run proceeded on garbage with no warning.
+    """
+    issues: dict[str, list[str]] = {}
+
+    def add(wn: str, msg: str) -> None:
+        issues.setdefault(wn, []).append(msg)
+
+    for wn, e in store.items():
+        wc = float(e.get("form_wc") or 0.0)
+        for fld, (lo, hi) in _WELLCONFIG_BOUNDS.items():
+            if fld == "form_wc":
+                continue
+            v = float(e.get(fld) or 0.0)
+            if not (lo <= v <= hi):
+                add(
+                    wn,
+                    f"{fld}={v:g} outside [{lo:g}, {hi:g}] — would be "
+                    "silently clamped at run time",
+                )
+        for fld in ("tubing_od", "tubing_thickness", "casing_od", "casing_thickness"):
+            if float(e.get(fld) or 0.0) <= 0:
+                add(wn, f"{fld} is missing/zero")
+        qwf = float(e.get("qwf") or 0.0)
+        pwf = float(e.get("pwf") or 0.0)
+        rp = float(e.get("res_pres") or 0.0)
+        if qwf <= 0:
+            add(wn, "qwf (total liquid) is missing/zero")
+        if pwf <= 0:
+            add(wn, "pwf is missing/zero")
+        elif rp and pwf >= rp:
+            add(
+                wn,
+                f"pwf={pwf:g} ≥ res_pres={rp:g} (degenerate IPR — the well "
+                "would fail every pump combo)",
+            )
+        if wc > MAX_MODELABLE_WC and not e.get("offline"):
+            add(
+                wn,
+                f"water cut {wc:.0%} is above the modelable "
+                f"{MAX_MODELABLE_WC:.0%} — mark the well offline (dewatering)",
+            )
+        oil = e.get(OIL_RATE_FIELD)
+        if oil is not None and qwf > 0 and 0 < wc <= MAX_MODELABLE_WC:
+            expected = float(oil) / (1.0 - wc)
+            if expected > 0 and abs(qwf - expected) / expected > 0.02:
+                add(
+                    wn,
+                    f"qwf={qwf:g} inconsistent with oil={float(oil):g} at "
+                    f"WC {wc:.2f} (expected ≈{expected:.0f}) — was the WC "
+                    "edited without re-deriving qwf?",
+                )
+    return issues
+
+
+def store_signature(store: dict[str, dict]) -> tuple:
+    """Order-independent signature of the optimizer-relevant store state.
+
+    Stamped into a run's meta so Results can detect that wells were added,
+    edited, or toggled online/offline AFTER the run — without it, a well
+    added post-run rendered as "Optimizer shut in" (P0-3). Only physical /
+    calibration fields participate; notes, provenance, and the reviewed pump
+    label don't change the optimization.
+    """
+    fields = _WELLCONFIG_FLOAT_FIELDS + _OPTIONAL_FLOAT_FIELDS + ("field_model",)
+
+    def _norm(v):
+        if v is None:
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return str(v)
+        return None if f != f else round(f, 6)
+
+    return tuple(
+        (wn,) + tuple(_norm(store[wn].get(f)) for f in fields) for wn in sorted(store)
+    )
+
+
 # ---------------------------------------------------------------------------
 # CSV round-trip
 # ---------------------------------------------------------------------------
@@ -370,7 +489,10 @@ def dataframe_to_store(df: pd.DataFrame) -> dict[str, dict]:
         entry[OIL_RATE_FIELD] = _opt_float(row.get(OIL_RATE_FIELD))
         for fld in _OPTIONAL_FLOAT_FIELDS:
             entry[fld] = _opt_float(row.get(fld))
-        entry["field_model"] = _str(row.get("field_model"), "Schrader") or "Schrader"
+        # Normalize case so a hand-edited "schrader"/"KUPARUK" can't trip
+        # WellConfig.__post_init__ at run time.
+        fm = (_str(row.get("field_model"), "Schrader") or "Schrader").strip().title()
+        entry["field_model"] = fm if fm in ("Schrader", "Kuparuk") else "Schrader"
         entry["review_nozzle"] = _nozzle_str(row.get("review_nozzle"))
         entry["review_throat"] = _str(row.get("review_throat")).strip()
         entry["ipr_source"] = _str(row.get("ipr_source"), "vogel") or "vogel"

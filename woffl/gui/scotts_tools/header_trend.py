@@ -114,7 +114,10 @@ def fetch_bhp_tag_map() -> dict[tuple[str, int], dict]:
         except (TypeError, ValueError):
             continue
         padnum = r["pad_number"]
-        whp = f"MPU_PI_{int(padnum)}2{wellnum}" if pd.notna(padnum) else None
+        # Use the int well number (wellnum is known int-convertible here — see the
+        # key above). A leading-zero string (e.g. "08") would otherwise build
+        # MPU_PI_<pad>208 instead of ...28 and the WHP tag would never resolve.
+        whp = f"MPU_PI_{int(padnum)}2{int(wellnum)}" if pd.notna(padnum) else None
         out[key] = {
             "bhp_esp": _clean_tag(r["bhp_esp"]),
             "bhp_other": _clean_tag(r["bhp_other"]),

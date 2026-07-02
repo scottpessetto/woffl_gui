@@ -71,7 +71,7 @@ def sensitivity_analysis(
     optimizer: "NetworkOptimizer",
     power_fluid_range: tuple[float, float],
     num_points: int = 10,
-    method: str = "greedy",
+    method: str = "milp",
 ) -> pd.DataFrame:
     """Run sensitivity analysis on power fluid availability
 
@@ -96,41 +96,45 @@ def sensitivity_analysis(
     min_pf, max_pf = power_fluid_range
     pf_levels = np.linspace(min_pf, max_pf, num_points)
 
-    # Store original constraint
+    # Store original constraint. The loop mutates optimizer.power_fluid in place,
+    # so restore it in a finally — otherwise an optimize() failure (bad method,
+    # infeasible low-PF level) would leave the optimizer permanently pinned to a
+    # sweep value, silently corrupting any later optimization on this instance.
     original_constraint = optimizer.power_fluid
 
     results = []
-    for pf_level in pf_levels:
-        # Update power fluid constraint
-        optimizer.power_fluid = PowerFluidConstraint(
-            total_rate=pf_level,
-            pressure=original_constraint.pressure,
-            rho_pf=original_constraint.rho_pf,
-        )
+    try:
+        for pf_level in pf_levels:
+            # Update power fluid constraint
+            optimizer.power_fluid = PowerFluidConstraint(
+                total_rate=pf_level,
+                pressure=original_constraint.pressure,
+                rho_pf=original_constraint.rho_pf,
+            )
 
-        # Run optimization at this power fluid level
-        opt_results = optimize(optimizer, method=method)
+            # Run optimization at this power fluid level
+            opt_results = optimize(optimizer, method=method)
 
-        # Calculate metrics
-        total_oil = sum(r.predicted_oil_rate for r in opt_results)
-        total_water = sum(r.predicted_total_water for r in opt_results)
-        total_pf_used = sum(r.allocated_power_fluid for r in opt_results)
-        utilization = total_pf_used / pf_level if pf_level > 0 else 0
+            # Calculate metrics
+            total_oil = sum(r.predicted_oil_rate for r in opt_results)
+            total_water = sum(r.predicted_total_water for r in opt_results)
+            total_pf_used = sum(r.allocated_power_fluid for r in opt_results)
+            utilization = total_pf_used / pf_level if pf_level > 0 else 0
 
-        results.append(
-            {
-                "power_fluid_available": pf_level,
-                "total_oil_rate": total_oil,
-                "total_water_rate": total_water,
-                "power_fluid_used": total_pf_used,
-                "num_wells": len(opt_results),
-                "utilization": utilization,
-                "oil_per_pf": total_oil / total_pf_used if total_pf_used > 0 else 0,
-            }
-        )
-
-    # Restore original constraint
-    optimizer.power_fluid = original_constraint
+            results.append(
+                {
+                    "power_fluid_available": pf_level,
+                    "total_oil_rate": total_oil,
+                    "total_water_rate": total_water,
+                    "power_fluid_used": total_pf_used,
+                    "num_wells": len(opt_results),
+                    "utilization": utilization,
+                    "oil_per_pf": total_oil / total_pf_used if total_pf_used > 0 else 0,
+                }
+            )
+    finally:
+        # Restore original constraint
+        optimizer.power_fluid = original_constraint
 
     return pd.DataFrame(results)
 

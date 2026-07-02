@@ -1092,8 +1092,12 @@ def render_tab(
             # PF mismatch is the foundational check — if the sidebar PF pressure
             # doesn't match operating conditions, friction calibration will fit
             # nonsense ken values to compensate. Gate calibration on this.
-            # Pull the test date so the warning + quickfix can show it.
-            cal_inputs = build_calibration_inputs(params, wellbore, well_profile)
+            # Pull the test date so the warning + quickfix can show it. Anchor on
+            # the SELECTED comparison test (not most-recent) so the displayed date
+            # matches the lift rate the PF check / quickfix compares against.
+            cal_inputs = build_calibration_inputs(
+                params, wellbore, well_profile, selected_test_row=selected_test_row
+            )
             test_date_str = cal_inputs["test_date_str"] if cal_inputs else None
             pf_warning_shown, pf_blocked = render_pf_mismatch_warning(
                 qnz_bwpd,
@@ -1107,7 +1111,8 @@ def render_tab(
             # gating (cal button disabled) is governed by `pf_blocked` only.
             if pf_warning_shown:
                 render_pf_quickfix_widget(
-                    params, wellbore, well_profile, target_lift_wat=actuals["pf"]
+                    params, wellbore, well_profile, target_lift_wat=actuals["pf"],
+                    selected_test_row=selected_test_row,
                 )
 
             # BHP red flag (only meaningful once PF is right — otherwise the BHP
@@ -1154,7 +1159,7 @@ def render_tab(
         if (
             _cal
             and params.selected_well != "Custom"
-            and st.session_state.get("sw_apply_calibration", False)
+            and st.session_state.get("sw_apply_calibration_persist", False)
         ):
             st.caption(
                 f"Rate-scalar calibration **applied** "
@@ -1938,29 +1943,34 @@ def _resolve_anchor_test_row(well_name: str, sorted_tests):
     """The well-test row the IPR anchor currently points to.
 
     Used to keep the 'Test to compare against' picker in sync with the IPR
-    anchor: reads the last-applied anchor signature (mode, date) and maps it to
-    a row in ``sorted_tests`` the same way ipr_anchor._resolve_anchor_row does
-    (median → nearest-median-BHP; specific → matching date; else most-recent).
-    Falls back to the most-recent test. ``sorted_tests`` must be WtDate-desc.
+    anchor. Delegates to the SAME resolver the anchor itself uses
+    (ipr_anchor._resolve_anchor_row, via compute_anchored_vogel) so the two can
+    never disagree: drop rows missing BHP *or* WtTotalFluid, then median
+    (nearest-median-BHP) / specific (matching date, else most-recent fallback) /
+    most-recent. Previously this re-derived the row with a BHP-only filter, a
+    date-desc tie-break, and no specific→recent fallback, so for median / BHP-less
+    'specific' anchors the comparison test could diverge from the test the IPR
+    was built on. ``sorted_tests`` must be WtDate-desc.
     """
     import pandas as pd
+
+    from woffl.gui.ipr_anchor import _resolve_anchor_row
 
     if sorted_tests is None or sorted_tests.empty:
         return None
     sig = st.session_state.get(f"sw_ipr_applied_sig_{well_name}")
     mode = sig[0] if sig else "recent"
     token = sig[1] if sig else None
-    if mode == "median" and "BHP" in sorted_tests.columns:
-        valid = sorted_tests[sorted_tests["BHP"].notna()]
-        if not valid.empty:
-            pos = int((valid["BHP"] - valid["BHP"].median()).abs().values.argmin())
-            return valid.iloc[pos]
-    elif mode == "specific" and token:
-        d = pd.to_datetime(sorted_tests["WtDate"], errors="coerce")
-        match = sorted_tests[d.dt.strftime("%Y-%m-%d") == token]
-        if not match.empty:
-            return match.iloc[0]
-    return sorted_tests.iloc[0]  # most-recent (WtDate-desc) / fallback
+
+    # Same fittable-row filter the anchor uses. If nothing is fittable the anchor
+    # falls back to its synthetic path, so compare against the most-recent test.
+    df = sorted_tests.dropna(subset=["BHP", "WtTotalFluid"]).copy()
+    if df.empty:
+        return sorted_tests.iloc[0]
+    df["__date"] = pd.to_datetime(df.get("WtDate"), errors="coerce")
+    anchor_date = token if mode == "specific" else None
+    row, _label = _resolve_anchor_row(df, mode, anchor_date)
+    return row.drop(labels="__date", errors="ignore")
 
 
 def _render_test_picker(well_name: str, test_df, *, synced: bool = False):
@@ -2067,7 +2077,7 @@ def _render_test_picker(well_name: str, test_df, *, synced: bool = False):
     # Clamp persisted selection to the current option list so a stale value
     # from a prior session doesn't crash the selectbox if the test cache
     # changed shape.
-    if st.session_state.get(key) not in options:
+    if st.session_state.get(key) not in range(len(sorted_tests)):
         st.session_state.pop(key, None)
 
     # The view switcher renders only the active view, so Streamlit drops this
@@ -2084,10 +2094,16 @@ def _render_test_picker(well_name: str, test_df, *, synced: bool = False):
                 default_idx = i
                 break
 
-    selected = st.selectbox(
+    # Select by POSITION (options are integer indices rendered via format_func),
+    # not by label: two tests can format to an identical label (same date + pump
+    # + rates, now possible with manual provisional tests), and the old
+    # options.index(selected) returned the FIRST match — operating on the wrong
+    # row when the second was chosen.
+    idx = st.selectbox(
         "Test to compare against",
-        options=options,
+        options=list(range(len(sorted_tests))),
         index=default_idx,
+        format_func=lambda i: options[i],
         key=key,
         help=(
             "Pick a well test. The hero-strip vs-actual deltas, the Model vs "
@@ -2097,7 +2113,6 @@ def _render_test_picker(well_name: str, test_df, *, synced: bool = False):
         ),
     )
 
-    idx = options.index(selected)
     row = sorted_tests.iloc[idx]
     # Persist the pick so a Batch/PF detour doesn't snap it back to most-recent.
     _d = row.get("WtDate")
@@ -2190,7 +2205,7 @@ def _render_ipr_anchor_control(well_name: str, test_df):
 
         date_opts = [_opt(r) for _, r in sorted_tests.iterrows()]
         anchor_key = f"_sw_ipr_anchor_pick_{well_name}"
-        if st.session_state.get(anchor_key) not in date_opts:
+        if st.session_state.get(anchor_key) not in range(len(sorted_tests)):
             st.session_state.pop(anchor_key, None)
 
         # Same restore for the specific-date picker: fall back to the applied
@@ -2205,14 +2220,17 @@ def _render_ipr_anchor_control(well_name: str, test_df):
                     break
 
         with col_pick:
-            picked = st.selectbox(
+            # Select by POSITION (format_func renders the label) so two tests
+            # with an identical label can't collapse onto the first via .index().
+            picked_idx = st.selectbox(
                 "Anchor test",
-                options=date_opts,
+                options=list(range(len(sorted_tests))),
                 index=default_date_idx,
+                format_func=lambda i: date_opts[i],
                 key=anchor_key,
                 help="The test the Vogel curve is forced through.",
             )
-        ad = sorted_tests.iloc[date_opts.index(picked)].get("WtDate")
+        ad = sorted_tests.iloc[picked_idx].get("WtDate")
         anchor_date = ad if pd.notna(ad) else None
 
     # Decouple toggle. By default the "Test to compare against" picker just below
@@ -2983,9 +3001,12 @@ def _render_model_vs_actual(
             # Rate-scalar apply toggle lives next to the metric it's derived
             # from. Toggling it scales the modeled rates everywhere else by
             # this factor (display-only — does not change BHP or PF rate).
-            st.checkbox(
+            # Persist via a non-widget shadow so a Solver->Batch->Solver detour
+            # (segmented_control GC drops this view's widget state) doesn't snap
+            # the toggle back off and silently un-apply the rate scalar.
+            apply_cal = st.checkbox(
                 f"Apply rate-scalar calibration (×{cal_result.calibration_factor:.2f})",
-                value=False,
+                value=st.session_state.get("sw_apply_calibration_persist", False),
                 key="sw_apply_calibration",
                 help=(
                     "After the solver runs, scales modeled oil and water by a "
@@ -2995,8 +3016,9 @@ def _render_model_vs_actual(
                     "calibration double-corrects; prefer one or the other."
                 ),
             )
+            st.session_state["sw_apply_calibration_persist"] = apply_cal
 
-            if st.session_state.get("sw_apply_calibration", False):
+            if apply_cal:
                 cal_oil = cal_result.model_oil * cal_result.calibration_factor
                 oil_delta_vs_actual = cal_oil - cal_result.actual_oil
                 cc1, cc2 = st.columns(2)
@@ -3026,6 +3048,7 @@ def _render_model_vs_actual(
         else:
             st.session_state.pop("sw_calibration_result", None)
             st.session_state.pop("sw_apply_calibration", None)
+            st.session_state.pop("sw_apply_calibration_persist", None)
 
         # Friction-coef calibration (BHP-target). Stored in session_state for
         # the top jetpump-solver panel to apply via checkbox.

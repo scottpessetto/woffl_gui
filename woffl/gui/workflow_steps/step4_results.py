@@ -29,9 +29,7 @@ def _render_pad_summary(pad: str, results) -> None:
     from woffl.gui.scotts_tools.well_sort import PUMP_LIMIT_PRESETS
 
     pad_limit = int(
-        st.session_state.get(
-            f"_pad_pump_limit_{pad}", PUMP_LIMIT_PRESETS.get(pad, 0)
-        )
+        st.session_state.get(f"_pad_pump_limit_{pad}", PUMP_LIMIT_PRESETS.get(pad, 0))
     )
 
     # Compare the stream the pad pump actually handles against its limit:
@@ -133,6 +131,34 @@ def render_step4():
     else:
         display_results = results
         cal_label = ""
+
+    # Well accounting — an engineer reading this plan must never have to
+    # notice a missing row himself (P0-5). Built by reconcile_wells at run
+    # time in Step 3, so it reflects THIS run.
+    recon = st.session_state.get("uw_reconciliation")
+    if recon is not None and len(recon):
+        n_conf = len(recon)
+        dropped = recon[recon["Status"] != "allocated"]
+        if len(dropped):
+            st.warning(
+                f"**Well accounting: {n_conf} configured → "
+                f"{n_conf - len(dropped)} in this plan.** Not in the plan: "
+                + ", ".join(f"{r.Well} ({r.Status})" for r in dropped.itertuples())
+            )
+            with st.expander("Why wells dropped out", expanded=False):
+                st.dataframe(dropped, use_container_width=True, hide_index=True)
+                st.caption(
+                    "**failed simulation** = no pump combo converged (check IPR/"
+                    "GOR/geometry) · **not allocated** = the solver's water "
+                    "budget bought more oil elsewhere (MILP may shut wells in) · "
+                    "**above marginal WC** = every config exceeded the Step-3 "
+                    "marginal-watercut threshold · **no semi-finalists** = MCKP "
+                    "searches only Pareto candidates."
+                )
+        else:
+            st.caption(
+                f"Well accounting: all {n_conf} configured wells are in this plan."
+            )
 
     # Pad-mode summary (only when Step 1 set Pad scope). Read through the
     # shadow-aware helper — the Step-1 widget keys are GC'd by the time the
@@ -340,9 +366,7 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None):
         # answers "what's the projected lift vs today" — but renamed and
         # given a tooltip so users know it assumes the calibration factor
         # transfers across pump configs (often the source of confusion).
-        row["Δ Cal vs Actual"] = (
-            cal_oil - actual if actual is not None else None
-        )
+        row["Δ Cal vs Actual"] = cal_oil - actual if actual is not None else None
         rows.append(row)
 
     comp_df = pd.DataFrame(rows)
@@ -357,15 +381,18 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None):
                 help="Pump installed today (from JP install history).",
             ),
             "Actual Oil": st.column_config.NumberColumn(
-                "Actual Oil (BOPD)", format="%.0f",
+                "Actual Oil (BOPD)",
+                format="%.0f",
                 help="Observed oil rate from the latest qualifying well test.",
             ),
             "Actual PF": st.column_config.NumberColumn(
-                "Actual PF (BWPD)", format="%.0f",
+                "Actual PF (BWPD)",
+                format="%.0f",
                 help="Observed PF (lift water) rate from the latest test.",
             ),
             "Current Model Oil": st.column_config.NumberColumn(
-                "Current Model Oil (BOPD)", format="%.0f",
+                "Current Model Oil (BOPD)",
+                format="%.0f",
                 help=(
                     "What the physics model predicts for the **current** "
                     "installed pump. Compare to Actual Oil to see the "
@@ -377,13 +404,13 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None):
                 help="Pump recommended by the optimizer (may equal Current).",
             ),
             "Opt Model Oil": st.column_config.NumberColumn(
-                "Opt Model Oil (BOPD)", format="%.0f",
-                help=(
-                    "Model-predicted oil rate at the optimizer's recommended pump."
-                ),
+                "Opt Model Oil (BOPD)",
+                format="%.0f",
+                help=("Model-predicted oil rate at the optimizer's recommended pump."),
             ),
             "Δ Model": st.column_config.NumberColumn(
-                "Δ Model (BOPD)", format="%+.0f",
+                "Δ Model (BOPD)",
+                format="%+.0f",
                 help=(
                     "Opt Model Oil − Current Model Oil. The **raw modeled "
                     "uplift** from switching to the recommended pump, "
@@ -393,7 +420,8 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None):
                 ),
             ),
             "Cal Oil": st.column_config.NumberColumn(
-                "Cal Oil (BOPD)", format="%.0f",
+                "Cal Oil (BOPD)",
+                format="%.0f",
                 help=(
                     "Opt Model Oil × calibration factor. **Caveat**: the "
                     "factor was derived from the current pump's model vs "
@@ -403,15 +431,18 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None):
                 ),
             ),
             "Cal Factor": st.column_config.NumberColumn(
-                "Cal Factor", format="%.2f",
+                "Cal Factor",
+                format="%.2f",
                 help="actual_oil / current_model_oil. Clamped to 0.3–2.0.",
             ),
             "Opt PF": st.column_config.NumberColumn(
-                "Opt PF (BWPD)", format="%.0f",
+                "Opt PF (BWPD)",
+                format="%.0f",
                 help="PF allocated by the optimizer to this well.",
             ),
             "Δ Cal vs Actual": st.column_config.NumberColumn(
-                "Δ Cal vs Actual (BOPD)", format="%+.0f",
+                "Δ Cal vs Actual (BOPD)",
+                format="%+.0f",
                 help=(
                     "Cal Oil − Actual Oil. **Projected** lift over today's "
                     "rate **assuming** the calibration factor transfers "
@@ -472,9 +503,7 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None):
         use_container_width=True,
         help="Builds a one-page-per-well IPR comparison and downloads it.",
     ):
-        from woffl.gui.workflow_steps.step2_review_ipr import (
-            _trigger_browser_download,
-        )
+        from woffl.gui.workflow_steps.step2_review_ipr import _trigger_browser_download
 
         with st.spinner("Building IPR comparison PDF..."):
             pdf_bytes = create_ipr_comparison_pdf(
@@ -486,6 +515,4 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None):
                 current_jp_map,
                 calibration=calibration_results,
             )
-        _trigger_browser_download(
-            pdf_bytes, "ipr_comparison.pdf", "application/pdf"
-        )
+        _trigger_browser_download(pdf_bytes, "ipr_comparison.pdf", "application/pdf")

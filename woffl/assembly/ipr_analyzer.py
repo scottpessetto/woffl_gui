@@ -7,6 +7,7 @@ Vogel coefficients suitable for the multi-well optimization template.
 Adapted from header_pressure_impact/process_data/calc_PI_RP.py and bhp_liq.py.
 """
 
+import logging
 import os
 from typing import Dict, List, Optional, Tuple
 
@@ -14,6 +15,8 @@ import numpy as np
 import pandas as pd
 
 from woffl.flow.inflow import InFlow
+
+logger = logging.getLogger(__name__)
 
 
 def _calculate_global_sse(
@@ -94,16 +97,24 @@ def _calculate_r_squared(
             return 0.0
         qmax = anchor_fluid / denom
 
+        # Accumulate residuals AND the total-sum-of-squares over the SAME subset
+        # (points below RP). Previously ss_res skipped bhp>=pres points while
+        # ss_tot/mean were over all points, biasing R² whenever any test sat at
+        # or above the fitted RP.
         ss_res = 0.0
+        used_fluid = []
         for j in range(len(bhp_values)):
             if bhp_values[j] >= pres:
                 continue
             ratio_j = bhp_values[j] / pres
             predicted = qmax * (1.0 - 0.2 * ratio_j - 0.8 * ratio_j**2)
             ss_res += (predicted - fluid_values[j]) ** 2
+            used_fluid.append(fluid_values[j])
 
-        mean_fluid = np.mean(fluid_values)
-        ss_tot = np.sum((fluid_values - mean_fluid) ** 2)
+        if len(used_fluid) < 2:
+            return 0.0
+        used_arr = np.asarray(used_fluid, dtype=float)
+        ss_tot = np.sum((used_arr - used_arr.mean()) ** 2)
 
         if ss_tot == 0:
             return 0.0
@@ -172,7 +183,9 @@ def estimate_reservoir_pressure(
         end_pres = max_pres
 
         if start_pres >= end_pres:
-            best_pres = int(max_bhp) + 50
+            # Clamp to the field cap — int(max_bhp)+50 could exceed max_pres
+            # (e.g. a Schrader well with max BHP ~1795 -> 1845 > the 1800 cap).
+            best_pres = min(int(max_bhp) + 50, max_pres)
         else:
             # Search with fine resolution near max_bhp, coarser further out
             for pres in range(start_pres, end_pres, 5):
@@ -180,6 +193,12 @@ def estimate_reservoir_pressure(
                 if sse < min_sse:
                     min_sse = sse
                     best_pres = pres
+
+        # If no candidate produced a finite SSE (e.g. degenerate all-<=0 fluid),
+        # best_pres is still None -> NaN Optimal_RP -> the well silently drops
+        # out downstream. Fall back to a sensible RP just above max BHP instead.
+        if best_pres is None:
+            best_pres = min(int(max_bhp) + 50, max_pres)
 
         optimal_pres[well] = best_pres
 
@@ -316,8 +335,12 @@ def compute_vogel_coefficients(
                     "R2": round(r_squared, 3),
                 }
             )
-        except Exception as e:
-            print(f"Error computing Vogel coefficients for {well}: {e}")
+        except (ValueError, ZeroDivisionError, KeyError, IndexError) as e:
+            # Expected per-well data problems (e.g. InFlow pwf>=pres, bad rows):
+            # skip this well but keep going. Unexpected exceptions (e.g. a column
+            # rename after an upstream sync) propagate so a SYSTEMIC failure is
+            # visible instead of silently degrading every well.
+            logger.warning("Skipping Vogel coefficients for %s: %s", well, e)
             continue
 
     return pd.DataFrame(coeffs_list)
@@ -365,8 +388,8 @@ def generate_ipr_curves(
                 "res_pres": res_p,
                 "qmax_recent": row["QMax_recent"],
             }
-        except Exception as e:
-            print(f"Error generating IPR curve for {well}: {e}")
+        except (ValueError, ZeroDivisionError, KeyError, IndexError) as e:
+            logger.warning("Skipping IPR curve for %s: %s", well, e)
             continue
 
     return ipr_data

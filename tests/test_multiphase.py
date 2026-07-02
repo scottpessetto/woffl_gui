@@ -62,6 +62,19 @@ def test_beggs_regime() -> None:
     assert calc_hpat == "intermittent"
 
 
+def test_beggs_l3_exponent_is_canonical() -> None:
+    """Tripwire for the L3 exponent library patch (upstream PR to kwellis/woffl).
+
+    The canonical Beggs-Brill L3 boundary is 0.10 * nslh**-1.4516. At nslh=0.5
+    that puts L3 at ~0.2735; the old typo -1.468 put it at ~0.2766. A Froude of
+    0.275 sits between them: with the canonical exponent froude > L3 -> the point
+    is 'intermittent'; with the typo froude <= L3 -> 'transition'. Goes red if
+    the exponent ever reverts to -1.468.
+    """
+    hpat, _ = tp.beggs_flow_pattern(0.5, 0.275)
+    assert hpat == "intermittent"
+
+
 def test_beggs_holdup() -> None:
     calc_ilh = tp.beggs_holdup_inc(
         book_nslh, book_NFr, book_Nlv, 90, book_hpat, book_tparm

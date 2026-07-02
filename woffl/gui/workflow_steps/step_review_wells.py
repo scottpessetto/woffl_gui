@@ -19,8 +19,13 @@ renders the review UI and maintains the store. ``store_for(pad)`` exposes it.
 import streamlit as st
 
 from woffl.gui import memory_gauge
+from woffl.gui.pad_helpers import recent_test_rates as _recent_test_rates
 from woffl.gui.sidebar import clamp_seed, render_sidebar
-from woffl.gui.utils import get_available_wells, get_well_tests_for_well, pad_from_mp_name
+from woffl.gui.utils import (
+    get_available_wells,
+    get_well_tests_for_well,
+    pad_from_mp_name,
+)
 from woffl.gui.workflow_steps import well_review_store as wrs
 
 _LAST_HYDRATED_KEY = "_sp_last_hydrated"  # which well we last pushed store->sidebar for
@@ -49,8 +54,7 @@ def _select_well(well_name: str) -> None:
 def _pad_real_wells(pad: str) -> list[str]:
     """All characterized wells on the pad (the 'account for every well' set)."""
     return sorted(
-        w for w in get_available_wells()
-        if w != "Custom" and pad_from_mp_name(w) == pad
+        w for w in get_available_wells() if w != "Custom" and pad_from_mp_name(w) == pad
     )
 
 
@@ -137,7 +141,11 @@ def _hydrate_sidebar_from_entry(entry: dict) -> None:
     for k in ("tubing_od", "tubing_thickness", "casing_od", "casing_thickness"):
         _set_sidebar(k, float(entry[k]), as_int=False)
 
-    for store_k, side_k in (("ken_well", "ken"), ("kth_well", "kth"), ("kdi_well", "kdi")):
+    for store_k, side_k in (
+        ("ken_well", "ken"),
+        ("kth_well", "kth"),
+        ("kdi_well", "kdi"),
+    ):
         if entry.get(store_k) is not None:
             _set_sidebar(side_k, float(entry[store_k]), as_int=False)
     if entry.get("ppf_surf_well") is not None:
@@ -198,7 +206,9 @@ def _render_progress(pad: str, real_wells: list[str]) -> None:
             ("⚫ " if store[w].get("offline") else "🔵 ") + f"{w} (hypo)" for w in hypo
         ]
         st.write("  ·  ".join(badges) if badges else "— none yet —")
-    st.caption("🟢 gauged BHP  ·  🟡 assumed/no-gauge  ·  🔵 hypothetical  ·  ⚫ offline (excluded)")
+    st.caption(
+        "🟢 gauged BHP  ·  🟡 assumed/no-gauge  ·  🔵 hypothetical  ·  ⚫ offline (excluded)"
+    )
 
 
 def _render_modeling_status(pad: str) -> None:
@@ -206,7 +216,9 @@ def _render_modeling_status(pad: str) -> None:
     store = store_for(pad)
     if not store:
         return
-    with st.expander("🔌 Modeling status — exclude pulled / offline wells", expanded=False):
+    with st.expander(
+        "🔌 Modeling status — exclude pulled / offline wells", expanded=False
+    ):
         st.caption(
             "Offline wells stay in the review set (accounted for) but are dropped "
             "from the optimization run. Toggle here without re-opening the Solver."
@@ -218,7 +230,8 @@ def _render_modeling_status(pad: str) -> None:
                 # straight back to the store each run so the badge + the run
                 # filter stay in sync.
                 store[w]["offline"] = st.checkbox(
-                    f"{w} offline", value=store[w].get("offline", False),
+                    f"{w} offline",
+                    value=store[w].get("offline", False),
                     key=f"sp_status_off_{pad}_{w}",
                 )
 
@@ -256,21 +269,26 @@ def _render_save_panel(params, real_wells: list[str], pad: str) -> None:
     c1, c2, c3 = st.columns([1.1, 1.1, 1.4])
     with c1:
         ipr_source = st.selectbox(
-            "IPR basis", options=list(wrs.IPR_SOURCES),
+            "IPR basis",
+            options=list(wrs.IPR_SOURCES),
             index=list(wrs.IPR_SOURCES).index(inferred_ipr),
             help="How the IPR anchor was established (auto-detected; override if needed).",
             key=f"sp_ipr_src_{well}",
         )
     with c2:
         bhp_source = st.selectbox(
-            "Match basis", options=list(wrs.BHP_SOURCES),
+            "Match basis",
+            options=list(wrs.BHP_SOURCES),
             index=0 if default_gauged else 1,
             help="'gauged' = a measured BHP backed the match; 'assumed' = no gauge, pwf is an estimate.",
             key=f"sp_bhp_src_{well}",
         )
     with c3:
-        notes = st.text_input("Note (optional)", key=f"sp_note_{well}",
-                              value=store.get(well, {}).get("notes", ""))
+        notes = st.text_input(
+            "Note (optional)",
+            key=f"sp_note_{well}",
+            value=store.get(well, {}).get("notes", ""),
+        )
 
     offline = st.checkbox(
         "🔌 Offline for this modeling (pulled / down — exclude from optimization)",
@@ -283,13 +301,24 @@ def _render_save_panel(params, real_wells: list[str], pad: str) -> None:
     jpump_md = params.well_data.get("JP_MD") if params.well_data else None
 
     btn_label = "💾 Update saved review" if already else "💾 Save & next well"
-    if st.button(btn_label, type="primary", use_container_width=True, key=f"sp_save_{well}"):
-        entry = wrs.snapshot_from_params(
-            params, ipr_source=ipr_source, bhp_source=bhp_source, offline=offline,
-            gauge_note=gauge_note,
-            jpump_md=float(jpump_md) if jpump_md is not None else None,
-            notes=notes,
-        )
+    if st.button(
+        btn_label, type="primary", use_container_width=True, key=f"sp_save_{well}"
+    ):
+        try:
+            entry = wrs.snapshot_from_params(
+                params,
+                ipr_source=ipr_source,
+                bhp_source=bhp_source,
+                offline=offline,
+                gauge_note=gauge_note,
+                jpump_md=float(jpump_md) if jpump_md is not None else None,
+                notes=notes,
+            )
+        except ValueError as e:
+            # e.g. WC above what the oil optimizer can model — don't save, tell
+            # the engineer exactly what to do instead.
+            st.error(str(e))
+            return jp_box, hero_box
         store[well] = entry
 
         # Advance to the next UNREVIEWED well after this one (sequential), wrapping
@@ -297,8 +326,12 @@ def _render_save_panel(params, real_wells: list[str], pad: str) -> None:
         # render_review_stage applies it right before the sidebar renders.
         if not already:
             i = real_wells.index(well) if well in real_wells else -1
-            after = [w for w in real_wells[i + 1:] if w not in store]
-            nxt = after[0] if after else next((w for w in real_wells if w not in store), None)
+            after = [w for w in real_wells[i + 1 :] if w not in store]
+            nxt = (
+                after[0]
+                if after
+                else next((w for w in real_wells if w not in store), None)
+            )
             if nxt:
                 st.session_state[f"sp_review_target_{pad}"] = nxt
         st.toast(f"Saved {well}", icon="✅")
@@ -321,38 +354,77 @@ def _render_hypothetical_form(pad: str) -> None:
         c1, c2, c3 = st.columns(3)
         with c1:
             name = st.text_input("Well name", value=f"MP{pad}-NEW", key="sp_hypo_name")
-            field_model = st.radio("Field model", ["Schrader", "Kuparuk"],
-                                   horizontal=True, key="sp_hypo_fm")
-            res_pres = st.number_input("Reservoir P (psi)", 400, 5000, 1800, 10, key="sp_hypo_resp")
+            field_model = st.radio(
+                "Field model",
+                ["Schrader", "Kuparuk"],
+                horizontal=True,
+                key="sp_hypo_fm",
+            )
+            res_pres = st.number_input(
+                "Reservoir P (psi)", 400, 5000, 1800, 10, key="sp_hypo_resp"
+            )
         with c2:
-            oil = st.number_input("Expected oil (BOPD)", 0, 6000, 400, 10, key="sp_hypo_oil")
-            pwf = st.number_input("Flowing BHP (psi)", 100, 2500, 900, 10, key="sp_hypo_pwf")
-            wc = st.number_input("Water cut", 0.0, 0.99, 0.5, 0.01, format="%.2f", key="sp_hypo_wc")
+            oil = st.number_input(
+                "Expected oil (BOPD)", 0, 6000, 400, 10, key="sp_hypo_oil"
+            )
+            pwf = st.number_input(
+                "Flowing BHP (psi)", 100, 2500, 900, 10, key="sp_hypo_pwf"
+            )
+            wc = st.number_input(
+                "Water cut", 0.0, 0.99, 0.5, 0.01, format="%.2f", key="sp_hypo_wc"
+            )
         with c3:
-            gor = st.number_input("GOR (scf/bbl)", 20, 10000, 250, 25, key="sp_hypo_gor")
-            temp = st.number_input("Form temp (°F)", 32, 350, 160, 1, key="sp_hypo_temp")
-            tvd = st.number_input("Jetpump TVD (ft)", 2500, 8000, 4200, 10, key="sp_hypo_tvd")
+            gor = st.number_input(
+                "GOR (scf/bbl)", 20, 10000, 250, 25, key="sp_hypo_gor"
+            )
+            temp = st.number_input(
+                "Form temp (°F)", 32, 350, 160, 1, key="sp_hypo_temp"
+            )
+            tvd = st.number_input(
+                "Jetpump TVD (ft)", 2500, 8000, 4200, 10, key="sp_hypo_tvd"
+            )
 
         if st.button("Add hypothetical well", key="sp_hypo_add"):
             name = name.strip()
             if not name:
                 st.warning("Enter a well name.")
                 return
-            oil_frac = max(1.0 - float(wc), wrs._MIN_OIL_FRACTION)
+            # The WC widget above caps at 0.99, so the exact conversion is safe.
+            oil_frac = 1.0 - float(wc)
             store_for(pad)[name] = {
                 "well_name": name,
-                "res_pres": float(res_pres), "form_temp": float(temp),
-                "jpump_tvd": float(tvd), "tubing_od": 4.5, "tubing_thickness": 0.5,
-                "casing_od": 6.875, "casing_thickness": 0.5,
-                "form_wc": float(wc), "form_gor": float(gor), "surf_pres": 210.0,
-                "qwf": float(oil) / oil_frac, "pwf": float(pwf),
+                "res_pres": float(res_pres),
+                "form_temp": float(temp),
+                "jpump_tvd": float(tvd),
+                "tubing_od": 4.5,
+                "tubing_thickness": 0.5,
+                "casing_od": 6.875,
+                "casing_thickness": 0.5,
+                "form_wc": float(wc),
+                "form_gor": float(gor),
+                "surf_pres": 210.0,
+                "qwf": float(oil) / oil_frac,
+                "pwf": float(pwf),
                 wrs.OIL_RATE_FIELD: float(oil),
-                "jpump_md": float(tvd), "oil_api": None, "gas_sg": None,
-                "wat_sg": None, "bubble_point": None, "ppf_surf_well": None,
-                "knz_well": None, "ken_well": None, "kth_well": None, "kdi_well": None,
-                "field_model": field_model, "review_nozzle": "", "review_throat": "",
-                "ipr_source": "hypothetical", "bhp_source": "assumed", "gauge_note": "",
-                "is_hypothetical": True, "offline": False, "reviewed": True,
+                "jpump_md": float(tvd),
+                "oil_api": None,
+                "gas_sg": None,
+                "wat_sg": None,
+                "bubble_point": None,
+                "ppf_surf_well": None,
+                "knz_well": None,
+                "ken_well": None,
+                "kth_well": None,
+                "kdi_well": None,
+                "field_model": field_model,
+                "review_nozzle": "",
+                "review_throat": "",
+                "ipr_source": "hypothetical",
+                "bhp_source": "assumed",
+                "gauge_note": "",
+                "is_hypothetical": True,
+                "offline": False,
+                "reviewed": True,
                 "notes": "hypothetical",
             }
             st.toast(f"Added hypothetical {name}", icon="🔵")
@@ -365,7 +437,9 @@ def _render_ipr_pdf_button(pad: str) -> None:
     store = store_for(pad)
     if not store:
         return
-    if st.button("⬇ Download IPRs-used PDF", use_container_width=True, key="sp_ipr_pdf"):
+    if st.button(
+        "⬇ Download IPRs-used PDF", use_container_width=True, key="sp_ipr_pdf"
+    ):
         import datetime as _dt
 
         import pandas as pd
@@ -389,32 +463,67 @@ def _render_ipr_pdf_button(pad: str) -> None:
 
         stamp = _dt.datetime.now().strftime("Generated %Y-%m-%d %H:%M")
         pdf_bytes = s_pad_ipr_report.build_ipr_pdf(pad, items, stamp)
-        autodownload(pdf_bytes, f"{pad}_pad_IPRs_used.pdf", "application/pdf", "sp_ipr_pdf_dl")
+        autodownload(
+            pdf_bytes, f"{pad}_pad_IPRs_used.pdf", "application/pdf", "sp_ipr_pdf_dl"
+        )
 
 
 def _render_csv_io(pad: str) -> None:
     store = store_for(pad)
     c1, c2 = st.columns(2)
     with c1:
-        if store and st.button("⬇ Download review CSV", use_container_width=True, key="sp_csv_dl"):
+        if store and st.button(
+            "⬇ Download review CSV", use_container_width=True, key=f"sp_csv_dl_{pad}"
+        ):
             from woffl.gui.components.download import autodownload
 
-            csv_bytes = wrs.store_to_dataframe(store).to_csv(index=False).encode("utf-8")
-            autodownload(csv_bytes, f"{pad}_pad_review.csv", "text/csv", "sp_csv_auto_dl")
+            csv_bytes = (
+                wrs.store_to_dataframe(store).to_csv(index=False).encode("utf-8")
+            )
+            autodownload(
+                csv_bytes, f"{pad}_pad_review.csv", "text/csv", f"sp_csv_auto_dl_{pad}"
+            )
     with c2:
-        up = st.file_uploader("⬆ Load review CSV", type=["csv"], key="sp_csv_up")
+        # Per-pad keys: this module backs the S/M/I pad pages, so a shared
+        # uploader key/sig let one pad's upload carry over to (or be skipped on)
+        # another pad when navigating between them.
+        up = st.file_uploader("⬆ Load review CSV", type=["csv"], key=f"sp_csv_up_{pad}")
         if up is not None:
             sig = (up.name, up.size)
-            if st.session_state.get("_sp_csv_sig") != sig:
+            if st.session_state.get(f"_sp_csv_sig_{pad}") != sig:
                 import pandas as pd
 
                 # dtype=str so pandas can't turn nozzle '10' into the float 10.0
                 # (which then stringifies to '10.0' and breaks NOZZLE_OPTIONS).
                 loaded = wrs.dataframe_to_store(pd.read_csv(up, dtype=str))
                 store.update(loaded)
-                st.session_state["_sp_csv_sig"] = sig
+                # Loud validation: CSV holes coerce to 0.0 and then clamp to
+                # plausible-looking defaults at run time — flag them per well
+                # NOW (persisted across the rerun below).
+                st.session_state[f"_sp_csv_issues_{pad}"] = wrs.validate_store(loaded)
+                # Drop the offline-checkbox widget state for the loaded wells so
+                # their value= re-seeds from the freshly loaded store. Otherwise
+                # the checkbox returns its STALE persisted widget value and the
+                # next _render_modeling_status pass writes it straight back over
+                # the loaded "offline" flag (silently reverting it).
+                for w in loaded:
+                    st.session_state.pop(f"sp_status_off_{pad}_{w}", None)
+                    st.session_state.pop(f"sp_offline_{w}", None)
+                st.session_state[f"_sp_csv_sig_{pad}"] = sig
                 st.success(f"Loaded {len(loaded)} well(s) from CSV.")
                 st.rerun()
+
+    issues = st.session_state.get(f"_sp_csv_issues_{pad}") or {}
+    if issues:
+        st.warning(
+            f"**{len(issues)} uploaded well(s) have problems** — fix them (re-open "
+            "in the Solver and re-save, or edit + re-upload the CSV) before running:"
+        )
+        for wn in sorted(issues):
+            st.write(f"- **{wn}**: " + "; ".join(issues[wn]))
+        if st.button("Dismiss", key=f"sp_csv_issues_dismiss_{pad}"):
+            st.session_state.pop(f"_sp_csv_issues_{pad}", None)
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -444,11 +553,11 @@ def _prefetch_pad_wells(pad: str, wells: list[str]) -> None:
         for w in wells:
             wd = None
             try:
-                wd = get_well_data(w)            # props (TVD / field / geometry)
+                wd = get_well_data(w)  # props (TVD / field / geometry)
             except Exception:
                 pass
             try:
-                get_well_tests_for_well(w)       # tests + gauge overlay + extended window
+                get_well_tests_for_well(w)  # tests + gauge overlay + extended window
             except Exception:
                 pass
             if wd:
@@ -509,9 +618,17 @@ def _batch_automatch_inputs(well: str, jp_hist, ppf_surf: float, rho_pf: float =
 
     recent = tests.sort_values("WtDate", ascending=False).iloc[0]
     bhp = recent.get("BHP")
-    bhp = float(bhp) if (bhp is not None and not pd.isna(bhp) and float(bhp) > 0) else None
+    bhp = (
+        float(bhp)
+        if (bhp is not None and not pd.isna(bhp) and float(bhp) > 0)
+        else None
+    )
     whp = recent.get("whp")
-    surf = float(whp) if (whp is not None and not pd.isna(whp) and float(whp) > 0) else 250.0
+    surf = (
+        float(whp)
+        if (whp is not None and not pd.isna(whp) and float(whp) > 0)
+        else 250.0
+    )
     tvd = int(wd.get("JP_TVD") or 4065)
     field = "schrader" if wd.get("is_sch", True) else "kuparuk"
     try:
@@ -522,28 +639,45 @@ def _batch_automatch_inputs(well: str, jp_hist, ppf_surf: float, rho_pf: float =
     except Exception:
         return None, None, "geometry/survey build failed"
     kwargs = dict(
-        oil_target=oil, pf_target=pf, pres=pres,
-        nozzle=str(cp["nozzle_no"]), throat=str(cp["throat_ratio"]),
-        surf_pres=surf, form_temp=float(wd.get("form_temp") or 120.0),
-        rho_pf=rho_pf, ppf_surf0=float(ppf_surf), wellbore=wellbore,
-        well_profile=wp, form_wc=wc, form_gor=gor, field_model=field,
-        bhp_target=bhp, pin_ppf=True,
+        oil_target=oil,
+        pf_target=pf,
+        pres=pres,
+        nozzle=str(cp["nozzle_no"]),
+        throat=str(cp["throat_ratio"]),
+        surf_pres=surf,
+        form_temp=float(wd.get("form_temp") or 120.0),
+        rho_pf=rho_pf,
+        ppf_surf0=float(ppf_surf),
+        wellbore=wellbore,
+        well_profile=wp,
+        form_wc=wc,
+        form_gor=gor,
+        field_model=field,
+        bhp_target=bhp,
+        pin_ppf=True,
     )
     # Raw scalars to rebuild a SimulationParams for "apply to store" (WellConfig
     # wants the capitalized field-model; the joint_match kwargs above keep the
     # lowercase the PVT helpers expect).
     raw = {
-        "nozzle_no": str(cp["nozzle_no"]), "area_ratio": str(cp["throat_ratio"]),
+        "nozzle_no": str(cp["nozzle_no"]),
+        "area_ratio": str(cp["throat_ratio"]),
         "jpump_direction": "reverse",
         "tubing_od": float(wd.get("out_dia") or 4.5),
         "tubing_thickness": float(wd.get("thick") or 0.5),
-        "casing_od": 6.875, "casing_thickness": 0.5,
-        "form_wc": float(wc), "form_gor": int(round(gor)),
+        "casing_od": 6.875,
+        "casing_thickness": 0.5,
+        "form_wc": float(wc),
+        "form_gor": int(round(gor)),
         "form_temp": int(round(float(wd.get("form_temp") or 120.0))),
         "field_model": "Schrader" if wd.get("is_sch", True) else "Kuparuk",
-        "oil_api": wd.get("oil_api"), "gas_sg": wd.get("gas_sg"),
-        "wat_sg": wd.get("wat_sg"), "bubble_point": wd.get("bubble_point"),
-        "surf_pres": int(round(surf)), "jpump_tvd": int(tvd), "has_bhp": bhp is not None,
+        "oil_api": wd.get("oil_api"),
+        "gas_sg": wd.get("gas_sg"),
+        "wat_sg": wd.get("wat_sg"),
+        "bubble_point": wd.get("bubble_point"),
+        "surf_pres": int(round(surf)),
+        "jpump_tvd": int(tvd),
+        "has_bhp": bhp is not None,
     }
     return kwargs, raw, None
 
@@ -553,8 +687,10 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
     PF pressure, fits the IPR to its recent-test oil, reports the PF residual."""
     from woffl.gui.joint_match import batch_match, batch_summary
 
-    with st.expander("🎯 Auto-match all wells (beta) — match the whole pad, then review",
-                     expanded=False):
+    with st.expander(
+        "🎯 Auto-match all wells (beta) — match the whole pad, then review",
+        expanded=False,
+    ):
         import pandas as pd
 
         st.caption(
@@ -564,10 +700,14 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
             "residual. Review the table, then open the ones that need attention."
         )
         pad_ppf = st.number_input(
-            "Pad PF header pressure (psi)", 800, 5500,
-            {"M": 3500}.get(pad, 3400), 50, key=f"batch_ppf_{pad}",
+            "Pad PF header pressure (psi)",
+            800,
+            5500,
+            {"M": 3500}.get(pad, 3400),
+            50,
+            key=f"batch_ppf_{pad}",
             help="Seeds each well's held PF below. Edit a well's PF to override, or "
-                 "hit Reset to re-seed everything to this value.",
+            "hit Reset to re-seed everything to this value.",
         )
 
         # Stable selection frame (Well · Auto-match · PF psi). Rebuilt only when the
@@ -576,34 +716,56 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
         # read the return value. Default-offline wells start UNCHECKED.
         fkey = f"batch_sel_{pad}"
         if st.session_state.get(f"{fkey}_sig") != tuple(real_wells):
-            st.session_state[fkey] = pd.DataFrame([
-                {"Well": w, "Auto-match": not _is_default_offline(pad, w),
-                 "PF psi": int(pad_ppf)} for w in real_wells
-            ])
+            st.session_state[fkey] = pd.DataFrame(
+                [
+                    {
+                        "Well": w,
+                        "Auto-match": not _is_default_offline(pad, w),
+                        "PF psi": int(pad_ppf),
+                    }
+                    for w in real_wells
+                ]
+            )
             st.session_state[f"{fkey}_sig"] = tuple(real_wells)
 
         edited = st.data_editor(
-            st.session_state[fkey], key=f"{fkey}_editor", hide_index=True,
+            st.session_state[fkey],
+            key=f"{fkey}_editor",
+            hide_index=True,
             use_container_width=True,
             column_config={
                 "Well": st.column_config.TextColumn(disabled=True),
                 "Auto-match": st.column_config.CheckboxColumn(default=True),
                 "PF psi": st.column_config.NumberColumn(
-                    min_value=800, max_value=5500, step=50, format="%d",
-                    help="Held PF pressure for this well (defaults to the pad value)."),
+                    min_value=800,
+                    max_value=5500,
+                    step=50,
+                    format="%d",
+                    help="Held PF pressure for this well (defaults to the pad value).",
+                ),
             },
         )
 
         def _row_ppf(v):
             return float(v) if pd.notna(v) else float(pad_ppf)
 
-        sel = [(str(r["Well"]), _row_ppf(r["PF psi"]))
-               for _, r in edited.iterrows() if bool(r["Auto-match"])]
+        sel = [
+            (str(r["Well"]), _row_ppf(r["PF psi"]))
+            for _, r in edited.iterrows()
+            if bool(r["Auto-match"])
+        ]
 
         b1, b2 = st.columns([2, 1])
-        run = b1.button(f"🎯 Auto-match {len(sel)} selected well(s)", type="primary",
-                        key=f"batch_run_{pad}", disabled=not sel, use_container_width=True)
-        if b2.button("↻ Reset selection", key=f"batch_reset_{pad}", use_container_width=True):
+        run = b1.button(
+            f"🎯 Auto-match {len(sel)} selected well(s)",
+            type="primary",
+            key=f"batch_run_{pad}",
+            disabled=not sel,
+            use_container_width=True,
+        )
+        if b2.button(
+            "↻ Reset selection", key=f"batch_reset_{pad}", use_container_width=True
+        ):
             st.session_state.pop(fkey, None)
             st.session_state.pop(f"{fkey}_sig", None)
             st.session_state.pop(f"{fkey}_editor", None)
@@ -623,8 +785,10 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
                 else:
                     wells_kwargs.append((w, kw))
                     raw_by_well[w] = raw
-                prog.progress((i + 1) / max(len(sel), 1),
-                              text=f"Prepared {i + 1}/{len(sel)} wells…")
+                prog.progress(
+                    (i + 1) / max(len(sel), 1),
+                    text=f"Prepared {i + 1}/{len(sel)} wells…",
+                )
             with st.spinner(f"Matching {len(wells_kwargs)} wells…"):
                 rows = batch_match(wells_kwargs)
             prog.empty()
@@ -649,29 +813,41 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
             def _r(v):
                 return round(v, 0) if (v is not None and v == v) else None
 
-            df = pd.DataFrame([{
-                "Well": r.well, "Status": r.status,
-                "Oil err %": _r(r.oil_err_pct), "PF resid %": _r(r.pf_err_pct),
-                "Note": (r.diagnostic or "")[:90],
-            } for r in rows])
+            df = pd.DataFrame(
+                [
+                    {
+                        "Well": r.well,
+                        "Status": r.status,
+                        "Oil err %": _r(r.oil_err_pct),
+                        "PF resid %": _r(r.pf_err_pct),
+                        "Note": (r.diagnostic or "")[:90],
+                    }
+                    for r in rows
+                ]
+            )
             st.dataframe(df, use_container_width=True, hide_index=True)
             if skipped:
-                st.caption("Skipped: " + ", ".join(f"{w} ({why})" for w, why in skipped))
+                st.caption(
+                    "Skipped: " + ", ".join(f"{w} ({why})" for w, why in skipped)
+                )
 
             # Apply the matched wells (oil reproduced at the held PF) straight into
             # the review store, so they're saved without re-doing each by hand.
-            matched = [r for r in rows if r.status == "matched" and r.result is not None]
+            matched = [
+                r for r in rows if r.status == "matched" and r.result is not None
+            ]
             raw_by_well = st.session_state.get(f"batch_raw_{pad}", {})
             if matched and st.button(
                 f"💾 Apply {len(matched)} matched well(s) to the review store",
                 key=f"batch_apply_{pad}",
                 help="Saves each matched well's fitted IPR + friction (PF pressure held) "
-                     "as a reviewed entry. Open any in the Solver below to adjust.",
+                "as a reviewed entry. Open any in the Solver below to adjust.",
             ):
                 from woffl.gui.params import SimulationParams
 
                 store = store_for(pad)
                 applied = 0
+                skipped: list[str] = []
                 for r in matched:
                     raw, res = raw_by_well.get(r.well), r.result
                     if not raw or res is None:
@@ -679,34 +855,57 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
                     try:
                         p = SimulationParams(
                             selected_well=r.well,
-                            nozzle_no=raw["nozzle_no"], area_ratio=raw["area_ratio"],
+                            nozzle_no=raw["nozzle_no"],
+                            area_ratio=raw["area_ratio"],
                             jpump_direction=raw["jpump_direction"],
-                            ken=float(res.ken), kth=float(res.kth), kdi=float(res.kdi),
-                            tubing_od=raw["tubing_od"], tubing_thickness=raw["tubing_thickness"],
-                            casing_od=raw["casing_od"], casing_thickness=raw["casing_thickness"],
-                            form_wc=round(float(raw["form_wc"]), 2), form_gor=int(raw["form_gor"]),
-                            form_temp=int(raw["form_temp"]), field_model=raw["field_model"],
-                            oil_api=raw["oil_api"], gas_sg=raw["gas_sg"], wat_sg=raw["wat_sg"],
-                            bubble_point=raw["bubble_point"], surf_pres=int(raw["surf_pres"]),
-                            jpump_tvd=int(raw["jpump_tvd"]), rho_pf=62.4,
+                            ken=float(res.ken),
+                            kth=float(res.kth),
+                            kdi=float(res.kdi),
+                            tubing_od=raw["tubing_od"],
+                            tubing_thickness=raw["tubing_thickness"],
+                            casing_od=raw["casing_od"],
+                            casing_thickness=raw["casing_thickness"],
+                            form_wc=round(float(raw["form_wc"]), 2),
+                            form_gor=int(raw["form_gor"]),
+                            form_temp=int(raw["form_temp"]),
+                            field_model=raw["field_model"],
+                            oil_api=raw["oil_api"],
+                            gas_sg=raw["gas_sg"],
+                            wat_sg=raw["wat_sg"],
+                            bubble_point=raw["bubble_point"],
+                            surf_pres=int(raw["surf_pres"]),
+                            jpump_tvd=int(raw["jpump_tvd"]),
+                            rho_pf=62.4,
                             ppf_surf=int(round(res.ppf_surf)),
-                            qwf=int(round(res.qwf_oil)), pwf=int(round(res.pwf)),
+                            qwf=int(round(res.qwf_oil)),
+                            pwf=int(round(res.pwf)),
                             pres=int(round(res.pres)),
                         )
                         off = store.get(r.well, {}).get(
-                            "offline", _is_default_offline(pad, r.well))
+                            "offline", _is_default_offline(pad, r.well)
+                        )
                         store[r.well] = wrs.snapshot_from_params(
-                            p, ipr_source="vogel",
+                            p,
+                            ipr_source="vogel",
                             bhp_source="gauged" if raw.get("has_bhp") else "assumed",
-                            offline=off, pin_pf_pressure=True,
+                            offline=off,
+                            pin_pf_pressure=True,
                         )
                         applied += 1
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # Surface, don't swallow: a systematic failure (e.g. a
+                        # bad field) otherwise looked like a partial success.
+                        skipped.append(f"{r.well}: {type(e).__name__}: {e}")
                 st.success(
                     f"Applied {applied} matched well(s) to the {pad}-Pad review store — "
                     "they're saved. Open any in the Solver below to fine-tune."
                 )
+                if skipped:
+                    with st.expander(
+                        f"{len(skipped)} well(s) could not be applied", expanded=False
+                    ):
+                        for msg in skipped:
+                            st.write(f"- {msg}")
                 st.rerun()
 
 
@@ -772,7 +971,9 @@ def render_review_stage(pad: str) -> None:
     from woffl.gui.tabs import jetpump_solver
 
     try:
-        jetpump, wellbore, inflow, res_mix, wp, _survey = _build_simulation_objects(params)
+        jetpump, wellbore, inflow, res_mix, wp, _survey = _build_simulation_objects(
+            params
+        )
     except ValueError as e:
         st.error(
             f"Cannot build the model for {well}: {e}. Adjust the sidebar inputs "
@@ -787,8 +988,14 @@ def render_review_stage(pad: str) -> None:
     # render_tab and the page navigation.
     try:
         jetpump_solver.render_tab(
-            params, jetpump, wellbore, wp, inflow, res_mix,
-            hero_container=hero_box, jp_strip_container=jp_box,
+            params,
+            jetpump,
+            wellbore,
+            wp,
+            inflow,
+            res_mix,
+            hero_container=hero_box,
+            jp_strip_container=jp_box,
         )
     except Exception as e:  # noqa: BLE001 — intentional last-resort guard
         if type(e).__name__ in ("RerunException", "StopException"):

@@ -9,7 +9,9 @@ class FormWater:
             self
         """
 
-        if (0.5 < wat_sg < 1.5) is False:
+        # [LIBRARY change -> upstream PR to kwellis/woffl] inclusive bounds match
+        # the documented "0.5 to 1.5" range; strict < rejected exact boundaries.
+        if (0.5 <= wat_sg <= 1.5) is False:
             raise ValueError(f"Water SG {wat_sg} Outside Range")
 
         self.wat_sg = wat_sg

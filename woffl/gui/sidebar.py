@@ -4,6 +4,8 @@ Extracts all sidebar parameter collection from the monolithic app.py main()
 into a dedicated module. Returns a SimulationParams dataclass and run button state.
 """
 
+import logging
+
 import streamlit as st
 
 from woffl.gui.params import NOZZLE_OPTIONS, THROAT_OPTIONS, SimulationParams
@@ -13,6 +15,8 @@ from woffl.gui.utils import (
     get_well_data,
     is_valid_number,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +55,12 @@ SEED_BOUNDS = {
     "bubble_point": (1001.0, 2999.0),
     "gas_sg": (0.51, 1.19),
     "wat_sg": (0.51, 1.49),
+    # pipe/casing geometry — match the _render_pipe_params widget bounds so a
+    # programmatic seed outside range is clamped, not silently reset to the min.
+    "tubing_od": (2.0, 9.0),
+    "tubing_thickness": (0.1, 2.0),
+    "casing_od": (4.0, 17.0),
+    "casing_thickness": (0.1, 2.0),
 }
 
 
@@ -165,8 +175,8 @@ def _update_well_parameters_from_data(
         from woffl.gui.scotts_tools._common import casing_dims_from_chars
 
         casing_od, casing_thick = casing_dims_from_chars(well_data)
-        _set_param("casing_od", round(casing_od, 3))
-        _set_param("casing_thickness", round(casing_thick, 3))
+        _set_param("casing_od", clamp_seed("casing_od", round(casing_od, 3)))
+        _set_param("casing_thickness", clamp_seed("casing_thickness", round(casing_thick, 3)))
 
         # Field model — write the radio's WIDGET key directly (the radio
         # renders later in this same run, so this is safe). Seeding only
@@ -317,9 +327,12 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
             # direct-from-test seed path below so the sidebar still picks up
             # WC/GOR/oil/WHP from the latest test — the engineer can then
             # manually tune pwf/res_pres against the modeled-vs-actual gap.
-        except Exception:
-            # Vogel exploded — fall through to direct-from-test seed too.
-            pass
+        except Exception as e:
+            # Vogel exploded — fall through to direct-from-test seed so the
+            # sidebar still populates, but LOG it. Silently swallowing meant a
+            # SYSTEMIC failure (e.g. a column rename after a library sync)
+            # degraded EVERY well to 1-test seeding with no signal at all.
+            logger.warning("IPR auto-populate failed for %s: %s", selected_well, e)
 
     # Direct-from-test seed path: runs when there's 1 test, or when 2+ tests
     # exist but Vogel couldn't fit (most often because no test has BHP). The

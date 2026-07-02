@@ -507,6 +507,10 @@ def _secant_solve(
     res_lookup = {psu_min: res_min, psu_max: res_max}
     res_list: list[float] = []
     qoil_std = fwat_bwpd = qnz_bwpd = mach_te = 0.0
+    # [LIBRARY change -> upstream PR to kwellis/woffl] track which suction the
+    # cached rates correspond to, so the returned rates can never be the stale
+    # 0.0 initializers (see the final guard before return).
+    rates_at = None
     for psu in psu_list:
         if psu in res_lookup:
             res_list.append(res_lookup[psu])
@@ -525,6 +529,7 @@ def _secant_solve(
                 jpump_direction,
             )
             res_list.append(res_seed)
+            rates_at = psu
 
     n = 0  # loop counter
     while abs(psu_list[-2] - psu_list[-1]) > psu_diff or abs(res_list[-1]) > res_tol:
@@ -549,12 +554,37 @@ def _secant_solve(
         )
         psu_list.append(psu_nxt)
         res_list.append(res_nxt)
+        rates_at = psu_nxt
         n += 1
         if n == 20:
             raise ConvergenceError(
                 "Suction Pressure for Overall System did not converge"
             )
-    return psu_list[-1], False, qoil_std, fwat_bwpd, qnz_bwpd, mach_te
+    # [LIBRARY change -> upstream PR to kwellis/woffl] Ensure the returned rates
+    # correspond to the returned suction. When BOTH seeds are bracket ends (their
+    # residuals come from res_lookup, so discharge_residual is never called for
+    # them) AND the secant loop body never runs — a thin feasible band where the
+    # bracket already satisfies psu_diff and res_tol — the rates would otherwise
+    # stay at their 0.0 initializers, reporting a real flowing well as 0 BOPD
+    # while returning normally (no ConvergenceError, so no fallback fires).
+    # Evaluate once at the final psu in that case. In the normal converging path
+    # rates_at already equals psu_final, so this is a no-op (bit-identical).
+    psu_final = psu_list[-1]
+    if rates_at != psu_final:
+        _res, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = discharge_residual(
+            psu_final,
+            pwh,
+            tsu,
+            ppf_surf,
+            jpump,
+            wellbore,
+            wellprof,
+            ipr_su,
+            prop_su,
+            prop_pf,
+            jpump_direction,
+        )
+    return psu_final, False, qoil_std, fwat_bwpd, qnz_bwpd, mach_te
 
 
 def _bisection_solve(
@@ -648,9 +678,15 @@ def _bisection_solve(
         except ThroatEntryNoSolution:
             # Shouldn't occur inside [psu_min, psu_max] (psu_min is the
             # feasibility floor), but if a probe point has no throat-entry
-            # solution treat it as the low-psu (too-low) side and keep bisecting.
-            psu_lo = psu_mid
-            psu_mid = (psu_lo + psu_hi) / 2
+            # solution it is below the floor — the too-low side — so the root
+            # lies ABOVE it. [LIBRARY change -> upstream PR to kwellis/woffl]
+            # Mark res_mid as definitively negative so the NEXT iteration narrows
+            # psu_lo = psu_mid consistently. Previously res_mid was left STALE
+            # (from an earlier, different suction) and psu_mid was recomputed only
+            # to be overwritten at the top of the loop — a possibly-wrong
+            # side-pick. The bracket still shrank, so the final answer converged;
+            # this just makes the narrowing direction correct.
+            res_mid = -(res_tol + 1.0)
         n += 1
         if n == 60:
             raise ConvergenceError(

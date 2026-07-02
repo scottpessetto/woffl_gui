@@ -807,6 +807,23 @@ def _render_nelder_mead_section(batch_pump, params: SimulationParams) -> None:
             "power fluid usage (bbl oil / bbl lift water). Higher values favor smaller pumps."
         )
 
+        # Slider bounds for the lift-cost penalty (also used to clamp the
+        # auto-derived value — a session_state seed outside the widget's range is
+        # silently reset to the MINIMUM by Streamlit, not clamped).
+        _LIFT_COST_MIN, _LIFT_COST_MAX = 0.00, 0.20
+
+        def _owr_from_wc(wc: float) -> float:
+            return (1 - wc) / wc if wc and wc > 0 else 0.0
+
+        def _sync_nm_lift_cost():
+            # Fires BEFORE the slider re-renders, so writing the slider's own
+            # session_state key here is the supported way to move it. (Passing
+            # value= with key= does NOT work: Streamlit ignores value= once the
+            # widget exists, so the slider would freeze on its first value.)
+            wc = st.session_state.get("nm_marginal_wc", 0.94)
+            cost = round(_owr_from_wc(wc), 2)
+            st.session_state["nm_lift_cost"] = min(_LIFT_COST_MAX, max(_LIFT_COST_MIN, cost))
+
         col1, col2, col3 = st.columns(3)
         with col1:
             marg_wc_input = st.number_input(
@@ -817,20 +834,29 @@ def _render_nelder_mead_section(batch_pump, params: SimulationParams) -> None:
                 step=0.01,
                 format="%.2f",
                 key="nm_marginal_wc",
+                on_change=_sync_nm_lift_cost,
                 help="Enter a marginal watercut to auto-calculate lift cost. OWR = (1 - WC) / WC.",
             )
             # Convert: WOR = wc / (1 - wc), OWR = 1/WOR = (1 - wc) / wc
-            calculated_lift_cost = (1 - marg_wc_input) / marg_wc_input
-            st.caption(
+            calculated_lift_cost = _owr_from_wc(marg_wc_input)
+            clamped = min(_LIFT_COST_MAX, max(_LIFT_COST_MIN, round(calculated_lift_cost, 2)))
+            caption = (
                 f"WOR = {marg_wc_input / (1 - marg_wc_input):.2f} | "
                 f"OWR (lift cost) = {calculated_lift_cost:.4f}"
             )
+            if calculated_lift_cost > _LIFT_COST_MAX:
+                caption += f" (clamped to slider max {_LIFT_COST_MAX:.2f})"
+            st.caption(caption)
         with col2:
+            # Seed the slider's session_state BEFORE it renders on first run; the
+            # on_change callback keeps it in sync thereafter. Don't pass value=
+            # alongside key= (it would be ignored once the widget exists).
+            if "nm_lift_cost" not in st.session_state:
+                st.session_state["nm_lift_cost"] = clamped
             lift_cost = st.slider(
                 "Lift Cost (bbl oil / bbl lift water)",
-                min_value=0.00,
-                max_value=0.20,
-                value=round(calculated_lift_cost, 2),
+                min_value=_LIFT_COST_MIN,
+                max_value=_LIFT_COST_MAX,
                 step=0.01,
                 format="%.2f",
                 key="nm_lift_cost",

@@ -382,8 +382,13 @@ def create_ipr_comparison_pdf(
             # unguarded division crashed the ENTIRE PDF build for one bad
             # template row.
             wc = well_config.form_wc
+            # Guard BEFORE the division (pres<=0 / pwf>=pres), then check the
+            # Vogel fraction. Previously vogel_frac was computed first, so a
+            # pres==0 row would ZeroDivisionError ahead of its own guard.
+            if pres <= 0 or pwf >= pres:
+                continue
             vogel_frac = 1 - 0.2 * (pwf / pres) - 0.8 * (pwf / pres) ** 2
-            if pres <= 0 or pwf >= pres or vogel_frac <= 0:
+            if vogel_frac <= 0:
                 continue
             qmax = qwf / vogel_frac
             qmax_oil = qmax * (1 - wc)

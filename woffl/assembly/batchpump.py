@@ -76,7 +76,6 @@ class BatchPump:
             kind (str): Kind of Pressure to update. Either "wellhead", "powerfluid" or "reservoir"
             psig (float): Pressure to update with, psig
         """
-        # chat gpt thinks using the reservoir method will fail, since you are calling ipr_su
         press_map = {
             "wellhead": "pwh",
             "powerfluid": "ppf_surf",
@@ -91,7 +90,20 @@ class BatchPump:
             )
 
         attr_name = press_map[kind]
-        setattr(self, attr_name, psig)
+        # [LIBRARY change -> upstream PR to kwellis/woffl] setattr does NOT
+        # traverse a dotted path: setattr(self, "ipr_su.pres", psig) creates a
+        # junk attribute literally named "ipr_su.pres" and leaves the real
+        # self.ipr_su.pres untouched, so update_press("reservoir", ...) silently
+        # did nothing (ran at the original reservoir pressure). Walk the path so
+        # the nested attribute actually updates. Flat keys behave as before.
+        if "." in attr_name:
+            obj_path, _, leaf = attr_name.rpartition(".")
+            target = self
+            for part in obj_path.split("."):
+                target = getattr(target, part)
+            setattr(target, leaf, psig)
+        else:
+            setattr(self, attr_name, psig)
 
     @staticmethod
     def jetpump_list(
@@ -165,8 +177,13 @@ class BatchPump:
                     "form_wat": fwat_bpd,
                     "lift_wat": lwat_bpd,
                     "totl_wat": fwat_bpd + lwat_bpd,
-                    "form_wor": fwat_bpd / qoil_std,
-                    "totl_wor": (fwat_bpd + lwat_bpd) / qoil_std,
+                    # [LIBRARY change -> upstream PR to kwellis/woffl] guard a
+                    # legitimate all-water (qoil_std == 0) solve: an unguarded
+                    # divide makes these inf (np.float64) or raises
+                    # ZeroDivisionError (Python float) inside the try, recording
+                    # a valid 0-oil pump as a FAILED (NaN) row instead.
+                    "form_wor": (fwat_bpd / qoil_std) if qoil_std > 0 else np.nan,
+                    "totl_wor": ((fwat_bpd + lwat_bpd) / qoil_std) if qoil_std > 0 else np.nan,
                     "error": "na",
                 }
 
@@ -189,7 +206,11 @@ class BatchPump:
                         "totl_wat": np.nan,
                         "form_wor": np.nan,
                         "totl_wor": np.nan,
-                        "error": exc,
+                        # [LIBRARY change -> upstream PR to kwellis/woffl] store
+                        # the message, not the live exception object: a BatchPump
+                        # returned across the optimizer's ProcessPool must pickle,
+                        # and an arbitrary third-party exception may not.
+                        "error": repr(exc),
                     }
             results.append(result)
         return pd.DataFrame(results)
@@ -315,6 +336,13 @@ class BatchPump:
         semi_df["motwr"] = gradient_back(qoil_semi, twat_semi)
         semi_df["molwr"] = gradient_back(qoil_semi, lwat_semi)
 
+        # [LIBRARY change -> upstream PR to kwellis/woffl] Drop any prior
+        # motwr/molwr before re-merging so process_results() is idempotent. A
+        # second call would otherwise merge these column names into a df that
+        # already has them, so pandas appends _x/_y suffixes and df["motwr"]/
+        # df["molwr"] no longer exist (get_pump_performance's row.get("molwr")
+        # then silently returns None).
+        self.df = self.df.drop(columns=["motwr", "molwr"], errors="ignore")
         self.df = self.df.merge(
             semi_df[["motwr", "molwr"]], left_index=True, right_index=True, how="left"
         )
@@ -514,8 +542,11 @@ def gradient_back(oil_rate: np.ndarray, water_rate: np.ndarray) -> list:
     grad = []
     for i in range(len(oil_rate)):
         if i != 0:  # skip the first value of 0,0, since you aren't returning that value
+            # [LIBRARY change -> upstream PR to kwellis/woffl] guard equal
+            # successive water rates (zero denominator -> inf marginal ratio).
+            denom = water_rate[i] - water_rate[i - 1]
             grad.append(
-                (oil_rate[i] - oil_rate[i - 1]) / (water_rate[i] - water_rate[i - 1])
+                (oil_rate[i] - oil_rate[i - 1]) / denom if denom != 0 else np.nan
             )
         else:
             pass

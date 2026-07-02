@@ -10,11 +10,7 @@ from woffl.assembly.ipr_analyzer import (
     generate_ipr_curves,
 )
 from woffl.assembly.network_optimizer import load_wells_from_dataframe
-from woffl.gui.ipr_viz import (
-    create_ipr_grid_png,
-    create_ipr_pdf,
-    create_ipr_plotly,
-)
+from woffl.gui.ipr_viz import create_ipr_grid_png, create_ipr_pdf, create_ipr_plotly
 from woffl.gui.utils import load_well_characteristics
 from woffl.gui.workflow_page import _clear_downstream
 
@@ -142,8 +138,19 @@ def _render_ipr_review():
             key="uw_rerun_ipr",
             help="Discard the cached Vogel fit and re-run with the values above.",
         ):
-            for k in ("uw_vogel_coeffs", "uw_ipr_curves", "uw_merged_with_rp"):
+            # New fits invalidate everything built from the old ones — the
+            # template, the WellConfigs, pre-calibration, and any results.
+            # Without this, the step indicator let the optimizer run against
+            # configs from the PREVIOUS fits while the screen showed new ones.
+            for k in (
+                "uw_vogel_coeffs",
+                "uw_ipr_curves",
+                "uw_merged_with_rp",
+                "uw_template_df",
+                "uw_well_configs",
+            ):
                 st.session_state.pop(k, None)
+            _clear_downstream(2.5)
             st.rerun()
 
     # Run IPR analysis if not already done
@@ -368,7 +375,7 @@ def _render_ipr_curves(
             key=f"uw_ipr_show_jp_labels{key_suffix}",
             help=(
                 "Render each test point as the pump installed at that "
-                "test's date (e.g. \"12B\") inside an enlarged colored marker."
+                'test\'s date (e.g. "12B") inside an enlarged colored marker.'
             ),
         )
 
@@ -521,9 +528,7 @@ def _render_edited_template_viewer(merged_with_rp: pd.DataFrame) -> None:
         )
         return
 
-    st.success(
-        f"Loaded **{len(edited_curves)}** wells from the edited template."
-    )
+    st.success(f"Loaded **{len(edited_curves)}** wells from the edited template.")
 
     _render_ipr_curves(
         edited_curves,

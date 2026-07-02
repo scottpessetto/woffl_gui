@@ -1188,6 +1188,11 @@ def render_tab() -> None:
     errors: list[str] = []
     ipr_rows: dict = {}     # exact IPR (ResP/qwf/pwf/wc) used per JP well, for the review
     curve_wells: dict = {}  # per-well swept oil for the response curves (if requested)
+    # Un-edited "ResP (psi)" per well, so the JP branch can detect a GENUINE
+    # manual edit (vs the as-loaded vw_prop_resvr/assumed value) and honor it.
+    base_resp_map: dict[str, float] = {}
+    if base_df is not None and "ResP (psi)" in base_df.columns:
+        base_resp_map = dict(zip(base_df["Well"].astype(str), base_df["ResP (psi)"]))
     # Like-wells donor metadata (G3): pad / lift / formation per selected well.
     rows_meta = {
         str(r["Well"]): {
@@ -1253,6 +1258,24 @@ def render_tab() -> None:
                 if ppr > float(donor_vogel.get("pwf", 0) or 0):
                     donor_vogel = {**donor_vogel, "ResP": ppr}
                     ipr_src = f"{ipr_src}+psPr"
+            # Honor a MANUAL edit to the "ResP (psi)" column for JP wells too —
+            # the non-JP path (_solve_nonjp_row) already reads it, but JP wells
+            # built their IPR straight from the Vogel donor and silently ignored
+            # the edit despite the caption saying "edit it." Detect a real edit
+            # (differs from the as-loaded base value) and let it win over the
+            # donor default and pseudo-Pr. Skip if it would invert the IPR
+            # (pr must exceed the operating pwf).
+            edited_resp = row.get("ResP (psi)")
+            base_resp = base_resp_map.get(str(wn))
+            if (
+                donor_vogel is not None
+                and edited_resp is not None and not pd.isna(edited_resp)
+                and base_resp is not None and not pd.isna(base_resp)
+                and abs(float(edited_resp) - float(base_resp)) > 0.5
+                and float(edited_resp) > float(donor_vogel.get("pwf", 0) or 0)
+            ):
+                donor_vogel = {**donor_vogel, "ResP": float(edited_resp)}
+                ipr_src = f"{ipr_src}+edRP"
             wc = build_well_config(wn, jp_chars_dict, donor_vogel, surf_pres=whp_now)
             well_objs = create_well_objects(wc)
             wellbore, well_profile, inflow, res_mix, prop_pf = well_objs
@@ -1405,8 +1428,17 @@ def render_tab() -> None:
             _traw[_traw["well"].isin(well_names)].copy()
             if _traw is not None and not _traw.empty else None
         )
-    except Exception:
+    except Exception as e:
+        # Surface the failure (matches the empirical-fetch handling above) — a
+        # silent None here quietly blanks the IPR-fit / Modeled-vs-Reality /
+        # back-test panels and shrinks the headline estimate (single-fit
+        # qmax/pr go None), with no indication why.
         st.session_state["hpi_test_df"] = None
+        st.warning(
+            f"Well-test points unavailable ({type(e).__name__}: {e}); the "
+            "IPR-fit, Modeled-vs-Reality and back-test panels will be limited "
+            "this run."
+        )
     st.session_state["hpi_test_oil"] = {
         str(r["Well"]): r.get("Oil (BOPD)") for _, r in selected.iterrows()
     }
@@ -1658,7 +1690,16 @@ def _render_results(results_df: pd.DataFrame, delta_p: float) -> None:
         + (f" — {n_override} well(s) on empirical." if n_override else ".")
     )
     if has_emp:
-        phys_tot = float(results_df["ΔOil (BOPD)"].sum())
+        # Compute phys_tot the SAME way as emp_tot/auto_tot (via _chosen_method),
+        # not as a raw column sum. Non-JP wells have NaN physics ΔOil, which
+        # .sum() silently drops — but _chosen_method falls those wells back to
+        # empirical, exactly as the headline d_oil (sum of "Chosen ΔOil") does.
+        # The raw-sum version disagreed with the headline on any pad with
+        # ESP/gas-lift/flowing wells.
+        phys_tot = float(sum(
+            _chosen_method(r["ΔOil (BOPD)"], r.get("Emp ΔOil (BOPD)", np.nan), "physics")[0]
+            for _, r in results_df.iterrows()
+        ))
         emp_tot = float(sum(
             _chosen_method(r["ΔOil (BOPD)"], r.get("Emp ΔOil (BOPD)", np.nan), "empirical")[0]
             for _, r in results_df.iterrows()

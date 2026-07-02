@@ -106,6 +106,89 @@ and is **not** upstreamed. Full design: `docs/water_pump_mode_plan.md`.
 `tests/test_pvt_resmix.py::test_water_mode_anchors_on_water`. The
 "off still raises" test is the tripwire that the oil path / #4 guard survived.
 
+### 6. `woffl/assembly/solopump.py` — `_secant_solve` returns real rates on a skipped loop
+The primary `jetpump_solver` call passes `seed_pair=(psu_min, psu_max)`, whose
+residuals come from `res_lookup`, so `discharge_residual` is never called for the
+seeds. If the secant `while` loop then never runs — a **thin feasible band** where
+the bracket already satisfies `psu_diff` and `res_tol` — the returned
+`qoil_std/fwat_bwpd/qnz_bwpd/mach_te` stayed at their `0.0` initializers: a real
+flowing well reported as **0 BOPD while returning normally** (no `ConvergenceError`,
+so the bisection/walk-inward fallbacks never fired). The patch tracks which suction
+the cached rates correspond to (`rates_at`) and re-evaluates `discharge_residual`
+at the returned `psu` only when they don't already match — so the normal converging
+path is **bit-identical**.
+
+**Guarded by:** `tests/test_asm_solopump.py::TestSecantSolveRatesPopulated`
+(stubs `discharge_residual`, drives a degenerate already-converged bracket, asserts
+real rates + exactly one final eval). Goes red if the final evaluation is dropped.
+
+### 7. `woffl/assembly/batchpump.py` — `update_press("reservoir")` + idempotent `process_results`
+Two additive fixes:
+- **`update_press` dotted path.** `setattr(self, "ipr_su.pres", psig)` does not
+  traverse a dotted path — it created a junk attribute literally named
+  `"ipr_su.pres"` and left the real `self.ipr_su.pres` untouched, so
+  `update_press("reservoir", …)` was a **silent no-op** (ran at the original
+  reservoir pressure). Now walks the path; flat keys (`wellhead`/`powerfluid`) are
+  unchanged.
+- **`process_results` idempotency.** The `motwr`/`molwr` merge wasn't idempotent:
+  a second call merged those names into a df that already had them, so pandas
+  suffixed them `_x`/`_y` and the plain columns vanished
+  (`get_pump_performance`'s `row.get("molwr")` then silently returned `None`).
+  Now drops any prior `motwr`/`molwr` before re-merging.
+
+**Guarded by:** `tests/test_asm_batchpump.py::TestUpdatePress` and
+`::TestProcessResultsIdempotent`.
+
+### 8. `woffl/pvt/blackoil.py` — McCain below-bubble compressibility takes Rsb
+`_compute_compressibility` fed `compressibility_mccain_below` `rs = gas_solubility()`,
+which **below the bubble point** is `Rs` at the *current* pressure. McCain-Rollins-
+Villena (1988) Eq. 5 is defined with **Rsb** — the solution GOR *at the bubble
+point* (a fixed property of the oil). Passing `Rs(p) << Rsb` systematically
+understated sub-bubble oil compressibility. The patch evaluates solubility at the
+bubble point explicitly (`solubility_kartoatmodjo(self.pbp, …)`). This is a real
+physics change: it nudges `cmix` (mixture speed of sound) and hence `mach_te`, so
+the `batch_test.py` 9X/12B reference `mach_te` values were re-baselined (the
+operating point — oil/water/psu — is unchanged).
+
+**Guarded by:** `tests/test_pvt_blackoil.py::test_oil_compressibility_below`
+(asserts ~2.40e-4 psi⁻¹; reverts to ~2.16e-4 if the Rsb input is lost).
+
+### 9. `woffl/flow/twophase.py` — Beggs-Brill L3 exponent
+`beggs_flow_pattern` used `l3 = 0.1 * nslh**-1.468`; the canonical Beggs-Brill L3
+boundary is `0.10 * λL**-1.4516` (the surrounding `l2 ≈ -2.4684` and `l4 = -6.738`
+match canonical — `-1.468` looks like a transcription slip copying the `.468` from
+L2). L3 separates the intermittent / distributed / transition regimes, so a wrong
+exponent picks the wrong holdup correlation near that boundary → wrong slip holdup
+→ wrong static ΔP in the two-phase outflow path.
+
+**Guarded by:** `tests/test_multiphase.py::test_beggs_l3_exponent_is_canonical`
+(at `nslh=0.5`, `froude=0.275` classifies as `intermittent` with `-1.4516` but
+`transition` with the old `-1.468`).
+
+### 10. Low-severity robustness guards (Low-tier review sweep)
+A batch of small additive guards across the shared library — all bit-identical on
+the normal path, each tagged in-code with `upstream PR`:
+
+- **`solopump.py` `_bisection_solve`** — on a `ThroatEntryNoSolution` probe inside
+  the bracket, mark `res_mid` negative (too-low side) instead of leaving it stale,
+  so the next narrowing direction is correct. (Covered by `TestMarginalConvergence`.)
+- **`batchpump.py`** — `form_wor`/`totl_wor` guard `qoil_std == 0` (all-water solve
+  → NaN, not inf/ZeroDivisionError that mislabels a valid 0-oil pump as failed);
+  `gradient_back` guards equal successive water rates (zero denominator → NaN).
+  Guarded by `tests/test_asm_batchpump.py::test_gradient_back_equal_water_is_nan`.
+- **`jetplot.py`** (diagnostic plot path) — clamp `pidx` from `searchsorted(...,1)`
+  so an all-subsonic window can't IndexError; floor `throat_entry_book`'s pressure
+  sweep below `psu` so a low-pressure well (`psu<=200`) doesn't sweep the wrong
+  direction. `psu>200` is bit-identical.
+- **`blackoil.py`** — replace the dead `np.errstate(invalid="raise")` (a no-op on
+  Python-float math) in `solubility_kartoatmodjo` with a real `pabs<=0` guard;
+  make the BlackOil range validations INCLUSIVE to match the docstrings. Guarded by
+  `tests/test_pvt_blackoil.py::{test_validation_bounds_inclusive,
+  test_validation_rejects_out_of_range, test_solubility_negative_abs_pressure_raises}`.
+- **`formgas.py` / `formwat.py`** — inclusive SG range validations (match docstrings).
+  Guarded by `test_pvt_formgas.py::test_gas_sg_bounds_inclusive` and
+  `test_pvt_formwater.py::test_wat_sg_bounds_inclusive`.
+
 ---
 
 ## NOT upstream — safe to change freely
@@ -129,7 +212,7 @@ lives there; only the solver + PVT files above (`solopump.py`, `jetflow.py`,
    If `TestMarginalConvergence` (or any solopump test) **goes red**, an upstream
    merge dropped or altered a local solver fix — re-apply it from this file / git
    history before shipping. **The tests are the safety net: a silently-lost patch
-   turns red.** (Baseline: the suite is fully green — 545 tests as of 2026-06-16.)
+   turns red.** (Baseline: the suite is fully green — 563 tests as of 2026-06-29.)
 4. **See the full divergence set** any time:
    ```bash
    git diff <upstream-remote>/main -- woffl/pvt woffl/geometry woffl/flow woffl/assembly

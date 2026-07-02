@@ -99,8 +99,19 @@ def _build_calibration_input_table(months_back: int) -> pd.DataFrame | None:
 
         # Geometry being passed into the solver — surface for verification
         chars = jp_chars_dict.get(wn, {})
-        tube_od = float(chars.get("out_dia") or 4.5)
-        tube_thk = float(chars.get("thick") or 0.271)
+
+        def _num(v, default):
+            # NaN-safe: `float('nan') or X` returns nan (nan is truthy), so the
+            # `or` fallback never fired for a present-but-NaN Databricks value —
+            # the verification table then showed NaN geometry.
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                return default
+            return default if math.isnan(fv) else fv
+
+        tube_od = _num(chars.get("out_dia"), 4.5)
+        tube_thk = _num(chars.get("thick"), 0.271)
         tube_id = tube_od - 2 * tube_thk
         case_od, case_thk = casing_dims_from_chars(chars)
         case_id = case_od - 2 * case_thk

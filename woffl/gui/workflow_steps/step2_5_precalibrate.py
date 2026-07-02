@@ -79,13 +79,17 @@ def _calibrate_one(well_config: WellConfig, test_row: dict, chars: dict) -> dict
             wellbore=wellbore, wellprof=wellprof,
             ipr_su=inflow, prop_su=res_mix, prop_pf=prop_pf,
         )
+        # NaN-safe: `float('nan') or 0.0` returns nan (nan is truthy), so a test
+        # with no oil volume showed NaN instead of 0 in the Obs Oil column.
+        _oil = test_row.get("WtOilVol")
+        obs_oil = float(_oil) if _oil is not None and not pd.isna(_oil) else 0.0
         return {
             "well_name": wn,
             "status": "ok",
             "test_date": test_row.get("WtDate"),
             "observed_lift_wat": float(test_row["lift_wat"]),
             "observed_bhp": float(test_row["BHP"]),
-            "observed_oil": float(test_row.get("WtOilVol") or 0.0),
+            "observed_oil": obs_oil,
             "pump": f"{nozzle}{throat}",
             "ppf_surf": float(pf.ppf_surf),
             "lift_residual": float(pf.lift_residual),

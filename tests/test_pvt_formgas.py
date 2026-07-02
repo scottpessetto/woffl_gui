@@ -122,5 +122,13 @@ def test_gas_zfactor() -> None:
     np.testing.assert_allclose(hygas["zfactor"], pygas["zfactor"], rtol=0.04)
 
 
+def test_gas_sg_bounds_inclusive() -> None:
+    # Tripwire for the inclusive-bounds library patch (docstring range 0.5-1.2).
+    FormGas(gas_sg=0.5)
+    FormGas(gas_sg=1.2)
+    with pytest.raises(ValueError):
+        FormGas(gas_sg=0.49)
+
+
 if __name__ == "__main__":
     plot_formgas_compare(hygas, pygas)

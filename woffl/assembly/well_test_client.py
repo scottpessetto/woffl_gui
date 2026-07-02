@@ -73,7 +73,10 @@ def _normalize_well_name(name: str) -> str:
         return name
 
     well = match.group(1)
-    # Remove leading zeros in the number portion
+    # DB names are 3-digit zero-padded (B-028, B-008). Strip ONE leading zero so
+    # the GUI form is 2-digit zero-padded to match jp_chars (B-028 -> MPB-28,
+    # B-008 -> MPB-08). Do NOT strip all zeros — jp_chars keys single-digit wells
+    # as e.g. MPH-08, so MPB-8 would not join.
     well = re.sub(r"-(0)(?=\d+)", "-", well)
     # Add MP prefix if not already present
     if not well.startswith("MP"):

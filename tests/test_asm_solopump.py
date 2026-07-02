@@ -263,3 +263,53 @@ class TestWellboreGeometry:
         qoil_big, _ = _solve(pump, wellbore=wbore_big)
         qoil_small, _ = _solve(pump, wellbore=wbore_small)
         assert qoil_big > qoil_small
+
+
+class TestSecantSolveRatesPopulated:
+    """Tripwire for the _secant_solve 0-BOPD fix (upstream PR to kwellis/woffl).
+
+    When BOTH seeds are the bracket ends (their residuals come from res_lookup,
+    so discharge_residual is never called for them) AND the bracket already
+    satisfies psu_diff / res_tol, the secant while-loop never runs. Before the
+    fix the returned rates stayed at their 0.0 initializers — a real flowing
+    well reported as 0 BOPD while returning normally (converged=False but no
+    ConvergenceError, so no fallback fired). The fix re-evaluates
+    discharge_residual at the returned psu when the cached rates don't already
+    correspond to it. Goes red if that final evaluation is dropped.
+    """
+
+    def test_rates_evaluated_when_loop_skips(self, monkeypatch):
+        calls = {"n": 0}
+
+        def fake_discharge_residual(psu, *args, **kwargs):
+            calls["n"] += 1
+            return (0.0, 123.0, 456.0, 789.0, 0.5)  # res, qoil, fwat, qnz, mach
+
+        monkeypatch.setattr(so, "discharge_residual", fake_discharge_residual)
+
+        psu_min, psu_max = 1000.0, 1002.0  # within psu_diff=5
+        res_min, res_max = 0.0, 1.0        # within res_tol=10 -> loop skipped
+        result = so._secant_solve(
+            seed_pair=(psu_min, psu_max),
+            res_min=res_min,
+            res_max=res_max,
+            psu_min=psu_min,
+            psu_max=psu_max,
+            pwh=pwh,
+            tsu=tsu,
+            ppf_surf=ppf_surf,
+            jpump=None,
+            wellbore=None,
+            wellprof=None,
+            ipr_su=None,
+            prop_su=None,
+            prop_pf=None,
+            jpump_direction="reverse",
+            psu_diff=5.0,
+            res_tol=10.0,
+        )
+        psu, _sonic, qoil, fwat, qnz, _mach = result
+        assert qoil == 123.0   # real rates, NOT the 0.0 initializers
+        assert fwat == 456.0
+        assert qnz == 789.0
+        assert calls["n"] == 1  # exactly one final eval at the returned psu

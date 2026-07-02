@@ -708,7 +708,8 @@ def _solve_pf_for_actual_lift(
 
 
 def render_pf_quickfix_widget(
-    params, wellbore, well_profile, *, target_lift_wat: float | None
+    params, wellbore, well_profile, *, target_lift_wat: float | None,
+    selected_test_row=None,
 ) -> None:
     """Inline PF-pressure quickfix rendered below a PF mismatch warning.
 
@@ -716,13 +717,23 @@ def render_pf_quickfix_widget(
       1. **Number input** — typing a value updates sidebar ppf_surf via
          on_change; Streamlit reruns and the simulation re-evaluates.
       2. **Auto-match button** — solves for the ppf_surf that produces the
-         most recent test's measured lift_wat.
+         selected test's measured lift_wat.
+
+    ``selected_test_row`` is the test the Solver is comparing against (IPR
+    anchor / comparison picker). It must be threaded into
+    ``build_calibration_inputs`` so the pump identity, surface pressure (WHP),
+    and displayed date all come from the SAME test as ``target_lift_wat`` —
+    otherwise Auto-match solves with the most-recent test's pump/WHP while
+    matching a different test's lift rate (wrong pump if a JPCO happened
+    between them), and the status caption shows the wrong date.
 
     The widget value is synced to current ``params.ppf_surf`` before render
     so external sidebar changes reflect here too. Skipped silently when the
     target lift isn't available (Auto-match would have nothing to match).
     """
-    inputs = build_calibration_inputs(params, wellbore, well_profile)
+    inputs = build_calibration_inputs(
+        params, wellbore, well_profile, selected_test_row=selected_test_row
+    )
     if inputs is None:
         return  # No JP/test context — quickfix wouldn't help anyway
 

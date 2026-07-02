@@ -20,23 +20,26 @@ class BlackOil:
         Returns:
             Self
         """
+        # [LIBRARY change -> upstream PR to kwellis/woffl] bounds are INCLUSIVE to
+        # match the docstrings ("10 to 40", etc.); the strict < rejected exact
+        # boundary inputs (e.g. oil_api == 40).
         api_min = 10
         api_max = 40
-        if (api_min < oil_api < api_max) is False:
+        if (api_min <= oil_api <= api_max) is False:
             raise ValueError(
                 f"Oil API {oil_api} Outside Range of {api_min} to {api_max}"
             )
 
         bub_min = 1000
         bub_max = 3000
-        if (bub_min < bubblepoint < bub_max) is False:
+        if (bub_min <= bubblepoint <= bub_max) is False:
             raise ValueError(
                 f"Bubblepoint {bubblepoint} Outside Range of {bub_min} to {bub_max}"
             )
 
         sg_min = 0.5
         sg_max = 1.2
-        if (sg_min < gas_sg < sg_max) is False:
+        if (sg_min <= gas_sg <= sg_max) is False:
             raise ValueError(f"Gas SG {gas_sg} Outside Range of {sg_min} to {sg_max}")
 
         self.oil_api = oil_api
@@ -150,16 +153,27 @@ class BlackOil:
         return self._cached("gas_solubility", self._compute_gas_solubility)
 
     def _compute_compressibility(self) -> float:
-        rs = self.gas_solubility()  # solubility of gas in the oil
         if self.press > self.pbp:  # above bubblepoint
+            # Vasquez above-bubble takes Rs at the bubble point (Rsb), which is
+            # exactly what gas_solubility() returns above the bubble point (it
+            # caps the evaluation pressure at pbp).
+            rs = self.gas_solubility()
             co = self.compressibility_vasquez_above(
                 self.press, self.temp, self.oil_api, self.gas_sg, rs
             )
         else:  # below the bubblepoint
-            co = self.compressibility_mccain_below(
-                self.press, self.temp, self.oil_api, self.gas_sg, rs
+            # [LIBRARY change -> upstream PR to kwellis/woffl] McCain-Rollins-
+            # Villena (1988) below-bubble correlation is defined with Rsb — the
+            # solution GOR AT THE BUBBLE POINT (a fixed property of the oil), not
+            # Rs at the current pressure. gas_solubility() below the bubble point
+            # returns Rs(press) << Rsb, which systematically understated co.
+            # Evaluate solubility at the bubble point explicitly.
+            rsb = self.solubility_kartoatmodjo(
+                self.pbp, self.temp, self.oil_api, self.gas_sg
             )
-            # co = self.compressibility_kartoatmodjo_above(self.press, self.temp, self.oil_api, self.gas_sg, rs)
+            co = self.compressibility_mccain_below(
+                self.press, self.temp, self.oil_api, self.gas_sg, rsb
+            )
         return co
 
     @property
@@ -400,10 +414,14 @@ class BlackOil:
         else:  # oilAPI greater than 30API
             c1, c2, c3, c4 = [0.0315, 0.7587, 1.0937, 11.289]
         pabs = press + 14.7  # absolute pressure
-        # print(pabs)
-        with np.errstate(invalid="raise"):
-            rs = c1 * gas_sg**c2 * pabs**c3 * 10 ** (c4 * oil_api / (temp + 460))
-        # print(rs)
+        # [LIBRARY change -> upstream PR to kwellis/woffl] np.errstate has NO
+        # effect on Python-float math — a negative pabs would make pabs**c3
+        # silently return a complex instead of raising. Make the guard real.
+        if pabs <= 0:
+            raise ValueError(
+                f"Absolute pressure {pabs:.1f} psia <= 0; gas solubility undefined"
+            )
+        rs = c1 * gas_sg**c2 * pabs**c3 * 10 ** (c4 * oil_api / (temp + 460))
         return rs
 
     @staticmethod

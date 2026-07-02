@@ -286,6 +286,10 @@ class JetBook:
         pidx = np.searchsorted(
             mach_ray, 1, side="left", sorter=idx_sort
         )  # find index location where mach is 1
+        # [LIBRARY change -> upstream PR to kwellis/woffl] clamp: an all-subsonic
+        # display window (no point reaches Mach 1) returns len(mach_ray), which
+        # would IndexError on the vel_ray[pidx] / tde_ray[pidx] annotations below.
+        pidx = min(int(pidx), len(mach_ray) - 1)
         pmo = float(
             np.interp(1, mach_ray, prs_ray)
         )  # interpolate for pressure at mach 1, pmo
@@ -527,7 +531,13 @@ def throat_entry_book(
     )
 
     ray_len = 50  # number of elements in the array
-    pte_ray = np.linspace(200, psu, ray_len)  # throat entry pressures
+    # [LIBRARY change -> upstream PR to kwellis/woffl] the low end must sit BELOW
+    # psu so the flipped book runs high->low. For the normal psu>200 case this is
+    # the original 200-psi floor (bit-identical). For a low-pressure well
+    # (psu<=200) the old linspace(200, psu) swept the WRONG direction after the
+    # flip (low->high); drop the floor below psu instead.
+    lo = 200.0 if psu > 200.0 else max(psu - 100.0, 50.0)
+    pte_ray = np.linspace(lo, psu, ray_len)  # throat entry pressures
     pte_ray = np.flip(pte_ray, axis=0)  # start with high pressure and go low
 
     for pte in pte_ray[

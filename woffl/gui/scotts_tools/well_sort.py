@@ -107,6 +107,13 @@ def render_tab() -> None:
     catalog = _cached_producer_catalog()
     last_tests = _cached_last_tests_ever()
     xv = _cached_xv_status()
+    if xv.empty:
+        st.caption(
+            "ℹ️ Safety-valve (XV) status unavailable — ProdXV/PFXV columns are "
+            "blank and classification falls back to the shut-in log only. (On "
+            "Databricks this usually means the app lacks access to the "
+            "`reporting` catalog.)"
+        )
 
     if not producers:
         st.error("No producers returned from vw_well_header.")

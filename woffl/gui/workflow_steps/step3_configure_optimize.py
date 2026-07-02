@@ -12,6 +12,7 @@ from woffl.assembly.network_optimizer import (
     NetworkOptimizer,
     PowerFluidConstraint,
     load_wells_from_dataframe,
+    reconcile_wells,
 )
 from woffl.assembly.optimization_algorithms import optimize
 from woffl.gui.optimization_viz import create_calibration_chart
@@ -19,13 +20,13 @@ from woffl.gui.params import NOZZLE_OPTIONS, THROAT_OPTIONS
 from woffl.gui.utils import is_valid_number
 from woffl.gui.workflow_page import _clear_downstream
 
-
 _DEFAULT_POPS_PADS = ("E", "F", "H", "I", "M", "S")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _auto_marginal_wc(pops_tuple: tuple[str, ...],
-                       overrides_tuple: tuple[str, ...]) -> dict | None:
+def _auto_marginal_wc(
+    pops_tuple: tuple[str, ...], overrides_tuple: tuple[str, ...]
+) -> dict | None:
     """Compute the field marginal WC from current Well-Sort data, cached 1 h.
 
     Hash key is the POPS list + per-well overrides so the cached value
@@ -59,11 +60,19 @@ def _auto_marginal_wc(pops_tuple: tuple[str, ...],
         catalog = _cached_producer_catalog()
         xv = _cached_xv_status()
         online_set, _ = classify_wells(
-            producers, shut_in, xv_df=xv, trust_xv=True,
+            producers,
+            shut_in,
+            xv_df=xv,
+            trust_xv=True,
         )
         online_df = build_online_table(
-            tests, shut_in, producers, mode="allocated",
-            xv_df=xv, online_wells=online_set, catalog_df=catalog,
+            tests,
+            shut_in,
+            producers,
+            mode="allocated",
+            xv_df=xv,
+            online_wells=online_set,
+            catalog_df=catalog,
         )
         return compute_field_marginal_wc(
             online_df,
@@ -127,21 +136,35 @@ def render_step3():
 
     # --- CSV override upload ---
     with st.expander("Upload Modified CSV (optional)"):
-        st.caption("Override well parameters by uploading an edited optimization template.")
+        st.caption(
+            "Override well parameters by uploading an edited optimization template."
+        )
         override_file = st.file_uploader(
             "Upload CSV Override",
             type=["csv"],
             key="uw_csv_override",
         )
         if override_file is not None:
-            # Process the file ONCE (keyed on its identity). Re-processing on
-            # every rerun re-queried Databricks each interaction and silently
-            # rebuilt the configs — discarding accepted pre-calibration.
-            file_sig = f"{override_file.name}:{override_file.size}"
+            # Process each distinct file CONTENT once (hash, not name+size —
+            # a re-uploaded edit with the same name/size used to be silently
+            # skipped while the caption claimed it was applied). Re-processing
+            # on every rerun would re-query Databricks each interaction.
+            import hashlib
+            import io
+
+            data = override_file.getvalue()
+            file_sig = hashlib.sha256(data).hexdigest()
             if st.session_state.get("uw_csv_override_sig") != file_sig:
                 try:
-                    override_df = pd.read_csv(override_file)
+                    override_df = pd.read_csv(io.BytesIO(data))
                     new_configs = load_wells_from_dataframe(override_df)
+                    # Keep the pre-override state so removing the file really
+                    # does revert (it used to be overwritten in place).
+                    if "uw_csv_pristine" not in st.session_state:
+                        st.session_state["uw_csv_pristine"] = (
+                            well_configs,
+                            st.session_state.get("uw_template_df"),
+                        )
                     # New configs invalidate pre-calibration AND any results.
                     _clear_downstream(2.5)
                     st.session_state["uw_well_configs"] = new_configs
@@ -155,6 +178,21 @@ def render_step3():
                 st.caption(
                     f"Override CSV **{override_file.name}** is loaded "
                     f"({len(well_configs)} wells). Remove the file to revert."
+                )
+        elif st.session_state.get("uw_csv_override_sig"):
+            # File removed from the uploader — actually revert.
+            pristine = st.session_state.pop("uw_csv_pristine", None)
+            st.session_state.pop("uw_csv_override_sig", None)
+            if pristine is not None:
+                pristine_configs, pristine_template = pristine
+                _clear_downstream(2.5)
+                st.session_state["uw_well_configs"] = pristine_configs
+                if pristine_template is not None:
+                    st.session_state["uw_template_df"] = pristine_template
+                well_configs = pristine_configs
+                st.info(
+                    "Override CSV removed — reverted to the "
+                    f"{len(pristine_configs)} pre-override well configuration(s)."
                 )
 
     # --- Wells summary ---
@@ -300,16 +338,19 @@ def render_step3():
     # Auto-fill marginal_watercut from Well Sort data (POPS-aware MAX of
     # online wells). Must run BEFORE the number_input widget — Streamlit
     # forbids writing to a widget's key after the widget renders.
-    pops_pads = tuple(sorted(
-        st.session_state.get("well_sort_pops_pads", _DEFAULT_POPS_PADS) or ()
-    ))
-    pops_overrides = tuple(sorted(
-        st.session_state.get("well_sort_pops_force_true", []) or ()
-    ))
+    pops_pads = tuple(
+        sorted(st.session_state.get("well_sort_pops_pads", _DEFAULT_POPS_PADS) or ())
+    )
+    pops_overrides = tuple(
+        sorted(st.session_state.get("well_sort_pops_force_true", []) or ())
+    )
     auto = _auto_marginal_wc(pops_pads, pops_overrides)
     if auto and not st.session_state.get("uw_marginal_wc_touched", False):
-        st.session_state["uw_marginal_wc"] = float(auto["wc"])
-        st.session_state["uw_marginal_wc_input"] = float(auto["wc"])
+        # Clamp to the widget's [0, 1] bounds — an unclamped seed >1.0 (dirty
+        # allocation data) is silently reset to the widget MINIMUM (0.0).
+        wc_seed = min(1.0, max(0.0, float(auto["wc"])))
+        st.session_state["uw_marginal_wc"] = wc_seed
+        st.session_state["uw_marginal_wc_input"] = wc_seed
 
     algo_col1, algo_col2, algo_col3 = st.columns(3)
     with algo_col1:
@@ -338,9 +379,12 @@ def render_step3():
             format="%.2f",
             on_change=_on_marginal_wc_change,
             help=(
-                "Worst well online — for POPS pads put to 100% if room "
-                "on pump for water handling. NOTE: currently informational "
-                "— the optimizer does not yet enforce this threshold."
+                "Economic limit on the marginal barrel: the optimizer drops "
+                "pump configs whose NEXT barrel of water buys too little oil "
+                "(marginal watercut = 1/(1 + marginal oil-water ratio), same "
+                "math as the single-well Batch Run recommendation). 1.00 = no "
+                "economic cut. For POPS pads put to 100% if room on pump for "
+                "water handling."
             ),
         )
         if auto:
@@ -356,7 +400,9 @@ def render_step3():
                     help="Discards your manual edit and refills from Well Sort.",
                 ):
                     st.session_state.pop("uw_marginal_wc_touched", None)
-                    st.session_state["uw_marginal_wc"] = float(auto["wc"])
+                    st.session_state["uw_marginal_wc"] = min(
+                        1.0, max(0.0, float(auto["wc"]))
+                    )
                     st.session_state.pop("uw_marginal_wc_input", None)
                     st.rerun()
         else:
@@ -408,9 +454,7 @@ def render_step3():
         st.session_state["_uw_throat_opts"] = list(throat_opts)
 
     if not nozzle_opts or not throat_opts:
-        st.warning(
-            "Select at least one nozzle size and one throat ratio above."
-        )
+        st.warning("Select at least one nozzle size and one throat ratio above.")
         return
 
     # --- Run optimization ---
@@ -471,7 +515,23 @@ def render_step3():
             )
             progress_bar.empty()
             status_text.empty()
-            st.success(f"Completed batch simulations for {len(wells)} wells")
+
+            # Per-well simulation health: a well whose entire sweep failed
+            # must be surfaced NOW, not silently vanish from the plan.
+            sim_recon = reconcile_wells(optimizer, [])
+            failed_sim = sim_recon[sim_recon["Status"] == "failed simulation"]
+            if not failed_sim.empty:
+                st.error(
+                    f"{len(failed_sim)} of {len(wells)} well(s) failed every "
+                    "pump combination and CANNOT be optimized: "
+                    + ", ".join(failed_sim["Well"])
+                    + ". Check their IPR / GOR / geometry in Step 2."
+                )
+                st.dataframe(failed_sim, use_container_width=True, hide_index=True)
+            st.success(
+                f"Completed batch simulations for "
+                f"{len(wells) - len(failed_sim)} of {len(wells)} wells"
+            )
 
             # Actual maps — built ONCE and stored unconditionally below, so a
             # re-run with calibration off can't leave a previous run's maps
@@ -506,9 +566,7 @@ def render_step3():
                         cal_col2.metric(
                             "Median Factor", f"{summary['median_factor']:.2f}"
                         )
-                        cal_col3.metric(
-                            "Mean Factor", f"{summary['mean_factor']:.2f}"
-                        )
+                        cal_col3.metric("Mean Factor", f"{summary['mean_factor']:.2f}")
 
                         fig_cal = create_calibration_chart(calibration_results)
                         st.pyplot(fig_cal)
@@ -527,18 +585,32 @@ def render_step3():
                 # Drop the PREVIOUS run's results too — leaving them made
                 # "Previous optimization results available" below present
                 # stale numbers as if they matched the inputs on screen.
-                for k in ("uw_opt_results", "uw_optimizer", "uw_calibration_results"):
+                for k in (
+                    "uw_opt_results",
+                    "uw_optimizer",
+                    "uw_calibration_results",
+                    "uw_reconciliation",
+                ):
                     st.session_state.pop(k, None)
                 st.warning(
                     "Optimization did not produce viable results. "
                     "Try adjusting constraints or pump options."
                 )
+                # Show WHY per well (all failed? all above marginal WC?).
+                st.dataframe(
+                    reconcile_wells(optimizer, []),
+                    use_container_width=True,
+                    hide_index=True,
+                )
                 return
 
-            st.success(f"Optimization complete! Allocated pumps to {len(results)} wells")
+            st.success(
+                f"Optimization complete! Allocated pumps to {len(results)} wells"
+            )
 
             # Store results and advance to Step 4
             _clear_downstream(4)
+            st.session_state["uw_reconciliation"] = reconcile_wells(optimizer, results)
             st.session_state["uw_optimizer"] = optimizer
             st.session_state["uw_opt_results"] = results
             st.session_state["uw_calibration_results"] = calibration_results
@@ -556,6 +628,16 @@ def render_step3():
             st.rerun()
 
         except Exception as e:
+            # A failed re-run must not leave the PREVIOUS run's results
+            # reachable — "View Results" would present a plan computed under
+            # different inputs with no staleness indication.
+            for k in (
+                "uw_opt_results",
+                "uw_optimizer",
+                "uw_calibration_results",
+                "uw_reconciliation",
+            ):
+                st.session_state.pop(k, None)
             st.error(f"Error during optimization: {str(e)}")
             st.exception(e)
 

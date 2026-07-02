@@ -194,7 +194,12 @@ def beggs_flow_pattern(nslh: float, froude: float) -> tuple[str, float]:
     """
     l1 = 316 * nslh**0.302
     l2 = 0.000925 * nslh**-2.468
-    l3 = 0.1 * nslh**-1.468
+    # [LIBRARY change -> upstream PR to kwellis/woffl] canonical Beggs-Brill L3
+    # exponent is -1.4516, not -1.468 (the latter looks like a transcription slip
+    # that copied the ".468" from L2's -2.468). L3 separates the intermittent /
+    # distributed / transition regimes, so an off exponent picks the wrong holdup
+    # correlation near that boundary -> wrong slip holdup -> wrong static dP.
+    l3 = 0.1 * nslh**-1.4516
     l4 = 0.5 * nslh**-6.738
 
     tran = 1  # zero for all flow patterns except for transitional

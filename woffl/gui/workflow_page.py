@@ -27,6 +27,11 @@ def _clear_downstream(from_step):
             "uw_excluded_wells",
             "uw_template_df",
             "uw_well_configs",
+            # CSV-override state must die with the configs it overrode —
+            # otherwise a Step-1 reload + same-file re-upload is silently
+            # skipped by the signature check.
+            "uw_csv_override_sig",
+            "uw_csv_pristine",
         ],
         2.5: [
             "uw_precal_results",
@@ -36,6 +41,7 @@ def _clear_downstream(from_step):
             "uw_optimizer",
             "uw_opt_results",
             "uw_calibration_results",
+            "uw_reconciliation",
             "uw_actual_oil_map",
             "uw_actual_pf_map",
             "uw_actual_bhp_map",
@@ -61,9 +67,7 @@ def _render_step_indicator(current_step, max_reached):
         display_idx = i + 1  # 1-based UI label
         with cols[i]:
             if step_num == current_step:
-                st.markdown(
-                    f"**:blue[Step {display_idx}: {label}]**"
-                )
+                st.markdown(f"**:blue[Step {display_idx}: {label}]**")
             elif step_num <= max_reached:
                 if st.button(
                     f"Step {display_idx}: {label}",
@@ -73,9 +77,7 @@ def _render_step_indicator(current_step, max_reached):
                     st.session_state["uw_current_step"] = step_num
                     st.rerun()
             else:
-                st.markdown(
-                    f":gray[Step {display_idx}: {label}]"
-                )
+                st.markdown(f":gray[Step {display_idx}: {label}]")
 
 
 def _render_sidebar():
@@ -89,8 +91,7 @@ def _render_sidebar():
     with st.sidebar:
         st.header("Workflow")
         st.caption(
-            "Step-specific parameters live inline within each step's main "
-            "panel."
+            "Step-specific parameters live inline within each step's main " "panel."
         )
 
         st.divider()

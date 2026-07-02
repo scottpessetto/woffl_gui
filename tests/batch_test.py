@@ -76,6 +76,14 @@ def test_sonic_count() -> None:
 # re-evaluating discharge_residual at each solved psu: all within +/-0.5 psid.
 # mach_te also shifted from the FormGas.compress fix (absolute pressure + no
 # state mutation), which corrected the mixture speed of sound.
+#
+# Re-baselined again 2026-06 after the BlackOil below-bubble compressibility fix
+# (McCain Eq.5 now takes Rsb — solution GOR at the bubble point — instead of
+# Rs at the current pressure; library patch). That raises sub-bubble oil
+# compressibility, nudging the mixture sound speed and hence mach_te by ~1%.
+# qoil_std / totl_wat / psu_solv are unchanged (the operating point is the same);
+# only the derived mach_te moved. 9X and 12B crossed the 1% tolerance and were
+# updated; 9D's shift stayed within tolerance.
 
 
 def test_9X_reference() -> None:
@@ -83,7 +91,7 @@ def test_9X_reference() -> None:
     row = df[(df["nozzle"] == "9") & (df["throat"] == "X")].iloc[0]
     assert row["qoil_std"] == pytest.approx(58.83, rel=0.01)
     assert row["totl_wat"] == pytest.approx(1937.17, rel=0.01)
-    assert row["mach_te"] == pytest.approx(0.9579, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.9694, rel=0.01)
     assert row["psu_solv"] == pytest.approx(1316.06, rel=0.01)
 
 
@@ -101,7 +109,7 @@ def test_12B_reference() -> None:
     row = df[(df["nozzle"] == "12") & (df["throat"] == "B")].iloc[0]
     assert row["qoil_std"] == pytest.approx(198.35, rel=0.01)
     assert row["totl_wat"] == pytest.approx(4543.32, rel=0.01)
-    assert row["mach_te"] == pytest.approx(0.4252, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.4298, rel=0.01)
     assert row["psu_solv"] == pytest.approx(1116.99, rel=0.01)
 
 

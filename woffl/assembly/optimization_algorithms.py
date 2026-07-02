@@ -8,12 +8,63 @@ Methods:
     mckp: Multi-choice knapsack via OR-Tools CP-SAT (Kaelin's upstream solver)
 """
 
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pandas as pd
 
 if TYPE_CHECKING:
     from woffl.assembly.network_optimizer import NetworkOptimizer, OptimizationResult
+
+logger = logging.getLogger(__name__)
+
+# Batch-df marginal oil-water-ratio column for each constrained stream.
+_MARG_COLS = {"lift_wat": "molwr", "totl_wat": "motwr"}
+
+
+def _over_marginal_wc(ratio, threshold: float) -> bool:
+    """True when a config's marginal watercut exceeds ``threshold``.
+
+    ``ratio`` is the batch df's marginal oil-water ratio (molwr/motwr — bbl oil
+    per bbl water at the margin); marginal watercut = 1 / (1 + ratio), the same
+    conversion the single-well recommender uses (utils.recommend_jetpump), so
+    the multi-well gate and the Batch Run recommendation agree.
+
+    NaN/missing ratios KEEP the config (fail open — a data-quality gap must not
+    silently exclude configs); ratio <= 0 means the marginal barrel buys no
+    oil, which is over any threshold < 1.
+    """
+    if ratio is None:
+        return False
+    try:
+        f = float(ratio)
+    except (TypeError, ValueError):
+        return False
+    if f != f:  # NaN
+        return False
+    if f <= 0.0:
+        return True
+    return (1.0 / (1.0 + f)) > threshold
+
+
+def _marginal_wc_settings(optimizer: "NetworkOptimizer") -> tuple[float, bool]:
+    """(threshold, active). The gate only engages below 1.0 so the default
+    pad-page setting (1.0 = no economic cut) is bit-identical to the old
+    unenforced behavior."""
+    mwc = float(getattr(optimizer, "marginal_watercut", 1.0) or 1.0)
+    return mwc, mwc < 1.0
+
+
+class _WellView:
+    """Duck-typed BatchPump view (wellname + df) handed to the MCKP solver, so
+    the marginal-watercut filter never mutates the cached BatchPump results."""
+
+    __slots__ = ("wellname", "df")
+
+    def __init__(self, wellname: str, df: "pd.DataFrame") -> None:
+        self.wellname = wellname
+        self.df = df
 
 
 def milp_optimization(
@@ -64,6 +115,14 @@ def milp_optimization(
     configs: list[dict] = []
     well_names: list[str] = []
 
+    # Marginal-watercut gate: prune configs whose incremental barrel is mostly
+    # water, so the solver can't buy oil past the economic limit the engineer
+    # set. Exclusions are recorded on the optimizer for UI reconciliation.
+    mwc, apply_mwc = _marginal_wc_settings(optimizer)
+    marg_col = _MARG_COLS[water_key]
+    mwc_excluded: dict[str, int] = {}
+    mwc_excluded_wells: list[str] = []
+
     for well in optimizer.wells:
         wn = well.well_name
         if wn not in optimizer.batch_results:
@@ -71,7 +130,11 @@ def milp_optimization(
         batch_pump = optimizer.batch_results[wn]
         successful = batch_pump.df[~batch_pump.df["qoil_std"].isna()]
 
+        n_kept = 0
         for _, row in successful.iterrows():
+            if apply_mwc and _over_marginal_wc(row.get(marg_col), mwc):
+                mwc_excluded[wn] = mwc_excluded.get(wn, 0) + 1
+                continue
             perf = optimizer.get_pump_performance(wn, row["nozzle"], row["throat"])
             if perf is None:
                 continue
@@ -83,9 +146,22 @@ def milp_optimization(
                     "perf": perf,
                 }
             )
+            n_kept += 1
 
+        if apply_mwc and n_kept == 0 and mwc_excluded.get(wn):
+            mwc_excluded_wells.append(wn)
         if wn not in well_names:
             well_names.append(wn)
+
+    optimizer.mwc_excluded = mwc_excluded
+    optimizer.mwc_excluded_wells = mwc_excluded_wells
+    if mwc_excluded_wells:
+        logger.warning(
+            "MILP: %d well(s) had every config above marginal WC %.2f: %s",
+            len(mwc_excluded_wells),
+            mwc,
+            ", ".join(mwc_excluded_wells),
+        )
 
     if not configs:
         optimizer.optimization_results = []
@@ -181,13 +257,71 @@ def mckp_optimization(
     if not optimizer.batch_results:
         raise ValueError("Must run batch simulations before optimization")
 
-    # Collect BatchPump objects in well order
+    try:
+        marg_col = _MARG_COLS[water_key]
+        marg_perf_key = {
+            "lift_wat": "marginal_oil_lift_water",
+            "totl_wat": "marginal_oil_total_water",
+        }[water_key]
+    except KeyError:
+        raise ValueError(
+            f"Unknown water_key: {water_key}. Use 'lift_wat' or 'totl_wat'"
+        ) from None
+
+    mwc, apply_mwc = _marginal_wc_settings(optimizer)
+
+    # Collect BatchPump objects in well order, skipping wells with no
+    # semi-finalists. optimize_jet_pumps() raises ValueError (empty semi) or
+    # KeyError (no "semi" column at all — e.g. process_results() failed for a
+    # fully-failed well) on such a well, which would abort the ENTIRE field run.
+    # The milp path instead just contributes no configs for a failed well; mirror
+    # that here so one bad well can't take down the whole MCKP optimization.
     batch_pumps = []
+    skipped = []
+    mwc_excluded: dict[str, int] = {}
+    mwc_excluded_wells: list[str] = []
     for well in optimizer.wells:
         wn = well.well_name
         if wn not in optimizer.batch_results:
             continue
-        batch_pumps.append(optimizer.batch_results[wn])
+        bp = optimizer.batch_results[wn]
+        df = bp.df
+        if "semi" not in df.columns or not bool(df["semi"].any()):
+            skipped.append(wn)
+            continue
+        # Marginal-watercut gate on the semi-finalists (same conversion as the
+        # MILP gate / single-well recommender). Filter a COPY view, never the
+        # cached BatchPump df.
+        if apply_mwc and marg_col in df.columns:
+            over = df["semi"].fillna(False) & df[marg_col].apply(
+                lambda r: _over_marginal_wc(r, mwc)
+            )
+            n_over = int(over.sum())
+            if n_over:
+                mwc_excluded[wn] = n_over
+                df = df[~over]
+                if not bool(df["semi"].any()):
+                    mwc_excluded_wells.append(wn)
+                    continue
+        batch_pumps.append(_WellView(wn, df))
+
+    optimizer.mwc_excluded = mwc_excluded
+    optimizer.mwc_excluded_wells = mwc_excluded_wells
+    optimizer.mckp_skipped = skipped
+
+    if skipped:
+        logger.warning(
+            "MCKP: skipping %d well(s) with no semi-finalists: %s",
+            len(skipped),
+            ", ".join(skipped),
+        )
+    if mwc_excluded_wells:
+        logger.warning(
+            "MCKP: %d well(s) had every semi-finalist above marginal WC %.2f: %s",
+            len(mwc_excluded_wells),
+            mwc,
+            ", ".join(mwc_excluded_wells),
+        )
 
     if not batch_pumps:
         optimizer.optimization_results = []
@@ -223,7 +357,9 @@ def mckp_optimization(
                 predicted_formation_water=perf["formation_water"],
                 predicted_lift_water=perf["lift_water"],
                 suction_pressure=perf["suction_pressure"],
-                marginal_oil_rate=perf["marginal_oil_lift_water"],
+                # Follow the constrained stream, matching the MILP path (a
+                # totl_wat run used to report lift-water marginals here).
+                marginal_oil_rate=perf[marg_perf_key],
                 sonic_status=perf["sonic_status"],
                 mach_te=perf["mach_te"],
             )

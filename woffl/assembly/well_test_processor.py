@@ -45,7 +45,9 @@ class WellTestProcessor:
 
         # Extract well name from EntName1 (e.g., "B-028A" -> "MPB-28")
         df["well"] = df["EntName1"].str.extract(r"(\w+-\d+)")
-        # Remove leading zeros in well number
+        # DB names are 3-digit zero-padded; strip ONE leading zero so the GUI
+        # form is 2-digit zero-padded to match jp_chars (B-028 -> MPB-28,
+        # B-008 -> MPB-08, NOT MPB-8 — jp_chars keys single-digit wells as MPH-08)
         df["well"] = df["well"].str.replace(r"-(0)(?=\d+)", "-", regex=True)
         df["well"] = "MP" + df["well"]
 
@@ -189,7 +191,11 @@ def merge_tests_with_bhp(
         # Convert WtDate to date-only for matching (BHP data is daily)
         filtered_tests["merge_date"] = filtered_tests["WtDate"].dt.normalize()
 
-        # Reset index on tag data to get date column
+        # Capture the index (the date) BEFORE reset_index turns it into a plain
+        # RangeIndex — the old else-branch read the post-reset 0,1,2 RangeIndex
+        # as dates -> 1970 epoch timestamps -> the well silently dropped from the
+        # join. Reset index on tag data to get the date column.
+        orig_index = filtered_tag_data.index
         filtered_tag_data = filtered_tag_data.reset_index()
         if "date" in filtered_tag_data.columns:
             filtered_tag_data["merge_date"] = pd.to_datetime(
@@ -200,10 +206,8 @@ def merge_tests_with_bhp(
                 filtered_tag_data["datetime"]
             ).dt.normalize()
         else:
-            # Index was the date
-            filtered_tag_data["merge_date"] = pd.to_datetime(
-                filtered_tag_data.index
-            ).normalize()
+            # Index was the date (captured before the reset above)
+            filtered_tag_data["merge_date"] = pd.to_datetime(orig_index).normalize()
 
         merged_well_data = pd.merge(
             filtered_tests,

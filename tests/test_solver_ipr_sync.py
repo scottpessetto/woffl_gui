@@ -226,9 +226,15 @@ class _FakeStWidgets:
         n = spec if isinstance(spec, int) else len(spec)
         return [_FakeColumn() for _ in range(n)]
 
-    def selectbox(self, label, options, index=0, key=None, help=None, **kw):
+    def selectbox(self, label, options, index=0, key=None, help=None,
+                  format_func=None, **kw):
         opts = list(options)
-        self.last_options[label] = opts
+        # Record the DISPLAYED labels, applying format_func like real Streamlit,
+        # so option-text assertions work whether the caller passes label strings
+        # directly or indices + a format_func (the dup-label-safe idiom).
+        self.last_options[label] = (
+            [format_func(o) for o in opts] if format_func is not None else opts
+        )
         # Key present with a still-valid value → that value wins (index ignored).
         if key is not None and self.session_state.get(key) in opts:
             return self.session_state[key]

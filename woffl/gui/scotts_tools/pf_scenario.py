@@ -187,7 +187,13 @@ def _estimate_bhp(
         if res_mid is None:
             psu_hi = psu_mid
             continue
-        if res_mid > 0:
+        # Residual (pdi_jp - pdi_of) is monotonically INCREASING in suction
+        # pressure (same convention as solopump.discharge_residual): res<0 below
+        # the root, res>0 above it. So a negative midpoint means the root lies
+        # ABOVE psu_mid -> raise the lower bound; positive -> lower the upper
+        # bound. (Previously these were swapped, collapsing the solve onto a
+        # bracket endpoint instead of the root.)
+        if res_mid < 0:
             psu_lo = psu_mid
         else:
             psu_hi = psu_mid
@@ -257,14 +263,30 @@ def _estimate_gaugeless_ipr(
         fric_coefs = friction_coefs_from_chars(chars)
         jpump = JetPump(pump["nozzle_no"], pump["throat_ratio"], **fric_coefs)
 
+        def _cnum(key, default):
+            """NaN-safe numeric lookup — Databricks chars carry missing values
+            as NaN under a *present* key, so dict.get's default never fires and
+            float(nan) silently poisons the solve (NaN Pipe areas -> NaN
+            residual -> _estimate_bhp's bound checks skipped)."""
+            v = chars.get(key)
+            if v is None:
+                return default
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                return default
+            return default if pd.isna(fv) else fv
+
         is_sch = chars.get("is_sch", True)
         if isinstance(is_sch, str):
             is_sch = is_sch.lower() in ("true", "1", "yes")
+        elif pd.isna(is_sch):
+            is_sch = True
         fm = "Schrader" if is_sch else "Kuparuk"
-        tsu = float(chars.get("form_temp", 75 if is_sch else 170))
-        jpump_md = float(chars.get("JP_MD", chars.get("JP_TVD", 4000)))
+        tsu = _cnum("form_temp", 75 if is_sch else 170)
+        jpump_md = _cnum("JP_MD", _cnum("JP_TVD", 4000))
 
-        tube = Pipe(out_dia=float(chars.get("out_dia", 4.5)), thick=float(chars.get("thick", 0.271)))
+        tube = Pipe(out_dia=_cnum("out_dia", 4.5), thick=_cnum("thick", 0.271))
         casing_od, casing_thk = casing_dims_from_chars(chars)
         case = Pipe(out_dia=casing_od, thick=casing_thk)
         wellbore = PipeInPipe(inn_pipe=tube, out_pipe=case)
@@ -281,7 +303,7 @@ def _estimate_gaugeless_ipr(
             pwh = float(test_whp)
 
         # Use oil rate (not total fluid) as qoil_std for the solver
-        psu_max = float(chars.get("res_pres", 1800))
+        psu_max = _cnum("res_pres", 1800)
         pf_for_well = float((pf_map or {}).get(wn, test_pf_pres))
         bhp_est = _estimate_bhp(
             oil_rate, wc, fgor, pwh, tsu, pf_for_well,

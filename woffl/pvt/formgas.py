@@ -15,7 +15,9 @@ class FormGas:
             Self
         """
 
-        if (0.5 < gas_sg < 1.2) is False:
+        # [LIBRARY change -> upstream PR to kwellis/woffl] inclusive bounds match
+        # the documented range; strict < rejected exact boundary inputs.
+        if (0.5 <= gas_sg <= 1.2) is False:
             # do I need more here?
             raise ValueError(f"Gas SG {gas_sg} Outside Range")
 
