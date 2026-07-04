@@ -78,6 +78,7 @@ OIL_RATE_FIELD = "qwf_oil_review"
 _STRING_FIELDS = (
     "well_name",
     "field_model",
+    "jpump_direction",
     "review_nozzle",
     "review_throat",
     "ipr_source",
@@ -100,6 +101,7 @@ CSV_COLUMNS = (
     + _OPTIONAL_FLOAT_FIELDS
     + (
         "field_model",
+        "jpump_direction",
         "review_nozzle",
         "review_throat",
         "ipr_source",
@@ -180,6 +182,17 @@ def _nozzle_str(raw: Any) -> str:
     except (TypeError, ValueError):
         pass
     return s
+
+
+def _direction(raw: Any) -> str:
+    """Normalize a circulation direction to 'reverse'/'forward'.
+
+    Sidebar radio values are 'Reverse'/'Forward'; older stores/CSVs have no
+    column at all. Anything unrecognized falls back to 'reverse' (the
+    standard configuration) — same default WellConfig applies.
+    """
+    d = _str(raw).strip().lower()
+    return d if d in ("reverse", "forward") else "reverse"
 
 
 def _bool(raw: Any, default: bool = False) -> bool:
@@ -291,6 +304,11 @@ def snapshot_from_params(
         "ken_well": float(params.ken),
         "kth_well": float(params.kth),
         "kdi_well": float(params.kdi),
+        # Circulation direction from the sidebar radio (live-PF-seeded on well
+        # selection): "reverse" = PF down the annulus, "forward" = PF down the
+        # tubing (e.g. MPS-17). Carried into WellConfig so the optimizer's
+        # BatchPump models the correct conduits.
+        "jpump_direction": _direction(getattr(params, "jpump_direction", None)),
         # Review metadata. The optimizer re-chooses nozzle/throat, so the
         # reviewed pump is informational (drives the "reviewed vs optimized"
         # comparison in Results), not a constraint.
@@ -363,6 +381,7 @@ def to_well_config(entry: dict) -> WellConfig:
         ken_well=entry.get("ken_well"),
         kth_well=entry.get("kth_well"),
         kdi_well=entry.get("kdi_well"),
+        jpump_direction=_direction(entry.get("jpump_direction")),
     )
 
 
@@ -443,7 +462,12 @@ def store_signature(store: dict[str, dict]) -> tuple:
     calibration fields participate; notes, provenance, and the reviewed pump
     label don't change the optimization.
     """
-    fields = _WELLCONFIG_FLOAT_FIELDS + _OPTIONAL_FLOAT_FIELDS + ("field_model",)
+    # jpump_direction changes the modeled conduits, so it participates.
+    fields = (
+        _WELLCONFIG_FLOAT_FIELDS
+        + _OPTIONAL_FLOAT_FIELDS
+        + ("field_model", "jpump_direction")
+    )
 
     def _norm(v):
         if v is None:
@@ -493,6 +517,7 @@ def dataframe_to_store(df: pd.DataFrame) -> dict[str, dict]:
         # WellConfig.__post_init__ at run time.
         fm = (_str(row.get("field_model"), "Schrader") or "Schrader").strip().title()
         entry["field_model"] = fm if fm in ("Schrader", "Kuparuk") else "Schrader"
+        entry["jpump_direction"] = _direction(row.get("jpump_direction"))
         entry["review_nozzle"] = _nozzle_str(row.get("review_nozzle"))
         entry["review_throat"] = _str(row.get("review_throat")).strip()
         entry["ipr_source"] = _str(row.get("ipr_source"), "vogel") or "vogel"

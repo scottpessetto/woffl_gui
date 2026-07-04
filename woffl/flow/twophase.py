@@ -9,6 +9,7 @@ import math
 import numpy as np
 
 from woffl.flow import singlephase as sp
+from woffl.flow.errors import FlowPatternUnknown
 
 
 def velocities(
@@ -220,8 +221,14 @@ def beggs_flow_pattern(nslh: float, froude: float) -> tuple[str, float]:
     elif (nslh >= 0.4) and (froude > l4):
         hpat = "distributed"
     else:
-        # need to thrown an error here
-        hpat = "unknown"
+        # [LIBRARY change -> upstream PR to kwellis/woffl] the regime bounds are
+        # exhaustive for finite inputs; only degenerate values (NaN nslh or
+        # froude, e.g. from survey noise) fall through. Returning "unknown"
+        # became a bare KeyError in beggs_holdup_inc that no ValueError-family
+        # handler caught — raise typed instead.
+        raise FlowPatternUnknown(
+            f"Beggs-Brill flow pattern unresolved: nslh={nslh}, froude={froude}"
+        )
 
     return hpat, tran
 
@@ -245,6 +252,11 @@ def beggs_holdup_base(
         - Applied Multiphase Flow in Pipes (2017) Al-Safran and Brill, Page 58 (error in eqn)
     """
     hlh = a * nslh**b / froude**c
+    # [LIBRARY change -> upstream PR to kwellis/woffl] canonical Beggs-Brill
+    # restriction: HL(0) >= lambda_L (no-slip holdup). The correlation is
+    # published with this floor; without it high-lambda / high-Froude points
+    # return a slip holdup BELOW no-slip, understating the static gradient.
+    hlh = max(hlh, nslh)
     return hlh
 
 
@@ -287,6 +299,12 @@ def beggs_cf_base(
         c (float): Beggs C Factor
     """
     c = (1 - nslh) * math.log(e * (nslh**f) * (ros_nlv**g) * (froude**h))
+    # [LIBRARY change -> upstream PR to kwellis/woffl] canonical Beggs-Brill
+    # restriction: C >= 0. Raw C goes negative routinely in intermittent flow,
+    # dragging the incline correction phi below 1 and understating holdup
+    # (~30% in realistic cases; extreme cases gave slip density DECREASING
+    # with depth). Beggs & Brill publish the correlation with this clamp.
+    c = max(c, 0.0)
     return c
 
 

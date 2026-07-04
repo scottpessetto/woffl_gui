@@ -12,6 +12,7 @@ from plotly.subplots import make_subplots
 
 from woffl.gui.components.dataframe_display import display_results_table
 from woffl.gui.params import SimulationParams
+from woffl.gui.tab_helpers import physical_sweep_signature, pump_at_test_matches
 from woffl.gui.utils import (
     build_calibration_inputs,
     is_valid_number,
@@ -23,10 +24,26 @@ from woffl.gui.utils import (
 
 # Qualitative palette that stays legible on white
 _PALETTE = [
-    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
-    "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
-    "#c49c94", "#f7b6d2", "#c7c7c7", "#dbdb8d", "#9edae5",
+    "#1f77b4",
+    "#ff7f0e",
+    "#2ca02c",
+    "#d62728",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#7f7f7f",
+    "#bcbd22",
+    "#17becf",
+    "#aec7e8",
+    "#ffbb78",
+    "#98df8a",
+    "#ff9896",
+    "#c5b0d5",
+    "#c49c94",
+    "#f7b6d2",
+    "#c7c7c7",
+    "#dbdb8d",
+    "#9edae5",
 ]
 
 
@@ -40,7 +57,8 @@ def _render_performance_vs_pressure(
     combos = sorted(successful_df["pump_combo"].unique())
 
     fig = make_subplots(
-        rows=1, cols=2,
+        rows=1,
+        cols=2,
         subplot_titles=("Oil Rate vs PF Pressure", "Total Water vs PF Pressure"),
         horizontal_spacing=0.10,
     )
@@ -87,7 +105,8 @@ def _render_performance_vs_pressure(
                 customdata=custom,
                 hovertemplate=hover,
             ),
-            row=1, col=1,
+            row=1,
+            col=1,
         )
 
         # Total water trace (right) — hide from legend (shared legendgroup)
@@ -104,17 +123,30 @@ def _render_performance_vs_pressure(
                 customdata=np.stack([cd["qoil_std"]], axis=-1),
                 hovertemplate=hover_water,
             ),
-            row=1, col=2,
+            row=1,
+            col=2,
         )
 
-    fig.update_xaxes(title_text="Power Fluid Pressure (psi)", gridcolor="lightgray",
-                     row=1, col=1)
-    fig.update_xaxes(title_text="Power Fluid Pressure (psi)", gridcolor="lightgray",
-                     row=1, col=2)
-    fig.update_yaxes(title_text="Oil Rate (BOPD)", gridcolor="lightgray",
-                     rangemode="tozero", row=1, col=1)
-    fig.update_yaxes(title_text="Total Water (BWPD)", gridcolor="lightgray",
-                     rangemode="tozero", row=1, col=2)
+    fig.update_xaxes(
+        title_text="Power Fluid Pressure (psi)", gridcolor="lightgray", row=1, col=1
+    )
+    fig.update_xaxes(
+        title_text="Power Fluid Pressure (psi)", gridcolor="lightgray", row=1, col=2
+    )
+    fig.update_yaxes(
+        title_text="Oil Rate (BOPD)",
+        gridcolor="lightgray",
+        rangemode="tozero",
+        row=1,
+        col=1,
+    )
+    fig.update_yaxes(
+        title_text="Total Water (BWPD)",
+        gridcolor="lightgray",
+        rangemode="tozero",
+        row=1,
+        col=2,
+    )
 
     fig.update_layout(
         title=dict(
@@ -307,6 +339,30 @@ def _render_calibration_flags_for_installed_pump(
     if well_tests is None or well_tests.empty:
         return
     recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
+
+    # P1-11 guard: the test's actuals were measured on whatever pump was in
+    # the hole at TEST time (set-to-set tenure via get_pump_at_date). In the
+    # JPCO→next-test window that's the OLD pump, so the PF-match / BHP flags
+    # would compare different pumps — pause them. None (no usable history
+    # record) fails open, same as the Solver's pump_differs guard.
+    test_date = recent.get("WtDate")
+    if (
+        pump_at_test_matches(jp_hist, params.selected_well, test_date, nozzle, throat)
+        is False
+    ):
+        jpco = current_pump.get("date_set")
+        jpco_str = (
+            pd.Timestamp(jpco).strftime("%Y-%m-%d")
+            if pd.notna(jpco)
+            else "unknown date"
+        )
+        st.info(
+            f"PF-match and BHP checks are paused — the latest test predates "
+            f"the current pump {nozzle}{throat} (JPCO on {jpco_str}). "
+            "They'll resume when a test on the new pump comes in."
+        )
+        return
+
     actual_bhp = recent.get("BHP") if "BHP" in well_tests.columns else None
     actual_pf = recent.get("lift_wat") if "lift_wat" in well_tests.columns else None
 
@@ -402,16 +458,15 @@ def render_tab(
     # re-execute on EVERY rerun of this view, including reruns triggered by
     # the quickfix widgets rendered below it (one Auto-match click paid the
     # full sweep twice on the shared 2-vCPU box).
-    sweep_sig = (
-        params.selected_well, params.field_model, params.jpump_direction,
-        params.surf_pres, params.form_temp, params.rho_pf,
-        params.power_fluid_min, params.power_fluid_max, params.power_fluid_step,
-        tuple(params.nozzle_batch_options), tuple(params.throat_batch_options),
-        params.ken, params.kth, params.kdi,
-        params.qwf, params.pwf, params.pres, params.form_wc, params.form_gor,
-        params.oil_api, params.gas_sg, params.wat_sg, params.bubble_point,
-        params.tubing_od, params.tubing_thickness,
-        params.casing_od, params.casing_thickness, params.jpump_tvd,
+    # Physical inputs come from the shared builder (tab_helpers) so a field
+    # added there invalidates BOTH tabs' caches; only the PF pressure range
+    # and the pump grid are tab-specific here.
+    sweep_sig = physical_sweep_signature(params) + (
+        params.power_fluid_min,
+        params.power_fluid_max,
+        params.power_fluid_step,
+        tuple(params.nozzle_batch_options),
+        tuple(params.throat_batch_options),
     )
     cached = st.session_state.get("_pf_range_cache")
     if cached is not None and cached.get("sig") == sweep_sig:

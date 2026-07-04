@@ -550,9 +550,7 @@ def throat_discharge(
                 rho = prop_tm.condition(p, tte).rho_mix()
                 v = sp.velocity(mtm / rho, ath)
                 m_tm, m_fr = throat_outlet_momentum(kth, v, ath, rho)
-                return throat_momentum_balance(
-                    pte, p, mom_nz, mom_te, m_tm, m_fr, ath
-                )
+                return throat_momentum_balance(pte, p, mom_nz, mom_te, m_tm, m_fr, ath)
 
             return _throat_discharge_bracketed(_bal, pte)
 
@@ -567,6 +565,17 @@ def _throat_discharge_bracketed(bal_fn, pte: float) -> float:
     Returns the validated ``ptm`` root. Raises :class:`ConvergenceError` only if
     no sign change exists in range (a genuinely non-physical configuration), so
     callers' existing failure handling is preserved.
+
+    Root selection: the residual generically has TWO roots — the balance falls
+    to -inf at both ends (gas expansion blows up the outlet momentum at low
+    ptm; the -ptm term dominates at high ptm) with a positive hump between.
+    The LOW root is the non-physical/choked branch; the HIGH root is the
+    working discharge (the secant fast path, seeded at 2-3x pte, converges to
+    it). Scan DOWNWARD from the top so the first bracketed sign change is the
+    physical high root — the original upward scan locked onto the low root and
+    reported an understated ptm/pdi, i.e. a false "pump can't lift" on exactly
+    the marginal wells this fallback exists to save.
+    [LIBRARY change -> upstream PR to kwellis/woffl]
     """
     from scipy.optimize import brentq
 
@@ -575,15 +584,20 @@ def _throat_discharge_bracketed(bal_fn, pte: float) -> float:
     # pump (initial secant guesses were 2*pte, 3*pte); scan well past that.
     for hi in (max(6.0 * pte, 300.0), max(15.0 * pte, 1500.0)):
         grid = np.linspace(lo, hi, 60)
-        prev_p = grid[0]
+        prev_p = grid[-1]
         prev_v = bal_fn(prev_p)
-        for p in grid[1:]:
+        if prev_v > 0.0:
+            # Still inside the positive hump — the high root is ABOVE this hi.
+            # Expand the range rather than walk down into the low root.
+            continue
+        for p in grid[-2::-1]:
             v = bal_fn(p)
             if prev_v == 0.0:
                 return float(prev_p)
             if (prev_v < 0.0) != (v < 0.0):  # sign change -> root bracketed
-                return float(brentq(bal_fn, prev_p, p, xtol=1e-2, rtol=1e-8,
-                                    maxiter=200))
+                return float(
+                    brentq(bal_fn, p, prev_p, xtol=1e-2, rtol=1e-8, maxiter=200)
+                )
             prev_p, prev_v = p, v
     raise ConvergenceError("throat mixture did not converge")
 
@@ -615,6 +629,26 @@ def throat_wc(qoil_std: float, wc_su: float, qwat_nz: float) -> tuple[float, flo
     qwat_tot = qwat_nz + qwat_su
     wc_tm = qwat_tot / (qwat_tot + qoil_std)
     return wc_tm, qwat_su
+
+
+def _throat_mixture_anchor(
+    qoil_std: float, qnz_bwpd: float, wc_tm: float, water_mode: bool
+) -> float:
+    """Anchor rate for throat-mixture (prop_tm) flow calculations.
+
+    Oil path: the anchor is the standard oil rate — wc_tm carries the
+    power-fluid water into the mixture totals, so nothing more is needed.
+    Water-pump mode: the anchor IS the water standard rate (see
+    ResMix.insitu_volm_flow's water branch) and wc_tm = 1.0 carries no
+    information about the power fluid — the nozzle water must be added
+    explicitly, or the diffuser and tubing traverse are sized on formation
+    water alone (e.g. 300 BWPD modeled instead of 2,800 with power fluid),
+    inconsistent with the throat momentum balance that DOES include the
+    nozzle mass flow. [LIBRARY change -> upstream PR to kwellis/woffl]
+    """
+    if water_mode and wc_tm >= 1.0:
+        return qoil_std + qnz_bwpd
+    return qoil_std
 
 
 def diffuser_ke(kdi: float, vtm: float, vdi: float) -> float:
@@ -759,9 +793,14 @@ def jetpump_base_calcs(
     # 100%-water solve stays water-anchored through the diffuser.
     # [LIBRARY change -> upstream PR to kwellis/woffl]
     prop_tm = ResMix(
-        wc_tm, prop_su.fgor, prop_su.oil, prop_su.wat, prop_su.gas,
+        wc_tm,
+        prop_su.fgor,
+        prop_su.oil,
+        prop_su.wat,
+        prop_su.gas,
         model_as_water=prop_su.model_as_water,
     )
     ptm = throat_discharge(pte, tsu, kth, vnz, anz, rho_ni, vte, ate, rho_te, prop_tm)
-    vtm, pdi = diffuser_discharge(ptm, tsu, kdi, ath, adi, qoil_std, prop_tm)
+    qtm_std = _throat_mixture_anchor(qoil_std, qnz_bwpd, wc_tm, prop_su.model_as_water)
+    vtm, pdi = diffuser_discharge(ptm, tsu, kdi, ath, adi, qtm_std, prop_tm)
     return pte, ptm, pdi, qoil_std, fwat_bwpd, qnz_bwpd, mach_te, prop_tm

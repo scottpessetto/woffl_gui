@@ -167,6 +167,12 @@ def _hydrate_sidebar_from_entry(entry: dict) -> None:
         st.session_state["field_model_index"] = ["Schrader", "Kuparuk"].index(fm)
         st.session_state.pop("field_model_radio", None)
 
+    # Circulation direction (store keeps lowercase; the radio uses title case).
+    jd = str(entry.get("jpump_direction") or "").strip().lower()
+    if jd in ("reverse", "forward"):
+        st.session_state["jpump_direction"] = jd.title()
+        st.session_state.pop("jpump_direction_input", None)
+
 
 # ---------------------------------------------------------------------------
 # UI sections
@@ -300,16 +306,16 @@ def _render_save_panel(params, real_wells: list[str], pad: str) -> None:
 
     jpump_md = params.well_data.get("JP_MD") if params.well_data else None
 
-    btn_label = "💾 Update saved review" if already else "💾 Save & next well"
-    if st.button(
-        btn_label, type="primary", use_container_width=True, key=f"sp_save_{well}"
-    ):
+    def _save_and_advance(offline_flag: bool) -> None:
+        """Snapshot → store → advance to the next unreviewed well. Shared by
+        the Save button and the dedicated Offline button so the two paths
+        can never drift."""
         try:
             entry = wrs.snapshot_from_params(
                 params,
                 ipr_source=ipr_source,
                 bhp_source=bhp_source,
-                offline=offline,
+                offline=offline_flag,
                 gauge_note=gauge_note,
                 jpump_md=float(jpump_md) if jpump_md is not None else None,
                 notes=notes,
@@ -318,8 +324,11 @@ def _render_save_panel(params, real_wells: list[str], pad: str) -> None:
             # e.g. WC above what the oil optimizer can model — don't save, tell
             # the engineer exactly what to do instead.
             st.error(str(e))
-            return jp_box, hero_box
+            return
         store[well] = entry
+        # The offline checkbox re-seeds from the stored value next render;
+        # drop its widget state so a dedicated-button save shows through.
+        st.session_state.pop(f"sp_offline_{well}", None)
 
         # Advance to the next UNREVIEWED well after this one (sequential), wrapping
         # to the first pending if we're at the end. Leave a one-shot target;
@@ -334,8 +343,33 @@ def _render_save_panel(params, real_wells: list[str], pad: str) -> None:
             )
             if nxt:
                 st.session_state[f"sp_review_target_{pad}"] = nxt
-        st.toast(f"Saved {well}", icon="✅")
+        st.toast(
+            f"Saved {well}" + (" — OFFLINE (excluded)" if offline_flag else ""),
+            icon="🔌" if offline_flag else "✅",
+        )
         st.rerun()
+
+    # Two first-class actions side by side: the normal save (honors the
+    # checkbox above) and a dedicated one-click "this well is down — exclude
+    # it and move on" for pulled / dewatering wells, so marking a well
+    # offline doesn't require spotting the checkbox first.
+    btn_label = "💾 Update saved review" if already else "💾 Save & next well"
+    off_label = "🔌 Offline — exclude" if already else "🔌 Offline & next well"
+    c_save, c_off = st.columns([1.6, 1.0])
+    with c_save:
+        if st.button(
+            btn_label, type="primary", use_container_width=True,
+            key=f"sp_save_{well}",
+        ):
+            _save_and_advance(offline)
+    with c_off:
+        if st.button(
+            off_label, use_container_width=True, key=f"sp_save_off_{well}",
+            help="Save this well as OFFLINE (pulled / down / dewatering): it "
+            "stays in the review set and pad accounting but is excluded from "
+            "the optimization run. One click — no checkbox needed.",
+        ):
+            _save_and_advance(True)
 
     if already and st.button("🗑 Remove from review set", key=f"sp_del_{well}"):
         store.pop(well, None)
@@ -416,6 +450,7 @@ def _render_hypothetical_form(pad: str) -> None:
                 "ken_well": None,
                 "kth_well": None,
                 "kdi_well": None,
+                "jpump_direction": "reverse",
                 "field_model": field_model,
                 "review_nozzle": "",
                 "review_throat": "",
@@ -638,6 +673,17 @@ def _batch_automatch_inputs(well: str, jp_hist, ppf_surf: float, rho_pf: float =
         wp = create_well_profile_from_survey(well, tvd, field)
     except Exception:
         return None, None, "geometry/survey build failed"
+
+    # Circulation direction from live daily pressures: PF on the tubing side
+    # (tubing_prs > inn_ann_prs) ⇒ forward circ, e.g. MPS-17. Mirrors the
+    # sidebar's direction seed so batch and single-well reviews agree.
+    from woffl.gui.utils import live_pf_for_seed
+
+    live_pf = live_pf_for_seed(well)
+    direction = (
+        "forward" if (live_pf and live_pf.get("pf_source") == "tubing") else "reverse"
+    )
+
     kwargs = dict(
         oil_target=oil,
         pf_target=pf,
@@ -653,6 +699,7 @@ def _batch_automatch_inputs(well: str, jp_hist, ppf_surf: float, rho_pf: float =
         form_wc=wc,
         form_gor=gor,
         field_model=field,
+        jpump_direction=direction,
         bhp_target=bhp,
         pin_ppf=True,
     )
@@ -662,7 +709,7 @@ def _batch_automatch_inputs(well: str, jp_hist, ppf_surf: float, rho_pf: float =
     raw = {
         "nozzle_no": str(cp["nozzle_no"]),
         "area_ratio": str(cp["throat_ratio"]),
-        "jpump_direction": "reverse",
+        "jpump_direction": direction,
         "tubing_od": float(wd.get("out_dia") or 4.5),
         "tubing_thickness": float(wd.get("thick") or 0.5),
         "casing_od": 6.875,
@@ -695,9 +742,11 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
 
         st.caption(
             "Pick the wells to auto-match (online wells start checked; default-offline "
-            "ones unchecked). Each holds its PF pressure — the pad normal, overridable "
-            "per well — fits the IPR to its recent-test oil, and reports the PF-rate "
-            "residual. Review the table, then open the ones that need attention."
+            "ones unchecked). Each holds its PF pressure — seeded per well from LIVE "
+            "daily data (vw_pressure_daily, most-recent-test day), pad normal as "
+            "fallback, overridable per well — fits the IPR to its recent-test oil, "
+            "and reports the PF-rate residual. Review the table, then open the ones "
+            "that need attention."
         )
         pad_ppf = st.number_input(
             "Pad PF header pressure (psi)",
@@ -706,14 +755,25 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
             {"M": 3500}.get(pad, 3400),
             50,
             key=f"batch_ppf_{pad}",
-            help="Seeds each well's held PF below. Edit a well's PF to override, or "
-            "hit Reset to re-seed everything to this value.",
+            help="Fallback for wells without a live PF reading. Wells with live "
+            "data seed from their own measured PF; edit a well's PF to override, "
+            "or hit Reset to re-seed everything.",
         )
 
         # Stable selection frame (Well · Auto-match · PF psi). Rebuilt only when the
         # well set changes (NOT on every rerun — never feed the editor its own
         # return; that drops/dupes cells). Edits replay via the editor widget; we
         # read the return value. Default-offline wells start UNCHECKED.
+        # Per-well PF seeds from live daily data (test-day of the most recent
+        # test, else latest daily reading), falling back to the pad value.
+        from woffl.gui.utils import live_pf_for_seed
+
+        def _live_or_pad_ppf(w: str) -> int:
+            live = live_pf_for_seed(w)
+            if live is not None:
+                return int(round(live["pf_press"]))
+            return int(pad_ppf)
+
         fkey = f"batch_sel_{pad}"
         if st.session_state.get(f"{fkey}_sig") != tuple(real_wells):
             st.session_state[fkey] = pd.DataFrame(
@@ -721,7 +781,7 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
                     {
                         "Well": w,
                         "Auto-match": not _is_default_offline(pad, w),
-                        "PF psi": int(pad_ppf),
+                        "PF psi": _live_or_pad_ppf(w),
                     }
                     for w in real_wells
                 ]
@@ -741,7 +801,8 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
                     max_value=5500,
                     step=50,
                     format="%d",
-                    help="Held PF pressure for this well (defaults to the pad value).",
+                    help="Held PF pressure for this well — live daily reading "
+                    "when available, else the pad value.",
                 ),
             },
         )

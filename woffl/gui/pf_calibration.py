@@ -133,6 +133,46 @@ class PfCalibrationResult:
     iterations: int
 
 
+def _solve_with_pump(
+    ppf_surf: float,
+    jp: JetPump,
+    *,
+    pwh: float,
+    tsu: float,
+    wellbore,
+    wellprof,
+    ipr_su,
+    prop_su,
+    prop_pf,
+    jpump_direction: str,
+) -> tuple[float, float, float, bool, bool]:
+    """Solve the jet pump once with a prebuilt JetPump object.
+
+    Returns (qnz, qoil, psu, sonic, ok). All-NaN with ok=False on solver
+    failure. Mirrors fric_calibration._solve_at_coefs's defensive wrap.
+    Taking the pump object (rather than nozzle/throat strings) lets the
+    nozzle-wear estimator pass a pump with a scaled effective nozzle.
+    """
+    try:
+        psu, sonic, qoil, _fwat, qnz, _mach = jetpump_solver(
+            pwh=pwh,
+            tsu=tsu,
+            ppf_surf=ppf_surf,
+            jpump=jp,
+            wellbore=wellbore,
+            wellprof=wellprof,
+            ipr_su=ipr_su,
+            prop_su=prop_su,
+            prop_pf=prop_pf,
+            jpump_direction=jpump_direction,
+        )
+        if psu is None or np.isnan(psu):
+            return np.nan, np.nan, np.nan, False, False
+        return float(qnz), float(qoil), float(psu), bool(sonic), True
+    except Exception:
+        return np.nan, np.nan, np.nan, False, False
+
+
 def _solve_at_ppf(
     ppf_surf: float,
     *,
@@ -151,30 +191,23 @@ def _solve_at_ppf(
     prop_pf,
     jpump_direction: str,
 ) -> tuple[float, float, float, bool, bool]:
-    """Solve the jet pump once at a given ppf_surf.
-
-    Returns (qnz, qoil, psu, sonic, ok). All-NaN with ok=False on solver
-    failure. Mirrors fric_calibration._solve_at_coefs's defensive wrap.
-    """
+    """Solve the jet pump once at a given ppf_surf (catalog pump)."""
     try:
         jp = JetPump(nozzle, throat, knz=knz, ken=ken, kth=kth, kdi=kdi)
-        psu, sonic, qoil, _fwat, qnz, _mach = jetpump_solver(
-            pwh=pwh,
-            tsu=tsu,
-            ppf_surf=ppf_surf,
-            jpump=jp,
-            wellbore=wellbore,
-            wellprof=wellprof,
-            ipr_su=ipr_su,
-            prop_su=prop_su,
-            prop_pf=prop_pf,
-            jpump_direction=jpump_direction,
-        )
-        if psu is None or np.isnan(psu):
-            return np.nan, np.nan, np.nan, False, False
-        return float(qnz), float(qoil), float(psu), bool(sonic), True
     except Exception:
         return np.nan, np.nan, np.nan, False, False
+    return _solve_with_pump(
+        ppf_surf,
+        jp,
+        pwh=pwh,
+        tsu=tsu,
+        wellbore=wellbore,
+        wellprof=wellprof,
+        ipr_su=ipr_su,
+        prop_su=prop_su,
+        prop_pf=prop_pf,
+        jpump_direction=jpump_direction,
+    )
 
 
 def calibrate_pf_for_lift(
@@ -297,4 +330,167 @@ def calibrate_pf_for_lift(
         modeled_bhp=psu_f, lift_residual=res_final,
         converged=abs(hi - lo) < tol_psi, bounded=False,
         sonic=sonic_f, iterations=iters,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Nozzle-wear estimation (PF pressure MEASURED → area is the free variable)
+# ---------------------------------------------------------------------------
+
+# Effective nozzle-AREA factor bounds. >1 = washed out (bigger bore), <1 =
+# partial plug / smaller pump than the tracker says. 1.6× area ≈ +26%
+# diameter — beyond that the "same pump, worn" story isn't credible and the
+# result should be read as "verify the pump identity".
+WEAR_LO_DEFAULT = 0.7
+WEAR_HI_DEFAULT = 1.6
+WEAR_TOL = 0.005
+
+
+@dataclass
+class NozzleWearResult:
+    well_name: str
+    target_lift: float       # observed lift_wat (BWPD)
+    ppf_surf: float          # MEASURED test-day PF pressure held fixed (psi)
+    wear_factor: float       # effective nozzle-AREA multiple vs catalog
+    dnz_catalog: float       # catalog nozzle diameter (in)
+    dnz_effective: float     # dnz_catalog * sqrt(wear_factor) (in)
+    equivalent_nozzle: str   # nearest catalog nozzle number to dnz_effective
+    modeled_qnz: float       # modeled PF rate at the returned factor (BWPD)
+    modeled_bhp: float       # diagnostic: suction pressure at the factor (psi)
+    lift_residual: float     # modeled_qnz − target_lift
+    converged: bool
+    bounded: bool            # hit the wear-factor search bound
+    sonic: bool
+    iterations: int
+
+
+def _nearest_nozzle_no(dnz: float) -> str:
+    diffs = [abs(d - dnz) for d in JetPump.nozzle_dia]
+    return str(diffs.index(min(diffs)) + 1)
+
+
+def estimate_nozzle_wear(
+    *,
+    well_name: str,
+    target_lift: float,
+    ppf_surf: float,
+    pwh: float,
+    tsu: float,
+    nozzle: str,
+    throat: str,
+    knz: float,
+    ken: float,
+    kth: float,
+    kdi: float,
+    wellbore,
+    wellprof,
+    ipr_su,
+    prop_su,
+    prop_pf,
+    jpump_direction: str = "reverse",
+    wear_lo: float = WEAR_LO_DEFAULT,
+    wear_hi: float = WEAR_HI_DEFAULT,
+    tol: float = WEAR_TOL,
+    max_iter: int = MAX_ITER,
+) -> NozzleWearResult:
+    """Bisect the effective nozzle-AREA factor so modeled qnz matches the
+    measured lift_wat at the MEASURED PF surface pressure.
+
+    The inverse of :func:`calibrate_pf_for_lift` for the live-PF era: with
+    ``ppf_surf`` measured (vw_pressure_daily test-day join), the pressure is
+    no longer the free variable — the nozzle's effective flow area is. The
+    factor is applied as ``dnz_eff = dnz_catalog * sqrt(factor)`` on a
+    catalog pump (JetPump stores dnz as a plain attribute; anz/ate are
+    derived properties, so ate = ath − anz shrinks self-consistently as the
+    nozzle wears — physically what a wash-out does).
+
+    Interpretation: ~1.0 = healthy; > ~1.10 = wash-out (compare
+    ``equivalent_nozzle``: "your 12 is flowing like a 13"); < ~0.90 =
+    partial plug or the tracker's pump identity is wrong. A ``bounded``
+    result means even the search limits can't reproduce the measured rate —
+    verify the pump identity / allocation before trusting any calibration.
+
+    This is a DIAGNOSTIC — it does not mutate the model. qnz is monotonic
+    in nozzle area, so plain bisection converges like the pressure search.
+    """
+    catalog = JetPump(nozzle, throat, knz=knz, ken=ken, kth=kth, kdi=kdi)
+    dnz_catalog = float(catalog.dnz)
+
+    def _residual(factor: float):
+        jp = JetPump(nozzle, throat, knz=knz, ken=ken, kth=kth, kdi=kdi)
+        jp.dnz = dnz_catalog * float(np.sqrt(factor))
+        qnz, _qoil, psu, sonic, ok = _solve_with_pump(
+            ppf_surf,
+            jp,
+            pwh=pwh, tsu=tsu,
+            wellbore=wellbore, wellprof=wellprof,
+            ipr_su=ipr_su, prop_su=prop_su, prop_pf=prop_pf,
+            jpump_direction=jpump_direction,
+        )
+        if not ok:
+            return None, qnz, psu, sonic
+        return qnz - target_lift, qnz, psu, sonic
+
+    def _result(factor, qnz, psu, res, converged, bounded, sonic, iters):
+        dnz_eff = dnz_catalog * float(np.sqrt(factor))
+        return NozzleWearResult(
+            well_name=well_name, target_lift=target_lift, ppf_surf=ppf_surf,
+            wear_factor=float(factor), dnz_catalog=dnz_catalog,
+            dnz_effective=dnz_eff,
+            equivalent_nozzle=_nearest_nozzle_no(dnz_eff),
+            modeled_qnz=qnz, modeled_bhp=psu, lift_residual=res,
+            converged=converged, bounded=bounded, sonic=sonic,
+            iterations=iters,
+        )
+
+    res_lo, qnz_lo, psu_lo, sonic_lo = _residual(wear_lo)
+    res_hi, qnz_hi, psu_hi, sonic_hi = _residual(wear_hi)
+
+    if res_lo is None or res_hi is None:
+        return _result(
+            1.0, float("nan"), float("nan"), float("nan"),
+            converged=False, bounded=False, sonic=False, iters=2,
+        )
+    # Both negative: even a 1.6×-area nozzle can't reach the measured rate.
+    if res_lo < 0 and res_hi < 0:
+        return _result(
+            wear_hi, qnz_hi, psu_hi, res_hi,
+            converged=False, bounded=True, sonic=sonic_hi, iters=2,
+        )
+    # Both positive: even a 0.7×-area nozzle overshoots the measured rate.
+    if res_lo > 0 and res_hi > 0:
+        return _result(
+            wear_lo, qnz_lo, psu_lo, res_lo,
+            converged=False, bounded=True, sonic=sonic_lo, iters=2,
+        )
+
+    lo, hi = wear_lo, wear_hi
+    res_l = res_lo
+    iters = 2
+    for _ in range(max_iter):
+        if abs(hi - lo) < tol:
+            break
+        mid = (lo + hi) / 2.0
+        res_mid, _qnz_m, _psu_m, _sonic_m = _residual(mid)
+        iters += 1
+        if res_mid is None:
+            hi = mid
+            continue
+        if (res_l < 0 and res_mid < 0) or (res_l > 0 and res_mid > 0):
+            lo, res_l = mid, res_mid
+        else:
+            hi = mid
+
+    mid_final = (lo + hi) / 2.0
+    res_f, qnz_f, psu_f, sonic_f = _residual(mid_final)
+    iters += 1
+    if res_f is None:
+        return _result(
+            mid_final, float("nan"), float("nan"), float("nan"),
+            converged=False, bounded=False, sonic=False, iters=iters,
+        )
+    return _result(
+        mid_final, qnz_f, psu_f, res_f,
+        converged=abs(hi - lo) < tol, bounded=False, sonic=sonic_f,
+        iters=iters,
     )

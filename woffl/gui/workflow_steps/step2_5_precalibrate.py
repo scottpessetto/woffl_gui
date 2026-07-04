@@ -68,6 +68,7 @@ def _calibrate_one(well_config: WellConfig, test_row: dict, chars: dict) -> dict
             knz=knz, ken=ken_seed, kth=kth_seed, kdi=kdi_seed,
             wellbore=wellbore, wellprof=wellprof,
             ipr_su=inflow, prop_su=res_mix, prop_pf=prop_pf,
+            jpump_direction=well_config.jpump_direction,
         )
         coef = calibrate_friction_coefs(
             well_name=wn,
@@ -78,6 +79,7 @@ def _calibrate_one(well_config: WellConfig, test_row: dict, chars: dict) -> dict
             knz=knz, ken=ken_seed,
             wellbore=wellbore, wellprof=wellprof,
             ipr_su=inflow, prop_su=res_mix, prop_pf=prop_pf,
+            jpump_direction=well_config.jpump_direction,
         )
         # NaN-safe: `float('nan') or 0.0` returns nan (nan is truthy), so a test
         # with no oil volume showed NaN instead of 0 in the Obs Oil column.

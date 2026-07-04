@@ -335,6 +335,44 @@ class TestEstimateReservoirPressure:
         result = estimate_reservoir_pressure(df)
         assert pd.notna(result["Optimal_RP"].dropna().iloc[0])
 
+    def test_flat_cloud_does_not_rail_to_cap(self):
+        """A flat test cloud (BHP barely moves, rate scatter uncorrelated)
+        must NOT push the fitted RP to the field cap.
+
+        Regression for the B-28 2026-07 bug: the old rate-direction SSE fell
+        monotonically with RP on flat clouds (a flatter curve always shrinks
+        rate residuals), so the grid search ran to its last candidate — the
+        Schrader 1800 cap — and the curve rode visibly above the points. The
+        axis-normalized objective has an interior minimum.
+        """
+        rng = np.random.default_rng(7)
+        n = 37
+        bhps = rng.normal(1150.0, 45.0, n).clip(1040.0, 1250.0)
+        fluids = rng.normal(1450.0, 180.0, n).clip(1100.0, 1900.0)  # no corr
+        df = make_merged_dataframe("WELL-FLAT", bhps, fluids)
+
+        result = estimate_reservoir_pressure(df, max_pres_schrader=1800)
+        rp = result["Optimal_RP"].iloc[0]
+
+        max_bhp = bhps.max()
+        # Interior minimum: clear of BOTH rails. The rate-only objective ran
+        # to the cap; a pressure-only (or harmonic-orthogonal) objective runs
+        # to the floor (max_bhp + 10, Qmax exploding).
+        assert rp >= max_bhp + 60, f"RP {rp} railed to the floor ({max_bhp:.0f})"
+        assert rp < 1800 - 100, f"RP {rp} railed toward the 1800 cap"
+
+    def test_informative_cloud_unaffected_by_flat_cloud_fix(self):
+        """Noisy-but-informative data must still recover the true RP."""
+        true_pres = 1400.0
+        qmax = 700.0
+        rng = np.random.default_rng(11)
+        bhps = np.linspace(300, 1100, 12)
+        fluids = make_vogel_points(true_pres, qmax, bhps) + rng.normal(0, 15, 12)
+        df = make_merged_dataframe("WELL-NOISY", bhps, fluids)
+
+        result = estimate_reservoir_pressure(df)
+        assert abs(result["Optimal_RP"].iloc[0] - true_pres) < 75
+
 
 # ===================================================================
 # 4. compute_vogel_coefficients

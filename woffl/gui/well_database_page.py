@@ -5,6 +5,19 @@ import streamlit as st
 from woffl.gui.utils import load_well_characteristics
 
 
+def _render_unavailable(detail: str) -> None:
+    """Error + retry instead of a silently blank page.
+
+    Failures are never cached (see utils.load_well_characteristics), so the
+    Retry button's rerun re-probes Databricks; clear() is belt-and-braces in
+    case a stale success entry is what's actually being served.
+    """
+    st.error(f"Well properties unavailable: {detail}")
+    if st.button("Retry", key="well_db_retry"):
+        load_well_characteristics.clear()
+        st.rerun()
+
+
 def run_well_database_page():
     st.title("Well Database")
     st.caption(
@@ -12,8 +25,13 @@ def run_well_database_page():
         "JP_TVD computed locally from deviation surveys."
     )
 
-    df = load_well_characteristics()
+    try:
+        df = load_well_characteristics()
+    except Exception as e:
+        _render_unavailable(str(e))
+        return
     if df.empty:
+        _render_unavailable("the well-properties source returned no rows")
         return
 
     df = df.drop(columns=[c for c in df.columns if "Unnamed" in c], errors="ignore")
@@ -25,7 +43,11 @@ def run_well_database_page():
     col2.metric("Schrader", int(df["is_sch"].sum()) if "is_sch" in df.columns else "—")
     col3.metric(
         "Pads",
-        df["Well"].str.extract(r"(MP[A-Z])")[0].nunique() if "Well" in df.columns else "—",
+        (
+            df["Well"].str.extract(r"(MP[A-Z])")[0].nunique()
+            if "Well" in df.columns
+            else "—"
+        ),
     )
     col4.metric("Estimated TVD", n_estimated, help="Wells lacking a deviation survey")
 
@@ -33,7 +55,9 @@ def run_well_database_page():
     if search:
         # regex=False: str.contains defaults to regex, so typing "(" or "["
         # raised an uncaught re.error and red-screened the page.
-        mask = df["Well"].str.contains(search.strip(), case=False, na=False, regex=False)
+        mask = df["Well"].str.contains(
+            search.strip(), case=False, na=False, regex=False
+        )
         df = df[mask]
 
     display_cols = [
@@ -70,8 +94,12 @@ def run_well_database_page():
             ),
             "out_dia": st.column_config.NumberColumn("Tbg OD (in)", format="%.3f"),
             "thick": st.column_config.NumberColumn("Tbg Wall (in)", format="%.3f"),
-            "casing_out_dia": st.column_config.NumberColumn("Csg OD (in)", format="%.3f"),
-            "casing_inn_dia": st.column_config.NumberColumn("Csg ID (in)", format="%.3f"),
+            "casing_out_dia": st.column_config.NumberColumn(
+                "Csg OD (in)", format="%.3f"
+            ),
+            "casing_inn_dia": st.column_config.NumberColumn(
+                "Csg ID (in)", format="%.3f"
+            ),
             "JP_MD": st.column_config.NumberColumn("JP MD (ft)", format="%.0f"),
             "JP_TVD": st.column_config.NumberColumn("JP TVD (ft)", format="%.1f"),
             "res_pres": st.column_config.NumberColumn("Res Press (psi)", format="%.0f"),

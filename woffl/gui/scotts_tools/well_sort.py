@@ -1122,26 +1122,49 @@ def _render_pad_marginal_wc_section() -> None:
 # the 90-day near-last-test average (shut).
 
 
-def _effective_wc(row) -> float:
-    """Total WC if present, else form WC, else NaN."""
-    for key in ("TotalWC", "WC"):
-        v = row.get(key)
-        if pd.notna(v):
-            return float(v)
-    return float("nan")
+def _effective_wc(row) -> tuple[float, str | None]:
+    """Effective last-test WC and the basis it was read on.
+
+    Returns ``(wc, basis)`` — basis ``"total"`` (``totl_wc``, the same basis
+    as the marginal line), ``"form"`` (formation-water fallback when the test
+    carries no total WC — reads LOW vs the total-WC line on lifted wells, so
+    callers must flag it rather than judge silently, P1-27), or ``None`` when
+    no WC exists at all.
+    """
+    v = row.get("TotalWC")
+    if pd.notna(v):
+        return float(v), "total"
+    v = row.get("WC")
+    if pd.notna(v):
+        return float(v), "form"
+    return float("nan"), None
+
+
+def _form_basis_note(wc_basis: str | None) -> str:
+    """Why-suffix flagging a decision made on form-basis WC (P1-27)."""
+    if wc_basis != "form":
+        return ""
+    return (
+        " [form-basis WC — test has no total WC; reads low vs the "
+        "total-WC line]"
+    )
 
 
 def add_online_decision(online_df: pd.DataFrame, marginal_wc: float) -> pd.DataFrame:
     """Augment the online table with a keep/SI decision vs the marginal WC.
 
     Adds: Decision (emoji-tagged string), Why (plain-language reason),
-    WCvsMarginal (Total WC − marginal), and a hidden ``_rank`` for sorting.
+    WCvsMarginal (Total WC − marginal), WCBasis ("total"/"form" — which WC
+    the decision used; a form-basis fallback reads low vs the total-WC line
+    and is flagged in Why, P1-27), and a hidden ``_rank`` for sorting.
 
     Rule:
       POPS-pad well                              -> ⚪ POPS (own handling)
       stale / no test                            -> ⚠️ Verify (unknown state)
       WC ≤ marginal                              -> ✅ Keep online
-      WC > marginal AND latest oil outlier-low   -> ⚠️ Verify before SI
+      WC > marginal AND latest test anomalous    -> ⚠️ Verify before SI
+        (oil outlier-LOW or water outlier-HIGH — either way one fluky test
+         shouldn't condemn the well, P1-28)
       WC > marginal otherwise                    -> 🔴 SI candidate
     """
     from woffl.assembly.well_sort_client import OUTLIER_PCT
@@ -1150,17 +1173,20 @@ def add_online_decision(online_df: pd.DataFrame, marginal_wc: float) -> pd.DataF
     if df.empty:
         for c in ("WCvsMarginal", "_rank"):
             df[c] = pd.Series(dtype="float")
-        for c in ("Decision", "Why"):
+        for c in ("Decision", "Why", "WCBasis"):
             df[c] = pd.Series(dtype="object")
         return df
 
-    decisions, whys, deltas, ranks = [], [], [], []
+    decisions, whys, deltas, bases, ranks = [], [], [], [], []
     for _, r in df.iterrows():
-        wc = _effective_wc(r)
+        wc, wc_basis = _effective_wc(r)
         deltas.append(wc - marginal_wc if pd.notna(wc) else float("nan"))
+        bases.append(wc_basis)
+        basis_note = _form_basis_note(wc_basis)
         pops = bool(r.get("PopsPad"))
         stale = bool(r.get("StaleTest"))
         oil_dev = r.get("OilDev")
+        wat_dev = r.get("WatDev")
         if pops:
             decisions.append("⚪ POPS (own handling)")
             whys.append(
@@ -1176,26 +1202,41 @@ def add_online_decision(online_df: pd.DataFrame, marginal_wc: float) -> pd.DataF
             decisions.append("✅ Keep online")
             whys.append(
                 f"WC {wc * 100:.0f}% ≤ marginal {marginal_wc * 100:.0f}% — worth its water."
+                + basis_note
             )
             ranks.append(2)
         else:
+            # Outlier protection: a single anomalous test — oil reading LOW
+            # or water reading HIGH — inflates the apparent WC; verify with a
+            # re-test instead of condemning the well on it (P1-28).
             oil_down = pd.notna(oil_dev) and float(oil_dev) < -OUTLIER_PCT
-            if oil_down:
+            wat_up = pd.notna(wat_dev) and float(wat_dev) > OUTLIER_PCT
+            if oil_down or wat_up:
+                anomalies = []
+                if oil_down:
+                    anomalies.append(
+                        f"oil is {abs(float(oil_dev)) * 100:.0f}% below the 2-mo avg"
+                    )
+                if wat_up:
+                    anomalies.append(
+                        f"water is {float(wat_dev) * 100:.0f}% above the 2-mo avg"
+                    )
                 decisions.append("⚠️ Verify before SI")
                 whys.append(
-                    f"WC {wc * 100:.0f}% > marginal {marginal_wc * 100:.0f}%, but latest "
-                    f"oil is {abs(float(oil_dev)) * 100:.0f}% below the 2-mo avg — confirm "
-                    "with a re-test before SI (may recover)."
+                    f"WC {wc * 100:.0f}% > marginal {marginal_wc * 100:.0f}%, but the "
+                    f"latest test looks anomalous — {' and '.join(anomalies)} — "
+                    "confirm with a re-test before SI (may recover)." + basis_note
                 )
                 ranks.append(1)
             else:
                 decisions.append("🔴 SI candidate")
                 whys.append(
                     f"WC {wc * 100:.0f}% > marginal {marginal_wc * 100:.0f}% — "
-                    "water not worth the oil."
+                    "water not worth the oil." + basis_note
                 )
                 ranks.append(0)
     df["WCvsMarginal"] = deltas
+    df["WCBasis"] = bases
     df["Decision"] = decisions
     df["Why"] = whys
     df["_rank"] = ranks
@@ -1205,38 +1246,62 @@ def add_online_decision(online_df: pd.DataFrame, marginal_wc: float) -> pd.DataF
 def add_shut_decision(shut_df: pd.DataFrame, marginal_wc: float) -> pd.DataFrame:
     """Augment the shut-in (offline) table with a BOL decision vs marginal WC.
 
-    Adds: Decision, Why, WCvsMarginal, NearAvgWC (90-day form-WC history),
-    and a hidden ``_rank``.
+    Adds: Decision, Why, WCvsMarginal, NearAvgWC (90-day history WC),
+    NearAvgWCBasis / WCBasis ("total"/"form"), and a hidden ``_rank``.
+
+    The 90-day history WC is compared to a TOTAL-WC marginal line, so it is
+    computed on the same basis wherever possible: the near-window SQL only
+    averages FORMATION water (``AVG(form_wat)``), so when the last test
+    carries lift-water data it is folded in as the window's lift proxy. Where
+    only form-basis history exists it is NOT allowed to grant a BOL trial —
+    form WC reads systematically low vs the total-WC line on lifted wells —
+    the row is flagged to verify instead (P1-27).
 
     Rule:
       no test                                       -> ⚠️ Verify (no test)
       last WC ≤ marginal                            -> 🟢 BOL candidate
-      last WC > marginal BUT 90-day hist WC ≤ marg  -> 🔬 BOL trial (recovery?)
+      last WC > marginal BUT 90-day TOTAL-basis
+        hist WC ≤ marg                              -> 🔬 BOL trial (recovery?)
+      last WC > marginal, form-basis hist ≤ marg    -> ⚠️ Verify (basis unreliable)
       last WC > marginal and history also high      -> ⏸️ Leave shut
     """
     df = shut_df.copy()
     if df.empty:
         for c in ("WCvsMarginal", "NearAvgWC", "_rank"):
             df[c] = pd.Series(dtype="float")
-        for c in ("Decision", "Why"):
+        for c in ("Decision", "Why", "WCBasis", "NearAvgWCBasis"):
             df[c] = pd.Series(dtype="object")
         return df
 
-    decisions, whys, deltas, near_wcs, ranks = [], [], [], [], []
+    decisions, whys, deltas = [], [], []
+    near_wcs, near_bases, wc_bases, ranks = [], [], [], []
     for _, r in df.iterrows():
-        wc = _effective_wc(r)
+        wc, wc_basis = _effective_wc(r)
         deltas.append(wc - marginal_wc if pd.notna(wc) else float("nan"))
-        # Form-based 90-day near-last-test WC: the "was it healthy recently?"
+        wc_bases.append(wc_basis)
+        basis_note = _form_basis_note(wc_basis)
+        # 90-day near-last-test history WC: the "was it healthy recently?"
         # signal that protects against condemning a well on one bad test.
+        # NearAvgWater is formation water only, but the marginal line is
+        # total WC — when the last test has lift-water data, fold it in so
+        # history and line share a basis; a form-only history is flagged
+        # below rather than decided on (P1-27).
         na_oil, na_wat = r.get("NearAvgOil"), r.get("NearAvgWater")
-        if (
-            pd.notna(na_oil) and pd.notna(na_wat)
-            and (float(na_oil) + float(na_wat)) > 0
-        ):
-            nwc = float(na_wat) / (float(na_oil) + float(na_wat))
-        else:
-            nwc = float("nan")
+        lift_wat = r.get("LiftWater")
+        nwc, nwc_basis = float("nan"), None
+        if pd.notna(na_oil) and pd.notna(na_wat):
+            hist_oil, hist_wat = float(na_oil), float(na_wat)
+            if pd.notna(lift_wat):
+                hist_wat += float(lift_wat)
+                nwc_basis = "total"
+            else:
+                nwc_basis = "form"
+            if (hist_oil + hist_wat) > 0:
+                nwc = hist_wat / (hist_oil + hist_wat)
+            else:
+                nwc_basis = None
         near_wcs.append(nwc)
+        near_bases.append(nwc_basis)
 
         if pd.isna(wc):
             decisions.append("⚠️ Verify — no test")
@@ -1246,25 +1311,42 @@ def add_shut_decision(shut_df: pd.DataFrame, marginal_wc: float) -> pd.DataFrame
             decisions.append("🟢 BOL candidate")
             whys.append(
                 f"Last WC {wc * 100:.0f}% ≤ marginal {marginal_wc * 100:.0f}% — "
-                "worth bringing on."
+                "worth bringing on." + basis_note
             )
             ranks.append(0)
         elif pd.notna(nwc) and nwc <= marginal_wc:
-            decisions.append("🔬 BOL trial")
-            whys.append(
-                f"Last WC {wc * 100:.0f}% > marginal, but the 90-day history WC "
-                f"{nwc * 100:.0f}% was below — BOL to see if the oil rate has recovered."
-            )
-            ranks.append(1)
+            if nwc_basis == "total":
+                decisions.append("🔬 BOL trial")
+                whys.append(
+                    f"Last WC {wc * 100:.0f}% > marginal, but the 90-day history WC "
+                    f"{nwc * 100:.0f}% (total basis, incl lift water) was below — "
+                    "BOL to see if the oil rate has recovered." + basis_note
+                )
+                ranks.append(1)
+            else:
+                # Form-basis history reads LOW vs the total-WC line — don't
+                # grant a BOL trial on it; flag for a re-test instead.
+                decisions.append("⚠️ Verify — form-basis history")
+                whys.append(
+                    f"Last WC {wc * 100:.0f}% > marginal {marginal_wc * 100:.0f}%; "
+                    f"the 90-day history WC {nwc * 100:.0f}% is below the line but "
+                    "formation-water basis only (no lift-water data) — unreliable "
+                    "vs the total-WC line. Re-test before any BOL call."
+                )
+                ranks.append(2)
         else:
+            # Safe on either basis: a form-basis history above the line
+            # implies the total-basis history is above it too.
             decisions.append("⏸️ Leave shut")
             whys.append(
                 f"WC {wc * 100:.0f}% > marginal {marginal_wc * 100:.0f}% (history too) — "
-                "water not worth it."
+                "water not worth it." + basis_note
             )
             ranks.append(3)
     df["WCvsMarginal"] = deltas
     df["NearAvgWC"] = near_wcs
+    df["NearAvgWCBasis"] = near_bases
+    df["WCBasis"] = wc_bases
     df["Decision"] = decisions
     df["Why"] = whys
     df["_rank"] = ranks

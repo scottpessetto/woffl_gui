@@ -48,6 +48,12 @@ class WellConfig:
             When set, overrides the field-level PowerFluidConstraint.pressure for
             this well's batch simulation. Populated by the pre-calibration step
             (Scott's Tools-style PF cal that matches modeled qnz to observed lift_wat).
+        jpump_direction (str): Circulation direction, "reverse" (PF down the
+            annulus — the standard configuration) or "forward" (PF down the
+            tubing, e.g. MPS-17). Detected from vw_pressure_daily (tubing_prs >
+            inn_ann_prs ⇒ forward) and carried from the sidebar through the
+            review store. Passed to BatchPump so the multi-well sweep models
+            the correct conduits.
         knz_well, ken_well, kth_well, kdi_well (Optional[float]): Per-well calibrated
             jet-pump friction coefficients (nozzle / entrance / throat / diffuser).
             When set, override the library defaults baked into BatchPump.jetpump_list
@@ -81,6 +87,7 @@ class WellConfig:
     ken_well: Optional[float] = None
     kth_well: Optional[float] = None
     kdi_well: Optional[float] = None
+    jpump_direction: str = "reverse"
 
     def __post_init__(self):
         """Validate configuration on initialization"""
@@ -91,6 +98,15 @@ class WellConfig:
         if self.field_model not in ["Schrader", "Kuparuk"]:
             raise ValueError(
                 f"field_model must be 'Schrader' or 'Kuparuk', got '{self.field_model}'"
+            )
+
+        # Normalize + validate circulation direction ("Reverse"/"Forward" from
+        # the sidebar radio, None from older stores/CSVs → "reverse").
+        self.jpump_direction = str(self.jpump_direction or "reverse").strip().lower()
+        if self.jpump_direction not in ("reverse", "forward"):
+            raise ValueError(
+                f"jpump_direction must be 'reverse' or 'forward', "
+                f"got '{self.jpump_direction}'"
             )
 
         # Validate ranges
@@ -643,6 +659,7 @@ def _simulate_single_well(
         ipr_su=inflow,
         prop_su=res_mix,
         prop_pf=prop_pf,
+        jpump_direction=well.jpump_direction,
         wellname=well.well_name,
     )
 
@@ -1021,6 +1038,11 @@ def load_wells_from_dataframe(
                 "gas_sg": _opt("gas_sg"),
                 "wat_sg": _opt("wat_sg"),
                 "bubble_point": _opt("bubble_point"),
+                # Circulation direction (WellConfig normalizes/validates;
+                # absent column → reverse, the standard configuration)
+                "jpump_direction": str(
+                    _first_valid(base_config.get("jpump_direction"), default="reverse")
+                ),
             }
 
             # Physical sanity the library doesn't check — fail at load time

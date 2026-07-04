@@ -105,8 +105,86 @@ class TestWellConfig:
         )
         assert wc.res_pres == 400
 
+    def test_direction_defaults_reverse(self):
+        wc = WellConfig(well_name="X", res_pres=1500, form_temp=70, jpump_tvd=4000)
+        assert wc.jpump_direction == "reverse"
 
-# ── PowerFluidConstraint validation ─────────────────────────────────────────
+    @pytest.mark.parametrize("raw", ["forward", "Forward", " FORWARD "])
+    def test_direction_normalized(self, raw):
+        wc = WellConfig(
+            well_name="X",
+            res_pres=1500,
+            form_temp=70,
+            jpump_tvd=4000,
+            jpump_direction=raw,
+        )
+        assert wc.jpump_direction == "forward"
+
+    def test_direction_none_falls_back_reverse(self):
+        # Legacy stores/CSVs round-trip None for the missing column.
+        wc = WellConfig(
+            well_name="X",
+            res_pres=1500,
+            form_temp=70,
+            jpump_tvd=4000,
+            jpump_direction=None,
+        )
+        assert wc.jpump_direction == "reverse"
+
+    def test_direction_invalid_rejected(self):
+        with pytest.raises(ValueError, match="jpump_direction"):
+            WellConfig(
+                well_name="X",
+                res_pres=1500,
+                form_temp=70,
+                jpump_tvd=4000,
+                jpump_direction="sideways",
+            )
+
+
+class TestSimulateSingleWellDirection:
+    """WellConfig.jpump_direction must reach the BatchPump constructor — the
+    regression this pins: the multi-well optimizer modeled every well as
+    reverse circ, including live-confirmed forward-circ wells like MPS-17."""
+
+    def test_direction_reaches_batchpump(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from woffl.assembly import network_optimizer as no
+
+        captured = {}
+
+        class _StubBatchPump:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            @staticmethod
+            def jetpump_list(nozzles, throats, **kw):
+                return []
+
+            def batch_run(self, jp_list, debug=False):
+                return pd.DataFrame()
+
+            def process_results(self):
+                pass
+
+        monkeypatch.setattr(no, "BatchPump", _StubBatchPump)
+        monkeypatch.setattr(
+            no.NetworkOptimizer,
+            "_create_well_objects",
+            staticmethod(lambda well: (None, None, None, None, None)),
+        )
+
+        wc = WellConfig(
+            well_name="MPS-17",
+            res_pres=1500,
+            form_temp=70,
+            jpump_tvd=4000,
+            jpump_direction="forward",
+        )
+        no._simulate_single_well(wc, 3400.0, ["12"], ["B"])
+        assert captured["jpump_direction"] == "forward"
+        assert captured["ppf_surf"] == 3400.0
 
 
 class TestPowerFluidConstraint:

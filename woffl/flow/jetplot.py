@@ -29,7 +29,7 @@ from matplotlib.figure import Figure
 
 from woffl.flow import jetflow as jf  # legacy
 from woffl.flow import singlephase as sp
-from woffl.flow.errors import ThroatEntryNoSolution
+from woffl.flow.errors import ConvergenceError, ThroatEntryNoSolution
 from woffl.flow.inflow import InFlow
 from woffl.pvt.resmix import ResMix
 
@@ -191,7 +191,21 @@ class JetBook:
 
         Return:
             pdi (float): Diffuser Discharge Pressure, psig
+
+        Raises:
+            ConvergenceError: when the diffuser sweep's total differential
+                energy is not monotonically increasing, so np.interp would
+                silently return garbage instead of the real zero crossing.
         """
+        # [LIBRARY change -> upstream PR to kwellis/woffl] P1-7 (same latent
+        # assumption as _dete_zero): np.interp requires an ascending xp and
+        # silently returns garbage otherwise. Guard it and fail loudly with
+        # the module's typed error. Monotonic (valid) sweeps are unchanged.
+        if np.any(np.diff(self.tde_ray) < 0):
+            raise ConvergenceError(
+                "diffuser sweep total differential energy is not monotonically "
+                "increasing, cannot interpolate the discharge pressure"
+            )
         return np.interp(0, self.tde_ray, self.prs_ray)  # type: ignore
 
     @staticmethod
@@ -237,6 +251,18 @@ class JetBook:
                 "throat entry sweep has no points with a non-negative tde gradient, "
                 "GOR or suction pressure is likely too low"
             )
+
+        # [LIBRARY change -> upstream PR to kwellis/woffl] P1-7: np.gradient can
+        # oscillate near the tde minimum (or at bubble-point kinks), making the
+        # dtdp >= 0 mask NON-contiguous. Flipping a non-contiguous masked
+        # tde_ray hands np.interp a non-sorted xp, and np.interp then silently
+        # returns garbage pte/vte/rho_te/mach_te. Keep only the LEADING
+        # contiguous run of True values — the subsonic branch. A mask that is
+        # already one contiguous run is unchanged (bit-identical results).
+        first_true = int(np.argmax(mask))  # mask.any() was checked above
+        breaks = np.flatnonzero(~mask[first_true:])
+        if breaks.size:
+            mask[first_true + breaks[0] :] = False  # noqa: E203
 
         tde_masked = tde_ray[mask]
         if tde_masked.max() < 0:

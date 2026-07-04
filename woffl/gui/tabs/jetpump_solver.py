@@ -460,12 +460,14 @@ def _render_jp_history_strip(well_name: str) -> None:
     if not show:
         return
 
-    # Reuse the JP History tab's own fetch + chart so the two stay identical
-    # by construction (the per-well queries are cached 24 h and pre-warmed by
-    # the JP-history prefetch thread, so this is usually instant).
+    # SHARED figure builder with the JP History tab (jp_history_tab.
+    # build_history_with_strip_figure) so the two charts are identical by
+    # construction. The per-well queries are cached 24 h and pre-warmed by
+    # the JP-history prefetch thread, so this is usually instant.
     from woffl.gui.tabs.jp_history_tab import (
-        _create_history_chart,
         _fetch_extended_well_tests,
+        build_history_with_strip_figure,
+        render_current_pump_caption,
     )
 
     # No JP installs on record (S-67): the well may still have tests, so show the
@@ -476,213 +478,24 @@ def _render_jp_history_strip(well_name: str) -> None:
         if t_df is None or t_df.empty:
             st.caption(f"No JP-install history or tests on record for {well_name}.")
             return
-        fig = _create_history_chart(well_name, t_df, well_df, bhp_d, bhp_o)
+        fig, _tl = build_history_with_strip_figure(
+            well_name, well_df, t_df, bhp_d, bhp_o
+        )
         st.plotly_chart(fig, use_container_width=True)
         st.caption("No JP-install history on record — showing the test / BHP trend only.")
         return
 
     earliest_date = well_df["Date Set"].min()
-    today = pd.Timestamp.today().normalize()
-    # Shared x-range so the colored install segments below line up vertically
-    # with the JPCO dashed lines in the chart above.
-    x_range = [
-        earliest_date - pd.Timedelta(days=15),
-        today + pd.Timedelta(days=15),
-    ]
-
     test_df, bhp_daily_df, bhp_overlay_df = _fetch_extended_well_tests(
         well_name, earliest_date
     )
 
-    def _label(nozzle, throat) -> str:
-        parts = ""
-        if pd.notna(nozzle):
-            try:
-                parts += str(int(nozzle))
-            except (TypeError, ValueError):
-                parts += str(nozzle).strip()
-        if pd.notna(throat):
-            parts += str(throat).strip()
-        return parts or "?"
-
-    # Tenure = THIS install's Date Set → the NEXT install's Date Set (last
-    # one → today). JPCOs are same-day slickline runs (pull + set in one
-    # visit per the AKIMS well events), so pumps are contiguous in reality —
-    # the tracker's Date Pulled column lags/shifts and drawing it produced
-    # phantom "no pump" gaps.
-    rows = []
-    set_dates = list(well_df["Date Set"])
-    for i, (_, r) in enumerate(well_df.iterrows()):
-        start = r["Date Set"]
-        is_last = i == len(set_dates) - 1
-        end = today if is_last else set_dates[i + 1]
-        if end <= start:  # zero/negative spans render invisibly
-            end = start + pd.Timedelta(days=1)
-        rows.append(
-            {
-                "Pump": _label(r.get("Nozzle Number"), r.get("Throat Ratio")),
-                "Start": start,
-                "End": end,
-                "Days": int((end - start).days),
-                "Pulled": "in hole" if is_last else end.strftime("%Y-%m-%d"),
-            }
-        )
-    tl = pd.DataFrame(rows)
-
-    import plotly.express as px
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
-
-    palette = px.colors.qualitative.Set2
-    pump_order = list(dict.fromkeys(tl["Pump"]))
-    color_of = {p: palette[i % len(palette)] for i, p in enumerate(pump_order)}
-
-    have_chart = test_df is not None and not test_df.empty
-
-    # ONE figure, two stacked subplots sharing the x-axis — STRUCTURAL
-    # alignment: the same pixel maps to the same date in both rows, so the
-    # JPCO dashed lines pass straight through the matching color boundaries
-    # below. (Two separate figures can never be pinned reliably — plotly
-    # auto-expands margins around axis labels differently per figure.)
-    if have_chart:
-        fig = make_subplots(
-            rows=2,
-            cols=1,
-            shared_xaxes=True,
-            row_heights=[0.84, 0.16],
-            vertical_spacing=0.06,
-            specs=[[{"secondary_y": True}], [{}]],
-        )
-        base = _create_history_chart(
-            well_name,
-            test_df,
-            well_df,
-            bhp_daily_df=bhp_daily_df,
-            bhp_overlay_df=bhp_overlay_df,
-            bhp_from_zero=True,
-        )
-        for tr in base.data:
-            fig.add_trace(
-                tr, row=1, col=1,
-                secondary_y=(getattr(tr, "yaxis", "y") == "y2"),
-            )
-        # JPCO dashed lines + labels are paper-referenced — re-added on the
-        # combined figure they span BOTH rows, visually tying each change
-        # line to its segment boundary in the strip.
-        for shp in base.layout.shapes:
-            fig.add_shape(shp)
-        for ann in base.layout.annotations:
-            fig.add_annotation(ann)
-        strip_xref, strip_yref = "x2", "y3 domain"
-        strip_target = dict(row=2, col=1)
-    else:
-        fig = go.Figure()
-        strip_xref, strip_yref = "x", "y domain"
-        strip_target = {}
-
-    # Strip segments as RECTANGLE SHAPES in real date coordinates — the
-    # px.timeline/go.Bar encoding (numeric millisecond lengths + datetime
-    # base) breaks inside subplots because the strip's axis infers a linear
-    # type from the numeric lengths. Shapes carry actual dates; nothing to
-    # mis-infer.
-    span = x_range[1] - x_range[0]
-    mids, labels, hover_custom = [], [], []
-    for _, seg in tl.iterrows():
-        fig.add_shape(
-            type="rect",
-            x0=seg["Start"],
-            x1=seg["End"],
-            y0=0.06,
-            y1=0.94,
-            xref=strip_xref,
-            yref=strip_yref,
-            fillcolor=color_of[seg["Pump"]],
-            line=dict(width=1, color="white"),
-            # below traces AND below the above-layer JPCO shapes, so the
-            # dashed change lines visibly cross the strip
-            layer="below",
-        )
-        mids.append(seg["Start"] + (seg["End"] - seg["Start"]) / 2)
-        # Only label segments wide enough to carry text — slivers (same-day
-        # JPCOs) keep their hover but stay unlabeled to avoid clutter.
-        wide_enough = (seg["End"] - seg["Start"]) / span > 0.03
-        labels.append(seg["Pump"] if wide_enough else "")
-        hover_custom.append(
-            [seg["Pump"], seg["Start"].strftime("%Y-%m-%d"), seg["Pulled"], seg["Days"]]
-        )
-
-    # Invisible markers + text at segment midpoints provide labels and hover
-    # (shapes themselves don't hover). Datetime x keeps the strip axis typed
-    # as a date axis.
-    fig.add_trace(
-        go.Scatter(
-            x=mids,
-            y=[0.5] * len(mids),
-            mode="markers+text",
-            marker=dict(size=14, opacity=0),
-            text=labels,
-            textposition="middle center",
-            textfont=dict(size=12, color="#1a1a1a"),
-            customdata=hover_custom,
-            hovertemplate=(
-                "<b>%{customdata[0]}</b><br>"
-                "Set %{customdata[1]} → %{customdata[2]}<br>"
-                "%{customdata[3]:,} days<extra></extra>"
-            ),
-            showlegend=False,
-        ),
-        **strip_target,
+    fig, tl = build_history_with_strip_figure(
+        well_name, well_df, test_df, bhp_daily_df, bhp_overlay_df,
+        bhp_from_zero=True, height=470,
     )
-
-    if have_chart:
-        fig.update_layout(
-            height=470,
-            title_text="",
-            hovermode="x unified",
-            margin=dict(t=30, b=8, l=65, r=65),
-            legend=dict(
-                orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
-            ),
-        )
-        # Months render under the CHART row; the strip row has no axis of
-        # its own (shared_xaxes hides upper ticks by default — re-enable).
-        fig.update_xaxes(
-            range=x_range, row=1, col=1, showticklabels=True, title_text=""
-        )
-        fig.update_xaxes(range=x_range, row=2, col=1, visible=False)
-        fig.update_yaxes(title_text="Rate (BPD)", row=1, col=1, secondary_y=False)
-        fig.update_yaxes(
-            title_text="BHP (psi)",
-            rangemode="tozero",
-            showgrid=False,
-            row=1,
-            col=1,
-            secondary_y=True,
-        )
-        fig.update_yaxes(
-            visible=False, fixedrange=True, range=[0, 1], row=2, col=1
-        )
-    else:
-        # Fallback when the test/BHP fetch failed: standalone strip with its
-        # own date axis so it still has a time reference.
-        fig.update_layout(
-            height=110,
-            margin=dict(l=65, r=65, t=4, b=4),
-            showlegend=False,
-            yaxis=dict(visible=False, fixedrange=True, range=[0, 1]),
-            xaxis=dict(side="bottom", fixedrange=True, range=x_range),
-            plot_bgcolor="rgba(0,0,0,0)",
-        )
-
     st.plotly_chart(fig, use_container_width=True, key="sw_jp_strip_chart")
-
-    cur = tl.iloc[-1]
-    if cur["Pulled"] == "in hole":
-        st.caption(
-            f"Current pump **{cur['Pump']}** — in hole since "
-            f"{cur['Start'].strftime('%Y-%m-%d')} ({cur['Days']:,} days). "
-            f"{len(tl)} install(s) on record."
-        )
+    render_current_pump_caption(tl)
 
 
 def render_tab(
@@ -1089,12 +902,12 @@ def render_tab(
                 "compare against and calibrate to this test."
             )
         else:
-            # PF mismatch is the foundational check — if the sidebar PF pressure
-            # doesn't match operating conditions, friction calibration will fit
-            # nonsense ken values to compensate. Gate calibration on this.
-            # Pull the test date so the warning + quickfix can show it. Anchor on
-            # the SELECTED comparison test (not most-recent) so the displayed date
-            # matches the lift rate the PF check / quickfix compares against.
+            # PF check. With a MEASURED test-day PF pressure (vw_pressure_daily
+            # join) a rate mismatch is a wear/identity diagnostic and never
+            # gates calibration; only tests with no daily reading keep the old
+            # "fix pressure first" gate. Anchor on the SELECTED comparison test
+            # (not most-recent) so the displayed date matches the lift rate the
+            # PF check / quickfix compares against.
             cal_inputs = build_calibration_inputs(
                 params, wellbore, well_profile, selected_test_row=selected_test_row
             )
@@ -1105,6 +918,7 @@ def render_tab(
                 params.ppf_surf,
                 test_date_str=test_date_str,
                 well_name=params.selected_well,
+                measured_pf=cal_inputs.get("test_pf_press") if cal_inputs else None,
             )
             # Render the quickfix whenever any warning fires (red OR yellow info)
             # so the user always has a one-click path to fine-tune. Calibration
@@ -1973,6 +1787,38 @@ def _resolve_anchor_test_row(well_name: str, sorted_tests):
     return row.drop(labels="__date", errors="ignore")
 
 
+def _anchor_test_pf(test_df, anchor_mode: str, anchor_date):
+    """Test-day live PF of the test the anchor CURRENTLY points to.
+
+    Same fittable-row filter + resolver as :func:`_resolve_anchor_test_row`,
+    but takes the mode/date directly (the applied-sig key isn't written yet at
+    seed time). Returns ``(pf_press, pf_source, wt_date)`` or
+    ``(None, None, None)`` when the anchor test has no valid same-day reading
+    (pre-2024-09-25 tests, manual tests, dead gauges).
+    """
+    import pandas as pd
+
+    from woffl.gui.ipr_anchor import _resolve_anchor_row
+    from woffl.gui.utils import pf_from_test_row
+
+    if test_df is None or test_df.empty or "pf_press" not in test_df.columns:
+        return None, None, None
+    df = test_df.dropna(subset=["BHP", "WtTotalFluid"]).copy()
+    if df.empty:
+        return None, None, None
+    df["__date"] = pd.to_datetime(df.get("WtDate"), errors="coerce")
+    try:
+        row, _label = _resolve_anchor_row(
+            df, anchor_mode, anchor_date if anchor_mode == "specific" else None
+        )
+    except Exception:
+        return None, None, None
+    live = pf_from_test_row(row)
+    if live is None:
+        return None, None, None
+    return live["pf_press"], live.get("pf_source"), live.get("pf_date")
+
+
 def _render_test_picker(well_name: str, test_df, *, synced: bool = False):
     """Selectbox listing the well's tests (date-desc); returns the picked row.
 
@@ -2271,6 +2117,9 @@ def _sync_chosen_ipr_to_sidebar(
     res_p: float,
     form_wc: float,
     fgor: float,
+    pf_press: float | None = None,
+    pf_source: str | None = None,
+    pf_date=None,
 ) -> None:
     """Seed the chosen test's IPR + fluid inputs into the sidebar.
 
@@ -2326,6 +2175,11 @@ def _sync_chosen_ipr_to_sidebar(
         "form_wc": clamp_seed("form_wc", round(float(form_wc), 2)),
         "form_gor": clamp_seed("form_gor", max(int(fgor), gor_floor)),
     }
+    # PF follows the anchor test's DAY (live vw_pressure_daily reading joined
+    # onto the test row) so the whole sidebar models the same day. Tests
+    # without a valid same-day reading leave PF untouched.
+    if pf_press is not None:
+        new_vals["ppf_surf"] = clamp_seed("ppf_surf", int(round(pf_press)))
 
     # Record the selection as applied up front so we don't keep re-evaluating.
     st.session_state[sig_key] = current_sig
@@ -2339,6 +2193,25 @@ def _sync_chosen_ipr_to_sidebar(
         # the logical key on the next run (writing *_input after render raises).
         st.session_state.pop(f"{k}_input", None)
 
+    pf_note = ""
+    if "ppf_surf" in new_vals:
+        # Keep the circulation-direction radio consistent with the conduit
+        # the live reading came from (tubing = forward circ). Sidebar already
+        # rendered, so: logical key + pop widget key (rerun below re-inits it).
+        if pf_source in ("annulus", "tubing"):
+            st.session_state["jpump_direction"] = (
+                "Reverse" if pf_source == "annulus" else "Forward"
+            )
+            st.session_state.pop("jpump_direction_input", None)
+        st.session_state["_pf_live_info"] = {
+            "well": well_name,
+            "kind": "test day",
+            "pf_press": float(new_vals["ppf_surf"]),
+            "pf_source": pf_source,
+            "pf_date": pf_date,
+        }
+        pf_note = f" · PF {new_vals['ppf_surf']:,} psi (test-day)"
+
     anchor_human = {
         "recent": "most-recent-test",
         "median": "median-test",
@@ -2348,10 +2221,55 @@ def _sync_chosen_ipr_to_sidebar(
         f"Seeded the {anchor_human} IPR + fluid into the sidebar "
         f"(qwf {new_vals['qwf']:,} BOPD · pwf {new_vals['pwf']:,} psi · "
         f"ResP {new_vals['res_pres']:,} psi · WC {new_vals['form_wc']:.2f} · "
-        f"GOR {new_vals['form_gor']:,}). Batch Run, PF Range, and the Solver "
-        "now use this — edit any field in the sidebar to override."
+        f"GOR {new_vals['form_gor']:,}{pf_note}). Batch Run, PF Range, and "
+        "the Solver now use this — edit any field in the sidebar to override."
     )
     st.rerun()
+
+
+_WEAK_IPR_R2 = 0.2
+
+
+def _render_weak_ipr_warning(params: SimulationParams, coeff_row, test_df) -> None:
+    """Warn when the Vogel fit is too weakly determined to trust its ResP.
+
+    Trigger: fit R² below ``_WEAK_IPR_R2`` (negative = worse than a flat
+    mean — typical for flat test clouds where BHP barely moves and the rate
+    scatter is allocation noise, so reservoir pressure is unidentifiable
+    from tests alone). The fit is still shown and seeded — this deliberately
+    does NOT substitute another value; it hands the decision to the
+    engineer, with the characterized Databricks pressure as a reference.
+    """
+    import pandas as pd
+
+    r2 = coeff_row.get("R2") if hasattr(coeff_row, "get") else None
+    if r2 is None or pd.isna(r2) or float(r2) >= _WEAK_IPR_R2:
+        return
+
+    span_txt = ""
+    if test_df is not None and "BHP" in test_df.columns:
+        bhp = pd.to_numeric(test_df["BHP"], errors="coerce").dropna()
+        if len(bhp) >= 2:
+            span_txt = (
+                f" The {len(bhp)} tests span only "
+                f"**{bhp.max() - bhp.min():,.0f} psi of BHP**, so the cloud "
+                "is nearly flat and reservoir pressure is not identifiable "
+                "from tests alone."
+            )
+
+    # Deliberately NO reference value here: vw_prop_resvr.resvr_press was
+    # itself populated from earlier fit output (circular — it has no more
+    # basis in reality than the fit being warned about), and quoting any
+    # number next to "decide for yourself" would anchor the decision.
+    st.warning(
+        f"⚠️ **Weak IPR fit** (R² = {float(r2):.2f}) — the fitted reservoir "
+        f"pressure of **{float(coeff_row['ResP']):,.0f} psi** is a "
+        f"best-effort estimate, not a measurement.{span_txt} "
+        "Decide a reservoir pressure from real evidence (build-ups, "
+        "shut-in gauge data, offset wells) and set **Reservoir Pressure** "
+        "in the sidebar — your value persists for the session and drives "
+        "the Solver, Batch Run, and PF Range."
+    )
 
 
 def _render_ipr_anchor_and_seed(params: SimulationParams, test_df):
@@ -2457,12 +2375,21 @@ def _render_ipr_anchor_and_seed(params: SimulationParams, test_df):
             if not well_coeffs.empty:
                 coeff_row = well_coeffs.iloc[0]
 
+    # Weak-fit banner: the fit is ALWAYS produced and seeded (never silently
+    # replaced), but when the test cloud can't actually constrain reservoir
+    # pressure the engineer is told to decide one themselves.
+    if coeff_row is not None:
+        _render_weak_ipr_warning(params, coeff_row, test_df)
+
     # Seed the chosen test's IPR + fluid into the sidebar so Batch Run, PF Range,
     # and the Solver all use it (the engineer can then override any field in the
     # sidebar — see _sync_chosen_ipr_to_sidebar). No-op unless the anchor-test
     # selection actually changed; when it did, this reruns the app so the picker
     # + solve below run against the freshly-seeded sidebar values.
     if coeff_row is not None:
+        pf_press, pf_source, pf_date = _anchor_test_pf(
+            test_df, anchor_mode, anchor_date
+        )
         _sync_chosen_ipr_to_sidebar(
             params.selected_well,
             anchor_mode=anchor_mode,
@@ -2472,6 +2399,9 @@ def _render_ipr_anchor_and_seed(params: SimulationParams, test_df):
             res_p=float(coeff_row["ResP"]),
             form_wc=float(coeff_row["form_wc"]),
             fgor=float(coeff_row["fgor"]),
+            pf_press=pf_press,
+            pf_source=pf_source,
+            pf_date=pf_date,
         )
 
     return coeff_row, vogel_coeffs, merged_with_rp

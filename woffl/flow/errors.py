@@ -23,3 +23,13 @@ class ConvergenceError(JetPumpError):
 class ThroatEntryNoSolution(JetPumpError, IndexError):
     """The throat-entry sweep produced no valid zero crossing of the total
     differential energy. Typical causes: GOR or suction pressure too low."""
+
+
+# [LIBRARY change -> upstream PR to kwellis/woffl]
+class FlowPatternUnknown(JetPumpError):
+    """Beggs-Brill flow-pattern classification fell through every regime bound.
+
+    Only reachable with degenerate inputs (NaN no-slip holdup / Froude number,
+    typically from survey noise upstream). Previously ``beggs_flow_pattern``
+    returned the string ``"unknown"``, which surfaced downstream as a bare
+    ``KeyError`` in ``beggs_holdup_inc`` that no ``except ValueError`` caught."""

@@ -41,6 +41,12 @@ class WellProfile:
 
         md_ray, vd_ray = sort_profile(np.array(md_list), np.array(vd_list))
 
+        # [LIBRARY change -> upstream PR to kwellis/woffl] P1-6: cheap input
+        # validation — NaN depths would silently corrupt every interpolation
+        # and the horizontal-distance cumsum downstream.
+        if np.isnan(md_ray).any() or np.isnan(vd_ray).any():
+            raise ValueError("Well survey contains NaN measured or vertical depths")
+
         self.md_ray = md_ray
         self.vd_ray = vd_ray
         self.hd_ray = self._horz_dist(self.md_ray, self.vd_ray)
@@ -237,6 +243,14 @@ class WellProfile:
         """
         md_diff = np.diff(md_ray, n=1)  # difference between values in array
         vd_diff = np.diff(vd_ray, n=1)  # difference between values in array
+        # [LIBRARY change -> upstream PR to kwellis/woffl] P1-6: survey noise
+        # can report |Δvd| > |Δmd| between stations, which is physically
+        # impossible (measured depth is arc length, so |Δvd| <= |Δmd| along a
+        # wellbore) and made the sqrt below return a silent NaN that cumsum
+        # then propagated through the whole hd_ray (and jetpump_hd / incline
+        # downstream). Clamp the Δvd magnitude to Δmd; clean surveys already
+        # satisfy the bound, so the clip is an identity there (bit-identical).
+        vd_diff = np.clip(vd_diff, -np.abs(md_diff), np.abs(md_diff))
         hd_diff = np.zeros(
             1
         )  # start with zero at top to make array match original size

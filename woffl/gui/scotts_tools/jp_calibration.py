@@ -16,6 +16,7 @@ from woffl.gui.utils import (
     PAD_PF_DEFAULTS,
     PAD_PF_FALLBACK,
     default_pad_pf as _default_pad_pf,
+    live_pf_for_seed,
     load_well_characteristics,
 )
 
@@ -64,9 +65,11 @@ def _build_calibration_input_table(months_back: int) -> pd.DataFrame | None:
       - Have a current pump in the JP history (i.e., are jet-pump wells —
         non-JP wells like ESP get filtered out)
 
-    Each row's initial PF Pressure is set from ``PAD_PF_DEFAULTS`` based on
-    the well's pad. The user can broadcast a per-pad value via the pad
-    inputs in the tab UI, or override individual rows in the table.
+    Each row's initial PF Pressure is the well's LIVE value from
+    vw_pressure_daily (test-day of its most recent test, else latest daily
+    reading), falling back to ``PAD_PF_DEFAULTS`` when the well has no valid
+    reading. The user can broadcast a per-pad value via the pad inputs in the
+    tab UI, or override individual rows in the table.
 
     Tubing/casing geometry columns are also surfaced so the user can spot
     wells where casing dims came from the fallback (6.875"/0.5") instead
@@ -119,6 +122,13 @@ def _build_calibration_input_table(months_back: int) -> pd.DataFrame | None:
         # Annulus cross-section (in²) — what the PF friction calc actually uses
         ann_area_in2 = (math.pi / 4) * (case_id**2 - tube_od**2)
 
+        # PF from live daily data (test-day of most recent test, else latest
+        # daily reading); pad default only when the well has no valid reading.
+        live_pf = live_pf_for_seed(wn)
+        pf_seed = (
+            int(round(live_pf["pf_press"])) if live_pf else _default_pad_pf(pad)
+        )
+
         rows.append(
             {
                 "Well": wn,
@@ -126,7 +136,7 @@ def _build_calibration_input_table(months_back: int) -> pd.DataFrame | None:
                 "Pump": pump_str,
                 "BHP (psi)": int(round(bhp)),
                 "WHP (psi)": int(round(whp_map[wn])) if wn in whp_map else None,
-                "PF Pressure (psi)": _default_pad_pf(pad),
+                "PF Pressure (psi)": pf_seed,
                 "Tube OD": round(tube_od, 3),
                 "Tube ID": round(tube_id, 3),
                 "Case OD": round(case_od, 3),

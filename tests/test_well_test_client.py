@@ -238,3 +238,62 @@ class TestFetchMilneWellTests:
         df, dropped = fetch_milne_well_tests("2024-01-01", "2024-12-31", ["B-028"])
         assert df.empty
         assert dropped == []
+
+
+# ── test-day PF pressure (vw_pressure_daily join) ─────────────────────────
+
+
+class TestTestDayPFPressure:
+    @patch("woffl.assembly.well_test_client.execute_query")
+    def test_pf_resolved_from_join_columns(self, mock_query):
+        mock_query.return_value = pd.DataFrame(
+            {
+                "well_name": ["B-028", "S-017", "B-028"],
+                "wt_date": pd.to_datetime(
+                    ["2026-06-17", "2026-06-22", "2026-06-29"]
+                ),
+                "bhp": [1230.0, None, 1175.0],
+                "oil_rate": [353.0, 579.0, 328.0],
+                "fwat_rate": [200.0, 250.0, 210.0],
+                "fgas_rate": [50.0, 60.0, 55.0],
+                "whp": [150.0, 160.0, 155.0],
+                "form_wc": [0.67, 0.68, 0.67],
+                "fgor": [500, 500, 500],
+                "lift_wat": [300.0, 350.0, 320.0],
+                # reverse circ / forward circ / no same-day reading
+                "pf_tubing_prs": [168.9, 3381.2, None],
+                "pf_inn_ann_prs": [2418.0, 242.0, None],
+            }
+        )
+        df, _ = fetch_milne_well_tests(
+            "2026-01-01", "2026-12-31", ["B-028", "S-017"]
+        )
+        by_date = df.set_index("WtDate")
+        assert by_date.loc["2026-06-17", "pf_press"] == pytest.approx(2418.0)
+        assert by_date.loc["2026-06-17", "pf_source"] == "annulus"
+        assert by_date.loc["2026-06-22", "pf_press"] == pytest.approx(3381.2)
+        assert by_date.loc["2026-06-22", "pf_source"] == "tubing"
+        assert pd.isna(by_date.loc["2026-06-29", "pf_press"])
+
+    @patch("woffl.assembly.well_test_client.execute_query")
+    def test_pf_columns_present_even_without_join(self, mock_query):
+        """Frames without the join columns (older mocks, fallbacks) still get
+        uniform all-NaN pf columns so consumers can check pf_press blindly."""
+        mock_query.return_value = pd.DataFrame(
+            {
+                "well_name": ["B-028"],
+                "wt_date": pd.to_datetime(["2024-01-15"]),
+                "bhp": [800.0],
+                "oil_rate": [100.0],
+                "fwat_rate": [200.0],
+                "fgas_rate": [50.0],
+                "whp": [150.0],
+                "form_wc": [0.67],
+                "fgor": [500],
+                "lift_wat": [300.0],
+            }
+        )
+        df, _ = fetch_milne_well_tests("2024-01-01", "2024-12-31", ["B-028"])
+        assert "pf_press" in df.columns
+        assert "pf_source" in df.columns
+        assert df["pf_press"].isna().all()

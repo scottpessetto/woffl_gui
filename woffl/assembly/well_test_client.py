@@ -30,11 +30,28 @@ SELECT
     vwt.form_wc,
     vwt.form_gor AS fgor,
     vwt.lift_wat,
-    round(vbdc.bhp_cln_value, 2) AS bhp
+    round(vbdc.bhp_cln_value, 2) AS bhp,
+    vpd.tubing_prs AS pf_tubing_prs,
+    vpd.inn_ann_prs AS pf_inn_ann_prs
 FROM mpu.wells.vw_well_test vwt
 LEFT JOIN mpu.wells.vw_bhp_daily_clean vbdc
     ON vwt.enthid = vbdc.enthid
     AND to_date(vwt.wt_date) = vbdc.tag_date
+LEFT JOIN (
+    -- vw_pressure_daily can carry multiple rows per well+day (repeated
+    -- samples); max() collapses them and prefers an operating reading over a
+    -- same-day shut-in 0. Resolved into pf_press/pf_source in Python — see
+    -- woffl.assembly.pf_pressure.resolve_pf_pressure.
+    SELECT
+        enthid,
+        sample_date,
+        max(tubing_prs) AS tubing_prs,
+        max(inn_ann_prs) AS inn_ann_prs
+    FROM mpu.wells.vw_pressure_daily
+    GROUP BY enthid, sample_date
+) vpd
+    ON vwt.enthid = vpd.enthid
+    AND to_date(vwt.wt_date) = vpd.sample_date
 WHERE vwt.well_name IN ({well_list})
     AND vwt.wt_date BETWEEN '{start_date}' AND '{end_date}'
     AND vwt.allocated = True
@@ -177,9 +194,19 @@ def fetch_milne_well_tests(
         "WtGasVol",
         "lift_wat",
         "whp",
+        "pf_tubing_prs",
+        "pf_inn_ann_prs",
     ]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Resolve the test-day power-fluid pressure from the vw_pressure_daily
+    # join (annulus for reverse circ, tubing when tubing > annulus = forward
+    # circ). Adds nullable pf_press/pf_source columns; rows without a valid
+    # same-day reading carry NaN/None and consumers fall back themselves.
+    from woffl.assembly.pf_pressure import add_pf_columns
+
+    df = add_pf_columns(df)
 
     # Track wells before dropping incomplete rows
     all_wells = set(df["well"].unique()) if "well" in df.columns else set()

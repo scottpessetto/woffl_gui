@@ -14,6 +14,7 @@ from woffl.assembly.calibration import CalibrationResult
 from woffl.geometry.jetpump import JetPump
 from woffl.gui.components.dataframe_display import display_results_table
 from woffl.gui.params import SimulationParams
+from woffl.gui.tab_helpers import physical_sweep_signature, pump_at_test_matches
 from woffl.gui.utils import (
     build_calibration_inputs,
     is_valid_number,
@@ -41,7 +42,7 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
             "- **Gold star**: Recommended jet pump based on marginal "
             "watercut threshold\n"
             "- **Labels**: Show nozzle size + throat ratio "
-            "(e.g., \"12B\" = nozzle 12, throat B)\n"
+            '(e.g., "12B" = nozzle 12, throat B)\n'
             "- **Hover** over any point for detailed metrics"
         ),
     )
@@ -148,7 +149,9 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
         # plot from wasting the left third on the (clipped) negative tail.
         x_curve_zero = 0.0  # default: keep the x-axis floored at 0
         if has_curve_fit:
-            coeff = batch_pump.coeff_form if water == "formation" else batch_pump.coeff_totl
+            coeff = (
+                batch_pump.coeff_form if water == "formation" else batch_pump.coeff_totl
+            )
             a, b, c = coeff
             fit_water = np.linspace(0, max_water_data, 200)
             # exp_model can dip below zero for some fit coefs at low water rates;
@@ -422,31 +425,36 @@ from woffl.gui.utils import get_well_tests_for_well as _get_well_tests  # noqa: 
 
 def _compute_batch_calibration(
     batch_pump, params: SimulationParams
-) -> CalibrationResult | None:
+) -> tuple[CalibrationResult | None, str | None]:
     """Compute calibration factor by comparing the installed pump's batch result to actual well test.
 
-    Returns CalibrationResult or None if data is insufficient.
+    Returns ``(CalibrationResult, None)`` on success, ``(None, None)`` when
+    data is insufficient, or ``(None, reason)`` when the latest test was
+    taken under a DIFFERENT pump than the current install (the
+    JPCO→next-test window) — pairing the new pump's model row with the old
+    pump's actuals would produce a bogus factor, so none is offered and the
+    hero strip shows the reason instead.
     """
     jp_hist = st.session_state.get("jp_history_df")
     if jp_hist is None or params.selected_well == "Custom":
-        return None
+        return None, None
 
     from woffl.assembly.jp_history import get_current_pump
 
     current_pump = get_current_pump(jp_hist, params.selected_well)
     if current_pump is None:
-        return None
+        return None, None
 
     nozzle = current_pump["nozzle_no"]
     throat = current_pump["throat_ratio"]
     if not nozzle or not throat:
-        return None
+        return None, None
 
     # Find the installed pump in batch results
     df = batch_pump.df
     match = df[(df["nozzle"] == nozzle) & (df["throat"] == throat)]
     if match.empty or pd.isna(match.iloc[0]["qoil_std"]):
-        return None
+        return None, None
 
     model_row = match.iloc[0]
     model_oil = model_row["qoil_std"]
@@ -456,12 +464,40 @@ def _compute_batch_calibration(
     # Get actual data from well tests
     test_df = _get_well_tests(params.selected_well)
     if test_df is None or test_df.empty:
-        return None
+        return None, None
 
     recent_test = test_df.sort_values("WtDate", ascending=False).iloc[0]
+
+    # P1-11 guard: the test's actuals were measured on whatever pump was in
+    # the hole at TEST time (set-to-set tenure via get_pump_at_date). None
+    # (no usable history record) fails open — same as the Solver's
+    # pump_differs guard.
+    test_date = recent_test.get("WtDate")
+    if (
+        pump_at_test_matches(jp_hist, params.selected_well, test_date, nozzle, throat)
+        is False
+    ):
+        jpco = current_pump.get("date_set")
+        jpco_str = (
+            pd.Timestamp(jpco).strftime("%Y-%m-%d")
+            if pd.notna(jpco)
+            else "unknown date"
+        )
+        test_str = (
+            pd.Timestamp(test_date).strftime("%Y-%m-%d")
+            if pd.notna(test_date)
+            else "latest"
+        )
+        reason = (
+            f"The {test_str} test predates the current pump "
+            f"{nozzle}{throat} (JPCO on {jpco_str}) — calibration is paused "
+            "until a test on the new pump comes in."
+        )
+        return None, reason
+
     actual_oil = recent_test.get("WtOilVol", None)
     if not is_valid_number(actual_oil) or actual_oil <= 0:
-        return None
+        return None, None
 
     actual_pf = recent_test.get("lift_wat", None)
     actual_bhp = recent_test.get("BHP", None)
@@ -469,17 +505,20 @@ def _compute_batch_calibration(
     raw_factor = actual_oil / model_oil
     factor = max(0.3, min(2.0, raw_factor))
 
-    return CalibrationResult(
-        well_name=params.selected_well,
-        current_nozzle=nozzle,
-        current_throat=throat,
-        model_oil=model_oil,
-        actual_oil=actual_oil,
-        model_pf=model_pf,
-        actual_pf=actual_pf if is_valid_number(actual_pf) else None,
-        model_bhp=model_bhp,
-        actual_bhp=actual_bhp if is_valid_number(actual_bhp) else None,
-        calibration_factor=factor,
+    return (
+        CalibrationResult(
+            well_name=params.selected_well,
+            current_nozzle=nozzle,
+            current_throat=throat,
+            model_oil=model_oil,
+            actual_oil=actual_oil,
+            model_pf=model_pf,
+            actual_pf=actual_pf if is_valid_number(actual_pf) else None,
+            model_bhp=model_bhp,
+            actual_bhp=actual_bhp if is_valid_number(actual_bhp) else None,
+            calibration_factor=factor,
+        ),
+        None,
     )
 
 
@@ -499,14 +538,24 @@ def _render_batch_hero_strip(
     deliberately compute calibration here even when the user can't see
     the full breakdown, so the toggle behaves the same as before.)
 
+    When the latest test predates the current pump (JPCO→next-test window),
+    no calibration is produced: the vs-actual deltas are blanked/greyed like
+    the Solver's pump_differs behavior and the PF/BHP checks are paused.
+
     Returns True when PF rate mismatch is large enough that the rate-scalar
     calibration would encode a PF-pressure error rather than a real model
     correction — the caller disables the toggle in that case.
     """
-    cal = _compute_batch_calibration(batch_pump, params)
+    cal, mismatch_reason = _compute_batch_calibration(batch_pump, params)
     if cal is None:
-        # No JP history / no actuals — show a minimal hero from the sidebar pump
-        _render_batch_hero_no_actuals(batch_pump, params)
+        # Whatever made the calibration unavailable also invalidates a
+        # previously stashed result — don't leave a stale toggle live below.
+        st.session_state.pop("batch_calibration_result", None)
+        if mismatch_reason:
+            _render_batch_hero_pump_mismatch(batch_pump, params, mismatch_reason)
+        else:
+            # No JP history / no actuals — minimal hero from the sidebar pump
+            _render_batch_hero_no_actuals(batch_pump, params)
         return False
 
     st.session_state["batch_calibration_result"] = cal
@@ -527,9 +576,7 @@ def _render_batch_hero_strip(
         (batch_pump.df["nozzle"] == cal.current_nozzle)
         & (batch_pump.df["throat"] == cal.current_throat)
     ]
-    model_form_wat = (
-        float(match.iloc[0]["form_wat"]) if not match.empty else None
-    )
+    model_form_wat = float(match.iloc[0]["form_wat"]) if not match.empty else None
 
     st.caption(
         f"Showing the **current installed pump** "
@@ -547,8 +594,10 @@ def _render_batch_hero_strip(
     with h1:
         d = _delta(cal.model_oil, cal.actual_oil, "vs actual")
         st.metric(
-            "Oil Rate", f"{cal.model_oil:,.0f} BOPD",
-            delta=d, delta_color="off" if d is None else "normal",
+            "Oil Rate",
+            f"{cal.model_oil:,.0f} BOPD",
+            delta=d,
+            delta_color="off" if d is None else "normal",
         )
     with h2:
         st.metric(
@@ -558,22 +607,24 @@ def _render_batch_hero_strip(
     with h3:
         d = _delta(cal.model_pf, cal.actual_pf, "vs actual")
         st.metric(
-            "Power Fluid", f"{cal.model_pf:,.0f} BWPD",
-            delta=d, delta_color="off" if d is None else "normal",
+            "Power Fluid",
+            f"{cal.model_pf:,.0f} BWPD",
+            delta=d,
+            delta_color="off" if d is None else "normal",
         )
     with h4:
         d = _delta(cal.model_bhp, cal.actual_bhp, "vs actual")
         st.metric(
-            "Suction Pressure", f"{cal.model_bhp:,.0f} psig",
-            delta=d, delta_color="off" if d is None else "normal",
+            "Suction Pressure",
+            f"{cal.model_bhp:,.0f} psig",
+            delta=d,
+            delta_color="off" if d is None else "normal",
         )
 
-    # PF mismatch is the foundational check. If the sidebar PF pressure
-    # doesn't match operating conditions, both the rate-scalar calibration
-    # (here) and the BHP friction-cal (Solver) will encode the pressure
-    # error rather than capturing a real model correction. The warning still
-    # gates the calibration toggle below; the PF quickfix lives on the
-    # Solver tab where users iterate on PF pressure tuning.
+    # PF check. With a MEASURED test-day PF pressure the rate mismatch is a
+    # wear/identity diagnostic and never gates the calibration toggle below;
+    # only tests without a daily reading keep the legacy "fix pressure first"
+    # gate. The PF quickfix / wear estimate live on the Solver tab.
     cal_inputs = build_calibration_inputs(params, wellbore, well_profile)
     test_date_str = cal_inputs["test_date_str"] if cal_inputs else None
     _pf_warning_shown, pf_blocked = render_pf_mismatch_warning(
@@ -582,6 +633,7 @@ def _render_batch_hero_strip(
         params.ppf_surf,
         test_date_str=test_date_str,
         well_name=params.selected_well,
+        measured_pf=cal_inputs.get("test_pf_press") if cal_inputs else None,
     )
 
     # BHP red flag (only meaningful once PF is right). Falls back to the
@@ -755,6 +807,68 @@ def _render_marg_wc_quickfix(params: SimulationParams) -> None:
         )
 
 
+def _render_batch_hero_pump_mismatch(
+    batch_pump, params: SimulationParams, reason: str
+) -> None:
+    """Hero strip variant for the JPCO→next-test window (P1-11).
+
+    The current pump's modeled row is still worth showing, but the latest
+    test's actuals were measured on the OLD pump — so the vs-actual deltas
+    are blanked and greyed (same semantic as the Solver's pump_differs
+    guard) and the PF-match / BHP-calibration checks are skipped entirely.
+    """
+    from woffl.assembly.jp_history import get_current_pump
+
+    st.warning(f"**Not a pump match.** {reason}", icon="⚠️")
+
+    jp_hist = st.session_state.get("jp_history_df")
+    current_pump = get_current_pump(jp_hist, params.selected_well)
+    if current_pump is None:
+        return
+    nozzle = current_pump["nozzle_no"]
+    throat = current_pump["throat_ratio"]
+    match = batch_pump.df[
+        (batch_pump.df["nozzle"] == nozzle) & (batch_pump.df["throat"] == throat)
+    ]
+    if match.empty or pd.isna(match.iloc[0].get("qoil_std")):
+        return
+    row = match.iloc[0]
+
+    date_str = (
+        current_pump["date_set"].strftime("%Y-%m-%d")
+        if current_pump["date_set"] is not None
+        else "N/A"
+    )
+    st.caption(
+        f"Showing the **current installed pump** ({nozzle}{throat}, "
+        f"set {date_str}). Vs-actual deltas are paused — see the note above."
+    )
+    h1, h2, h3, h4 = st.columns(4)
+    with h1:
+        st.metric(
+            "Oil Rate",
+            f"{row['qoil_std']:,.0f} BOPD",
+            delta="vs actual",
+            delta_color="off",
+        )
+    with h2:
+        st.metric("Formation Water", f"{row['form_wat']:,.0f} BWPD")
+    with h3:
+        st.metric(
+            "Power Fluid",
+            f"{row['lift_wat']:,.0f} BWPD",
+            delta="vs actual",
+            delta_color="off",
+        )
+    with h4:
+        st.metric(
+            "Suction Pressure",
+            f"{row['psu_solv']:,.0f} psig",
+            delta="vs actual",
+            delta_color="off",
+        )
+
+
 def _render_batch_hero_no_actuals(batch_pump, params: SimulationParams) -> None:
     """Hero strip variant for Custom mode / wells without test data.
 
@@ -763,8 +877,7 @@ def _render_batch_hero_no_actuals(batch_pump, params: SimulationParams) -> None:
     sb_nozzle = params.nozzle_no
     sb_throat = params.area_ratio
     match = batch_pump.df[
-        (batch_pump.df["nozzle"] == sb_nozzle)
-        & (batch_pump.df["throat"] == sb_throat)
+        (batch_pump.df["nozzle"] == sb_nozzle) & (batch_pump.df["throat"] == sb_throat)
     ]
     if match.empty or pd.isna(match.iloc[0].get("qoil_std")):
         return  # Nothing to show — sidebar pump wasn't in the batch grid
@@ -822,7 +935,9 @@ def _render_nelder_mead_section(batch_pump, params: SimulationParams) -> None:
             # widget exists, so the slider would freeze on its first value.)
             wc = st.session_state.get("nm_marginal_wc", 0.94)
             cost = round(_owr_from_wc(wc), 2)
-            st.session_state["nm_lift_cost"] = min(_LIFT_COST_MAX, max(_LIFT_COST_MIN, cost))
+            st.session_state["nm_lift_cost"] = min(
+                _LIFT_COST_MAX, max(_LIFT_COST_MIN, cost)
+            )
 
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -839,7 +954,9 @@ def _render_nelder_mead_section(batch_pump, params: SimulationParams) -> None:
             )
             # Convert: WOR = wc / (1 - wc), OWR = 1/WOR = (1 - wc) / wc
             calculated_lift_cost = _owr_from_wc(marg_wc_input)
-            clamped = min(_LIFT_COST_MAX, max(_LIFT_COST_MIN, round(calculated_lift_cost, 2)))
+            clamped = min(
+                _LIFT_COST_MAX, max(_LIFT_COST_MIN, round(calculated_lift_cost, 2))
+            )
             caption = (
                 f"WOR = {marg_wc_input / (1 - marg_wc_input):.2f} | "
                 f"OWR (lift cost) = {calculated_lift_cost:.4f}"
@@ -1004,15 +1121,12 @@ def render_tab(
     # box. On a hit, the BatchPump's dataframe and coefficients are reset
     # from pristine copies so the calibration toggle below still rescales
     # from raw values instead of compounding across reruns.
-    sweep_sig = (
-        params.selected_well, params.field_model, params.jpump_direction,
-        params.surf_pres, params.form_temp, params.rho_pf, params.ppf_surf,
-        tuple(params.nozzle_batch_options), tuple(params.throat_batch_options),
-        params.ken, params.kth, params.kdi,
-        params.qwf, params.pwf, params.pres, params.form_wc, params.form_gor,
-        params.oil_api, params.gas_sg, params.wat_sg, params.bubble_point,
-        params.tubing_od, params.tubing_thickness,
-        params.casing_od, params.casing_thickness, params.jpump_tvd,
+    # Physical inputs come from the shared builder (tab_helpers) so a field
+    # added there invalidates BOTH tabs' caches; only the batch grid itself
+    # is tab-specific here.
+    sweep_sig = physical_sweep_signature(params) + (
+        tuple(params.nozzle_batch_options),
+        tuple(params.throat_batch_options),
     )
     cached = st.session_state.get("_batch_sweep_cache")
     if cached is not None and cached.get("sig") == sweep_sig:
@@ -1075,9 +1189,7 @@ def render_tab(
     # Side effect: computes + stashes the calibration so the toggle below
     # can use it. Returns True when PF rate mismatch is too large to trust
     # the rate-scalar calibration.
-    pf_blocked = _render_batch_hero_strip(
-        batch_pump, params, wellbore, well_profile
-    )
+    pf_blocked = _render_batch_hero_strip(batch_pump, params, wellbore, well_profile)
 
     # Calibration toggle — scales modeled oil and formation water by the
     # installed-pump factor. The toggle sits below the performance graph,
@@ -1123,7 +1235,9 @@ def render_tab(
             # (lift water is unchanged), so the recommendation may shift to a
             # smaller pump when the model over-predicts.
             batch_pump.df.drop(
-                columns=["semi", "motwr", "molwr", "mofwr"], errors="ignore", inplace=True
+                columns=["semi", "motwr", "molwr", "mofwr"],
+                errors="ignore",
+                inplace=True,
             )
             try:
                 batch_pump.process_results()

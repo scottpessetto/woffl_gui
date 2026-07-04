@@ -14,16 +14,23 @@ import pandas as pd
 import pytest
 
 # ---------------------------------------------------------------------------
-# Mock streamlit *before* importing anything from woffl.gui.utils so that
-# module-level `import streamlit as st` and the @st.cache_data decorator
-# resolve without a running Streamlit server.
+# Make streamlit importable *before* importing anything from woffl.gui.utils
+# so that module-level `import streamlit as st` and the @st.cache_data
+# decorator resolve without a running Streamlit server. Prefer the REAL
+# package (bare mode works fine for these tests): leaving a MagicMock in
+# sys.modules poisons the whole process — a later test file's
+# `import streamlit.components.v1` fails because the mock isn't a package
+# (order-dependent flake when this file runs before test_gui_smoke).
 # ---------------------------------------------------------------------------
-_st_mock = MagicMock()
-# Make @st.cache_data a passthrough decorator
-_st_mock.cache_data = lambda *args, **kwargs: (
-    args[0] if args and callable(args[0]) else lambda fn: fn
-)
-sys.modules.setdefault("streamlit", _st_mock)
+try:
+    import streamlit  # noqa: F401
+except ImportError:  # pragma: no cover - env without streamlit installed
+    _st_mock = MagicMock()
+    # Make @st.cache_data a passthrough decorator
+    _st_mock.cache_data = lambda *args, **kwargs: (
+        args[0] if args and callable(args[0]) else lambda fn: fn
+    )
+    sys.modules.setdefault("streamlit", _st_mock)
 
 from woffl.flow.inflow import InFlow
 from woffl.geometry.jetpump import JetPump

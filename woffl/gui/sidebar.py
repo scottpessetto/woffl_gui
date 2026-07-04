@@ -146,6 +146,63 @@ def _populate_pump_from_history(selected_well: str) -> None:
         _set_param("area_ratio", throat_str)
 
 
+def _seed_pf_from_live(selected_well: str) -> None:
+    """Seed PF surface pressure (+ circulation direction) from live daily data.
+
+    vw_pressure_daily carries each well's actual daily tubing/annulus
+    pressures, so PF is measured, not assumed. Priority:
+
+      1. the most recent test's TEST-DAY reading (joined onto every test row
+         by well_test_client) — consistent with the qwf/pwf/WC/GOR the IPR
+         auto-populate just seeded from that same test,
+      2. the latest daily reading (last 30 days) when the test day has none,
+      3. the legacy pad default (pre-live behavior; also covers Databricks
+         being unreachable).
+
+    The resolved source also tells us the circulation direction (PF down the
+    tubing = forward circ), so the Pump section's direction radio is seeded to
+    match — both its logical and widget keys, which is safe here because this
+    runs inside the well-selection block BEFORE the Pump widgets render (same
+    pattern as the field-model radio seed above).
+
+    Provenance lands in ``st.session_state["_pf_live_info"]`` for the caption
+    under the PF widget. Only called on well selection (is_new_well), so a
+    manual PF edit afterwards persists — same contract as every other seed.
+    """
+    from woffl.gui.utils import (
+        default_pad_pf,
+        live_pf_for_seed,
+        pad_from_mp_name,
+    )
+
+    live = live_pf_for_seed(selected_well)
+
+    if live is None:
+        pad = pad_from_mp_name(selected_well)
+        fallback = default_pad_pf(pad) if pad else 3168
+        _set_param("ppf_surf", clamp_seed("ppf_surf", fallback))
+        st.session_state["_pf_live_info"] = {
+            "well": selected_well,
+            "kind": "fallback",
+            "pf_press": fallback,
+        }
+        return
+
+    _set_param("ppf_surf", clamp_seed("ppf_surf", int(round(live["pf_press"]))))
+    source = live.get("pf_source")
+    if source in ("annulus", "tubing"):
+        direction = "Reverse" if source == "annulus" else "Forward"
+        st.session_state["jpump_direction"] = direction
+        st.session_state["jpump_direction_input"] = direction
+    st.session_state["_pf_live_info"] = {
+        "well": selected_well,
+        "kind": live.get("kind"),
+        "pf_press": float(live["pf_press"]),
+        "pf_source": source,
+        "pf_date": live.get("pf_date"),
+    }
+
+
 def _update_well_parameters_from_data(
     well_data: dict | None, selected_well: str
 ) -> None:
@@ -197,19 +254,11 @@ def _update_well_parameters_from_data(
         _seed_param("gas_sg", well_data.get("gas_sg"), 0.65)
         _seed_param("wat_sg", well_data.get("wat_sg"), 1.02)
 
-        # Pad-aware PF surface pressure default. B/G/J wells run on booster
-        # pads at ~2200 psi; F is ~2800; the rest run on Schrader at ~3400.
-        # Without this the GUI defaulted everyone to 3168 and triggered a
-        # PF-mismatch warning on the Solver tab for every non-Schrader well.
-        # Future-proof: replace with vw_power_fluid_header once populated.
-        from woffl.gui.utils import default_pad_pf, pad_from_mp_name
-
-        pad = pad_from_mp_name(selected_well)
-        if pad:
-            _set_param("ppf_surf", default_pad_pf(pad))
-
         _populate_pump_from_history(selected_well)
         _auto_populate_from_ipr(selected_well)
+        # After IPR auto-populate so the test frame (with test-day PF columns)
+        # is already sliced/cached for this well.
+        _seed_pf_from_live(selected_well)
         st.session_state.last_selected_well_all = selected_well
     elif force_ipr_refresh:
         # Gauge override changed — refresh IPR-driven sidebar values
@@ -684,6 +733,35 @@ def _render_pvt_overrides(
     return oil_api, gas_sg, wat_sg, bubble_point
 
 
+def _render_pf_live_caption() -> None:
+    """Provenance caption for the PF widget's live-data seed.
+
+    ``_pf_live_info`` is written by the well-selection seed
+    (:func:`_seed_pf_from_live`) and the Solver's IPR-anchor seed; only shown
+    while it belongs to the currently selected well.
+    """
+    info = st.session_state.get("_pf_live_info")
+    if not info or info.get("well") != st.session_state.get(
+        "last_selected_well_all"
+    ):
+        return
+    if info.get("kind") == "fallback":
+        st.caption(
+            f"No live PF reading — seeded pad default "
+            f"{info['pf_press']:,.0f} psi."
+        )
+        return
+    from woffl.assembly.pf_pressure import PF_SOURCE_LABELS
+
+    src = PF_SOURCE_LABELS.get(info.get("pf_source"), info.get("pf_source"))
+    date = info.get("pf_date")
+    date_str = f" on {date:%Y-%m-%d}" if hasattr(date, "strftime") else ""
+    st.caption(
+        f"Live: {info['pf_press']:,.0f} psi from {src}{date_str} "
+        f"({info.get('kind')})."
+    )
+
+
 def _render_pressures() -> tuple[int, int]:
     """Render the two always-visible pressure knobs (PF + surface)."""
     # Bounds match the PF Auto-match search envelope [800, 5500] — narrower
@@ -693,6 +771,7 @@ def _render_pressures() -> tuple[int, int]:
         "Power Fluid Surface Pressure (psi)", "ppf_surf", 3168,
         min_value=800, max_value=5500, step=10,
     )
+    _render_pf_live_caption()
     surf_pres = _number_input(
         "Wellhead Surface Pressure (psi)", "surf_pres", 210,
         min_value=10, max_value=600, step=10,

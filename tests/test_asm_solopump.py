@@ -135,8 +135,16 @@ class TestMarginalConvergence:
 
     def _solve_marginal(self, jpump):
         return so.jetpump_solver(
-            self.pwh_m, self.tsu_m, self.ppf_m, jpump, wbore, profile,
-            self.ipr_marginal, self.res_marginal, mpu_wat, "reverse",
+            self.pwh_m,
+            self.tsu_m,
+            self.ppf_m,
+            jpump,
+            wbore,
+            profile,
+            self.ipr_marginal,
+            self.res_marginal,
+            mpu_wat,
+            "reverse",
         )
 
     def test_marginal_pump_converges(self):
@@ -153,14 +161,26 @@ class TestMarginalConvergence:
 
         jp = JetPump("12", "B")
         psu_min, _q, _te = _jf.psu_minimize(
-            tsu=self.tsu_m, ken=jp.ken, ate=jp.ate,
-            ipr_su=self.ipr_marginal, prop_su=self.res_marginal,
+            tsu=self.tsu_m,
+            ken=jp.ken,
+            ate=jp.ate,
+            ipr_su=self.ipr_marginal,
+            prop_su=self.res_marginal,
         )
         raised = False
         try:
             so.discharge_residual(
-                psu_min, self.pwh_m, self.tsu_m, self.ppf_m, jp, wbore, profile,
-                self.ipr_marginal, self.res_marginal, mpu_wat, "reverse",
+                psu_min,
+                self.pwh_m,
+                self.tsu_m,
+                self.ppf_m,
+                jp,
+                wbore,
+                profile,
+                self.ipr_marginal,
+                self.res_marginal,
+                mpu_wat,
+                "reverse",
             )
         except ConvergenceError:
             raised = True
@@ -181,8 +201,16 @@ class TestMarginalConvergence:
         res_hi = ResMix(wc=0.99, fgor=400, oil=mpu_oil, wat=mpu_wat, gas=mpu_gas)
         ipr_hi = InFlow(qwf=3000 * self._vf, pwf=0.5 * self.pres_m, pres=self.pres_m)
         psu, sonic, qoil, fwat, lwat, mach = so.jetpump_solver(
-            self.pwh_m, self.tsu_m, self.ppf_m, JetPump("13", "B"), wbore, profile,
-            ipr_hi, res_hi, mpu_wat, "reverse",
+            self.pwh_m,
+            self.tsu_m,
+            self.ppf_m,
+            JetPump("13", "B"),
+            wbore,
+            profile,
+            ipr_hi,
+            res_hi,
+            mpu_wat,
+            "reverse",
         )
         assert qoil > 0 and lwat > 0  # marginal well, but it does flow
 
@@ -193,6 +221,38 @@ def test_throat_wc_water_branch():
     wc_tm, qwat_su = _jf.throat_wc(qoil_std=800, wc_su=1.0, qwat_nz=500)
     assert qwat_su == 800
     assert wc_tm == 1.0
+
+
+def test_throat_mixture_anchor():
+    """Tripwire for the water-mode anchor fix (upstream PR to kwellis/woffl).
+
+    In water mode the prop_tm anchor is a WATER rate and must include the
+    nozzle water; the oil path must be untouched (wc_tm carries the PF there).
+    Goes red if _throat_mixture_anchor is reverted to a bare qoil_std."""
+    # water mode at 100% WC: anchor = formation water + nozzle water
+    assert _jf._throat_mixture_anchor(300.0, 2500.0, 1.0, True) == 2800.0
+    # oil path: anchor stays the oil rate, regardless of the flag
+    assert _jf._throat_mixture_anchor(300.0, 2500.0, 0.94, False) == 300.0
+    assert _jf._throat_mixture_anchor(300.0, 2500.0, 0.94, True) == 300.0
+    # 100% WC without water mode: unchanged anchor (the resmix oil branch
+    # raises its own ValueError downstream — behavior preserved)
+    assert _jf._throat_mixture_anchor(300.0, 2500.0, 1.0, False) == 300.0
+
+
+def test_bracketed_throat_discharge_takes_physical_high_root():
+    """Tripwire for the bracketed-fallback root selection (upstream PR).
+
+    The momentum-balance residual generically has two roots (low = the
+    non-physical/choked branch, high = the working discharge). The fallback
+    must return the HIGH root — the original upward scan locked onto the low
+    one and reported a false 'pump can't lift'. Synthetic residual: negative
+    outside (100, 2000), positive between — mirrors the real hump shape."""
+
+    def bal(p):
+        return -(p - 100.0) * (p - 2000.0) / 1000.0
+
+    root = _jf._throat_discharge_bracketed(bal, pte=300.0)
+    assert root == pytest.approx(2000.0, abs=1.0)  # NOT the low root at 100
 
 
 class TestWaterPumpMode:
@@ -216,8 +276,16 @@ class TestWaterPumpMode:
     def test_water_pump_solve_converges(self):
         """A 100%-water well solves and lifts water (no oil)."""
         psu, sonic, qwater, fwat, lwat, mach = so.jetpump_solver(
-            self.pwh_w, self.tsu_w, self.ppf_w, JetPump("12", "B"), wbore, profile,
-            self.ipr_water, self.res_water, mpu_wat, "reverse",
+            self.pwh_w,
+            self.tsu_w,
+            self.ppf_w,
+            JetPump("12", "B"),
+            wbore,
+            profile,
+            self.ipr_water,
+            self.res_water,
+            mpu_wat,
+            "reverse",
         )
         # the "oil" slot carries the formation water rate in water mode
         assert qwater > 0 and fwat > 0 and lwat > 0
@@ -228,9 +296,66 @@ class TestWaterPumpMode:
         res_no_flag = ResMix(wc=1.0, fgor=600, oil=mpu_oil, wat=mpu_wat, gas=mpu_gas)
         with pytest.raises(ValueError):
             so.jetpump_solver(
-                self.pwh_w, self.tsu_w, self.ppf_w, JetPump("12", "B"), wbore,
-                profile, self.ipr_water, res_no_flag, mpu_wat, "reverse",
+                self.pwh_w,
+                self.tsu_w,
+                self.ppf_w,
+                JetPump("12", "B"),
+                wbore,
+                profile,
+                self.ipr_water,
+                res_no_flag,
+                mpu_wat,
+                "reverse",
             )
+
+    def test_water_solve_outflow_includes_power_fluid(self):
+        """Tripwire for the water-mode anchor fix (upstream PR to kwellis/woffl).
+
+        Pinned to the fixed solve: the tubing traverse and diffuser are sized
+        on formation + power-fluid water (~4,200 BWPD here), not formation
+        alone (~1,140). Losing the fix moves psu to ~912 (+22%) and formation
+        water to ~1,142 (-13%) — far outside the pins."""
+        psu, _sonic, qwater, fwat, lwat, _mach = so.jetpump_solver(
+            self.pwh_w,
+            self.tsu_w,
+            self.ppf_w,
+            JetPump("12", "B"),
+            wbore,
+            profile,
+            self.ipr_water,
+            self.res_water,
+            mpu_wat,
+            "reverse",
+        )
+        assert psu == pytest.approx(746.8, rel=0.05)
+        assert fwat == pytest.approx(1315.9, rel=0.05)
+        assert lwat == pytest.approx(2862.8, rel=0.05)
+        # reported rates keep their meaning: the "oil" slot carries FORMATION
+        # water only (the PF stays in lwat)
+        assert qwater == fwat
+
+    def test_anchor_is_live_in_the_solve_path(self, monkeypatch):
+        """Precondition guard: forcing the anchor back to formation-only must
+        CHANGE the solve — proving _throat_mixture_anchor is actually on the
+        discharge-residual path (not dead code the pinned test can't see)."""
+        args = (
+            self.pwh_w,
+            self.tsu_w,
+            self.ppf_w,
+            JetPump("12", "B"),
+            wbore,
+            profile,
+            self.ipr_water,
+            self.res_water,
+            mpu_wat,
+            "reverse",
+        )
+        psu_fixed = so.jetpump_solver(*args)[0]
+        monkeypatch.setattr(
+            _jf, "_throat_mixture_anchor", lambda qoil_std, qnz, wc_tm, wm: qoil_std
+        )
+        psu_legacy = so.jetpump_solver(*args)[0]
+        assert abs(psu_fixed - psu_legacy) > 50  # ~166 psi at these conditions
 
 
 class TestWellboreGeometry:
@@ -288,7 +413,7 @@ class TestSecantSolveRatesPopulated:
         monkeypatch.setattr(so, "discharge_residual", fake_discharge_residual)
 
         psu_min, psu_max = 1000.0, 1002.0  # within psu_diff=5
-        res_min, res_max = 0.0, 1.0        # within res_tol=10 -> loop skipped
+        res_min, res_max = 0.0, 1.0  # within res_tol=10 -> loop skipped
         result = so._secant_solve(
             seed_pair=(psu_min, psu_max),
             res_min=res_min,
@@ -309,7 +434,7 @@ class TestSecantSolveRatesPopulated:
             res_tol=10.0,
         )
         psu, _sonic, qoil, fwat, qnz, _mach = result
-        assert qoil == 123.0   # real rates, NOT the 0.0 initializers
+        assert qoil == 123.0  # real rates, NOT the 0.0 initializers
         assert fwat == 456.0
         assert qnz == 789.0
         assert calls["n"] == 1  # exactly one final eval at the returned psu

@@ -55,6 +55,11 @@ def horz_angle(hlen: float, ylen: float) -> float:
     Returns:
         theta (float): Horizontal angle, degrees
     """
-    theta = np.arcsin(ylen / hlen)  # angle in radians
+    # [LIBRARY change -> upstream PR to kwellis/woffl] P1-6: survey noise can
+    # hand this |ylen| slightly greater than hlen (physically impossible for a
+    # hypotenuse), pushing the ratio outside arcsin's [-1, 1] domain and
+    # returning a silent NaN incline. Clamp the ratio; valid inputs are inside
+    # the domain already, so the clip is an identity there (bit-identical).
+    theta = np.arcsin(np.clip(ylen / hlen, -1.0, 1.0))  # angle in radians
     theta = np.degrees(theta)  # convert to degrees
     return theta

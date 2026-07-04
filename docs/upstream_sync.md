@@ -165,7 +165,46 @@ exponent picks the wrong holdup correlation near that boundary → wrong slip ho
 (at `nslh=0.5`, `froude=0.275` classifies as `intermittent` with `-1.4516` but
 `transition` with the old `-1.468`).
 
-### 10. Low-severity robustness guards (Low-tier review sweep)
+### 10. Water-pump mode — outflow anchored on TOTAL water (P1-1, 2026-07-02)
+Extends #5. In water mode the `prop_tm` anchor is a **water** rate (see
+`ResMix.insitu_volm_flow`'s water branch), and `wc_tm = 1.0` carries no
+information about the power fluid — so anchoring the diffuser discharge and the
+tubing traverse on `qoil_std` (= formation water only) dropped the nozzle
+volume: a well moving 300 BWPD formation + 2,500 BWPD PF was modeled at 300
+BWPD in the tubing, inconsistent with the throat momentum balance (which DOES
+include the nozzle mass flow). New helper `jetflow._throat_mixture_anchor`
+returns `qoil_std + qnz_bwpd` only when `water_mode and wc_tm >= 1.0`; both
+call sites (`jetflow.jetpump_base_calcs`, `solopump.discharge_residual` — the
+diffuser AND `production_top_down_press`) use it. **Oil-path solves are
+bit-identical** (anchor unchanged unless the water branch is engaged). At the
+reference water fixture the operating point moves psu 912 → 747 psig and
+formation water 1,142 → 1,316 BWPD — the broken model materially understated
+the well.
+
+**Guarded by:** `tests/test_asm_solopump.py::test_throat_mixture_anchor`,
+`TestWaterPumpMode::test_water_solve_outflow_includes_power_fluid` (pinned
+post-fix values; the legacy anchor lands ~22% off) and
+`TestWaterPumpMode::test_anchor_is_live_in_the_solve_path` (monkeypatches the
+anchor back to formation-only and asserts the solve changes — proves the
+helper is on the live path, not dead code).
+
+### 11. `_throat_discharge_bracketed` — take the physical HIGH root (P1-3, 2026-07-02)
+Extends #2. The momentum-balance residual generically has **two** roots (it
+falls to −∞ at both ends with a positive hump between): the low root is the
+non-physical/choked branch, the high root is the working discharge the secant
+fast path (seeded at 2–3× pte) converges to. The fallback's original upward
+scan from 15 psig locked onto the **low** root — an understated ptm/pdi, i.e. a
+false "pump can't lift" on exactly the marginal wells the fallback exists to
+save. Now scans **downward** from the top of the range (expanding the range
+first when `bal(hi) > 0`, meaning the scan started inside the hump), so the
+first bracketed sign change is the physical high root. Secant fast path
+untouched; already-converging solves bit-identical.
+
+**Guarded by:** `tests/test_asm_solopump.py::test_bracketed_throat_discharge_takes_physical_high_root`
+(synthetic two-root residual with roots at 100 and 2,000; asserts 2,000 —
+the upward scan returns 100 and goes red).
+
+### 12. Low-severity robustness guards (Low-tier review sweep)
 A batch of small additive guards across the shared library — all bit-identical on
 the normal path, each tagged in-code with `upstream PR`:
 

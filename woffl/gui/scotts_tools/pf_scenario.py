@@ -361,6 +361,7 @@ def _solve_at_pf(
         ipr_su=inflow,
         prop_su=res_mix,
         prop_pf=prop_pf,
+        jpump_direction=wc.jpump_direction,
         wellname=wc.well_name,
     )
     result_df = batch.batch_run([jp])
@@ -405,10 +406,52 @@ def render_tab():
         st.error("Could not parse the CSV. Check format: 3 rows — wells, PF-A, PF-B.")
         return
 
+    # Baseline Scenario A at the RECENT MEASURED PF (vw_pressure_daily) so the
+    # comparison reads "current actual vs proposed" instead of "assumed vs
+    # proposed". Per-well live reading first, live pad median as backstop,
+    # CSV column B only when the well has no live data at all.
+    use_live_baseline = st.checkbox(
+        "📡 Baseline Scenario A at recent measured PF (current vs optimized)",
+        value=True,
+        key="pf_scenario_live_a",
+        help="Replaces each well's Scenario A pressure with its latest "
+        "measured PF (per-well daily reading, else the pad's live median). "
+        "Scenario B stays as uploaded — your proposed/optimized pressures. "
+        "Uncheck to run the CSV exactly as uploaded.",
+    )
+    if use_live_baseline:
+        from woffl.assembly.pf_pressure import pad_pf_medians
+        from woffl.gui.utils import latest_pf_for_well, load_pf_latest
+
+        live_medians = pad_pf_medians(load_pf_latest())
+        sources = []
+        new_a = []
+        for _, r in scenario_df.iterrows():
+            live = latest_pf_for_well(r["well_name"])
+            if live is not None:
+                new_a.append(float(int(round(live["pf_press"]))))
+                sources.append(f"live ({live['pf_date']:%m-%d})")
+            elif r["pad"] in live_medians:
+                new_a.append(float(live_medians[r["pad"]]))
+                sources.append("pad live median")
+            else:
+                # No live data for the well OR its pad — the uploaded value
+                # is the best remaining guess.
+                new_a.append(float(r["pf_pres_a"]))
+                sources.append("CSV (no live data)")
+        scenario_df["pf_pres_a"] = new_a
+        scenario_df["pf_a_source"] = sources
+    else:
+        scenario_df["pf_a_source"] = "CSV"
+
     # Show parsed input
     st.subheader("Parsed Input")
-    display_input = scenario_df[["well_name", "pad", "pf_pres_a", "pf_pres_b"]].copy()
-    display_input.columns = ["Well", "Pad", "Scenario A PF (psi)", "Scenario B PF (psi)"]
+    display_input = scenario_df[
+        ["well_name", "pad", "pf_pres_a", "pf_a_source", "pf_pres_b"]
+    ].copy()
+    display_input.columns = [
+        "Well", "Pad", "Scenario A PF (psi)", "A source", "Scenario B PF (psi)",
+    ]
     st.dataframe(display_input, use_container_width=True, hide_index=True)
 
     # Settings
@@ -424,14 +467,29 @@ def render_tab():
             help="How far back to pull well tests for IPR fitting.",
         )
     with col_b:
+        # Seed from the live per-pad medians of the pads in this CSV — one
+        # global number is still a simplification, but at least it starts at
+        # the measured level instead of a hardcoded 3400.
+        from woffl.assembly.pf_pressure import pad_pf_medians as _ppm
+        from woffl.gui.utils import load_pf_latest as _lpl
+
+        _medians = _ppm(_lpl())
+        _pads = [p for p in scenario_df["pad"].unique() if p in _medians]
+        _seed = (
+            int(round(sum(_medians[p] for p in _pads) / len(_pads) / 100.0) * 100)
+            if _pads
+            else 3400
+        )
         test_pf_pres = st.number_input(
             "PF pressure at test time (psi)",
             min_value=1000,
             max_value=5000,
-            value=3400,
+            value=_seed,
             step=100,
             key="pf_scenario_test_pf",
-            help="PF pressure when well tests were run. Used to estimate BHP for wells without gauges.",
+            help="PF pressure when well tests were run — used to estimate BHP "
+            "for wells without gauges. Seeded from the live per-pad median "
+            "of the pads in this CSV.",
         )
 
     # Friction-coefficient mode: per-well from Databricks (default), manual

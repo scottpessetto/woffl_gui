@@ -83,6 +83,53 @@ def pf_map_from_selected(selected_df: pd.DataFrame | None) -> dict[str, float]:
     return out
 
 
+# ── lift-type classification (JP tenure vs conversion signals) ───────────────
+
+
+def classify_lift(pump_date_set, esp_amps, lift_gas, test_date=None) -> str:
+    """Classify a producer's lift type from the JP install + latest-test signals.
+
+    A current jet-pump install claims the well — but only while it is the most
+    recent signal. An ESP-flagged test (``esp_amps > 0``) dated AFTER the latest
+    install means the well was converted, and a lift conversion terminates JP
+    tenure, so the well classifies ESP even though an install row still exists
+    (the old rule modeled a years-ago JP→ESP conversion as JP forever).
+
+    Args:
+        pump_date_set: ``Date Set`` of the latest valid JP install, or None/NaT
+            when the well has no (dated) current pump.
+        esp_amps: latest-test ESP amps (the ESP signal).
+        lift_gas: latest-test lift gas (the gas-lift signal).
+        test_date: date of that latest test. Without it an ESP-flagged test
+            can't prove it postdates the install, so JP tenure stands.
+
+    Returns:
+        ``"JP"`` / ``"ESP"`` / ``"gas-lift"`` / ``"flowing"``.
+    """
+
+    def _pos(x) -> bool:
+        try:
+            return x is not None and not pd.isna(x) and float(x) > 0
+        except (TypeError, ValueError):
+            return False
+
+    esp = _pos(esp_amps)
+    has_pump = pump_date_set is not None and not pd.isna(pump_date_set)
+    if has_pump:
+        if esp and test_date is not None and not pd.isna(test_date):
+            try:
+                if pd.Timestamp(test_date) > pd.Timestamp(pump_date_set):
+                    return "ESP"  # conversion: ESP signal postdates the install
+            except (TypeError, ValueError):
+                pass
+        return "JP"
+    if esp:
+        return "ESP"
+    if _pos(lift_gas):
+        return "gas-lift"
+    return "flowing"
+
+
 # ── ΔOil method picker (physics / empirical / auto) ──────────────────────────
 
 
@@ -109,6 +156,28 @@ def _chosen_method(phys_doil, emp_doil, method: str):
 
 # ── sonic-aware per-well verdict ─────────────────────────────────────────────
 
+# Verdict prefix for wells whose solver did not converge — kept distinct from
+# "no response" so a well the model CAN'T solve never lands in the "header move
+# won't help" bucket (exactly the marginal-well population).
+MODEL_FAILED_PREFIX = "model failed"
+
+
+def solver_error_note(err_now, err_scen, max_len: int = 90) -> str | None:
+    """First solver error across the baseline/scenario solves, trimmed for display.
+
+    BatchPump stores ``repr(exc)`` per row (``"na"`` when the solve converged);
+    this picks the first real error and truncates it so it fits a verdict cell.
+    Returns None when both solves converged.
+    """
+    for e in (err_now, err_scen):
+        if e is None or (isinstance(e, float) and pd.isna(e)):
+            continue
+        s = str(e).strip()
+        if not s or s.lower() in ("na", "nan", "none"):
+            continue
+        return (s[: max_len - 1] + "…") if len(s) > max_len else s
+    return None
+
 
 def _verdict(
     sonic_now: bool,
@@ -117,6 +186,7 @@ def _verdict(
     emp_class: str | None,
     compare_emp: bool,
     resp_thresh: float = 5.0,
+    error: str | None = None,
 ) -> str:
     """Combine the physics sonic flag + ΔOil with the empirical class into an
     actionable per-well label (Scott's sonic-decoupling insight made explicit).
@@ -125,7 +195,13 @@ def _verdict(
     propagate past the critical throat, so it won't respond regardless of what
     the IPR suggests. Non-sonic wells that the physics says respond are then
     confirmed or contradicted by the empirical slope.
+
+    ``error`` (a solver failure from :func:`solver_error_note`) wins over
+    everything: a non-converging solve produces NaN ΔOil, which used to read as
+    "no response" — a wrong, confident answer for exactly the marginal wells.
     """
+    if error:
+        return f"{MODEL_FAILED_PREFIX} — {error}"
     if sonic_now:
         return "sonic-decoupled"          # already choked — header won't help
     if sonic_scen:
@@ -142,22 +218,92 @@ def _verdict(
     return "responsive (physics)"
 
 
+# ── scenario WHP clamp + physics slope (P1-22) ───────────────────────────────
+
+
+def clamp_scenario_whp(whp_now, delta_p, floor: float = 30.0) -> tuple[float, bool]:
+    """Scenario WHP for a header move, clamped at the solver sanity floor.
+
+    ``delta_p`` reaches -500 while typical WHPs run 100-400 psi, so the raw
+    ``whp_now + delta_p`` can go negative — the solver gets garbage below the
+    floor. Returns ``(whp_scen, clamped)``; when ``clamped`` is True the caller
+    must display and difference against THIS value, not the raw target.
+    """
+    scen = float(whp_now) + float(delta_p)
+    if scen < floor:
+        return float(floor), True
+    return scen, False
+
+
+def physics_slope(psu_now, psu_scen, whp_now, whp_scen) -> float:
+    """Physics-implied dBHP/dWHP — the secant of the two solves over the WHP
+    delta the solver ACTUALLY saw.
+
+    Divide by ``whp_scen − whp_now`` (the clamped delta), never the requested
+    ``delta_p``: when the scenario WHP clamps at the floor the unclamped
+    divisor understates the slope (≈3× in the review example) and biases the
+    Physics-vs-Empirical scatter and the sense-check. NaN when any input is
+    missing or the effective delta is ~0 (fully clamped move).
+    """
+    vals = (psu_now, psu_scen, whp_now, whp_scen)
+    if any(v is None or pd.isna(v) for v in vals):
+        return np.nan
+    d = float(whp_scen) - float(whp_now)
+    if abs(d) < 1e-9:
+        return np.nan
+    return (float(psu_scen) - float(psu_now)) / d
+
+
+# ── non-JP "current BHP" anchor (P1-25) ──────────────────────────────────────
+
+
+def recent_bhp_anchor(bhp, n: int = 24, min_bhp: float = 50.0) -> tuple[float, bool]:
+    """Robust "current BHP" anchor for a non-JP well from its hourly BHP trend.
+
+    Median of the LAST ``n`` readings above ``min_bhp`` — the same shut-in /
+    sentinel screen as ``header_trend.fit_within_day`` — so a single 12-psi
+    tail bin can no longer anchor the whole generic Vogel IPR.
+
+    Returns ``(anchor, screened)``. When NO reading passes the screen it falls
+    back to the median of the last ``n`` raw readings with ``screened=False``
+    so the caller can flag the anchor as suspect. ``(nan, False)`` for a
+    missing/empty/all-NaN series.
+    """
+    if bhp is None:
+        return (np.nan, False)
+    s = pd.to_numeric(pd.Series(bhp), errors="coerce").dropna()
+    if s.empty:
+        return (np.nan, False)
+    clean = s[s > min_bhp]
+    if not clean.empty:
+        return float(clean.tail(n).median()), True
+    return float(s.tail(n).median()), False
+
+
 # ── sensitivity roll-up (per-pad + overall) ──────────────────────────────────
 
 
 def verdict_bucket(verdict, sonic_now: bool = False) -> str:
-    """Collapse the 6-way verdict into a response class for roll-ups.
+    """Collapse the per-well verdict into a response class for roll-ups.
 
-    responsive / sonic / no-response / other. ``sonic_now`` (the physics flag)
-    forces ``sonic`` even if the verdict text doesn't say so.
+    responsive / sonic / no-response / model-failed / unassessed / other.
+    ``sonic_now`` (the physics flag) forces ``sonic`` even if the verdict text
+    doesn't say so. A "model failed" verdict wins over the sonic flag — the
+    row's numbers aren't trusted, so it must not count as sonic OR no-response.
+    "no data" (non-JP wells with no usable BHP trend) is "unassessed", not a
+    confident zero.
     """
     v = str(verdict or "")
+    if v.startswith(MODEL_FAILED_PREFIX):
+        return "model-failed"
     if sonic_now or v in ("sonic-decoupled", "chokes when lowered"):
         return "sonic"
     if v.startswith("responsive"):
         return "responsive"
     if v == "no response":
         return "no-response"
+    if v == "no data":
+        return "unassessed"
     return "other"
 
 
@@ -193,6 +339,8 @@ def summarize_sensitivity(
             "Responsive": int((g["_bucket"] == "responsive").sum()),
             "Sonic": int((g["_bucket"] == "sonic").sum()),
             "No-response": int((g["_bucket"] == "no-response").sum()),
+            "Model failed": int((g["_bucket"] == "model-failed").sum()),
+            "Unassessed": int((g["_bucket"] == "unassessed").sum()),
             "Oil now (BOPD)": oil_now,
             "ΔOil (BOPD)": doil,
             "Oil after Δ (BOPD)": oil_now + doil,

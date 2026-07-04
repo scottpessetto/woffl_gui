@@ -82,6 +82,59 @@ def test_beggs_holdup() -> None:
     assert calc_ilh == pytest.approx(book_ilh, rel=0.01)
 
 
+def test_beggs_cf_clamped_nonnegative() -> None:
+    """Tripwire for the C >= 0 clamp library patch (upstream PR to kwellis/woffl).
+
+    Beggs & Brill publish the correlation with the restriction C >= 0. At
+    nslh=0.1, NFr=50, NLv=20 the raw intermittent C is ~-0.52; unclamped it
+    drags phi below 1 and understates the inclined holdup. Goes red if the
+    clamp in beggs_cf_base is ever lost.
+    """
+    c_seg, c_int, c_dis, c_down = tp.beggs_cf(0.1, 50.0, 20.0)
+    assert c_int == 0.0  # raw value is negative -> clamped
+    assert c_seg >= 0.0 and c_down >= 0.0 and c_dis == 0.0
+    # C = 0 means NO incline correction (phi exactly 1), never a reduction
+    assert tp.beggs_phi(c_int, 45.0) == 1.0
+    # the book example's positive C is untouched by the clamp (pg 3-62 inputs)
+    _, c_int_book, _, _ = tp.beggs_cf(book_nslh, book_NFr, book_Nlv)
+    assert c_int_book > 0.0
+
+
+def test_beggs_holdup_floor_at_no_slip() -> None:
+    """Tripwire for the HL(0) >= lambda_L floor (upstream PR to kwellis/woffl).
+
+    The published correlation floors the horizontal holdup at the no-slip
+    holdup. At nslh=0.9, NFr=200 all three raw pattern holdups fall below 0.9
+    (segregated ~0.59, intermittent ~0.73, distributed ~0.73) — unphysical for
+    the correlation. Goes red if the floor in beggs_holdup_base is lost.
+    """
+    hlh_seg, hlh_int, hlh_dis = tp.beggs_holdup_horz(0.9, 200.0)
+    assert hlh_seg == 0.9
+    assert hlh_int == 0.9
+    assert hlh_dis == 0.9
+    # a condition where the raw correlation already exceeds lambda is untouched
+    # (book example pg 3-62: nslh=0.393, NFr=5.67 -> intermittent HL(0)~0.497)
+    _, hlh_int_book, _ = tp.beggs_holdup_horz(book_nslh, book_NFr)
+    assert hlh_int_book == pytest.approx(0.497, rel=0.01)
+    assert hlh_int_book > book_nslh
+
+
+def test_beggs_flow_pattern_raises_typed_on_degenerate_inputs() -> None:
+    """Tripwire for the typed flow-pattern raise (upstream PR to kwellis/woffl).
+
+    NaN inputs (survey noise) fall through every regime bound. The old code
+    returned "unknown", which became a bare KeyError in beggs_holdup_inc that
+    no ValueError-family handler caught. Must raise FlowPatternUnknown (a
+    ValueError subclass, so existing solver handlers catch it).
+    """
+    from woffl.flow.errors import FlowPatternUnknown
+
+    with pytest.raises(FlowPatternUnknown):
+        tp.beggs_flow_pattern(float("nan"), 5.67)
+    with pytest.raises(ValueError):  # subclass contract for existing handlers
+        tp.beggs_flow_pattern(0.5, float("nan"))
+
+
 def test_reynolds_number() -> None:
     calc_NRe = sp.reynolds(book_rho_mix, book_vmix, book_dhyd, book_umix)
     assert calc_NRe == pytest.approx(book_NRe, rel=0.01)

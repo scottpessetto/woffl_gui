@@ -38,7 +38,13 @@ from woffl.assembly.batchpump import BatchPump
 from woffl.assembly.jp_history import get_current_pump
 from woffl.assembly.network_optimizer import WellConfig
 from woffl.geometry.jetpump import JetPump
-from woffl.gui.utils import PAD_PF_FALLBACK, default_pad_pf, load_well_characteristics
+from woffl.gui.utils import (
+    PAD_PF_FALLBACK,
+    default_pad_pf,
+    live_pad_pf_default,
+    live_pf_for_seed,
+    load_well_characteristics,
+)
 
 from . import header_trend as ht
 from ._common import (
@@ -121,6 +127,7 @@ def _solve_at_whp(
         ipr_su=inflow,
         prop_su=res_mix,
         prop_pf=prop_pf,
+        jpump_direction=wc.jpump_direction,
         wellname=wc.well_name,
     )
     result_df = batch.batch_run([jp])
@@ -208,13 +215,22 @@ def _render_pad_pf_editor(pads: list[str]) -> dict[str, int]:
     tok = tuple(pads)
     grid = st.session_state.get("hpi_pad_pf_base")
     if grid is None or st.session_state.get("hpi_pad_pf_base_tok") != tok:
-        resolved = resolve_pad_pf(pads, st.session_state.get("hpi_pad_pf"), default_pad_pf)
+        resolved = resolve_pad_pf(
+            pads, st.session_state.get("hpi_pad_pf"), live_pad_pf_default
+        )
         grid = pd.DataFrame(
             [
                 {
                     "Pad": p,
                     "PF (psi)": resolved[p],
-                    "Source": "default" if resolved[p] == int(default_pad_pf(p)) else "edited",
+                    "Source": (
+                        "live median"
+                        if resolved[p] == int(live_pad_pf_default(p))
+                        and resolved[p] != int(default_pad_pf(p))
+                        else "default"
+                        if resolved[p] == int(default_pad_pf(p))
+                        else "edited"
+                    ),
                 }
                 for p in pads
             ]
@@ -224,8 +240,9 @@ def _render_pad_pf_editor(pads: list[str]) -> dict[str, int]:
         st.session_state.pop("hpi_pad_pf_editor", None)
     st.caption(
         "**Power-fluid pressure per pad** — held fixed while the header (WHP) is "
-        "swept, so it sets the modeled baseline. Seeded from pad defaults; edit to "
-        "match each pad's actual PF. JP wells inherit their pad's value below "
+        "swept, so it sets the modeled baseline. Seeded from the live per-pad "
+        "median (vw_pressure_daily), pad defaults as fallback; edit to override. "
+        "JP wells with a live reading use their own measured PF below "
         "(overridable per well)."
     )
     edited = st.data_editor(
@@ -425,6 +442,17 @@ def _build_input_table(
             whp_now = whp_map.get(wn)
         oil = ov.get("oil")
 
+        # JP wells: live per-well PF (vw_pressure_daily) beats the pad-table
+        # value; pad value covers wells without a valid live reading.
+        pf_held = None
+        if is_jp:
+            live_pf = live_pf_for_seed(wn)
+            pf_held = (
+                int(round(live_pf["pf_press"]))
+                if live_pf
+                else int(pad_pf.get(pad, default_pad_pf(pad)))
+            )
+
         rows.append(
             {
                 "Well": wn,
@@ -432,10 +460,7 @@ def _build_input_table(
                 "Lift": lift,
                 "Pump": f"{pump['nozzle_no']}{pump['throat_ratio']}" if is_jp else "",
                 "Oil (BOPD)": round(float(oil), 0) if pd.notna(oil) else None,
-                # Per-pad PF (from the per-pad PF editor); JP only, overridable per well.
-                "PF held (psi)": (
-                    int(pad_pf.get(pad, default_pad_pf(pad))) if is_jp else None
-                ),
+                "PF held (psi)": pf_held,
                 "WHP now (psi)": int(round(whp_now)) if pd.notna(whp_now) else None,
                 "ResP (psi)": int(round(float(res_pres))),
                 "Formation": formation,

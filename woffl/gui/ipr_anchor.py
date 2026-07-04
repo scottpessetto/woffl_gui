@@ -48,8 +48,12 @@ def fit_rp_through_anchor(
     This is the single-fixed-anchor analogue of
     ``ipr_analyzer._calculate_global_sse``, which instead minimizes over every
     possible anchor. Here the anchor is chosen by the user (specific / median),
-    so only RP is free.
+    so only RP is free. Uses the SAME axis-normalized point-to-curve distance
+    as the library fit (``ipr_analyzer._normalized_curve_sse``) — the old
+    rate-only SSE railed the RP sweep to the field cap on flat test clouds.
     """
+    from woffl.assembly.ipr_analyzer import _axis_scales, _normalized_curve_sse
+
     bhp_values = np.asarray(bhp_values, dtype=float)
     fluid_values = np.asarray(fluid_values, dtype=float)
 
@@ -65,6 +69,8 @@ def fit_rp_through_anchor(
     if start_pres >= end_pres:
         return int(floor) + 50
 
+    q_scale, p_scale = _axis_scales(bhp_values, fluid_values)
+
     best_rp = None
     best_sse = float("inf")
     for pres in range(start_pres, end_pres, step):
@@ -72,17 +78,12 @@ def fit_rp_through_anchor(
         denom_a = _vogel_denom(anchor_bhp, p)
         if denom_a <= 0:
             continue
-        qmax = anchor_fluid / denom_a
-
-        sse = 0.0
-        for j in range(bhp_values.size):
-            bj = bhp_values[j]
-            if bj >= p:
-                sse += 1e8  # penalty: BHP above RP is non-physical for Vogel
-                continue
-            pred = qmax * _vogel_denom(bj, p)
-            sse += (pred - fluid_values[j]) ** 2
-
+        qmax = np.array([anchor_fluid / denom_a])
+        sse = float(
+            _normalized_curve_sse(
+                bhp_values, fluid_values, p, qmax, q_scale, p_scale
+            )[0]
+        )
         if sse < best_sse:
             best_sse = sse
             best_rp = pres

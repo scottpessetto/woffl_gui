@@ -202,7 +202,11 @@ def discharge_residual(
     # stays water-anchored through the diffuser discharge.
     # [LIBRARY change -> upstream PR to kwellis/woffl]
     prop_tm = ResMix(
-        wc_tm, prop_su.fgor, prop_su.oil, prop_su.wat, prop_su.gas,
+        wc_tm,
+        prop_su.fgor,
+        prop_su.oil,
+        prop_su.wat,
+        prop_su.gas,
         model_as_water=prop_su.model_as_water,
     )
     ptm = jf.throat_discharge(
@@ -217,14 +221,23 @@ def discharge_residual(
         rho_te,
         prop_tm,
     )
+    # Water-pump mode: prop_tm flows are WATER-anchored, so the anchor must
+    # include the nozzle water — qoil_std alone sized the diffuser and tubing
+    # traverse on formation water only, dropping the (often dominant)
+    # power-fluid volume. Oil-path solves are bit-identical.
+    # [LIBRARY change -> upstream PR to kwellis/woffl]
+    qtm_std = jf._throat_mixture_anchor(
+        qoil_std, qnz_bwpd, wc_tm, prop_su.model_as_water
+    )
+
     # diffuser area is assumed to be the same as the tubing area, whether forward or reverse jet pump
     vtm, pdi_jp = jf.diffuser_discharge(
-        ptm, tsu, jpump.kdi, jpump.ath, wellbore.inn_pipe.inn_area, qoil_std, prop_tm
+        ptm, tsu, jpump.kdi, jpump.ath, wellbore.inn_pipe.inn_area, qtm_std, prop_tm
     )
 
     # out flow section
     md_seg, prs_ray, slh_ray = of.production_top_down_press(
-        pwh, tsu, qoil_std, prop_tm, wellbore, wellprof, production_flowpath
+        pwh, tsu, qtm_std, prop_tm, wellbore, wellprof, production_flowpath
     )
 
     pdi_of = prs_ray[-1]  # discharge pressure outflow
@@ -272,21 +285,43 @@ def _residual_walk_inward(
     [LIBRARY change -> upstream PR to kwellis/woffl]
     """
     span = psu_toward - psu_start
-    fracs = (0.0, 0.005, 0.01, 0.02, 0.04, 0.07, 0.11, 0.16, 0.22,
-             0.30, 0.40, 0.52, 0.66, 0.82, 0.95)
+    fracs = (
+        0.0,
+        0.005,
+        0.01,
+        0.02,
+        0.04,
+        0.07,
+        0.11,
+        0.16,
+        0.22,
+        0.30,
+        0.40,
+        0.52,
+        0.66,
+        0.82,
+        0.95,
+    )
     for fr in fracs:
         psu = psu_start + span * fr
         try:
             res, qoil, fwat, qnz, mach = discharge_residual(
-                psu, pwh, tsu, ppf_surf, jpump, wellbore, wellprof,
-                ipr_su, prop_su, prop_pf, jpump_direction,
+                psu,
+                pwh,
+                tsu,
+                ppf_surf,
+                jpump,
+                wellbore,
+                wellprof,
+                ipr_su,
+                prop_su,
+                prop_pf,
+                jpump_direction,
             )
             return psu, res, (qoil, fwat, qnz, mach)
         except ConvergenceError:
             continue  # infeasible throat mixture at this suction — step inward
-    raise ConvergenceError(
-        "no feasible suction pressure for the inner throat solve"
-    )
+    raise ConvergenceError("no feasible suction pressure for the inner throat solve")
 
 
 def jetpump_solver(
@@ -341,11 +376,19 @@ def jetpump_solver(
     # the endpoint is already feasible (the overwhelming majority) the first
     # probe returns it unchanged, so converged solves stay bit-identical.
     # [LIBRARY change -> upstream PR to kwellis/woffl]
-    psu_min, res_min, (qoil_std, fwat_bwpd, qnz_bwpd, mach_te) = (
-        _residual_walk_inward(
-            psu_min, psu_max, pwh, tsu, ppf_surf, jpump, wellbore, wellprof,
-            ipr_su, prop_su, prop_pf, jpump_direction,
-        )
+    psu_min, res_min, (qoil_std, fwat_bwpd, qnz_bwpd, mach_te) = _residual_walk_inward(
+        psu_min,
+        psu_max,
+        pwh,
+        tsu,
+        ppf_surf,
+        jpump,
+        wellbore,
+        wellprof,
+        ipr_su,
+        prop_su,
+        prop_pf,
+        jpump_direction,
     )
 
     # if the jetpump (available) discharge is above the outflow (required) discharge at lowest suction
@@ -355,8 +398,18 @@ def jetpump_solver(
         return psu_min, sonic_status, qoil_std, fwat_bwpd, qnz_bwpd, mach_te
 
     psu_max, res_max, _ = _residual_walk_inward(
-        psu_max, psu_min, pwh, tsu, ppf_surf, jpump, wellbore, wellprof,
-        ipr_su, prop_su, prop_pf, jpump_direction,
+        psu_max,
+        psu_min,
+        pwh,
+        tsu,
+        ppf_surf,
+        jpump,
+        wellbore,
+        wellprof,
+        ipr_su,
+        prop_su,
+        prop_pf,
+        jpump_direction,
     )
 
     # if the jetpump (available) discharge is below the outflow (required) discharge at highest suction
@@ -535,9 +588,7 @@ def _secant_solve(
     while abs(psu_list[-2] - psu_list[-1]) > psu_diff or abs(res_list[-1]) > res_tol:
         # secant on the LAST TWO iterates; the root stays bracketed between
         # psu_min (res <= 0) and psu_max (res >= 0), so clamp overshoots back in
-        psu_nxt = jf.psu_secant(
-            psu_list[-2], psu_list[-1], res_list[-2], res_list[-1]
-        )
+        psu_nxt = jf.psu_secant(psu_list[-2], psu_list[-1], res_list[-2], res_list[-1])
         psu_nxt = min(max(psu_nxt, psu_min), psu_max)
         res_nxt, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = discharge_residual(
             psu_nxt,

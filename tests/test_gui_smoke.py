@@ -19,14 +19,18 @@ PAGE_MODULES = [
     "woffl.gui.pad_helpers",
     "woffl.gui.params",
     "woffl.gui.sidebar",
+    "woffl.gui.tab_helpers",
     "woffl.gui.utils",
     "woffl.gui.single_well_page",
     "woffl.gui.workflow_page",
     "woffl.gui.well_database_page",
     "woffl.gui.well_sort_page",
+    "woffl.gui.pad_page",
     "woffl.gui.s_pad_page",
     "woffl.gui.i_pad_page",
     "woffl.gui.m_pad_page",
+    "woffl.gui.pad_optimize",
+    "woffl.gui.pad_plant_base",
     "woffl.gui.s_pad_plant",
     "woffl.gui.i_pad_plant",
     "woffl.gui.m_pad_plant",
@@ -112,13 +116,14 @@ class TestBatchAutomatchInputs:
         assert why == "no current pump"
 
     def test_helpers_are_the_shared_ones(self):
-        from woffl.gui import i_pad_page, m_pad_page, pad_helpers, s_pad_page
+        # R-1 Phase C: the render path lives in pad_page; the S/I/M modules
+        # are thin specs and no longer touch the helpers directly.
+        from woffl.gui import pad_helpers, pad_page
         from woffl.gui.workflow_steps import step_review_wells as srw
 
         assert srw._recent_test_rates is pad_helpers.recent_test_rates
-        for mod in (s_pad_page, i_pad_page, m_pad_page):
-            assert mod._recent_test_rates is pad_helpers.recent_test_rates
-            assert mod._parse_pump is pad_helpers.parse_pump
+        assert pad_page._recent_test_rates is pad_helpers.recent_test_rates
+        assert pad_page._parse_pump is pad_helpers.parse_pump
 
     def test_parse_pump(self):
         from woffl.gui.pad_helpers import parse_pump

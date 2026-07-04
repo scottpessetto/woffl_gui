@@ -19,17 +19,83 @@ from woffl.flow.inflow import InFlow
 logger = logging.getLogger(__name__)
 
 
+def _axis_scales(
+    bhp: np.ndarray, fluid: np.ndarray
+) -> tuple[float, float]:
+    """Candidate-independent normalization scales for the two plot axes.
+
+    Data-cloud spread with a floor of 5% of the cloud's magnitude, so a
+    perfectly flat axis (all tests at the same BHP) can't blow residuals up
+    to infinity, and neither axis dominates purely by its units.
+    """
+    q_scale = max(float(np.std(fluid)), 0.05 * float(np.median(np.abs(fluid))), 1.0)
+    p_scale = max(float(np.std(bhp)), 0.05 * float(np.median(np.abs(bhp))), 1.0)
+    return q_scale, p_scale
+
+
+def _normalized_curve_sse(
+    bhp: np.ndarray,
+    fluid: np.ndarray,
+    pres: float,
+    qmax: np.ndarray,
+    q_scale: float,
+    p_scale: float,
+) -> np.ndarray:
+    """Axis-normalized point-to-curve SSE for one candidate RP, per anchor.
+
+    For each anchored Vogel curve (one qmax per anchor) and each test point,
+    SUMS the squared RATE-direction residual (predicted rate at the point's
+    BHP) and the squared PRESSURE-direction residual (Vogel inverted for BHP
+    at the point's rate), both axis-normalized: ``d² = u² + v²``.
+
+    Why the SUM and not an orthogonal-distance formula: the old rate-only
+    SSE railed the RP search to the field cap on flat test clouds (BHP
+    barely moves, rate scatter is allocation noise — e.g. B-28 2026-07:
+    corr(BHP, rate) = −0.05), because a flatter curve (higher RP) always
+    shrinks rate residuals. A pressure-only SSE rails the other way (RP →
+    just above max BHP, Qmax exploding). The harmonic/orthogonal combination
+    ``u²v²/(u²+v²)`` degenerates to whichever residual is smaller and rails
+    low too (verified on B-28). Summing penalizes BOTH failure modes — the
+    steep low-RP curve blows up the rate term, the flat high-RP curve blows
+    up the pressure term — so the total has an interior minimum, and on
+    informative clouds both terms minimize at the true RP together. For
+    points beyond the curve's reach (rate > qmax) the vertical residual is
+    taken to the curve's p=0 endpoint.
+
+    Returns an ``(m,)`` array: total SSE per anchor. Points with
+    BHP >= pres contribute the legacy 1e8 penalty each.
+    """
+    ratio = bhp / pres
+    vogel = 1.0 - 0.2 * ratio - 0.8 * ratio**2
+    valid_j = bhp < pres
+
+    pred_q = np.outer(qmax, np.where(valid_j, vogel, 0.0))  # (m, n)
+    du = (pred_q - fluid[None, :]) / q_scale
+
+    # Invert Vogel for the pressure-direction residual: for exact on-curve
+    # data disc = (0.2 + 1.6·ratio)², so r_pred reproduces ratio exactly.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        qratio = fluid[None, :] / qmax[:, None]
+    disc = 0.04 + 3.2 * (1.0 - qratio)
+    r_pred = (-0.2 + np.sqrt(np.clip(disc, 0.0, None))) / 1.6
+    pred_p = np.where(disc >= 0.0, r_pred * pres, 0.0)
+    dv = (pred_p - bhp[None, :]) / p_scale
+
+    d2 = du * du + dv * dv
+    d2[:, ~valid_j] = 1e8  # penalty for BHP >= RP, same as the original
+    return d2.sum(axis=1)
+
+
 def _calculate_global_sse(
     bhp_values: np.ndarray, fluid_values: np.ndarray, pres: float
 ) -> float:
-    """Calculate sum of squared errors for a candidate reservoir pressure.
+    """Calculate the fit error for a candidate reservoir pressure.
 
     For each test point used as the anchor, computes the Vogel curve and
-    measures how well it predicts ALL other test points. Returns the
-    minimum SSE across all possible anchor points.
-
-    This approach finds the RP where the Vogel curve best passes through
-    the cloud of test data, regardless of which point anchors the curve.
+    measures the axis-normalized distance (see :func:`_normalized_curve_sse`)
+    to ALL test points. Returns the minimum SSE across all possible anchor
+    points — the RP where some anchored Vogel curve best passes through the
+    cloud as drawn on the plot.
 
     Args:
         bhp_values: Array of BHP values for the well
@@ -37,15 +103,12 @@ def _calculate_global_sse(
         pres: Candidate reservoir pressure (must be > max BHP)
 
     Returns:
-        Minimum sum of squared errors across all anchor choices
+        Minimum normalized SSE across all anchor choices
     """
     n = len(bhp_values)
     if n < 2:
         return float("inf")
 
-    # Vectorized: the original pure-Python anchor×point double loop ran
-    # ~1M scalar iterations per well across the RP grid search (50 tests ×
-    # 400 candidates), grinding for tens of seconds on a full-field fetch.
     bhp = np.asarray(bhp_values, dtype=float)
     fluid = np.asarray(fluid_values, dtype=float)
 
@@ -58,14 +121,11 @@ def _calculate_global_sse(
     if not valid_anchor.any():
         return float("inf")
 
-    valid_j = bhp < pres  # points predictable by the curve
-
     qmax = fluid[valid_anchor] / vogel[valid_anchor]  # (m,)
-    predicted = np.outer(qmax, np.where(valid_j, vogel, 0.0))  # (m, n)
-    err2 = (predicted - fluid[None, :]) ** 2
-    err2[:, ~valid_j] = 1e8  # penalty for BHP >= RP, same as the original
-
-    return float(err2.sum(axis=1).min())
+    q_scale, p_scale = _axis_scales(bhp, fluid)
+    return float(
+        _normalized_curve_sse(bhp, fluid, pres, qmax, q_scale, p_scale).min()
+    )
 
 
 def _calculate_r_squared(

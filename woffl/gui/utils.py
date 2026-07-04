@@ -247,6 +247,108 @@ def default_pad_pf(pad: str) -> int:
     return PAD_PF_DEFAULTS.get(pad, PAD_PF_FALLBACK)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_pf_latest_cached() -> pd.DataFrame:
+    """Latest live PF pressure per well from vw_pressure_daily. Cached 1h.
+
+    Raises on Databricks failure so the failure is NOT cached — the next call
+    retries. Callers go through :func:`load_pf_latest` for the soft-fail.
+    """
+    from woffl.assembly.pf_pressure import fetch_pf_latest
+
+    return fetch_pf_latest()
+
+
+_PF_LATEST_COLS = ["well", "pf_press", "pf_source", "pf_date", "tubing_prs", "inn_ann_prs"]
+
+
+def load_pf_latest() -> pd.DataFrame:
+    """Soft-fail wrapper around the live PF-pressure pull.
+
+    Returns an empty frame when Databricks is unreachable so every consumer
+    falls back to test-day / pad-default values without special-casing.
+    """
+    try:
+        return _fetch_pf_latest_cached()
+    except Exception:
+        return pd.DataFrame(columns=_PF_LATEST_COLS)
+
+
+def latest_pf_for_well(well_name: str) -> dict | None:
+    """Most recent valid live PF reading for one well (GUI-normalized name).
+
+    Returns ``{"pf_press": float, "pf_source": "annulus"|"tubing",
+    "pf_date": Timestamp}`` or None when the well has no valid reading in the
+    lookback window (dead gauges, non-JP wells, Databricks down).
+    """
+    df = load_pf_latest()
+    if df is None or df.empty:
+        return None
+    rows = df[df["well"] == well_name]
+    if rows.empty:
+        return None
+    row = rows.iloc[0]
+    if not is_valid_number(row.get("pf_press")):
+        return None
+    return {
+        "pf_press": float(row["pf_press"]),
+        "pf_source": row.get("pf_source"),
+        "pf_date": row.get("pf_date"),
+    }
+
+
+def pf_from_test_row(row) -> dict | None:
+    """Test-day live PF from a well-test row's joined pf_press/pf_source.
+
+    Rows predating vw_pressure_daily coverage (2024-09-25), manual tests, and
+    days with no valid reading return None.
+    """
+    if row is None:
+        return None
+    pf = row.get("pf_press") if hasattr(row, "get") else None
+    if not is_valid_number(pf):
+        return None
+    return {
+        "pf_press": float(pf),
+        "pf_source": row.get("pf_source"),
+        "pf_date": row.get("WtDate"),
+    }
+
+
+def live_pad_pf_default(pad: str) -> int:
+    """Pad-level PF default: live per-pad median, else the legacy pad default.
+
+    Medians come from annulus-source wells only (unambiguous JP power fluid —
+    see pf_pressure.pad_pf_medians); pads with no live JP reading fall back to
+    PAD_PF_DEFAULTS.
+    """
+    from woffl.assembly.pf_pressure import pad_pf_medians
+
+    medians = pad_pf_medians(load_pf_latest())
+    return medians.get(pad, default_pad_pf(pad))
+
+
+def live_pf_for_seed(well_name: str) -> dict | None:
+    """Best live PF value to seed a well's PF-pressure input with.
+
+    Priority: the most recent test's TEST-DAY reading (consistent with the
+    qwf/pwf/WC/GOR that seed from the same test) → the latest daily reading.
+    Returns ``{"pf_press", "pf_source", "pf_date", "kind"}`` with kind
+    "test day" / "latest daily", or None (caller falls back to pad defaults).
+    """
+    tests = get_well_tests_for_well(well_name)
+    if tests is not None and not tests.empty and "pf_press" in tests.columns:
+        recent = tests.sort_values("WtDate", ascending=False).iloc[0]
+        live = pf_from_test_row(recent)
+        if live is not None:
+            live["kind"] = "test day"
+            return live
+    live = latest_pf_for_well(well_name)
+    if live is not None:
+        live["kind"] = "latest daily"
+    return live
+
+
 def pad_from_mp_name(mp_name: str) -> str:
     """MPB-30 → B, MPI-15 → I. Returns the input unchanged for unknown formats."""
     if not mp_name or "-" not in mp_name:
@@ -276,9 +378,7 @@ def _trigger_gor_reset(well_name: str, current_gor, reason: str) -> None:
     # sidebar auto-populate and the IPR-anchor seed honor this floor, so
     # re-seeding from a test can't drop GOR back below the recovery value.
     floor_map = st.session_state.setdefault("_well_min_gor", {})
-    floor_map[well_name] = max(
-        floor_map.get(well_name, 0), GOR_AUTO_RECOVERY_VALUE
-    )
+    floor_map[well_name] = max(floor_map.get(well_name, 0), GOR_AUTO_RECOVERY_VALUE)
 
     st.session_state["_solver_gor_reset_msg"] = (
         f"Solver failed to converge for {well_name} at GOR={current_gor} scf/bbl "
@@ -382,22 +482,30 @@ def render_pf_mismatch_warning(
     *,
     test_date_str: str | None = None,
     well_name: str | None = None,
+    measured_pf: float | None = None,
 ) -> tuple[bool, bool]:
     """Render a tiered PF mismatch warning. Returns ``(warning_shown, blocked)``.
 
-    Three states based on severity + per-well acknowledgment:
-      - **No warning** when |delta| ≤ moderate threshold → returns (False, False)
-      - **Soft yellow info** when moderate-but-not-severe, OR when severe
-        but the user has already acknowledged via the quickfix this session.
-        Calibration is allowed → returns (True, False).
-      - **Red error + gate** only when SEVERE and not yet acknowledged →
-        returns (True, True). This is the only path that gates the cal button.
+    ``measured_pf`` is the test-day MEASURED PF surface pressure from
+    vw_pressure_daily (build_calibration_inputs["test_pf_press"]). When it is
+    present, the warning **never blocks calibration**: the historical gate
+    existed because PF pressure was an assumption — a PF-rate mismatch meant
+    "your pressure guess is wrong, fix it before friction cal encodes it".
+    With the pressure measured, a rate mismatch instead points at nozzle wear
+    (wash-out), a wrong pump identity in the tracker, or lift-water
+    allocation — none of which should hold the BHP calibration hostage. The
+    severe tier becomes an orange diagnostic naming those causes.
 
-    The intent is to flag the issue once and then get out of the user's way.
-    Iterating on PF + calibration becomes painful when a fresh red flag
-    appears every time the modeled PF drifts >100 BWPD off the test value.
+    Without a measured PF (test predates vw_pressure_daily coverage, or no
+    valid reading that day), the original three-state behavior stands:
+      - **No warning** when |delta| ≤ moderate threshold → (False, False)
+      - **Soft yellow info** when moderate-but-not-severe, OR severe but
+        already acknowledged via the quickfix → (True, False)
+      - **Red error + gate** only when SEVERE and not acknowledged →
+        (True, True). The only path that gates the cal button.
+
     Callers render the quickfix widget whenever ``warning_shown`` is True so
-    the user can fine-tune from either tier.
+    the user can fine-tune / diagnose from any tier.
     """
     if not is_valid_number(modeled_pf) or not is_valid_number(actual_pf):
         return False, False
@@ -407,10 +515,34 @@ def render_pf_mismatch_warning(
         return False, False
 
     is_severe = abs_delta > _PF_SEVERE_ABS_BWPD or pct_delta > _PF_SEVERE_PCT
+    has_measured = is_valid_number(measured_pf)
     acknowledged = _pf_is_acknowledged(well_name)
-    block = is_severe and not acknowledged
+    block = is_severe and not acknowledged and not has_measured
 
     direction = "above" if modeled_pf > actual_pf else "below"
+
+    if has_measured:
+        wear_hint = (
+            "the nozzle is likely passing more fluid than catalog (wash-out)"
+            if modeled_pf < actual_pf
+            else "the pump is moving less than the model expects (partial plug, "
+            "or a smaller pump than the tracker says)"
+        )
+        body = (
+            f"PF rate is {abs_delta:.0f} BWPD ({pct_delta:.1f}%) {direction} "
+            f"the test actual ({actual_pf:.0f} BWPD) — at the **measured** "
+            f"test-day PF pressure of {measured_pf:,.0f} psi. Pressure isn't "
+            f"the culprit: {wear_hint}, or the lift-water allocation is off. "
+            "BHP calibration is allowed — but a large rate gap partly leaks "
+            "into the fitted coefficients, so run *Estimate nozzle wear* "
+            "below and verify the pump identity if it persists."
+        )
+        if is_severe:
+            st.warning(f"⚠️ **PF rate mismatch (diagnostic)** — {body}")
+        else:
+            st.info(f"ℹ️ {body}")
+        return True, False
+
     test_clause = (
         f" The matching well test was on **{test_date_str}** — look up the "
         f"actual PF surface pressure operating that day."
@@ -424,8 +556,9 @@ def render_pf_mismatch_warning(
             f"modeled PF rate is {abs_delta:.0f} BWPD ({pct_delta:.1f}%) "
             f"{direction} the measured actual ({actual_pf:.0f} BWPD). The "
             f"sidebar **Power Fluid Surface Pressure** ({ppf_surf} psi) "
-            f"probably doesn't match the operating value.{test_clause} Adjust "
-            "it until this delta is small, then run BHP calibration."
+            f"probably doesn't match the operating value (no daily reading "
+            f"for this test day).{test_clause} Adjust it until this delta is "
+            "small, then run BHP calibration."
         )
     else:
         # Soft yellow info — small, easy to scan past once the user knows.
@@ -440,7 +573,10 @@ def render_pf_mismatch_warning(
 
 
 def build_calibration_inputs(
-    params, wellbore, well_profile, selected_test_row=None,
+    params,
+    wellbore,
+    well_profile,
+    selected_test_row=None,
 ) -> dict | None:
     """Build the IPR-derived simulation inputs for calibration / PF-search.
 
@@ -497,7 +633,8 @@ def build_calibration_inputs(
         td = recent.get("WtDate")
         pump_at_date = (
             _pump_at_test_date(jp_hist, params.selected_well, td)
-            if pd.notna(td) else None
+            if pd.notna(td)
+            else None
         )
         if (
             pump_at_date is not None
@@ -563,6 +700,11 @@ def build_calibration_inputs(
     actual_bhp = recent.get("BHP")
     actual_pf = recent.get("lift_wat")
 
+    # Test-day MEASURED PF surface pressure (vw_pressure_daily join). When
+    # present, a PF-rate mismatch is no longer a pressure problem — the PF
+    # gate downgrades to a diagnostic (wear / pump identity / allocation).
+    live_pf = pf_from_test_row(recent)
+
     return {
         "nozzle": str(nozzle),
         "throat": str(throat),
@@ -572,6 +714,8 @@ def build_calibration_inputs(
         "actual_bhp": float(actual_bhp) if is_valid_number(actual_bhp) else None,
         "actual_pf": float(actual_pf) if is_valid_number(actual_pf) else None,
         "test_date_str": test_date_str,
+        "test_pf_press": live_pf["pf_press"] if live_pf else None,
+        "test_pf_source": live_pf.get("pf_source") if live_pf else None,
     }
 
 
@@ -662,15 +806,17 @@ def _solve_pf_for_actual_lift(
     # Realistic PF surface-pressure envelope. Start narrow; robust_bracket
     # expands outward to these caps as needed.
     LO_FLOOR, HI_CAP = 800.0, 5500.0
-    br = robust_bracket(
-        residual, 1500.0, 4000.0, lo_floor=LO_FLOOR, hi_cap=HI_CAP
-    )
+    br = robust_bracket(residual, 1500.0, 4000.0, lo_floor=LO_FLOOR, hi_cap=HI_CAP)
 
     if br["status"] == "nan":
-        return None, None, (
-            "Solver failed across the PF-pressure search range — the installed "
-            "pump may not converge at these conditions. Check the IPR and pump "
-            "inputs."
+        return (
+            None,
+            None,
+            (
+                "Solver failed across the PF-pressure search range — the installed "
+                "pump may not converge at these conditions. Check the IPR and pump "
+                "inputs."
+            ),
         )
 
     if br["status"] == "no_bracket":
@@ -678,20 +824,28 @@ def _solve_pf_for_actual_lift(
         # fa>0 → overshoots even at LO_FLOOR.
         if br["fb"] < 0:
             modeled = br["fb"] + target_lift_wat
-            return None, None, (
-                f"Even at {br['b']:.0f} psi PF, modeled lift "
-                f"({modeled:.0f} BWPD) stays below the target "
-                f"({target_lift_wat:.0f} BWPD). The pump can't reach the "
-                "measured rate within the realistic surface envelope — likely "
-                "a washout or the wrong nozzle/throat."
+            return (
+                None,
+                None,
+                (
+                    f"Even at {br['b']:.0f} psi PF, modeled lift "
+                    f"({modeled:.0f} BWPD) stays below the target "
+                    f"({target_lift_wat:.0f} BWPD). The pump can't reach the "
+                    "measured rate within the realistic surface envelope — likely "
+                    "a washout or the wrong nozzle/throat."
+                ),
             )
         modeled = br["fa"] + target_lift_wat
-        return None, None, (
-            f"Even at {br['a']:.0f} psi PF, modeled lift "
-            f"({modeled:.0f} BWPD) exceeds the target "
-            f"({target_lift_wat:.0f} BWPD). The pump moves more than the "
-            "measured rate at the lowest realistic PF pressure — check the "
-            "pump size or the test's PF rate."
+        return (
+            None,
+            None,
+            (
+                f"Even at {br['a']:.0f} psi PF, modeled lift "
+                f"({modeled:.0f} BWPD) exceeds the target "
+                f"({target_lift_wat:.0f} BWPD). The pump moves more than the "
+                "measured rate at the lowest realistic PF pressure — check the "
+                "pump size or the test's PF rate."
+            ),
         )
 
     a, b = br["a"], br["b"]
@@ -708,7 +862,11 @@ def _solve_pf_for_actual_lift(
 
 
 def render_pf_quickfix_widget(
-    params, wellbore, well_profile, *, target_lift_wat: float | None,
+    params,
+    wellbore,
+    well_profile,
+    *,
+    target_lift_wat: float | None,
     selected_test_row=None,
 ) -> None:
     """Inline PF-pressure quickfix rendered below a PF mismatch warning.
@@ -754,13 +912,17 @@ def render_pf_quickfix_widget(
     if err:
         st.warning(err)
 
+    measured_pf = inputs.get("test_pf_press")
+
     col_input, col_auto, col_status = st.columns([2, 1, 3])
     with col_input:
         # Bounds match the sidebar ppf_surf widget and the Auto-match search
         # envelope [800, 5500] so a solved value is always representable.
         st.number_input(
             "Quickfix: actual PF surface pressure (psi)",
-            min_value=800, max_value=5500, step=10,
+            min_value=800,
+            max_value=5500,
+            step=10,
             key=_PF_QUICKFIX_KEY,
             on_change=_on_pf_quickfix_change,
             help=(
@@ -789,10 +951,47 @@ def render_pf_quickfix_widget(
         if target_lift_wat is None:
             st.caption("Auto-match unavailable — test has no measured PF rate.")
         else:
+            src = inputs.get("test_pf_source")
+            measured_clause = (
+                f" · measured test-day PF: {measured_pf:,.0f} psi"
+                + (f" ({src})" if src else "")
+                if is_valid_number(measured_pf)
+                else ""
+            )
             st.caption(
                 f"Target: {target_lift_wat:.0f} BWPD "
                 f"(from {inputs['test_date_str'] or 'most recent test'})"
+                f"{measured_clause}"
             )
+
+    # Nozzle-wear estimate — only offered when the test day's PF pressure is
+    # MEASURED: with pressure pinned, the nozzle's effective flow area is the
+    # free variable, so the PF-rate gap becomes a wear/identity diagnostic
+    # instead of a pressure-tuning exercise.
+    if is_valid_number(measured_pf) and target_lift_wat is not None:
+        wear_msg = st.session_state.pop("_pf_wear_msg", None)
+        if wear_msg:
+            level, text = wear_msg
+            getattr(st, level)(text)
+        if st.button(
+            "🔬 Estimate nozzle wear",
+            key="_pf_wear_btn",
+            help=(
+                "Holds the MEASURED test-day PF pressure and solves the "
+                "effective nozzle area that reproduces the test's lift rate. "
+                "≈1.0 = healthy; >1.1 = washing out; <0.9 = plugging or "
+                "wrong pump identity. Diagnostic only — does not change the "
+                "model. Runs ~12 solver evaluations."
+            ),
+        ):
+            _ack_pf(params.selected_well)
+            with st.spinner("Solving effective nozzle area at measured PF..."):
+                st.session_state["_pf_wear_msg"] = _estimate_wear_message(
+                    params, wellbore, well_profile, inputs,
+                    target_lift_wat=float(target_lift_wat),
+                    measured_pf=float(measured_pf),
+                )
+            st.rerun()
 
     if auto_clicked and target_lift_wat is not None:
         # User has engaged with PF — downgrade future warnings even if the
@@ -819,6 +1018,93 @@ def render_pf_quickfix_widget(
                 f"({delta:+.0f} BWPD)."
             )
         st.rerun()
+
+
+def _estimate_wear_message(
+    params,
+    wellbore,
+    well_profile,
+    inputs: dict,
+    *,
+    target_lift_wat: float,
+    measured_pf: float,
+) -> tuple[str, str]:
+    """Run the nozzle-wear estimate and format it as a (st_level, text) pair.
+
+    Wraps :func:`woffl.gui.pf_calibration.estimate_nozzle_wear` with the same
+    context calibration uses (installed pump, IPR inflow, test WHP). Returns
+    a message routed through session state so it survives the st.rerun().
+    """
+    from woffl.gui.pf_calibration import estimate_nozzle_wear
+
+    _, prop_pf, _ = create_pvt_components(params.field_model)
+    prop_pf = prop_pf.condition(0, 60)
+    try:
+        r = estimate_nozzle_wear(
+            well_name=params.selected_well,
+            target_lift=target_lift_wat,
+            ppf_surf=measured_pf,
+            pwh=inputs["model_surf_pres"],
+            tsu=float(params.form_temp),
+            nozzle=inputs["nozzle"],
+            throat=inputs["throat"],
+            knz=0.01,
+            ken=float(params.ken),
+            kth=float(params.kth),
+            kdi=float(params.kdi),
+            wellbore=wellbore,
+            wellprof=well_profile,
+            ipr_su=inputs["ipr_inflow"],
+            prop_su=inputs["ipr_res_mix"],
+            prop_pf=prop_pf,
+            jpump_direction=params.jpump_direction,
+        )
+    except Exception as e:
+        return "warning", f"Nozzle-wear estimate failed: {e}"
+
+    pump = f"{inputs['nozzle']}{inputs['throat']}"
+    if not is_valid_number(r.wear_factor) or (
+        not r.converged and not r.bounded
+    ):
+        return (
+            "warning",
+            "Nozzle-wear estimate could not converge — the solver failed "
+            "across the wear-factor range. Check the IPR and pump inputs.",
+        )
+    if r.bounded:
+        side = (
+            "even a badly washed-out nozzle (1.6× area) can't reach the "
+            "measured rate — the tracker pump identity or the lift-water "
+            "allocation is suspect"
+            if r.lift_residual < 0
+            else "even a mostly-plugged nozzle (0.7× area) still overshoots "
+            "the measured rate — the actual pump is likely smaller than the "
+            f"tracker's {pump}"
+        )
+        return (
+            "warning",
+            f"Wear search hit its bound at {r.wear_factor:.2f}× area: {side}.",
+        )
+
+    if r.wear_factor > 1.10:
+        state = "consistent with **wash-out**"
+        level = "warning"
+    elif r.wear_factor < 0.90:
+        state = "consistent with **plugging or a smaller pump than the tracker says**"
+        level = "warning"
+    else:
+        state = "within normal tolerance — nozzle looks healthy"
+        level = "success"
+    return (
+        level,
+        f"Effective nozzle area ≈ **{r.wear_factor:.2f}× catalog** at the "
+        f"measured {measured_pf:,.0f} psi — the {pump}'s nozzle "
+        f"({r.dnz_catalog:.3f}″) is flowing like a "
+        f"**{r.equivalent_nozzle}** ({r.dnz_effective:.3f}″); modeled "
+        f"lift {r.modeled_qnz:,.0f} vs measured {target_lift_wat:,.0f} BWPD. "
+        f"{state.capitalize()}. Diagnostic only — the model still runs the "
+        "catalog pump.",
+    )
 
 
 def create_jetpump(nozzle_no, area_ratio, ken, kth, kdi):
@@ -1411,9 +1697,31 @@ def _jp_chars_csv_path() -> str:
     )
 
 
+class WellCharsUnavailableError(RuntimeError):
+    """Well properties could not be loaded (Databricks, and possibly the CSV).
+
+    Raised by the cached core INSTEAD of returning a fallback/empty frame:
+    st.cache_data caches RETURNED frames process-wide for the full TTL but
+    never caches exceptions, so raising keeps a Databricks blip from pinning
+    stale-CSV (or empty) results for every user for an hour (P1-12).
+    """
+
+
 @st.cache_data(ttl=3600, show_spinner="Loading well properties from Databricks…")
 def _load_well_characteristics_cached() -> tuple[pd.DataFrame, list]:
-    """Cached core for load_well_characteristics — returns (df, missing).
+    """Cached core for load_well_characteristics — caches SUCCESS only.
+
+    Contract (P1-12): either return a good Databricks frame (cached
+    process-wide for 1 h) or raise WellCharsUnavailableError — st.cache_data
+    does not cache exceptions, so a failure leaves the cache unfilled and the
+    next rerun re-probes Databricks. The jp_chars.csv fallback is built by
+    the UNCACHED wrapper so it can never be pinned in the cache.
+
+    No st.warning/st.error in here: the body runs inside a warm background
+    thread at startup (app.py prefetch) where element placement is undefined,
+    and on a cache hit the body is skipped so only the one session that
+    filled the cache would ever see the message. All user-facing status
+    renders in the uncached wrapper.
 
     The missing-surveys list is RETURNED rather than written to session_state
     here: st.cache_data skips the function body on a hit, so a session_state
@@ -1427,16 +1735,9 @@ def _load_well_characteristics_cached() -> tuple[pd.DataFrame, list]:
         if df.empty:
             raise RuntimeError("vw_prop_mech returned no rows")
     except Exception as e:
-        st.warning(
-            f"Databricks unavailable ({e}); falling back to jp_chars.csv. "
-            "Properties may be stale."
-        )
-        try:
-            return pd.read_csv(_jp_chars_csv_path()), []
-        except Exception as csv_err:
-            st.error(f"Both Databricks and jp_chars.csv failed: {csv_err}")
-            return pd.DataFrame(), []
-
+        raise WellCharsUnavailableError(
+            f"Databricks well-properties load failed: {e}"
+        ) from e
     return df, missing
 
 
@@ -1445,31 +1746,76 @@ def load_well_characteristics() -> pd.DataFrame:
 
     Wraps the library helper fetch_well_props_enriched() (which joins
     vw_prop_mech + vw_prop_resvr and computes JP_TVD from local deviation
-    surveys). Falls back to jp_chars.csv if Databricks is unreachable.
+    surveys).
+
+    Failure handling (P1-12) — only SUCCESS results are ever cached:
+
+    - Databricks OK → frame cached process-wide for 1 h (cached core).
+    - Databricks down, jp_chars.csv OK → return the CSV frame (availability
+      beats freshness) but cache NOTHING: this uncached wrapper rebuilds the
+      fallback on every call, so every rerun re-probes Databricks and picks
+      live data back up the moment it recovers. The stale-data st.warning
+      renders HERE, outside the cached core, so every session sees it.
+    - Both fail → raise WellCharsUnavailableError (never return an empty
+      frame — a cached empty frame used to collapse the well dropdown to
+      ["Custom"] and blank the Well Database for an hour with no retry).
+      app.py surfaces the error; the Well Database page shows an error with
+      a Retry button.
+
+    st.session_state["well_chars_source"] is set to "databricks" or
+    "csv_fallback" so callers can check provenance without re-probing.
 
     Wells with estimated JP_TVD (no local survey) are flagged in
     st.session_state["wells_missing_surveys"] for the app-level warning —
     set here, OUTSIDE the cache, so every session gets the banner.
-
-    Cache: process-wide via @st.cache_data, TTL 1 hour. On Databricks Apps
-    (single Streamlit process per container) this is shared across all users.
     """
-    df, missing = _load_well_characteristics_cached()
+    try:
+        df, missing = _load_well_characteristics_cached()
+    except WellCharsUnavailableError as db_err:
+        try:
+            fallback_df = pd.read_csv(_jp_chars_csv_path())
+            if fallback_df.empty:
+                raise RuntimeError("jp_chars.csv has no rows")
+        except Exception as csv_err:
+            raise WellCharsUnavailableError(
+                f"{db_err}; jp_chars.csv fallback also failed: {csv_err}"
+            ) from csv_err
+        st.session_state["wells_missing_surveys"] = []
+        st.session_state["well_chars_source"] = "csv_fallback"
+        st.warning(
+            f"{db_err} — using bundled jp_chars.csv (properties may be stale). "
+            "Nothing was cached; Databricks is re-probed on the next rerun."
+        )
+        return fallback_df
+
     st.session_state["wells_missing_surveys"] = missing
+    st.session_state["well_chars_source"] = "databricks"
     return df
 
 
-# Keep cache-clear call sites working against the wrapped function.
-load_well_characteristics.clear = _load_well_characteristics_cached.clear  # type: ignore[attr-defined]
+# Keep cache-clear call sites working against the wrapped function. Under a
+# passthrough-mocked st.cache_data (unit tests) the core is a plain function
+# with no .clear — fall back to a no-op so importing utils never breaks.
+load_well_characteristics.clear = getattr(  # type: ignore[attr-defined]
+    _load_well_characteristics_cached, "clear", lambda: None
+)
 
 
 def get_available_wells():
     """Return list of available well names.
 
+    Degrades to ["Custom"] when well properties are fully unavailable
+    (Databricks AND the CSV fallback down) so the sidebar still renders.
+    Because failures are never cached, the next rerun re-probes Databricks
+    and the full list returns on recovery.
+
     Returns:
-        list: List of well names from jp_chars.csv
+        list: ["Custom"] + sorted well names
     """
-    well_chars = load_well_characteristics()
+    try:
+        well_chars = load_well_characteristics()
+    except WellCharsUnavailableError:
+        return ["Custom"]
     if not well_chars.empty:
         return ["Custom"] + sorted(well_chars["Well"].tolist())
     return ["Custom"]
@@ -1482,9 +1828,14 @@ def get_well_data(well_name):
         well_name (str): Name of the well
 
     Returns:
-        dict or None: Well data dictionary or None if not found
+        dict or None: Well data dictionary, or None if not found or the
+        well-properties source is fully unavailable (never cached, so a
+        later rerun re-probes).
     """
-    well_chars = load_well_characteristics()
+    try:
+        well_chars = load_well_characteristics()
+    except WellCharsUnavailableError:
+        return None
     if well_chars.empty:
         return None
 

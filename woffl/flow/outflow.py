@@ -78,6 +78,16 @@ def beggs_diff_press(
     sb = tp.beggs_sf(yb)
     fb = tp.beggs_ff(ff, sb)
     dp_fric = tp.beggs_press_friction(fb, rho_mix, vmix, hyd_dia, length)
+
+    # [LIBRARY change -> upstream PR to kwellis/woffl] canonical Beggs-Brill
+    # total gradient carries the acceleration (kinetic energy) term:
+    #   dp/dL = (dp_static/dL + dp_friction/dL) / (1 - Ek)
+    # beggs_ek existed (with its 0.9 clamp) but had no call site, understating
+    # the gradient where gas velocity is high (upper wellbore). Both components
+    # are scaled so callers summing dp_stat + dp_fric get the canonical total.
+    ek = tp.beggs_ek(pin, rho_mix, vmix, vsg)
+    dp_stat = dp_stat / (1 - ek)
+    dp_fric = dp_fric / (1 - ek)
     return dp_stat, dp_fric, slh
 
 

@@ -81,9 +81,7 @@ def _prefetch_well_sort_data() -> None:
 
     from streamlit.runtime.scriptrunner import add_script_run_ctx
 
-    thread = threading.Thread(
-        target=_worker, daemon=True, name="well-sort-prefetch"
-    )
+    thread = threading.Thread(target=_worker, daemon=True, name="well-sort-prefetch")
     add_script_run_ctx(thread)  # lets the thread call @st.cache_data fns cleanly
     thread.start()
 
@@ -112,6 +110,7 @@ def main():
     # Workers only fill the process-wide st.cache_data entries; session_state
     # writes and fallback handling stay on the main thread below.
     with st.sidebar:
+        chars_warm_error: Exception | None = None
         needs_jp = "jp_history_df" not in st.session_state
         needs_tests = "all_well_tests_df" not in st.session_state
         if needs_jp or needs_tests:
@@ -121,6 +120,7 @@ def main():
 
             from woffl.gui.utils import (
                 DEFAULT_TEST_MONTHS,
+                _fetch_pf_latest_cached,
                 _load_well_characteristics_cached,
                 fetch_all_well_tests,
             )
@@ -134,7 +134,13 @@ def main():
                 except Exception as e:
                     errors[name] = e
 
-            jobs: list[tuple] = [("chars", _load_well_characteristics_cached)]
+            # Live PF pressures (vw_pressure_daily) warm alongside — failures
+            # are non-fatal (consumers soft-fail to pad defaults via
+            # load_pf_latest), so no error handling below.
+            jobs: list[tuple] = [
+                ("chars", _load_well_characteristics_cached),
+                ("pf_latest", _fetch_pf_latest_cached),
+            ]
             if needs_jp:
                 jobs.append(("jp_history", _cached_jp_history))
             if needs_tests:
@@ -158,6 +164,12 @@ def main():
                     threads.append(t)
                 for t in threads:
                     t.join()
+
+            # The chars warm job raises on any Databricks failure (nothing is
+            # cached — see utils._load_well_characteristics_cached). Keep the
+            # error so the main-thread load below can surface it instead of
+            # silently dropping it.
+            chars_warm_error = errors.get("chars")
 
             if needs_jp:
                 if "jp_history" in results:
@@ -183,14 +195,33 @@ def main():
                     )
                     st.session_state["all_well_tests_df"] = None
 
-        # Well properties — instant when the parallel warm above succeeded;
-        # the wrapper also sets the missing-survey list into session_state.
+        # Well properties — instant when the parallel warm above succeeded.
+        # The uncached wrapper sets the missing-survey list into session_state
+        # and renders the stale-CSV warning itself when Databricks is down.
+        # If the warm thread failed, this call re-probes Databricks (failures
+        # are never cached), so a transient blip self-heals right here.
         from woffl.gui.utils import load_well_characteristics
 
         try:
             load_well_characteristics()
         except Exception as e:
-            st.warning(f"Could not load well properties: {e}")
+            # Double failure: Databricks AND the jp_chars.csv fallback. The
+            # message from the wrapper already carries both errors.
+            msg = f"Well properties unavailable — {e}"
+            if chars_warm_error is not None and str(chars_warm_error) not in str(e):
+                msg += f" (startup prefetch error: {chars_warm_error})"
+            st.error(msg)
+        else:
+            if (
+                chars_warm_error is not None
+                and st.session_state.get("well_chars_source") == "databricks"
+            ):
+                # Transient blip: the prefetch failed but the immediate retry
+                # succeeded — surface it quietly rather than dropping it.
+                st.info(
+                    "Well-properties prefetch hit a transient Databricks error "
+                    f"({chars_warm_error}); the retry succeeded."
+                )
 
         missing = st.session_state.get("wells_missing_surveys") or []
         if missing:

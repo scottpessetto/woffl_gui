@@ -309,6 +309,19 @@ def build_well_config(
         params["qwf"] = float(vogel_row["qwf"])
         params["pwf"] = float(vogel_row["pwf"])
 
+    # Circulation direction from live daily pressures (vw_pressure_daily):
+    # PF on the tubing side ⇒ forward circ (e.g. MPS-17). Soft-fails to
+    # "reverse", the standard configuration. Function-level import — utils
+    # imports pieces of _common, so a top-level import would be circular.
+    try:
+        from woffl.gui.utils import live_pf_for_seed
+
+        live_pf = live_pf_for_seed(well_name)
+        if live_pf and live_pf.get("pf_source") == "tubing":
+            params["jpump_direction"] = "forward"
+    except Exception:
+        pass
+
     return WellConfig(**params)
 
 

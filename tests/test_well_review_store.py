@@ -231,3 +231,47 @@ class TestCsvRoundTrip:
         df = wrs.store_to_dataframe(self._store())
         df.loc[df["well_name"] == "MPS-2", "well_name"] = ""
         assert set(wrs.dataframe_to_store(df)) == {"MPS-1"}
+
+
+class TestCirculationDirection:
+    """jpump_direction must survive snapshot -> CSV -> WellConfig, and legacy
+    stores/CSVs without the column must default to reverse (the standard
+    configuration) instead of crashing."""
+
+    def test_snapshot_captures_forward(self):
+        entry = _snapshot(_params(jpump_direction="forward"))
+        assert entry["jpump_direction"] == "forward"
+
+    def test_snapshot_normalizes_radio_case(self):
+        # The sidebar radio value is "Forward"/"Reverse" (title case).
+        entry = _snapshot(_params(jpump_direction="Forward"))
+        assert entry["jpump_direction"] == "forward"
+
+    def test_to_well_config_carries_direction(self):
+        entry = _snapshot(_params(jpump_direction="forward"))
+        cfg = wrs.to_well_config(entry)
+        assert cfg.jpump_direction == "forward"
+
+    def test_legacy_entry_without_field_defaults_reverse(self):
+        entry = _snapshot(_params())
+        entry.pop("jpump_direction", None)  # entry saved before the field existed
+        cfg = wrs.to_well_config(entry)
+        assert cfg.jpump_direction == "reverse"
+
+    def test_csv_round_trip(self):
+        entry = _snapshot(_params(jpump_direction="forward"))
+        store = {"MPS-99": entry}
+        loaded = wrs.dataframe_to_store(wrs.store_to_dataframe(store))
+        assert loaded["MPS-99"]["jpump_direction"] == "forward"
+        assert wrs.to_well_config(loaded["MPS-99"]).jpump_direction == "forward"
+
+    def test_legacy_csv_without_column_defaults_reverse(self):
+        store = {"MPS-99": _snapshot(_params())}
+        df = wrs.store_to_dataframe(store).drop(columns=["jpump_direction"])
+        loaded = wrs.dataframe_to_store(df)
+        assert loaded["MPS-99"]["jpump_direction"] == "reverse"
+
+    def test_direction_changes_store_signature(self):
+        store_rev = {"MPS-99": _snapshot(_params(jpump_direction="reverse"))}
+        store_fwd = {"MPS-99": _snapshot(_params(jpump_direction="forward"))}
+        assert wrs.store_signature(store_rev) != wrs.store_signature(store_fwd)
