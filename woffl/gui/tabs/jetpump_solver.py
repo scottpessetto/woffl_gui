@@ -2375,12 +2375,6 @@ def _render_ipr_anchor_and_seed(params: SimulationParams, test_df):
             if not well_coeffs.empty:
                 coeff_row = well_coeffs.iloc[0]
 
-    # Weak-fit banner: the fit is ALWAYS produced and seeded (never silently
-    # replaced), but when the test cloud can't actually constrain reservoir
-    # pressure the engineer is told to decide one themselves.
-    if coeff_row is not None:
-        _render_weak_ipr_warning(params, coeff_row, test_df)
-
     # Seed the chosen test's IPR + fluid into the sidebar so Batch Run, PF Range,
     # and the Solver all use it (the engineer can then override any field in the
     # sidebar — see _sync_chosen_ipr_to_sidebar). No-op unless the anchor-test
@@ -2748,6 +2742,13 @@ def _render_model_vs_actual(
             show_jp_labels=show_jp_labels,
         )
         st.plotly_chart(fig, use_container_width=True)
+        # Weak-fit banner directly under the IPR chart it's judging: the fit
+        # is ALWAYS produced and seeded (never silently replaced), but when
+        # the test cloud can't constrain reservoir pressure the engineer is
+        # told to decide one themselves.
+        _af_coeff_row, _, _af_tests = anchor_fit
+        if _af_coeff_row is not None:
+            _render_weak_ipr_warning(params, _af_coeff_row, _af_tests)
         _render_ipr_rate_calculator(params, model_res_p)
 
     # 6. Modeled vs Actual + calibration sections need at least 1 test.
