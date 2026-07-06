@@ -84,23 +84,21 @@ def _render_memory_gauge_section(well_name: str) -> None:
                 well_tests_df = get_well_tests_for_well(well_name)
                 cov = (
                     coverage_summary(well_tests_df, gauge)
-                    if well_tests_df is not None else None
+                    if well_tests_df is not None
+                    else None
                 )
                 file_count = len(gauge.files)
-                file_str = (
-                    f" ({file_count} file{'s' if file_count != 1 else ''})"
-                )
+                file_str = f" ({file_count} file{'s' if file_count != 1 else ''})"
                 date_range = (
                     f"{gauge.start_date.strftime('%Y-%m-%d')} → "
                     f"{gauge.end_date.strftime('%Y-%m-%d')}"
                 )
                 cov_str = (
                     f" · {cov['tests_matched']}/{cov['tests_total']} tests matched"
-                    if cov else ""
+                    if cov
+                    else ""
                 )
-                disregard_str = (
-                    " · **Databricks BHP disregarded**" if disregard else ""
-                )
+                disregard_str = " · **Databricks BHP disregarded**" if disregard else ""
                 st.info(
                     f"**Memory gauge active for {well_name}**{file_str} — "
                     f"{date_range} ({gauge.sample_count:,} samples)"
@@ -209,9 +207,7 @@ def _render_memory_gauge_section(well_name: str) -> None:
         # The uploader uses a counter in its key so it can be "reset" by
         # incrementing the counter after a successful Add (Streamlit has
         # no API to programmatically clear a file_uploader).
-        upload_counter = st.session_state.get(
-            f"_mg_upload_counter_{well_name}", 0
-        )
+        upload_counter = st.session_state.get(f"_mg_upload_counter_{well_name}", 0)
         upload_label = (
             "Upload more gauge files"
             if gauge is not None
@@ -302,7 +298,9 @@ def _render_memory_gauge_section(well_name: str) -> None:
             ):
                 ext_df = fetch_extended_tests(well_name, new_gauge.start_date)
                 db_bhp_df = fetch_databricks_bhp_daily(
-                    well_name, new_gauge.start_date, new_gauge.end_date,
+                    well_name,
+                    new_gauge.start_date,
+                    new_gauge.end_date,
                 )
 
             if ext_df is not None and not ext_df.empty:
@@ -337,9 +335,7 @@ def _render_memory_gauge_section(well_name: str) -> None:
 
             # Reset the uploader by bumping its key counter — the next render
             # renders a fresh empty file_uploader, ready for more files.
-            st.session_state[f"_mg_upload_counter_{well_name}"] = (
-                upload_counter + 1
-            )
+            st.session_state[f"_mg_upload_counter_{well_name}"] = upload_counter + 1
             st.session_state["_force_ipr_refresh"] = True
             st.rerun()
 
@@ -482,7 +478,9 @@ def _render_jp_history_strip(well_name: str) -> None:
             well_name, well_df, t_df, bhp_d, bhp_o
         )
         st.plotly_chart(fig, use_container_width=True)
-        st.caption("No JP-install history on record — showing the test / BHP trend only.")
+        st.caption(
+            "No JP-install history on record — showing the test / BHP trend only."
+        )
         return
 
     earliest_date = well_df["Date Set"].min()
@@ -491,16 +489,29 @@ def _render_jp_history_strip(well_name: str) -> None:
     )
 
     fig, tl = build_history_with_strip_figure(
-        well_name, well_df, test_df, bhp_daily_df, bhp_overlay_df,
-        bhp_from_zero=True, height=470,
+        well_name,
+        well_df,
+        test_df,
+        bhp_daily_df,
+        bhp_overlay_df,
+        bhp_from_zero=True,
+        height=470,
     )
     st.plotly_chart(fig, use_container_width=True, key="sw_jp_strip_chart")
     render_current_pump_caption(tl)
 
 
 def render_tab(
-    params: SimulationParams, jetpump, wellbore, well_profile, inflow, res_mix,
-    *, hero_container=None, jp_strip_container=None,
+    params: SimulationParams,
+    jetpump,
+    wellbore,
+    well_profile,
+    inflow,
+    res_mix,
+    *,
+    hero_container=None,
+    jp_strip_container=None,
+    anchor_container=None,
 ) -> None:
     """Render the Jetpump Solver Results tab.
 
@@ -523,6 +534,14 @@ def render_tab(
             ``hero_container`` (both under the title) so the history plot sits
             right above the hero. When ``None`` it renders inline at the top of
             the Solver, unchanged.
+        anchor_container: Optional container into which the IPR-anchor selector
+            (+ the comparison-test decouple checkbox) is rendered. The
+            pad-review page passes a container under the "Save review" title —
+            without it the anchor control sat below the whole save panel under
+            the "Solver" heading, where engineers never found it. Execution
+            order is unchanged (the control still runs, and seeds the sidebar,
+            before the solve); only where it DISPLAYS moves. ``None`` = inline
+            at the top of the Solver, unchanged.
     """
     import pandas as pd
 
@@ -582,22 +601,24 @@ def render_tab(
         and not params.model_as_water
         and n_tests_now >= 2
     )
-    if anchor_selector_shown:
-        anchor_fit = _render_ipr_anchor_and_seed(params, test_df)
-    else:
-        anchor_fit = (None, None, None)
+    _anchor_box = anchor_container if anchor_container is not None else st.container()
+    with _anchor_box:
+        if anchor_selector_shown:
+            anchor_fit = _render_ipr_anchor_and_seed(params, test_df)
+        else:
+            anchor_fit = (None, None, None)
 
     # The comparison-test picker is slaved to the IPR anchor by default; the
     # "Use a different test for comparison" checkbox (rendered by the anchor
     # selector just above) frees it. That checkbox renders earlier in THIS run,
     # so its value is already committed when we read it here. Default = most
-    # recent test, matching the pre-picker behaviour.
-    _decoupled = st.session_state.get(
-        f"sw_ipr_decouple_{params.selected_well}", False
-    )
-    selected_test_row = _render_test_picker(
-        params.selected_well, test_df, synced=not _decoupled
-    )
+    # recent test, matching the pre-picker behaviour. Rendered into the same
+    # box as the anchor selector — they're one control group.
+    _decoupled = st.session_state.get(f"sw_ipr_decouple_{params.selected_well}", False)
+    with _anchor_box:
+        selected_test_row = _render_test_picker(
+            params.selected_well, test_df, synced=not _decoupled
+        )
 
     # The hero strip models the SIDEBAR pump — the pump the user picked to model.
     # We still look up the pump that was in the well at the selected test's date
@@ -628,8 +649,7 @@ def render_tab(
                 )
 
     pump_differs = (
-        test_pump is not None
-        and (effective_nozzle, effective_throat) != test_pump
+        test_pump is not None and (effective_nozzle, effective_throat) != test_pump
     )
 
     # The hero strip (pump-identity banner, gauge caveat, and the vs-actual
@@ -746,19 +766,23 @@ def render_tab(
             )
             w1, w2, w3, w4 = st.columns(4)
             w1.metric(
-                "Suction Pressure", f"{psu:,.0f} psig",
+                "Suction Pressure",
+                f"{psu:,.0f} psig",
                 help="Bottomhole pressure the pump pulls — the dewatering drawdown.",
             )
             w2.metric(
-                "Water Rate", f"{water_rate:,.0f} BWPD",
+                "Water Rate",
+                f"{water_rate:,.0f} BWPD",
                 help="Formation water lifted at the solved suction (from the IPR).",
             )
             w3.metric(
-                "Power Fluid", f"{qnz_bwpd:,.0f} BWPD",
+                "Power Fluid",
+                f"{qnz_bwpd:,.0f} BWPD",
                 help="Power-fluid (water) rate required to drive the pump.",
             )
             w4.metric(
-                "PF Surface Pressure", f"{params.ppf_surf:,.0f} psig",
+                "PF Surface Pressure",
+                f"{params.ppf_surf:,.0f} psig",
                 help="Power-fluid pressure supplied at surface (sidebar).",
             )
             _sonic = "Sonic (choked)" if sonic_status else "Subsonic"
@@ -844,8 +868,10 @@ def render_tab(
             with h1:
                 d = _delta(qoil_std, actuals["oil"], "vs actual")
                 st.metric(
-                    _label("Oil Rate", actuals["oil"]), f"{qoil_std:,.0f} BOPD",
-                    delta=d, delta_color="off" if d is None else _dcolor,
+                    _label("Oil Rate", actuals["oil"]),
+                    f"{qoil_std:,.0f} BOPD",
+                    delta=d,
+                    delta_color="off" if d is None else _dcolor,
                 )
             with h2:
                 # Formation Water has no actuals counterpart (we don't track it
@@ -854,14 +880,18 @@ def render_tab(
             with h3:
                 d = _delta(qnz_bwpd, actuals["pf"], "vs actual")
                 st.metric(
-                    _label("Power Fluid", actuals["pf"]), f"{qnz_bwpd:,.0f} BWPD",
-                    delta=d, delta_color="off" if d is None else _dcolor,
+                    _label("Power Fluid", actuals["pf"]),
+                    f"{qnz_bwpd:,.0f} BWPD",
+                    delta=d,
+                    delta_color="off" if d is None else _dcolor,
                 )
             with h4:
                 d = _delta(psu, actuals["bhp"], "vs actual")
                 st.metric(
-                    _label("Suction Pressure", actuals["bhp"]), f"{psu:,.0f} psig",
-                    delta=d, delta_color="off" if d is None else _dcolor,
+                    _label("Suction Pressure", actuals["bhp"]),
+                    f"{psu:,.0f} psig",
+                    delta=d,
+                    delta_color="off" if d is None else _dcolor,
                 )
 
             # Footer the hero with the exact test the deltas are measured against
@@ -879,7 +909,8 @@ def render_tab(
             if has_any_actual:
                 _cmp = (
                     f"the **{_cmp_date}** well test"
-                    if _cmp_date else "the most recent well test"
+                    if _cmp_date
+                    else "the most recent well test"
                 )
                 if pump_differs:
                     st.caption(
@@ -925,7 +956,10 @@ def render_tab(
             # gating (cal button disabled) is governed by `pf_blocked` only.
             if pf_warning_shown:
                 render_pf_quickfix_widget(
-                    params, wellbore, well_profile, target_lift_wat=actuals["pf"],
+                    params,
+                    wellbore,
+                    well_profile,
+                    target_lift_wat=actuals["pf"],
                     selected_test_row=selected_test_row,
                 )
 
@@ -935,9 +969,7 @@ def render_tab(
                 # The hero footer (top, by the metrics) already states the
                 # comparison test + date; just surface the BHP-calibration flag
                 # here when it applies.
-                render_bhp_calibration_warning(
-                    psu, actuals["bhp"], on_solver_view=True
-                )
+                render_bhp_calibration_warning(psu, actuals["bhp"], on_solver_view=True)
 
             # Compact calibration action bar — buttons live here so they're
             # visible without scrolling. Run is disabled while PF mismatch is
@@ -947,7 +979,9 @@ def render_tab(
             # ``selected_test_row`` and ``bhp_missing`` reflect the picker so
             # the gating + calibration target stay in sync.
             _render_fric_cal_action_bar(
-                params, wellbore, well_profile,
+                params,
+                wellbore,
+                well_profile,
                 selected_test_row=selected_test_row,
                 pf_blocked=pf_blocked,
                 bhp_missing=(actuals["bhp"] is None),
@@ -961,9 +995,7 @@ def render_tab(
             with d2:
                 st.metric("Sonic Flow", "Yes" if sonic_status else "No")
             if sonic_status:
-                st.info(
-                    "Critical flow conditions — sonic velocity at throat entry."
-                )
+                st.info("Critical flow conditions — sonic velocity at throat entry.")
             else:
                 st.caption("Stable subsonic flow at the throat.")
 
@@ -1006,8 +1038,15 @@ def render_tab(
     # IPR-anchor fit was already computed + seeded at the top of the tab; pass
     # it down so MvA reuses it for its chart instead of recomputing.
     _render_model_vs_actual(
-        params, wellbore, well_profile,
-        selected_test_row=selected_test_row, anchor_fit=anchor_fit,
+        params,
+        wellbore,
+        well_profile,
+        selected_test_row=selected_test_row,
+        anchor_fit=anchor_fit,
+        # Pad review: draw the IPR chart into the same box as the anchor
+        # pickers, so the curve sits right next to the control that moves it.
+        # None (Single-Well) keeps the chart inline in Model-vs-Actual.
+        ipr_chart_container=anchor_container,
     )
 
     # Deferred fill of the pump-history placeholder reserved at the top —
@@ -1049,7 +1088,11 @@ def _can_run_fric_cal(params: SimulationParams) -> bool:
 
 
 def _execute_fric_cal(
-    params: SimulationParams, wellbore, well_profile, *, selected_test_row=None,
+    params: SimulationParams,
+    wellbore,
+    well_profile,
+    *,
+    selected_test_row=None,
 ) -> tuple[bool, str | None]:
     """Build the calibration inputs and run calibrate_friction_coefs.
 
@@ -1065,7 +1108,10 @@ def _execute_fric_cal(
     from woffl.gui.utils import build_calibration_inputs
 
     inputs = build_calibration_inputs(
-        params, wellbore, well_profile, selected_test_row=selected_test_row,
+        params,
+        wellbore,
+        well_profile,
+        selected_test_row=selected_test_row,
     )
     if inputs is None:
         return False, "Cannot calibrate — missing JP history or test data."
@@ -1197,9 +1243,7 @@ def _render_fric_cal_action_bar(
                 "gauge reading to target."
             )
         elif pf_blocked:
-            st.caption(
-                "⚠️ Calibration blocked — fix the PF rate mismatch above first."
-            )
+            st.caption("⚠️ Calibration blocked — fix the PF rate mismatch above first.")
         elif has_result:
             quality = getattr(result, "match_quality", "unknown")
             color = {"good": "green", "fair": "orange", "poor": "red"}.get(
@@ -1227,7 +1271,9 @@ def _render_fric_cal_action_bar(
     if run_clicked:
         with st.spinner("Calibrating (Nelder-Mead)..."):
             ok, err = _execute_fric_cal(
-                params, wellbore, well_profile,
+                params,
+                wellbore,
+                well_profile,
                 selected_test_row=selected_test_row,
             )
         if not ok:
@@ -1273,7 +1319,10 @@ def _render_oil_rate_backmatch(
 
     # Build the test-conditioned solver inputs (installed pump + test WHP).
     inputs = build_calibration_inputs(
-        params, wellbore, well_profile, selected_test_row=selected_test_row,
+        params,
+        wellbore,
+        well_profile,
+        selected_test_row=selected_test_row,
     )
     if inputs is None:
         return  # no JP history / test data — can't identify the pump
@@ -1397,7 +1446,10 @@ def _render_joint_automatch(
     bhp_test = actuals.get("bhp")  # optional third target
 
     inputs = build_calibration_inputs(
-        params, wellbore, well_profile, selected_test_row=selected_test_row,
+        params,
+        wellbore,
+        well_profile,
+        selected_test_row=selected_test_row,
     )
     if inputs is not None:
         nozzle, throat = inputs["nozzle"], inputs["throat"]
@@ -1415,9 +1467,7 @@ def _render_joint_automatch(
         pump_src = "sidebar"
 
     st.markdown("##### Auto-match oil + power fluid")
-    _bhp_note = (
-        f" and BHP **{bhp_test:,.0f} psi**" if bhp_test else " (BHP inferred)"
-    )
+    _bhp_note = f" and BHP **{bhp_test:,.0f} psi**" if bhp_test else " (BHP inferred)"
     st.caption(
         f"Hold the measured PF pressure (**{params.ppf_surf:,.0f} psi**) and match "
         f"the {pump_src} pump **{nozzle}{throat}** to this test's oil "
@@ -1428,10 +1478,11 @@ def _render_joint_automatch(
     )
     float_pf = st.checkbox(
         "Let PF pressure float to also match the PF rate (advanced)",
-        value=False, key="sw_joint_float_pf",
+        value=False,
+        key="sw_joint_float_pf",
         help="Off (default): hold the real PF pressure, match oil, report the PF "
-             "residual. On: let the matcher lower PF pressure to also hit the PF "
-             "rate — it can land below the real header, so use only to explore.",
+        "residual. On: let the matcher lower PF pressure to also hit the PF "
+        "rate — it can land below the real header, so use only to explore.",
     )
 
     if st.button(
@@ -1493,19 +1544,27 @@ def _render_joint_automatch(
             st.session_state.pop(f"{k}_input", None)
 
         pinned = not float_pf
-        ppf_note = "" if pinned else (
-            f" ⚠️ PF pressure moved "
-            f"{abs(r.ppf_surf - float(params.ppf_surf)):,.0f} psi to {r.ppf_surf:,.0f} "
-            f"(from {params.ppf_surf:,.0f}) — sanity-check vs the known header."
-            if abs(r.ppf_surf - float(params.ppf_surf)) > 500 else ""
+        ppf_note = (
+            ""
+            if pinned
+            else (
+                f" ⚠️ PF pressure moved "
+                f"{abs(r.ppf_surf - float(params.ppf_surf)):,.0f} psi to {r.ppf_surf:,.0f} "
+                f"(from {params.ppf_surf:,.0f}) — sanity-check vs the known header."
+                if abs(r.ppf_surf - float(params.ppf_surf)) > 500
+                else ""
+            )
         )
         seeded = (
             f"Seeded qwf {seeds['qwf']:,} · pwf {seeds['pwf']:,} · ResP {seeds['res_pres']:,}"
             + ("" if pinned else f" · PF {seeds['ppf_surf']:,} psi")
             + f" · ken {seeds['ken']:.3f}/kth {seeds['kth']:.3f}/kdi {seeds['kdi']:.3f}."
         )
-        bhp_txt = (f" · BHP {r.modeled_bhp:,.0f} psi ({r.bhp_err_pct:+.0f}%)"
-                   if r.bhp_err_pct is not None else f" · BHP {r.modeled_bhp:,.0f} psi")
+        bhp_txt = (
+            f" · BHP {r.modeled_bhp:,.0f} psi ({r.bhp_err_pct:+.0f}%)"
+            if r.bhp_err_pct is not None
+            else f" · BHP {r.modeled_bhp:,.0f} psi"
+        )
         if pinned and r.ok:
             text = (
                 f"**{nozzle}{throat} · PF pressure held at {seeds['ppf_surf']:,} psi.** "
@@ -1599,7 +1658,8 @@ def _render_fric_calibration_section(
     iter_str = f", {result.iterations} iters" if result.iterations is not None else ""
     starts_str = (
         f", {result.starts_tried} seed" + ("s" if result.starts_tried != 1 else "")
-        if hasattr(result, "starts_tried") else ""
+        if hasattr(result, "starts_tried")
+        else ""
     )
     flags = []
     if getattr(result, "bounded", False):
@@ -1857,9 +1917,7 @@ def _render_test_picker(well_name: str, test_df, *, synced: bool = False):
             )
             return None
 
-    sorted_tests = test_df.sort_values(
-        "WtDate", ascending=False
-    ).reset_index(drop=True)
+    sorted_tests = test_df.sort_values("WtDate", ascending=False).reset_index(drop=True)
 
     # Pump-at-test-date lookup needs JP history. Pull once, reuse per row.
     jp_hist = st.session_state.get("jp_history_df")
@@ -2027,9 +2085,9 @@ def _render_ipr_anchor_control(well_name: str, test_df):
 
     anchor_date = None
     if mode == "specific":
-        sorted_tests = test_df.sort_values(
-            "WtDate", ascending=False
-        ).reset_index(drop=True)
+        sorted_tests = test_df.sort_values("WtDate", ascending=False).reset_index(
+            drop=True
+        )
         jp_hist = st.session_state.get("jp_history_df")
 
         def _opt(row) -> str:
@@ -2298,9 +2356,7 @@ def _render_ipr_anchor_and_seed(params: SimulationParams, test_df):
     """
     import pandas as pd
 
-    anchor_mode, anchor_date = _render_ipr_anchor_control(
-        params.selected_well, test_df
-    )
+    anchor_mode, anchor_date = _render_ipr_anchor_control(params.selected_well, test_df)
 
     # One-shot confirmation from the prior run's sidebar seed. The seed reruns
     # the app, so the note replays on the following render — shown here at the
@@ -2319,9 +2375,7 @@ def _render_ipr_anchor_and_seed(params: SimulationParams, test_df):
         # upstream-library change).
         from woffl.gui.ipr_anchor import compute_anchored_vogel
 
-        field_max_rp = (
-            3000 if str(params.field_model).lower() == "kuparuk" else 1800
-        )
+        field_max_rp = 3000 if str(params.field_model).lower() == "kuparuk" else 1800
         anchored = compute_anchored_vogel(
             test_df,
             well_name=params.selected_well,
@@ -2369,9 +2423,7 @@ def _render_ipr_anchor_and_seed(params: SimulationParams, test_df):
             and not vogel_coeffs.empty
             and "Well" in vogel_coeffs.columns
         ):
-            well_coeffs = vogel_coeffs[
-                vogel_coeffs["Well"] == params.selected_well
-            ]
+            well_coeffs = vogel_coeffs[vogel_coeffs["Well"] == params.selected_well]
             if not well_coeffs.empty:
                 coeff_row = well_coeffs.iloc[0]
 
@@ -2492,6 +2544,7 @@ def _render_model_vs_actual(
     *,
     selected_test_row=None,
     anchor_fit=(None, None, None),
+    ipr_chart_container=None,
 ) -> None:
     """Render the Model vs Actual comparison section.
 
@@ -2512,6 +2565,10 @@ def _render_model_vs_actual(
     comparison rather than re-rendering the anchor control or re-running the
     Vogel fit. It's ``(None, None, None)`` for the 0/1-test or Vogel-failed
     cases, which fall through to the synthetic-IPR path below.
+
+    ``ipr_chart_container``: optional container the IPR-chart block draws
+    into. The pad-review page passes the same box as the IPR-anchor pickers
+    (picker + curve belong together); ``None`` renders inline here.
     """
     jp_hist = st.session_state.get("jp_history_df")
     if jp_hist is None or params.selected_well == "Custom":
@@ -2616,140 +2673,144 @@ def _render_model_vs_actual(
     model_res_p = float(params.pres)
     model_gor = int(params.form_gor)
 
-    if coeff_row is not None:
-        st.caption(
-            f"IPR + fluid seeded from the anchor test into the sidebar: "
-            f"Reservoir Pressure **{model_res_p:.0f}** psi · "
-            f"GOR **{model_gor:,}** scf/bbl · WC **{float(params.form_wc):.2f}**. "
-            "Edit any of them in the sidebar to override (persists for the session)."
-        )
-        # Draw the curve at the sidebar ResP (seeded from the anchor test,
-        # overridable in the sidebar) so the chart matches the solver + Batch.
-        vogel_coeffs_plot = vogel_coeffs.copy()
-        vogel_coeffs_plot.loc[
-            vogel_coeffs_plot["Well"] == params.selected_well, "ResP"
-        ] = model_res_p
-        ipr_data = generate_ipr_curves(vogel_coeffs_plot)
-        plot_points = merged_with_rp
-    else:
-        # 0-test, 1-test, or Vogel-failed path.
-        model_res_p = float(params.pres)
-
-        anchor_src = None
-        if n_tests >= 1:
-            # Anchor on the SELECTED test (picker default = most recent), so
-            # an older-test selection keeps the IPR-anchor + comparison row
-            # in sync with what the user picked.
-            if selected_test_row is not None:
-                anchor_row = selected_test_row
-            else:
-                anchor_row = test_df.sort_values("WtDate", ascending=False).iloc[0]
-            total = anchor_row.get("WtTotalFluid")
-            bhp = anchor_row.get("BHP")
-            if is_valid_number(total) and is_valid_number(bhp):
-                anchor_qwf = float(total)
-                anchor_pwf = float(bhp)
-                anchor_src = "well test"
-
-        if anchor_src is None:
-            # 0-test fallback (or 1-test missing total/BHP). Sidebar qwf is the
-            # OIL rate; convert to total liquid for the chart's x-axis (BPD)
-            # using sidebar form_wc. Falls back to oil rate when WC ≈ 1.
-            wc = float(params.form_wc)
-            if 0.0 <= wc < 1.0:
-                anchor_qwf = float(params.qwf) / max(1e-6, 1.0 - wc)
-            else:
-                anchor_qwf = float(params.qwf)
-            anchor_pwf = float(params.pwf)
-            anchor_src = "sidebar"
-
-        # Guard against degenerate sidebar values (pwf >= ResP would make
-        # Vogel divide by zero / go negative; non-positive flow is meaningless).
-        ipr_data = {}
-        if (
-            anchor_qwf > 0
-            and 0 <= anchor_pwf < model_res_p
-            and model_res_p > 0
-        ):
-            try:
-                synth_qmax = InFlow.vogel_qmax(
-                    anchor_qwf, anchor_pwf, model_res_p
-                )
-                synth_coeffs = pd.DataFrame(
-                    [
-                        {
-                            "Well": params.selected_well,
-                            "ResP": model_res_p,
-                            "qwf": anchor_qwf,
-                            "pwf": anchor_pwf,
-                            "QMax_recent": synth_qmax,
-                        }
-                    ]
-                )
-                ipr_data = generate_ipr_curves(synth_coeffs)
-            except Exception as e:
-                st.warning(
-                    f"Could not build IPR curve from anchor "
-                    f"(qwf={anchor_qwf:.0f}, pwf={anchor_pwf:.0f}, "
-                    f"ResP={model_res_p:.0f}): {e}"
-                )
-        plot_points = test_df if test_df is not None else pd.DataFrame()
-
-        st.caption(
-            f"Using Reservoir Pressure: **{model_res_p:.0f}** psi (sidebar) · "
-            f"IPR anchor: {anchor_src} (qwf={anchor_qwf:.0f} BPD, "
-            f"pwf={anchor_pwf:.0f} psi)"
-        )
-        if n_tests == 0:
-            st.info(
-                f"No well tests for {params.selected_well} — chart shows the "
-                "IPR curve from sidebar values only. No actuals available, "
-                "so the modeled-vs-actual comparison and calibration are "
-                "unavailable for this well."
-            )
-        elif n_tests == 1:
-            st.info(
-                f"Only 1 well test for {params.selected_well} — Vogel fit "
-                "needs 2+ tests, so the chart anchors on this single point + "
-                "sidebar reservoir pressure."
-            )
-
-    # JP-label toggle for the IPR scatter — sits just above the chart so
-    # the checkbox is next to the picture it affects. Default off (plain
-    # colored dots; the colorbar still encodes Days Ago).
-    show_jp_labels = st.checkbox(
-        "Show JP label inside each test point",
-        value=False,
-        key=f"mva_show_jp_labels_{params.selected_well}",
-        help=(
-            "Replace each test point's dot with the pump installed at that "
-            "test's date (e.g. \"12B\"), drawn inside an enlarged colored "
-            "marker. Useful for seeing pump changes alongside the IPR shape."
-        ),
+    # The whole IPR-chart block (seeded caption, JP-label toggle, curve,
+    # weak-fit warning, rate calculator) draws into ``ipr_chart_container``
+    # when the host page provides one — the pad-review page passes the same
+    # box as the IPR-anchor pickers so the curve sits right next to the
+    # control that moves it. ``None`` (Single-Well) renders inline here,
+    # unchanged. Only display placement moves; the variables assigned in this
+    # block stay visible to the comparison model below (with-blocks don't
+    # scope).
+    _ipr_box = (
+        ipr_chart_container if ipr_chart_container is not None else st.container()
     )
+    with _ipr_box:
+        if coeff_row is not None:
+            st.caption(
+                f"IPR + fluid seeded from the anchor test into the sidebar: "
+                f"Reservoir Pressure **{model_res_p:.0f}** psi · "
+                f"GOR **{model_gor:,}** scf/bbl · WC **{float(params.form_wc):.2f}**. "
+                "Edit any of them in the sidebar to override (persists for the session)."
+            )
+            # Draw the curve at the sidebar ResP (seeded from the anchor test,
+            # overridable in the sidebar) so the chart matches the solver + Batch.
+            vogel_coeffs_plot = vogel_coeffs.copy()
+            vogel_coeffs_plot.loc[
+                vogel_coeffs_plot["Well"] == params.selected_well, "ResP"
+            ] = model_res_p
+            ipr_data = generate_ipr_curves(vogel_coeffs_plot)
+            plot_points = merged_with_rp
+        else:
+            # 0-test, 1-test, or Vogel-failed path.
+            model_res_p = float(params.pres)
 
-    # 5. Always render the IPR chart (Vogel-fit or synthetic).
-    if params.selected_well in ipr_data:
-        plot_data = (
-            plot_points if plot_points is not None else pd.DataFrame()
+            anchor_src = None
+            if n_tests >= 1:
+                # Anchor on the SELECTED test (picker default = most recent), so
+                # an older-test selection keeps the IPR-anchor + comparison row
+                # in sync with what the user picked.
+                if selected_test_row is not None:
+                    anchor_row = selected_test_row
+                else:
+                    anchor_row = test_df.sort_values("WtDate", ascending=False).iloc[0]
+                total = anchor_row.get("WtTotalFluid")
+                bhp = anchor_row.get("BHP")
+                if is_valid_number(total) and is_valid_number(bhp):
+                    anchor_qwf = float(total)
+                    anchor_pwf = float(bhp)
+                    anchor_src = "well test"
+
+            if anchor_src is None:
+                # 0-test fallback (or 1-test missing total/BHP). Sidebar qwf is the
+                # OIL rate; convert to total liquid for the chart's x-axis (BPD)
+                # using sidebar form_wc. Falls back to oil rate when WC ≈ 1.
+                wc = float(params.form_wc)
+                if 0.0 <= wc < 1.0:
+                    anchor_qwf = float(params.qwf) / max(1e-6, 1.0 - wc)
+                else:
+                    anchor_qwf = float(params.qwf)
+                anchor_pwf = float(params.pwf)
+                anchor_src = "sidebar"
+
+            # Guard against degenerate sidebar values (pwf >= ResP would make
+            # Vogel divide by zero / go negative; non-positive flow is meaningless).
+            ipr_data = {}
+            if anchor_qwf > 0 and 0 <= anchor_pwf < model_res_p and model_res_p > 0:
+                try:
+                    synth_qmax = InFlow.vogel_qmax(anchor_qwf, anchor_pwf, model_res_p)
+                    synth_coeffs = pd.DataFrame(
+                        [
+                            {
+                                "Well": params.selected_well,
+                                "ResP": model_res_p,
+                                "qwf": anchor_qwf,
+                                "pwf": anchor_pwf,
+                                "QMax_recent": synth_qmax,
+                            }
+                        ]
+                    )
+                    ipr_data = generate_ipr_curves(synth_coeffs)
+                except Exception as e:
+                    st.warning(
+                        f"Could not build IPR curve from anchor "
+                        f"(qwf={anchor_qwf:.0f}, pwf={anchor_pwf:.0f}, "
+                        f"ResP={model_res_p:.0f}): {e}"
+                    )
+            plot_points = test_df if test_df is not None else pd.DataFrame()
+
+            st.caption(
+                f"Using Reservoir Pressure: **{model_res_p:.0f}** psi (sidebar) · "
+                f"IPR anchor: {anchor_src} (qwf={anchor_qwf:.0f} BPD, "
+                f"pwf={anchor_pwf:.0f} psi)"
+            )
+            if n_tests == 0:
+                st.info(
+                    f"No well tests for {params.selected_well} — chart shows the "
+                    "IPR curve from sidebar values only. No actuals available, "
+                    "so the modeled-vs-actual comparison and calibration are "
+                    "unavailable for this well."
+                )
+            elif n_tests == 1:
+                st.info(
+                    f"Only 1 well test for {params.selected_well} — Vogel fit "
+                    "needs 2+ tests, so the chart anchors on this single point + "
+                    "sidebar reservoir pressure."
+                )
+
+        # JP-label toggle for the IPR scatter — sits just above the chart so
+        # the checkbox is next to the picture it affects. Default off (plain
+        # colored dots; the colorbar still encodes Days Ago).
+        show_jp_labels = st.checkbox(
+            "Show JP label inside each test point",
+            value=False,
+            key=f"mva_show_jp_labels_{params.selected_well}",
+            help=(
+                "Replace each test point's dot with the pump installed at that "
+                'test\'s date (e.g. "12B"), drawn inside an enlarged colored '
+                "marker. Useful for seeing pump changes alongside the IPR shape."
+            ),
         )
-        fig = create_ipr_plotly(
-            params.selected_well,
-            ipr_data[params.selected_well],
-            plot_data,
-            form_wc=params.form_wc,
-            jp_history=jp_hist,
-            show_jp_labels=show_jp_labels,
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        # Weak-fit banner directly under the IPR chart it's judging: the fit
-        # is ALWAYS produced and seeded (never silently replaced), but when
-        # the test cloud can't constrain reservoir pressure the engineer is
-        # told to decide one themselves.
-        _af_coeff_row, _, _af_tests = anchor_fit
-        if _af_coeff_row is not None:
-            _render_weak_ipr_warning(params, _af_coeff_row, _af_tests)
-        _render_ipr_rate_calculator(params, model_res_p)
+
+        # 5. Always render the IPR chart (Vogel-fit or synthetic).
+        if params.selected_well in ipr_data:
+            plot_data = plot_points if plot_points is not None else pd.DataFrame()
+            fig = create_ipr_plotly(
+                params.selected_well,
+                ipr_data[params.selected_well],
+                plot_data,
+                form_wc=params.form_wc,
+                jp_history=jp_hist,
+                show_jp_labels=show_jp_labels,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            # Weak-fit banner directly under the IPR chart it's judging: the fit
+            # is ALWAYS produced and seeded (never silently replaced), but when
+            # the test cloud can't constrain reservoir pressure the engineer is
+            # told to decide one themselves.
+            _af_coeff_row, _, _af_tests = anchor_fit
+            if _af_coeff_row is not None:
+                _render_weak_ipr_warning(params, _af_coeff_row, _af_tests)
+            _render_ipr_rate_calculator(params, model_res_p)
 
     # 6. Modeled vs Actual + calibration sections need at least 1 test.
     if n_tests == 0:
@@ -2823,9 +2884,7 @@ def _render_model_vs_actual(
     # Heading reflects the SELECTED test's date (test picker default = most
     # recent). Falls back to a generic label if the test row has no WtDate.
     if recent_test is not None and pd.notna(recent_test.get("WtDate")):
-        _test_date_label = (
-            f"{recent_test.get('WtDate').strftime('%Y-%m-%d')} Test"
-        )
+        _test_date_label = f"{recent_test.get('WtDate').strftime('%Y-%m-%d')} Test"
     else:
         _test_date_label = "Most Recent Test"
     st.markdown(f"#### Modeled vs Actual ({_test_date_label})")

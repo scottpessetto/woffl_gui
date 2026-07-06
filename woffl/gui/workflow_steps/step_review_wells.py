@@ -252,10 +252,14 @@ def _render_save_panel(params, real_wells: list[str], pad: str) -> None:
     # The Solver (rendered below) fills these (deferred) so the engineer sees the
     # well's history AND the model-vs-actual difference right under the title,
     # without scrolling into the Solver. Order matters: jp_box (the production /
-    # BHP / JPCO chart + pump-in-well timeline) sits ABOVE hero_box (pump banner
-    # + vs-actual metrics). Returned to render_review_stage, which hands them to
-    # jetpump_solver.render_tab as jp_strip_container / hero_container.
+    # BHP / JPCO chart + pump-in-well timeline) sits ABOVE anchor_box (the IPR
+    # anchor + comparison-test pickers — the *driving test* choice, hoisted here
+    # because under the Solver heading nobody found it), which sits ABOVE
+    # hero_box (pump banner + vs-actual metrics for that choice). Returned to
+    # render_review_stage, which hands them to jetpump_solver.render_tab as
+    # jp_strip_container / anchor_container / hero_container.
     jp_box = st.container()
+    anchor_box = st.container()
     hero_box = st.container()
 
     inferred_ipr = _infer_ipr_source(well)
@@ -358,13 +362,17 @@ def _render_save_panel(params, real_wells: list[str], pad: str) -> None:
     c_save, c_off = st.columns([1.6, 1.0])
     with c_save:
         if st.button(
-            btn_label, type="primary", use_container_width=True,
+            btn_label,
+            type="primary",
+            use_container_width=True,
             key=f"sp_save_{well}",
         ):
             _save_and_advance(offline)
     with c_off:
         if st.button(
-            off_label, use_container_width=True, key=f"sp_save_off_{well}",
+            off_label,
+            use_container_width=True,
+            key=f"sp_save_off_{well}",
             help="Save this well as OFFLINE (pulled / down / dewatering): it "
             "stays in the review set and pad accounting but is excluded from "
             "the optimization run. One click — no checkbox needed.",
@@ -376,7 +384,7 @@ def _render_save_panel(params, real_wells: list[str], pad: str) -> None:
         st.session_state.pop(_LAST_HYDRATED_KEY, None)
         st.rerun()
 
-    return jp_box, hero_box
+    return jp_box, anchor_box, hero_box
 
 
 def _render_hypothetical_form(pad: str) -> None:
@@ -1019,7 +1027,7 @@ def render_review_stage(pad: str) -> None:
 
     _render_progress(pad, real_wells)
     st.divider()
-    jp_box, hero_box = _render_save_panel(params, real_wells, pad)
+    jp_box, anchor_box, hero_box = _render_save_panel(params, real_wells, pad)
     _render_modeling_status(pad)
     _render_hypothetical_form(pad)
     _render_csv_io(pad)
@@ -1057,6 +1065,7 @@ def render_review_stage(pad: str) -> None:
             res_mix,
             hero_container=hero_box,
             jp_strip_container=jp_box,
+            anchor_container=anchor_box,
         )
     except Exception as e:  # noqa: BLE001 — intentional last-resort guard
         if type(e).__name__ in ("RerunException", "StopException"):

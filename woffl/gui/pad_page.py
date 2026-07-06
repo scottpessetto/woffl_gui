@@ -49,6 +49,7 @@ from typing import Callable, Optional
 import streamlit as st
 
 from woffl.gui import pad_optimize
+from woffl.gui.pad_helpers import build_comparison_rows as _build_comparison_rows
 from woffl.gui.pad_helpers import parse_pump as _parse_pump
 from woffl.gui.pad_helpers import recent_test_rates as _recent_test_rates
 from woffl.gui.pad_helpers import (
@@ -453,52 +454,106 @@ def _render_results(spec: PadSpec) -> None:
     si_wells = [w for w in active if w not in opt_choice]
     _render_results_accounting(meta, active, si_wells)
 
-    # Station operating point
-    st.markdown("#### Station operating point")
+    # Current state: measured recent-test medians + the pump captured at
+    # review, with the configure-stage match check supplying Model÷Test.
+    rates = {w: _recent_test_rates(w) for w in active}
+    mc = st.session_state.get(f"{p}_matchcheck")
+    mc_rows = {r["well"]: r for r in mc["rows"]} if mc else {}
+    rows = _build_comparison_rows(results, active, si_wells, rates, mc_rows)
+    cur_oil = sum(r["Current oil"] or 0 for r in rows)
+    cur_pf = sum(r["Current PF"] or 0 for r in rows)
+    cur_hdr = None
+    if cur_pf > 0:
+        hdr, over = pad_optimize.settled_header(spec.plant, cur_pf, 0.0, n_pumps)
+        cur_hdr = None if over else hdr
+
+    # Station operating point — optimized, with deltas vs today
+    st.markdown("#### Station operating point — optimized vs current")
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Header pressure", f"{meta['header_psi']:,.0f} psi")
-    m2.metric("Total power fluid", f"{meta['total_pf_bpd']:,.0f} BPD")
+    m1.metric(
+        "Header pressure",
+        f"{meta['header_psi']:,.0f} psi",
+        delta=(
+            f"{meta['header_psi'] - cur_hdr:+,.0f} vs current"
+            if cur_hdr is not None
+            else None
+        ),
+        delta_color="off",
+    )
+    m2.metric(
+        "Total power fluid",
+        f"{meta['total_pf_bpd']:,.0f} BPD",
+        delta=f"{meta['total_pf_bpd'] - cur_pf:+,.0f} vs current" if cur_pf else None,
+        delta_color="off",
+    )
     if spec.station_metric3 is not None:
         label, value = spec.station_metric3(meta)
         m3.metric(label, value)
-    m4.metric("Total oil", f"{meta['total_oil_bopd']:,.0f} BOPD")
+    m4.metric(
+        "Total oil",
+        f"{meta['total_oil_bopd']:,.0f} BOPD",
+        delta=(
+            f"{meta['total_oil_bopd'] - cur_oil:+,.0f} vs current" if cur_oil else None
+        ),
+    )
+    st.caption(
+        f"**Current** = what the pad does today, measured: median of each well's "
+        f"recent tests — {cur_oil:,.0f} BOPD oil · {cur_pf:,.0f} BPD PF"
+        + (f" · header settles ≈ {cur_hdr:,.0f} psi at that draw" if cur_hdr else "")
+        + ". **Optimized** = what the plan below is modeled to deliver."
+    )
 
     if spec.render_station_extras is not None:
         spec.render_station_extras(meta)
 
-    # Per-well table — includes SHUT IN wells so the SI decision is visible.
-    st.markdown("#### Per-well recommendations")
-    rows = []
-    for r in results:
-        rows.append(
-            {
-                "Well": r.well_name,
-                "Nozzle": r.recommended_nozzle,
-                "Throat": r.recommended_throat,
-                "Oil (BOPD)": round(r.predicted_oil_rate, 0),
-                "Power fluid (BPD)": round(r.predicted_lift_water, 0),
-                "Form. water (BPD)": round(r.predicted_formation_water, 0),
-                "Total WC": round(r.total_watercut, 3),
-                "Suction (psi)": round(r.suction_pressure, 0),
-                "Status": "⚠ sonic" if r.sonic_status else "run",
-            }
-        )
-    for w in si_wells:
-        rows.append(
-            {
-                "Well": w,
-                "Nozzle": "—",
-                "Throat": "—",
-                "Oil (BOPD)": 0,
-                "Power fluid (BPD)": 0,
-                "Form. water (BPD)": 0,
-                "Total WC": None,
-                "Suction (psi)": None,
-                "Status": "SHUT IN",
-            }
-        )
+    # Per-well table — current pump + measured rates beside the optimizer's
+    # pick, SHUT IN wells included so the SI decision (and its cost) is visible.
+    st.markdown("#### Per well — current vs optimized")
+    _MAIN_COLS = [
+        "Well",
+        "Current pump",
+        "Current oil",
+        "Current PF",
+        "Optimized pump",
+        "Opt oil",
+        "Opt PF",
+        "Δ oil",
+        "Change",
+        "Model÷Test",
+        "Status",
+    ]
+    _DETAIL_COLS = [
+        "Well",
+        "Optimized pump",
+        "Form. water (BPD)",
+        "Total WC",
+        "Suction (psi)",
+        "Status",
+    ]
     df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df[_MAIN_COLS], use_container_width=True, hide_index=True)
+
+    # Table totals — sums of the rows above (incl. SHUT IN zeros), so this
+    # line always reconciles with the table even if it drifts from run meta.
+    opt_oil_tot = sum(r["Opt oil"] or 0 for r in rows)
+    opt_pf_tot = sum(r["Opt PF"] or 0 for r in rows)
+    st.markdown(
+        f"**Total power fluid** — current **{cur_pf:,.0f}** → optimized "
+        f"**{opt_pf_tot:,.0f} BPD** ({opt_pf_tot - cur_pf:+,.0f})  ·  "
+        f"**Total oil** — current **{cur_oil:,.0f}** → optimized "
+        f"**{opt_oil_tot:,.0f} BOPD** ({opt_oil_tot - cur_oil:+,.0f})"
+    )
+    st.caption(
+        "**Current oil/PF** = measured (median of recent tests); **Opt oil/PF** = "
+        "model. **Δ oil** therefore mixes model vs measured — check **Model÷Test** "
+        "(model ÷ test at the CURRENT pump, from the pre-flight match check): a well "
+        "at 1.3 over-predicts by ~30%, so read its Δ as optimistic. **Change**: "
+        "▲ bigger / ▼ smaller = nozzle size up / down; ▲/▼ throat = same nozzle, "
+        "larger / smaller throat. Sorted by biggest mover. Wells with no installed "
+        "pump or no valid tests show —."
+    )
+    with st.expander("Full optimizer detail (formation water, WC, suction)"):
+        st.dataframe(df[_DETAIL_COLS], use_container_width=True, hide_index=True)
 
     op_points = [
         {

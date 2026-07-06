@@ -242,14 +242,27 @@ def main():
     modes = [
         "Single Well Analysis",
         "Optimization Workflow",
-        "S-Pad Optimization",
-        "I-Pad Optimization",
-        "M-Pad Optimization",
+        "Pad Optimization",
         "Well Database",
         "Well Sort",
     ]
     if st.session_state.get("_scotts_tools", False):
         modes.append("Scott's Tools")
+
+    # The dedicated S/I/M pad modes merged into "Pad Optimization" (R-1 §3).
+    # Migrate a session still holding an old mode name BEFORE the radio
+    # renders (writing a widget key pre-render is allowed), landing the user
+    # on the same pad via the hub's shadow key.
+    _legacy_pads = {
+        "S-Pad Optimization": "S-Pad",
+        "I-Pad Optimization": "I-Pad",
+        "M-Pad Optimization": "M-Pad",
+    }
+    if st.session_state.get("app_mode_radio") in _legacy_pads:
+        st.session_state["pad_hub_pad_shadow"] = _legacy_pads[
+            st.session_state["app_mode_radio"]
+        ]
+        st.session_state["app_mode_radio"] = "Pad Optimization"
 
     # Mode selection. The key matters: without one, the widget identity is
     # derived from its options, so unlocking Scott's Tools (options change)
@@ -262,6 +275,8 @@ def main():
         help=(
             "Single Well: Analyze one well in detail. "
             "Optimization: Select wells → Review IPR → Optimize → Results. "
+            "Pad Optimization: Optimize one pad against its booster plant "
+            "(S / I / M). "
             "Well Database: View live well properties from Databricks. "
             "Well Sort: Online/offline classification + marginal WC calculator."
         ),
@@ -272,20 +287,10 @@ def main():
 
         run_workflow_page()
 
-    elif app_mode == "S-Pad Optimization":
-        from woffl.gui.s_pad_page import run_s_pad_page
+    elif app_mode == "Pad Optimization":
+        from woffl.gui.pad_hub import run_pad_hub
 
-        run_s_pad_page()
-
-    elif app_mode == "I-Pad Optimization":
-        from woffl.gui.i_pad_page import run_i_pad_page
-
-        run_i_pad_page()
-
-    elif app_mode == "M-Pad Optimization":
-        from woffl.gui.m_pad_page import run_m_pad_page
-
-        run_m_pad_page()
+        run_pad_hub()
 
     elif app_mode == "Well Database":
         from woffl.gui.well_database_page import run_well_database_page

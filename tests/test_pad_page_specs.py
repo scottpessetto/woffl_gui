@@ -100,13 +100,16 @@ class TestEntryPoints:
         ]
         assert not required
 
-    def test_app_imports_these_entries(self):
-        # app.py routes the three modes via lazy imports — pin the exact lines
-        # so a rename here can't silently break the routing there.
+    def test_app_routes_pads_through_the_hub(self):
+        # app.py routes the single "Pad Optimization" mode via a lazy import
+        # of the hub, and the hub lazy-imports each pad's SPEC — pin the exact
+        # lines so a rename can't silently break the routing chain.
         src = _APP_PATH.read_text(encoding="utf-8")
-        assert "from woffl.gui.s_pad_page import run_s_pad_page" in src
-        assert "from woffl.gui.i_pad_page import run_i_pad_page" in src
-        assert "from woffl.gui.m_pad_page import run_m_pad_page" in src
+        assert "from woffl.gui.pad_hub import run_pad_hub" in src
+        hub_src = (_APP_PATH.parent / "pad_hub.py").read_text(encoding="utf-8")
+        assert "from woffl.gui.s_pad_page import SPEC" in hub_src
+        assert "from woffl.gui.i_pad_page import SPEC" in hub_src
+        assert "from woffl.gui.m_pad_page import SPEC" in hub_src
 
 
 class TestHooks:

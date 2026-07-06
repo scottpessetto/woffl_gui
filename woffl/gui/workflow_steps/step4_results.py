@@ -172,14 +172,16 @@ def render_step4():
     metrics = optimizer.calculate_field_metrics(display_results)
 
     has_jp_history = "jp_history_df" in st.session_state
+    # "Current vs Optimized" leads — the first question an engineer has about
+    # a plan is what it changes vs today, not the optimized-only summary.
     tab_labels = ["Summary", "Well Details", "Visualizations", "Export"]
     if has_jp_history:
-        tab_labels.append("Current vs Optimized")
+        tab_labels.insert(0, "Current vs Optimized")
 
-    result_tabs = st.tabs(tab_labels)
+    result_tabs = dict(zip(tab_labels, st.tabs(tab_labels)))
 
     # --- Summary tab ---
-    with result_tabs[0]:
+    with result_tabs["Summary"]:
         st.write(f"### Field-Level Metrics{cal_label}")
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -196,7 +198,7 @@ def render_step4():
             st.metric("Sonic Wells", f"{metrics['num_sonic']}/{metrics['num_wells']}")
 
     # --- Well Details tab ---
-    with result_tabs[1]:
+    with result_tabs["Well Details"]:
         st.write("### Well-Level Results")
         results_df = optimizer.to_dataframe(display_results)
         if calibration_results:
@@ -210,7 +212,7 @@ def render_step4():
         st.dataframe(results_df, use_container_width=True, height=400)
 
     # --- Visualizations tab ---
-    with result_tabs[2]:
+    with result_tabs["Visualizations"]:
         st.write("### Optimization Visualizations")
         viz_col1, viz_col2 = st.columns(2)
 
@@ -247,7 +249,7 @@ def render_step4():
             plt.close()
 
     # --- Export tab ---
-    with result_tabs[3]:
+    with result_tabs["Export"]:
         st.write("### Export Results")
         export_df = optimizer.to_dataframe(display_results)
         if calibration_results:
@@ -273,9 +275,9 @@ def render_step4():
         st.write(f"- Total Power Fluid: {metrics['total_power_fluid']:.1f} BWPD")
         st.write(f"- Power Fluid Utilization: {metrics['power_fluid_utilization']:.1%}")
 
-    # --- Current vs Optimized tab ---
+    # --- Current vs Optimized tab (rendered first in the tab strip) ---
     if has_jp_history:
-        with result_tabs[4]:
+        with result_tabs["Current vs Optimized"]:
             _render_current_vs_optimized(results, optimizer, calibration_results)
 
     # --- Navigation ---
