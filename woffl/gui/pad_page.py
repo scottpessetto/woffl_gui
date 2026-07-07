@@ -212,15 +212,46 @@ def _render_configure(spec: PadSpec) -> None:
     with method_col:
         method = st.selectbox("Optimizer", ["milp", "mckp"], key=f"{p}_method")
     with wc_col:
-        marginal_wc = st.number_input(
-            "Marginal water cut",
-            0.0,
-            1.0,
-            1.0,
-            0.01,
-            format="%.2f",
-            key=f"{p}_marginal_wc",
+        # Checkbox `value=` MUST read session_state first (CLAUDE.md gotcha) —
+        # a hardcoded literal would clobber a programmatically-set state on
+        # every rerun. Default True: the plant-derived gate is the new default
+        # behavior; the manual number_input below is the override path.
+        auto_wc = st.checkbox(
+            "Auto marginal WC (from plant limits)",
+            value=st.session_state.get(f"{p}_marginal_wc_auto", True),
+            key=f"{p}_marginal_wc_auto",
             help=spec.marginal_wc_help,
+        )
+        if auto_wc:
+            st.caption(
+                "Gate computed from the booster curve / PF budget at each "
+                "trial header; slack → parsimony tie-break."
+            )
+            marginal_wc = None
+        else:
+            # Same key as before the auto-WC feature shipped, so an old
+            # session's manual value survives the upgrade untouched.
+            marginal_wc = st.number_input(
+                "Marginal water cut",
+                0.0,
+                1.0,
+                1.0,
+                0.01,
+                format="%.2f",
+                key=f"{p}_marginal_wc",
+                help=spec.marginal_wc_help,
+            )
+        parsimony_bopd = st.number_input(
+            "Parsimony threshold (BOPD)",
+            min_value=0.0,
+            value=20.0,
+            step=1.0,
+            key=f"{p}_parsimony_bopd",
+            help=(
+                "A bigger pump must add at least this much oil to be chosen "
+                "over a smaller one when PF has slack. 0 disables the "
+                "tie-break."
+            ),
         )
 
     c4, c5 = st.columns(2)
@@ -390,6 +421,7 @@ def _render_configure(spec: PadSpec) -> None:
                     method,
                     marginal_wc,
                     n_steps=spec.n_steps,
+                    parsimony_bopd=parsimony_bopd,
                     progress=_progress,
                 )
         except Exception as e:
@@ -430,6 +462,66 @@ def _download_results(spec: PadSpec, df) -> None:
             f"{spec.pad}_pad_optimization_results.csv",
             "text/csv",
             f"{spec.prefix}_res_auto_dl",
+        )
+
+
+def _gate_caption(meta: dict) -> str:
+    """One-line summary of the marginal-WC gate actually applied at the
+    winning header, for the Results stage.
+
+    Pure (no Streamlit) so it's unit-testable directly. Reads ``meta`` with
+    ``.get`` throughout: a run stored in session BEFORE this feature shipped
+    carries none of ``marginal_wc_used``/``marginal_wc_source``/``pf_slack``,
+    and must render a sensible line instead of KeyError-ing.
+    """
+    used = meta.get("marginal_wc_used")
+    if used is None:
+        return (
+            "Marginal WC gate: not recorded for this run — re-run to see gate detail."
+        )
+    source = meta.get("marginal_wc_source", "manual")
+    if source == "manual":
+        detail = "manual"
+    elif meta.get("pf_slack"):
+        detail = "auto — PF slack, parsimony active"
+    else:
+        detail = "auto, plant-derived — budget bound"
+    return f"Marginal WC gate: {used:.2f} ({detail})"
+
+
+def _parsimony_rows(swaps: list[dict]) -> list[dict]:
+    """Display rows for the parsimony-swaps table — pure so it's testable
+    without Streamlit. ``swaps`` is ``meta["parsimony_swaps"]``: a list of
+    ``{well, from_pump, to_pump, oil_given_up, pf_saved}`` dicts."""
+    return [
+        {
+            "Well": s.get("well"),
+            "Pump": f"{s.get('from_pump')} → {s.get('to_pump')}",
+            "Oil given up (BOPD)": s.get("oil_given_up"),
+            "PF saved (BPD)": s.get("pf_saved"),
+        }
+        for s in swaps
+    ]
+
+
+def _render_parsimony_swaps(meta: dict) -> None:
+    """Expander listing wells the parsimony tie-break kept on a smaller pump.
+    Renders nothing when there's nothing to show (empty/missing/old meta)."""
+    import pandas as pd
+
+    swaps = meta.get("parsimony_swaps") or []
+    if not swaps:
+        return
+    with st.expander(f"Parsimony: {len(swaps)} well(s) kept a smaller pump"):
+        st.caption(
+            "PF had slack at the winning header — these wells kept a smaller "
+            "pump because the bigger one didn't add enough oil to clear the "
+            "parsimony threshold."
+        )
+        st.dataframe(
+            pd.DataFrame(_parsimony_rows(swaps)),
+            use_container_width=True,
+            hide_index=True,
         )
 
 
@@ -505,6 +597,8 @@ def _render_results(spec: PadSpec) -> None:
         + (f" · header settles ≈ {cur_hdr:,.0f} psi at that draw" if cur_hdr else "")
         + ". **Optimized** = what the plan below is modeled to deliver."
     )
+    st.caption(_gate_caption(meta))
+    _render_parsimony_swaps(meta)
 
     if spec.render_station_extras is not None:
         spec.render_station_extras(meta)

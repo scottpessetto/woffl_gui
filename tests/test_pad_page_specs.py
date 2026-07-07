@@ -193,3 +193,108 @@ class TestFixedHeaderSpec:
         # rendering needs a Streamlit runtime — just pin the entry signature
         params = list(inspect.signature(run_pad_page).parameters)
         assert params == ["spec"]
+
+
+class TestGateCaption:
+    """``pad_page._gate_caption`` — the Results-stage marginal-WC gate line.
+
+    Pure formatter (no Streamlit) covering the auto/manual/slack contract
+    from ``pad_optimize.run_optimization``'s meta dict, plus the stale-meta
+    fallback for runs stored before this feature shipped.
+    """
+
+    def test_auto_budget_bound(self):
+        from woffl.gui.pad_page import _gate_caption
+
+        meta = {
+            "marginal_wc_used": 0.97,
+            "marginal_wc_source": "auto (plant-derived)",
+            "pf_slack": False,
+        }
+        out = _gate_caption(meta)
+        assert "0.97" in out
+        assert "auto" in out
+        assert "budget bound" in out
+        assert "PF slack" not in out
+
+    def test_auto_pf_slack_parsimony_active(self):
+        from woffl.gui.pad_page import _gate_caption
+
+        meta = {
+            "marginal_wc_used": 1.0,
+            "marginal_wc_source": "auto (plant-derived)",
+            "pf_slack": True,
+        }
+        out = _gate_caption(meta)
+        assert "1.00" in out
+        assert "PF slack" in out
+        assert "parsimony active" in out
+
+    def test_manual(self):
+        from woffl.gui.pad_page import _gate_caption
+
+        meta = {
+            "marginal_wc_used": 0.9,
+            "marginal_wc_source": "manual",
+            "pf_slack": False,
+        }
+        out = _gate_caption(meta)
+        assert "0.90" in out
+        assert "manual" in out
+        assert "auto" not in out
+
+    def test_stale_meta_no_new_keys_does_not_keyerror(self):
+        # A run stored in session before this feature shipped: meta carries
+        # none of marginal_wc_used/marginal_wc_source/pf_slack.
+        from woffl.gui.pad_page import _gate_caption
+
+        meta = {
+            "n_pumps": 3,
+            "header_psi": 3200.0,
+            "total_pf_bpd": 50000.0,
+            "total_oil_bopd": 900.0,
+        }
+        out = _gate_caption(meta)
+        assert isinstance(out, str)
+        assert out  # renders SOMETHING, never raises
+
+    def test_manual_source_missing_defaults_to_manual(self):
+        # marginal_wc_used present but source missing (shouldn't happen from
+        # the real contract, but .get fallback must still not KeyError).
+        from woffl.gui.pad_page import _gate_caption
+
+        out = _gate_caption({"marginal_wc_used": 0.85})
+        assert "0.85" in out
+        assert "manual" in out
+
+
+class TestParsimonyRows:
+    """``pad_page._parsimony_rows`` — pure row-builder for the Results
+    parsimony-swaps expander table."""
+
+    def test_builds_display_rows(self):
+        from woffl.gui.pad_page import _parsimony_rows
+
+        swaps = [
+            {
+                "well": "MPS-01",
+                "from_pump": "13C",
+                "to_pump": "12B",
+                "oil_given_up": 3.2,
+                "pf_saved": 400.0,
+            }
+        ]
+        rows = _parsimony_rows(swaps)
+        assert rows == [
+            {
+                "Well": "MPS-01",
+                "Pump": "13C → 12B",
+                "Oil given up (BOPD)": 3.2,
+                "PF saved (BPD)": 400.0,
+            }
+        ]
+
+    def test_empty_list_returns_empty(self):
+        from woffl.gui.pad_page import _parsimony_rows
+
+        assert _parsimony_rows([]) == []

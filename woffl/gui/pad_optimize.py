@@ -39,6 +39,19 @@ tracked in every fixed-point path) plus the pad extras each page's render
 code reads (per_pump_bpd / station_cap_bpd for fixed_curve;
 frontier_cap_bpd / suction_psi / pumps / amp_limited / min_total_flow for
 free_pressure).
+
+``run_optimization``'s ``marginal_wc`` also accepts ``None`` (AUTO-DERIVE the
+gate from the plant's own PF/water budget at each trial header, via
+``woffl.assembly.optimization_algorithms.derive_pad_marginal_wc``) alongside
+the legacy manual-float override, plus a ``parsimony_bopd`` knob (default 20,
+0 disables) that swaps a well down to a smaller/less-water config when it
+gives up no more than that much oil (``apply_parsimony`` — the field case
+this exists for: a well upsized 13C->15B for ~2 BOPD at +1,500 BPD PF). Its
+meta dict additionally carries ``marginal_wc_used`` (the gate actually
+applied at the final/winning header), ``marginal_wc_source`` ("auto
+(plant-derived)" | "manual"), ``pf_slack`` (True when the demand walk never
+exhausted the budget there), and ``parsimony_swaps`` (list of ``{well,
+from_pump, to_pump, oil_given_up, pf_saved}`` dicts).
 """
 
 from __future__ import annotations
@@ -126,12 +139,13 @@ def run_optimization(
     nozzles: Iterable[str],
     throats: Iterable[str],
     method: str,
-    marginal_wc: float,
+    marginal_wc: Optional[float],
     *,
     n_steps: int = 11,
     max_iter: int = 8,
     tol_psi: float = 10.0,
     relax: float = 0.6,
+    parsimony_bopd: float = 20.0,
     progress: Optional[Callable] = None,
 ):
     """Optimize nozzle/throat across the pad, coupled to the booster plant.
@@ -139,10 +153,29 @@ def run_optimization(
     Dispatches on ``plant.coupling`` (see the module docstring). ``n_steps``
     only applies to the free_pressure sweep (I-Pad passes 11, M-Pad 9);
     ``max_iter``/``tol_psi``/``relax`` only to the fixed_curve fixed point.
+
+    ``marginal_wc``: a float is a MANUAL gate override (today's behavior,
+    unchanged). ``None`` means AUTO-DERIVE the gate from the plant's own
+    physical limits at each trial header —
+    ``woffl.assembly.optimization_algorithms.derive_pad_marginal_wc`` pools
+    every well's oil-per-water Pareto frontier and reads the gate off the
+    ratio that exhausts the plant's PF/water budget, so the economics cutoff
+    can never be looser than the pad can actually deliver.
+
+    ``parsimony_bopd``: after the optimizer picks pumps, a well is swapped
+    down to a smaller (less-water) config if that config gives up no more
+    than this many BOPD — so PF slack isn't spent upsizing a pump for a
+    noise-level oil gain. 0 disables the tie-break.
+
     Returns ``(results, optimizer, meta)`` — ``optimizer`` is the one behind
     ``results`` (the winning sweep step for free_pressure), and
     ``meta["reconciliation"]`` is computed from it (per-well drop reasons at
-    the winning point, P0-5).
+    the winning point, P0-5). ``meta`` also carries ``marginal_wc_used``
+    (the gate actually applied at the final/winning header),
+    ``marginal_wc_source`` ("auto (plant-derived)" | "manual"), ``pf_slack``
+    (True when the demand walk never exhausted the budget there), and
+    ``parsimony_swaps`` (list of ``{well, from_pump, to_pump, oil_given_up,
+    pf_saved}`` dicts, empty when none).
     """
     if plant.coupling == "fixed_curve":
         return _run_fixed_point(
@@ -156,6 +189,7 @@ def run_optimization(
             max_iter=max_iter,
             tol_psi=tol_psi,
             relax=relax,
+            parsimony_bopd=parsimony_bopd,
             progress=progress,
         )
     return _run_pressure_sweep(
@@ -167,6 +201,7 @@ def run_optimization(
         method,
         marginal_wc,
         n_steps=n_steps,
+        parsimony_bopd=parsimony_bopd,
         progress=progress,
     )
 
@@ -183,6 +218,7 @@ def _run_fixed_point(
     max_iter,
     tol_psi,
     relax,
+    parsimony_bopd=20.0,
     progress,
 ):
     """fixed_curve: solve optimizer <-> pump-curve to a damped fixed point."""
@@ -191,7 +227,11 @@ def _run_fixed_point(
         PowerFluidConstraint,
         reconcile_wells,
     )
-    from woffl.assembly.optimization_algorithms import optimize
+    from woffl.assembly.optimization_algorithms import (
+        apply_parsimony,
+        derive_pad_marginal_wc,
+        optimize,
+    )
     from woffl.gui.scotts_tools._common import worker_ceiling
 
     cap = plant.flow_window(n_pumps)[1]  # hydraulic (thrust) ceiling
@@ -199,6 +239,8 @@ def _run_fixed_point(
     lo_p, hi_p = plant.clamp_window(n_pumps)
     history = []
     results, optimizer, converged = [], None, False
+    mwc_used = mwc_source = pf_slack = None
+    parsimony_swaps: list = []
 
     for it in range(max_iter):
         ppf_c = max(lo_p, min(hi_p, ppf))
@@ -207,9 +249,33 @@ def _run_fixed_point(
         pf = PowerFluidConstraint(
             total_rate=cap, pressure=ppf_c, rho_pf=_RHO_PF_DEFAULT
         )
-        optimizer = NetworkOptimizer(well_configs, pf, nozzles, throats, marginal_wc)
+        optimizer = NetworkOptimizer(
+            well_configs,
+            pf,
+            nozzles,
+            throats,
+            marginal_wc if marginal_wc is not None else 1.0,
+        )
         optimizer.run_all_batch_simulations(max_workers=worker_ceiling())
+
+        # Marginal-WC gate: manual value stays manual; None auto-derives it
+        # from the plant's OWN budget at this trial header (cheap — pools
+        # frontiers already in memory). Both branches report ``pf_slack`` —
+        # informative even when the gate is manual.
+        gate, slack = derive_pad_marginal_wc(optimizer.batch_results, cap, "lift_wat")
+        if marginal_wc is None:
+            optimizer.marginal_watercut = gate
+            mwc_used, mwc_source = gate, "auto (plant-derived)"
+        else:
+            mwc_used, mwc_source = marginal_wc, "manual"
+        pf_slack = slack
+
         results = optimize(optimizer, method=method, water_key="lift_wat")
+        # Parsimony tie-break BEFORE total_pf is computed, so the header
+        # fixed point settles on the parsimonious demand, not the raw pick.
+        results, parsimony_swaps = apply_parsimony(
+            results, optimizer, "lift_wat", parsimony_bopd
+        )
 
         total_pf = sum(r.predicted_lift_water for r in results)
         new_ppf, _ = _next_header(plant, total_pf, ppf_c, n_pumps)
@@ -243,6 +309,10 @@ def _run_fixed_point(
         **plant.flags(total_pf, n_pumps),
         "per_pump_bpd": (total_pf / n_pumps) if n_pumps else None,
         "station_cap_bpd": cap,
+        "marginal_wc_used": mwc_used,
+        "marginal_wc_source": mwc_source,
+        "pf_slack": pf_slack,
+        "parsimony_swaps": parsimony_swaps,
     }
     # Per-well drop accounting (failed sim vs solver shut-in vs marginal-WC
     # exclusion) — Results renders the real reasons instead of a blanket SI.
@@ -260,6 +330,7 @@ def _run_pressure_sweep(
     marginal_wc,
     *,
     n_steps,
+    parsimony_bopd=20.0,
     progress,
 ):
     """free_pressure: sweep candidate headers, keep the most-oil pressure."""
@@ -268,7 +339,11 @@ def _run_pressure_sweep(
         PowerFluidConstraint,
         reconcile_wells,
     )
-    from woffl.assembly.optimization_algorithms import optimize
+    from woffl.assembly.optimization_algorithms import (
+        apply_parsimony,
+        derive_pad_marginal_wc,
+        optimize,
+    )
     from woffl.gui.scotts_tools._common import worker_ceiling
 
     p_floor, p_ceiling = plant.pressure_window(n_pumps)
@@ -286,9 +361,26 @@ def _run_pressure_sweep(
         for wc in well_configs:
             wc.ppf_surf_well = P
         pf = PowerFluidConstraint(total_rate=cap, pressure=P, rho_pf=_RHO_PF_DEFAULT)
-        opt = NetworkOptimizer(well_configs, pf, nozzles, throats, marginal_wc)
+        opt = NetworkOptimizer(
+            well_configs,
+            pf,
+            nozzles,
+            throats,
+            marginal_wc if marginal_wc is not None else 1.0,
+        )
         opt.run_all_batch_simulations(max_workers=worker_ceiling())
+
+        # Marginal-WC gate at THIS trial header — manual stays manual; None
+        # auto-derives from the plant's own budget at this pressure.
+        gate, slack = derive_pad_marginal_wc(opt.batch_results, cap, "lift_wat")
+        if marginal_wc is None:
+            opt.marginal_watercut = gate
+            trial_mwc_used, trial_mwc_source = gate, "auto (plant-derived)"
+        else:
+            trial_mwc_used, trial_mwc_source = marginal_wc, "manual"
+
         results = optimize(opt, method=method, water_key="lift_wat")
+        results, trial_swaps = apply_parsimony(results, opt, "lift_wat", parsimony_bopd)
         total_pf = sum(r.predicted_lift_water for r in results)
         total_oil = sum(r.predicted_oil_rate for r in results)
         rec = {
@@ -298,6 +390,10 @@ def _run_pressure_sweep(
             "total_oil": total_oil,
             "results": results,
             "opt": opt,
+            "mwc_used": trial_mwc_used,
+            "mwc_source": trial_mwc_source,
+            "pf_slack": slack,
+            "parsimony_swaps": trial_swaps,
         }
         sweep.append(rec)
         if best is None or total_oil > best["total_oil"]:
@@ -331,6 +427,10 @@ def _run_pressure_sweep(
         "nozzles": list(nozzles),
         "throats": list(throats),
         **plant.flags(best["total_pf"], n_pumps),
+        "marginal_wc_used": best["mwc_used"],
+        "marginal_wc_source": best["mwc_source"],
+        "pf_slack": best["pf_slack"],
+        "parsimony_swaps": best["parsimony_swaps"],
     }
     if "amp_limited" in env:
         meta["amp_limited"] = env["amp_limited"]

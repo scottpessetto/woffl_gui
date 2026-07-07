@@ -159,6 +159,18 @@ def _batch_df(rows):
     return pd.DataFrame([{"nozzle": n, "throat": t, "qoil_std": q} for n, t, q in rows])
 
 
+def _derive_batch_df(rows):
+    """Mini BatchPump.df exposing ``lift_wat`` too: rows = [(nozzle, throat,
+    qoil_std, lift_wat)] — for the marginal-WC auto-derive / parsimony
+    integration tests, which read ``df[water_key]`` directly."""
+    return pd.DataFrame(
+        [
+            {"nozzle": n, "throat": t, "qoil_std": q, "lift_wat": w}
+            for n, t, q, w in rows
+        ]
+    )
+
+
 def _wells(*names):
     return [
         WellConfig(well_name=n, res_pres=1500, form_temp=70, jpump_tvd=4000)
@@ -606,6 +618,154 @@ class TestRhoPfDefault:
         )
         opt = fake_core.Optimizer.instances[-1]
         assert opt.power_fluid.rho_pf == po._RHO_PF_DEFAULT
+
+
+# ── marginal-WC auto-derive + parsimony (feature integration) ──────────────
+
+
+class TestMarginalWcAutoDeriveAndParsimony:
+    """``marginal_wc=None`` auto-derives the gate from the plant's own
+    budget (``derive_pad_marginal_wc``); a float keeps today's manual
+    behavior. ``parsimony_bopd`` (default 5.0) swaps a well down to a
+    smaller/less-water config that gives up no more than that much oil.
+    Both new meta keys land on BOTH couplings' returned meta dict."""
+
+    def test_auto_derive_slack_on_fixed_point(self, fake_core):
+        # cap = flow_window(3)[1] = 50000 for CurvePlant -- this well's tiny
+        # frontier fits comfortably inside it -> slack, gate 1.0.
+        fake_core.Optimizer.batch_dfs = {
+            "W1": _derive_batch_df(
+                [("12", "B", 100.0, 1000.0), ("13", "C", 150.0, 2000.0)]
+            )
+        }
+        fake_core.optimize_fn = lambda opt: [_result("W1", 1000.0, 100.0)]
+        results, optimizer, meta = po.run_optimization(
+            _wells("W1"), CurvePlant(), 3, ["12", "13"], ["B", "C"], "milp", None
+        )
+        assert meta["marginal_wc_used"] == pytest.approx(1.0)
+        assert meta["marginal_wc_source"] == "auto (plant-derived)"
+        assert meta["pf_slack"] is True
+        assert meta["parsimony_swaps"] == []
+        assert optimizer.marginal_watercut == pytest.approx(1.0)
+
+    def test_auto_derive_binding_cap_on_fixed_point(self, fake_core):
+        # Shrink the plant's budget so the pooled frontier actually crosses
+        # it: frontier (1000,100) ratio .1, (3000,130) -> seg dw=2000,
+        # doil=30, ratio .015. cap=1500 crosses the second segment.
+        plant = CurvePlant()
+        plant.flow_window = lambda n_pumps=None: (10000.0, 1500.0)
+        fake_core.Optimizer.batch_dfs = {
+            "W1": _derive_batch_df(
+                [("12", "B", 100.0, 1000.0), ("13", "C", 130.0, 3000.0)]
+            )
+        }
+        fake_core.optimize_fn = lambda opt: [_result("W1", 500.0, 50.0)]
+        results, optimizer, meta = po.run_optimization(
+            _wells("W1"), plant, 3, ["12", "13"], ["B", "C"], "milp", None
+        )
+        assert meta["marginal_wc_source"] == "auto (plant-derived)"
+        assert meta["pf_slack"] is False
+        assert meta["marginal_wc_used"] == pytest.approx(1.0 / 1.015)
+        assert optimizer.marginal_watercut == pytest.approx(1.0 / 1.015)
+
+    def test_auto_derive_meta_keys_on_pressure_sweep(self, fake_core):
+        fake_core.Optimizer.batch_dfs = {
+            "W1": _derive_batch_df([("12", "B", 100.0, 500.0)])
+        }
+        fake_core.optimize_fn = lambda opt: [_result("W1", 500.0, 100.0)]
+        results, optimizer, meta = po.run_optimization(
+            _wells("W1"), FreePlant(), None, ["12"], ["B"], "mckp", None, n_steps=5
+        )
+        assert meta["marginal_wc_source"] == "auto (plant-derived)"
+        assert meta["marginal_wc_used"] == pytest.approx(1.0)
+        assert meta["pf_slack"] is True
+        assert meta["parsimony_swaps"] == []
+        assert optimizer.marginal_watercut == pytest.approx(1.0)
+
+    def test_manual_float_still_respected(self, fake_core):
+        fake_core.Optimizer.batch_dfs = {
+            "W1": _derive_batch_df([("12", "B", 100.0, 1000.0)])
+        }
+        fake_core.optimize_fn = lambda opt: [_result("W1", 1000.0, 100.0)]
+        results, optimizer, meta = po.run_optimization(
+            _wells("W1"), CurvePlant(), 3, ["12"], ["B"], "milp", 0.8
+        )
+        # the gate stays the manual value regardless of plant slack
+        assert optimizer.marginal_watercut == pytest.approx(0.8)
+        assert meta["marginal_wc_used"] == pytest.approx(0.8)
+        assert meta["marginal_wc_source"] == "manual"
+        # pf_slack is still reported -- informative even though unused to gate
+        assert meta["pf_slack"] is True
+
+    def test_parsimony_reduces_total_pf_in_crafted_case(self, fake_core):
+        # chosen 12B: 302 BOPD @ 3200 BPD PF. 13C gives up only 2 BOPD for
+        # 1500 less PF -- within the default 5 BOPD threshold, and the
+        # least-water qualifier -- so the parsimony pass swaps to it, and
+        # the header fixed point settles on the smaller demand. This is the
+        # field case the feature exists for: a needless pump upsize
+        # (13C->15B in the field, mirrored here as 13C vs 12B) for
+        # noise-level oil.
+        fake_core.Optimizer.batch_dfs = {
+            "W1": _derive_batch_df(
+                [("12", "B", 302.0, 3200.0), ("13", "C", 300.0, 1700.0)]
+            )
+        }
+        fake_core.Optimizer.perf_table = {
+            ("W1", "13", "C"): {
+                "oil_rate": 300.0,
+                "lift_water": 1700.0,
+                "formation_water": 0.0,
+                "suction_pressure": 1000.0,
+                "sonic_status": False,
+                "mach_te": 0.5,
+                "marginal_oil_lift_water": 0.0,
+                "marginal_oil_total_water": 0.0,
+            },
+        }
+        fake_core.optimize_fn = lambda opt: [_result("W1", 3200.0, 302.0)]
+        results, optimizer, meta = po.run_optimization(
+            _wells("W1"),
+            CurvePlant(),
+            3,
+            ["12", "13"],
+            ["B", "C"],
+            "milp",
+            1.0,
+            parsimony_bopd=5.0,
+        )
+        (r,) = results
+        assert (r.recommended_nozzle, r.recommended_throat) == ("13", "C")
+        assert meta["total_pf_bpd"] == pytest.approx(1700.0)
+        assert meta["total_oil_bopd"] == pytest.approx(300.0)
+        assert meta["parsimony_swaps"] == [
+            {
+                "well": "W1",
+                "from_pump": "12B",
+                "to_pump": "13C",
+                "oil_given_up": pytest.approx(2.0),
+                "pf_saved": pytest.approx(1500.0),
+            }
+        ]
+
+    def test_parsimony_disabled_when_threshold_zero(self, fake_core):
+        fake_core.Optimizer.batch_dfs = {
+            "W1": _derive_batch_df(
+                [("12", "B", 302.0, 3200.0), ("13", "C", 300.0, 1700.0)]
+            )
+        }
+        fake_core.optimize_fn = lambda opt: [_result("W1", 3200.0, 302.0)]
+        results, optimizer, meta = po.run_optimization(
+            _wells("W1"),
+            CurvePlant(),
+            3,
+            ["12", "13"],
+            ["B", "C"],
+            "milp",
+            1.0,
+            parsimony_bopd=0.0,
+        )
+        assert meta["parsimony_swaps"] == []
+        assert meta["total_pf_bpd"] == pytest.approx(3200.0)
 
 
 # ── settled_header ──────────────────────────────────────────────────────────

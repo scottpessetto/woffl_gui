@@ -271,6 +271,17 @@ def build_ipr_grid_figure(
         nz, th = e.get("review_nozzle") or "", e.get("review_throat") or ""
         return f"{nz}{th}" if nz and th else "—"
 
+    def _cur_oil(well: str, qwf) -> Optional[float]:
+        """As-reviewed oil BOPD: the store's audit field, else liquid*(1-wc)."""
+        e = active.get(well, {})
+        oil = e.get("qwf_oil_review")
+        if oil is not None and oil == oil:  # not NaN
+            return float(oil)
+        wc = e.get("form_wc")
+        if qwf is not None and wc is not None and wc == wc:
+            return float(qwf) * (1.0 - float(wc))
+        return None
+
     si_with_data = [w for w in si_wells if _has_data(w)]
     wells = list(opt_by_well.keys()) + si_with_data
     if not wells or not any(_has_data(w) for w in wells):
@@ -331,7 +342,9 @@ def build_ipr_grid_figure(
         # (b) current operating point (always plotted if we have it, even
         # when the curve above was skipped).
         have_current = qwf is not None and pwf is not None
+        cur_oil = _cur_oil(well, qwf)
         if have_current:
+            oil_line = f"<br>Oil {cur_oil:.0f} BOPD" if cur_oil is not None else ""
             fig.add_trace(
                 go.Scatter(
                     x=[qwf],
@@ -343,7 +356,7 @@ def build_ipr_grid_figure(
                     showlegend=not shown_current,
                     hovertemplate=(
                         f"{well} · {_cur_pump(well)}<br>Liquid %{{x:.0f}} BPD"
-                        f"<br>BHP %{{y:.0f}} psi<extra></extra>"
+                        f"{oil_line}<br>BHP %{{y:.0f}} psi<extra></extra>"
                     ),
                 ),
                 row=row_i,
@@ -395,9 +408,15 @@ def build_ipr_grid_figure(
                 col=col_i,
             )
 
-        # (e) per-panel pump-change annotation, top-right inside the axes
+        # (e) per-panel pump-change annotation, top-right inside the axes:
+        # pump change on line 1, oil rates current -> optimized on line 2.
+        oil_from = f"{cur_oil:.0f}" if cur_oil is not None else "—"
+        oil_to = f"{r.predicted_oil_rate:.0f}" if have_opt else "0"
         fig.add_annotation(
-            text=f"{_cur_pump(well)} → {opt_pump_label}",
+            text=(
+                f"{_cur_pump(well)} → {opt_pump_label}"
+                f"<br>{oil_from} → {oil_to} bopd"
+            ),
             xref="x domain",
             yref="y domain",
             x=0.98,

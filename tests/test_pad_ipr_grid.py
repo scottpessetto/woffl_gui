@@ -122,8 +122,9 @@ class TestBuildIprGridFigure:
             t.mode == "markers" and t.marker.symbol == "star" for t in fig.data
         )
         anns = _pump_annotations(fig)
-        assert any(a.endswith("→ SHUT IN") for a in anns)
-        assert any(a == "12B → SHUT IN" for a in anns)
+        assert any(a.startswith("12B → SHUT IN") for a in anns)
+        # SI well: optimized oil is 0 on the annotation's oil line.
+        assert any("→ 0 bopd" in a for a in anns)
 
     def test_pump_change_annotation_text(self):
         results = [
@@ -132,7 +133,46 @@ class TestBuildIprGridFigure:
         active = {"MPS-01": _entry("12", "B", pwf=1400, qwf=300, res_pres=1800)}
         fig = build_ipr_grid_figure(results, active, [])
         assert fig is not None
-        assert "12B → 14C" in _pump_annotations(fig)
+        assert any(a.startswith("12B → 14C") for a in _pump_annotations(fig))
+
+    def test_annotation_shows_oil_rates_current_to_optimized(self):
+        # Current oil prefers the store's as-reviewed audit field; optimized
+        # oil is the result's predicted rate. Both appear on line 2.
+        r = _result(well_name="MPS-01", predicted_oil_rate=260.4)
+        active = {
+            "MPS-01": _entry(
+                "12", "B", pwf=1400, qwf=300, res_pres=1800, qwf_oil_review=245.2
+            )
+        }
+        fig = build_ipr_grid_figure([r], active, [])
+        assert fig is not None
+        assert any("245 → 260 bopd" in a for a in _pump_annotations(fig))
+
+    def test_annotation_oil_falls_back_to_liquid_times_wc(self):
+        # No qwf_oil_review -> oil = qwf * (1 - form_wc); missing both -> "—".
+        r = _result(well_name="A", predicted_oil_rate=50.0)
+        active = {
+            "A": _entry(pwf=1400, qwf=300, res_pres=1800, form_wc=0.9),
+            "B": _entry(pwf=1200, qwf=400, res_pres=1600),  # no oil info at all
+        }
+        fig = build_ipr_grid_figure([r], active, ["B"])
+        assert fig is not None
+        anns = _pump_annotations(fig)
+        assert any("30 → 50 bopd" in a for a in anns)  # 300 * (1 - 0.9)
+        assert any("— → 0 bopd" in a for a in anns)  # unknown current, SI
+
+    def test_current_hover_includes_oil_when_known(self):
+        active = {
+            "A": _entry(pwf=1400, qwf=300, res_pres=1800, qwf_oil_review=245.0),
+            "B": _entry(pwf=1200, qwf=400, res_pres=1600),  # oil unknown
+        }
+        fig = build_ipr_grid_figure([], active, ["A", "B"])
+        assert fig is not None
+        current = [t for t in fig.data if t.name == "Current"]
+        assert len(current) == 2
+        by_x = {t.x[0]: t.hovertemplate for t in current}
+        assert "Oil 245 BOPD" in by_x[300]
+        assert "Oil" not in by_x[400]
 
     def test_optimized_x_is_oil_plus_formation_water_not_total_liquid(self):
         r = _result(
