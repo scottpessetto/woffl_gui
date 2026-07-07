@@ -255,6 +255,44 @@ def test_bracketed_throat_discharge_takes_physical_high_root():
     assert root == pytest.approx(2000.0, abs=1.0)  # NOT the low root at 100
 
 
+class TestSolverUsesVogelIPR:
+    """Tripwire for the Vogel-IPR restoration (upstream PR to kwellis/woffl).
+
+    Commit ee3886e (2026-03-11, "change woffl to solve on ipr not straightline
+    PI. t'isnt right") flipped the three throat-entry IPR evaluations in
+    jetflow.py / jetplot.py from ``method="pidx"`` to ``method="vogel"``. A
+    later upstream sync (0f147fb, "incorporate woffl 2.0") silently reverted
+    all three back to "pidx" — upstream ``kwellis/woffl`` still uses the
+    straight-line PI, which is not right (see the commit message). See
+    ``docs/upstream_sync.md`` #15. Goes red if
+    ``jetflow.throat_entry_zero_tde``, ``jetflow.throat_entry_mach_one``, or
+    ``jetplot.throat_entry_book`` reverts to ``method="pidx"``.
+    """
+
+    def test_solver_qoil_matches_vogel_not_pidx(self):
+        """A single cheap E-41 solve: qoil_std must equal the Vogel IPR
+        evaluated at the solved psu, and must NOT equal the straight-line PI
+        evaluation at that same psu (they diverge everywhere strictly between
+        the anchor pwf and reservoir pressure)."""
+        psu, _sonic, qoil, _fwat, _lwat, _mach = so.jetpump_solver(
+            pwh,
+            tsu,
+            ppf_surf,
+            JetPump("12", "C"),
+            wbore,
+            profile,
+            ipr,
+            res,
+            mpu_wat,
+            "reverse",
+        )
+        # precondition: psu must land strictly between pwf and pres, where
+        # Vogel and PI diverge (both curves meet at pwf and at pres).
+        assert ipr.pwf < psu < ipr.pres
+        assert qoil == pytest.approx(ipr.oil_flow(psu, method="vogel"))
+        assert qoil != pytest.approx(ipr.oil_flow(psu, method="pidx"))
+
+
 class TestWaterPumpMode:
     """Opt-in 100%-water (dewatering) mode.
 
@@ -312,9 +350,18 @@ class TestWaterPumpMode:
         """Tripwire for the water-mode anchor fix (upstream PR to kwellis/woffl).
 
         Pinned to the fixed solve: the tubing traverse and diffuser are sized
-        on formation + power-fluid water (~4,200 BWPD here), not formation
+        on formation + power-fluid water (~2,900 BWPD here), not formation
         alone (~1,140). Losing the fix moves psu to ~912 (+22%) and formation
-        water to ~1,142 (-13%) — far outside the pins."""
+        water to ~1,142 (-13%) — far outside the pins.
+
+        Re-baselined 2026-07-06 (restored ee3886e Vogel IPR, clobbered by the
+        woffl-2.0 sync): jetflow's IPR evaluation flipped from
+        method="pidx" to method="vogel" (docs/upstream_sync.md #15). Here
+        psu solves to ~698 psig, BELOW the water-IPR's anchor pwf=1000, where
+        the Vogel curve sits BELOW the straight-line PI chord — so fwat moves
+        DOWN (was 1315.9 pidx-based -> 1248.9 vogel-based); lwat ticks up
+        slightly as the lower suction pulls a bit more power fluid through the
+        nozzle."""
         psu, _sonic, qwater, fwat, lwat, _mach = so.jetpump_solver(
             self.pwh_w,
             self.tsu_w,
@@ -327,9 +374,9 @@ class TestWaterPumpMode:
             mpu_wat,
             "reverse",
         )
-        assert psu == pytest.approx(746.8, rel=0.05)
-        assert fwat == pytest.approx(1315.9, rel=0.05)
-        assert lwat == pytest.approx(2862.8, rel=0.05)
+        assert psu == pytest.approx(698.4, rel=0.05)
+        assert fwat == pytest.approx(1248.9, rel=0.05)
+        assert lwat == pytest.approx(2873.8, rel=0.05)
         # reported rates keep their meaning: the "oil" slot carries FORMATION
         # water only (the PF stays in lwat)
         assert qwater == fwat
@@ -355,7 +402,10 @@ class TestWaterPumpMode:
             _jf, "_throat_mixture_anchor", lambda qoil_std, qnz, wc_tm, wm: qoil_std
         )
         psu_legacy = so.jetpump_solver(*args)[0]
-        assert abs(psu_fixed - psu_legacy) > 50  # ~166 psi at these conditions
+        # ~373 psi at these conditions post-Vogel (was ~166 psi under the old
+        # pidx IPR evaluation, restored ee3886e — see docs/upstream_sync.md #15);
+        # the inequality itself is a wide margin, not a tight pin.
+        assert abs(psu_fixed - psu_legacy) > 50
 
 
 class TestWellboreGeometry:
@@ -438,3 +488,120 @@ class TestSecantSolveRatesPopulated:
         assert fwat == 456.0
         assert qnz == 789.0
         assert calls["n"] == 1  # exactly one final eval at the returned psu
+
+
+class TestFallbackWalksPastBareJetPumpError:
+    """Tripwire for the P1-8 fix (upstream PR to kwellis/woffl).
+
+    ``nozzle_velocity`` (jetflow.py) raises the BARE ``JetPumpError`` base
+    class (not ``ConvergenceError``, not ``ThroatEntryNoSolution``) when
+    ``pni <= pte`` — the power fluid can't overcome throat-entry pressure at
+    that suction. Before the fix, ``_residual_walk_inward`` only caught
+    ``ConvergenceError`` and the bisection midpoint only caught
+    ``ThroatEntryNoSolution``, so this bare exception escaped BOTH fallback
+    paths uncaught and aborted a solve the fallbacks exist to rescue — the
+    same "works in the well, not in the model" failure class as
+    TestMarginalConvergence, just from a different inner exception type.
+    """
+
+    def test_walk_inward_passes_bare_jetpumperror(self, monkeypatch):
+        """_residual_walk_inward must step past a bare JetPumpError exactly
+        like it does ConvergenceError. Before the fix this raises JetPumpError
+        uncaught on the very first probe."""
+        calls = {"n": 0}
+
+        def fake_discharge_residual(psu, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] <= 3:
+                raise _jf.JetPumpError(
+                    "nozzle inlet pressure below throat entry pressure"
+                )
+            return (-5.0, 111.0, 222.0, 333.0, 0.4)
+
+        monkeypatch.setattr(so, "discharge_residual", fake_discharge_residual)
+
+        psu, res, rates = so._residual_walk_inward(
+            psu_start=1000.0,
+            psu_toward=1400.0,
+            pwh=pwh,
+            tsu=tsu,
+            ppf_surf=ppf_surf,
+            jpump=None,
+            wellbore=None,
+            wellprof=None,
+            ipr_su=None,
+            prop_su=None,
+            prop_pf=None,
+            jpump_direction="reverse",
+        )
+        assert calls["n"] == 4  # 3 probes walked past, the 4th succeeded
+        assert res == -5.0
+        assert rates == (111.0, 222.0, 333.0, 0.4)
+
+    def test_walk_inward_still_reraises_throat_entry_no_solution(self, monkeypatch):
+        """ThroatEntryNoSolution must still propagate unchanged (it drives the
+        GUI's GOR auto-recovery) — the broadened except must not swallow it."""
+        from woffl.flow.errors import ThroatEntryNoSolution
+
+        def fake_discharge_residual(psu, *args, **kwargs):
+            raise ThroatEntryNoSolution("no zero crossing")
+
+        monkeypatch.setattr(so, "discharge_residual", fake_discharge_residual)
+
+        with pytest.raises(ThroatEntryNoSolution):
+            so._residual_walk_inward(
+                psu_start=1000.0,
+                psu_toward=1400.0,
+                pwh=pwh,
+                tsu=tsu,
+                ppf_surf=ppf_surf,
+                jpump=None,
+                wellbore=None,
+                wellprof=None,
+                ipr_su=None,
+                prop_su=None,
+                prop_pf=None,
+                jpump_direction="reverse",
+            )
+
+    def test_bisection_midpoint_passes_bare_jetpumperror(self, monkeypatch):
+        """The bisection midpoint's except must catch the JetPumpError family
+        (ConvergenceError and the bare JetPumpError), not just
+        ThroatEntryNoSolution. Before the fix this raises JetPumpError
+        uncaught on the second probe (the first in-loop evaluation)."""
+        calls = {"n": 0}
+
+        def fake_discharge_residual(psu, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return (-50.0, 1.0, 2.0, 3.0, 0.1)  # pre-loop probe, succeeds
+            if calls["n"] == 2:
+                raise _jf.JetPumpError(
+                    "nozzle inlet pressure below throat entry pressure"
+                )
+            return (5.0, 111.0, 222.0, 333.0, 0.4)  # converges on the 3rd probe
+
+        monkeypatch.setattr(so, "discharge_residual", fake_discharge_residual)
+
+        result = so._bisection_solve(
+            psu_lo=1000.0,
+            psu_hi=1400.0,
+            res_lo=-100.0,
+            res_hi=100.0,
+            pwh=pwh,
+            tsu=tsu,
+            ppf_surf=ppf_surf,
+            jpump=None,
+            wellbore=None,
+            wellprof=None,
+            ipr_su=None,
+            prop_su=None,
+            prop_pf=None,
+            jpump_direction="reverse",
+            res_tol=10.0,
+        )
+        _psu, _sonic, qoil, fwat, qnz, _mach = result
+        assert calls["n"] == 3  # call 2's JetPumpError was walked past
+        assert qoil == 111.0  # rates from the converged final probe
+        assert fwat == 222.0
+        assert qnz == 333.0

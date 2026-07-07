@@ -169,11 +169,7 @@ def _seed_pf_from_live(selected_well: str) -> None:
     under the PF widget. Only called on well selection (is_new_well), so a
     manual PF edit afterwards persists — same contract as every other seed.
     """
-    from woffl.gui.utils import (
-        default_pad_pf,
-        live_pf_for_seed,
-        pad_from_mp_name,
-    )
+    from woffl.gui.utils import default_pad_pf, live_pf_for_seed, pad_from_mp_name
 
     live = live_pf_for_seed(selected_well)
 
@@ -233,7 +229,9 @@ def _update_well_parameters_from_data(
 
         casing_od, casing_thick = casing_dims_from_chars(well_data)
         _set_param("casing_od", clamp_seed("casing_od", round(casing_od, 3)))
-        _set_param("casing_thickness", clamp_seed("casing_thickness", round(casing_thick, 3)))
+        _set_param(
+            "casing_thickness", clamp_seed("casing_thickness", round(casing_thick, 3))
+        )
 
         # Field model — write the radio's WIDGET key directly (the radio
         # renders later in this same run, so this is safe). Seeding only
@@ -290,19 +288,6 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
     # "specific".
     st.session_state.pop(f"sw_ipr_applied_sig_{selected_well}", None)
 
-    import pandas as _pd
-
-    def _is_finite(v) -> bool:
-        # Use pd.isna so pd.NA, NaN, NaT, and None all return False — the
-        # BHP column may carry pd.NA after a "disregard Databricks BHP"
-        # toggle, and the older isinstance(float)+math.isnan check misses it.
-        if v is None:
-            return False
-        try:
-            return not bool(_pd.isna(v))
-        except (TypeError, ValueError):
-            return True  # non-NA-checkable scalars (strings, etc.)
-
     # Route through the central helper so memory-gauge BHP overrides feed
     # into the IPR auto-populate (Vogel fit + sidebar pwf/res_pres seed).
     from woffl.gui.utils import get_well_tests_for_well
@@ -332,7 +317,8 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
             )
             well_coeffs = (
                 vogel_coeffs[vogel_coeffs["Well"] == selected_well]
-                if vogel_usable else None
+                if vogel_usable
+                else None
             )
             if well_coeffs is not None and not well_coeffs.empty:
                 coeff_row = well_coeffs.iloc[0]
@@ -341,7 +327,8 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
                 # Seeds clamped to widget bounds — out-of-range session values
                 # get silently reset to the widget minimum by Streamlit.
                 _set_param(
-                    "form_wc", clamp_seed("form_wc", round(float(coeff_row["form_wc"]), 2))
+                    "form_wc",
+                    clamp_seed("form_wc", round(float(coeff_row["form_wc"]), 2)),
                 )
                 _set_param(
                     "form_gor",
@@ -349,14 +336,16 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
                 )
                 _set_param(
                     "qwf",
-                    clamp_seed("qwf", int(coeff_row["qwf"] * (1 - coeff_row["form_wc"]))),
+                    clamp_seed(
+                        "qwf", int(coeff_row["qwf"] * (1 - coeff_row["form_wc"]))
+                    ),
                 )
                 _set_param("pwf", clamp_seed("pwf", int(coeff_row["pwf"])))
                 _set_param("res_pres", clamp_seed("res_pres", int(coeff_row["ResP"])))
 
                 recent = well_tests.sort_values("WtDate", ascending=False).iloc[0]
                 whp = recent.get("whp")
-                if _is_finite(whp):
+                if is_valid_number(whp):
                     _set_param("surf_pres", clamp_seed("surf_pres", int(whp)))
 
                 num_tests = int(coeff_row["num_tests"])
@@ -385,7 +374,7 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
 
     # Direct-from-test seed path: runs when there's 1 test, or when 2+ tests
     # exist but Vogel couldn't fit (most often because no test has BHP). The
-    # `_is_finite(bhp)` guard at the pwf line means no-BHP wells skip pwf
+    # `is_valid_number(bhp)` guard at the pwf line means no-BHP wells skip pwf
     # cleanly; the engineer keeps the sidebar's prior pwf/res_pres and tunes
     # against the oil-rate-mismatch flag in the hero strip.
     _clear_ipr_state()
@@ -398,16 +387,16 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
     fgor = recent.get("fgor")
     whp = recent.get("whp")
 
-    if _is_finite(water) and _is_finite(total) and float(total) > 0:
+    if is_valid_number(water) and is_valid_number(total) and float(total) > 0:
         wc = max(0.0, min(1.0, float(water) / float(total)))
         _set_param("form_wc", round(wc, 2))
-    if _is_finite(oil):
+    if is_valid_number(oil):
         _set_param("qwf", clamp_seed("qwf", int(float(oil))))
-    if _is_finite(bhp):
+    if is_valid_number(bhp):
         _set_param("pwf", clamp_seed("pwf", int(float(bhp))))
-    if _is_finite(fgor):
+    if is_valid_number(fgor):
         _set_param("form_gor", clamp_seed("form_gor", max(int(float(fgor)), gor_floor)))
-    if _is_finite(whp):
+    if is_valid_number(whp):
         _set_param("surf_pres", clamp_seed("surf_pres", int(float(whp))))
 
     test_date = recent.get("WtDate")
@@ -490,7 +479,9 @@ def _render_test_lookback_controls() -> None:
         )
 
 
-def _render_well_selection(well_filter: list[str] | None = None) -> tuple[str, dict | None]:
+def _render_well_selection(
+    well_filter: list[str] | None = None,
+) -> tuple[str, dict | None]:
     """Render well selection widgets and return selected well + data.
 
     When ``well_filter`` is provided (the pad-scoped optimization review loop),
@@ -649,20 +640,42 @@ def _render_pipe_params(well_data: dict | None) -> tuple[float, float, float, fl
     auto_help = "Auto-populated from well data" if well_data else None
 
     tubing_od = _number_input(
-        "Tubing Outer Diameter (inches)", "tubing_od", 4.5,
-        min_value=2.0, max_value=9.0, step=0.1, format="%.3f", help=auto_help,
+        "Tubing Outer Diameter (inches)",
+        "tubing_od",
+        4.5,
+        min_value=2.0,
+        max_value=9.0,
+        step=0.1,
+        format="%.3f",
+        help=auto_help,
     )
     tubing_thickness = _number_input(
-        "Tubing Wall Thickness (inches)", "tubing_thickness", 0.5,
-        min_value=0.1, max_value=2.0, step=0.1, format="%.3f", help=auto_help,
+        "Tubing Wall Thickness (inches)",
+        "tubing_thickness",
+        0.5,
+        min_value=0.1,
+        max_value=2.0,
+        step=0.1,
+        format="%.3f",
+        help=auto_help,
     )
     casing_od = _number_input(
-        "Casing Outer Diameter (inches)", "casing_od", 6.875,
-        min_value=4.0, max_value=17.0, step=0.125, format="%.3f",
+        "Casing Outer Diameter (inches)",
+        "casing_od",
+        6.875,
+        min_value=4.0,
+        max_value=17.0,
+        step=0.125,
+        format="%.3f",
     )
     casing_thickness = _number_input(
-        "Casing Wall Thickness (inches)", "casing_thickness", 0.5,
-        min_value=0.1, max_value=2.0, step=0.1, format="%.3f",
+        "Casing Wall Thickness (inches)",
+        "casing_thickness",
+        0.5,
+        min_value=0.1,
+        max_value=2.0,
+        step=0.1,
+        format="%.3f",
     )
     return tubing_od, tubing_thickness, casing_od, casing_thickness
 
@@ -677,28 +690,59 @@ def _render_formation_inflow(
     )
 
     qwf = _number_input(
-        "Oil Rate at FBHP (qwf, BOPD)", "qwf", 750,
-        min_value=10, max_value=6000, step=10, help=ipr_help,
+        "Oil Rate at FBHP (qwf, BOPD)",
+        "qwf",
+        750,
+        min_value=10,
+        max_value=6000,
+        step=10,
+        help=ipr_help,
     )
     pwf = _number_input(
-        "Flowing BHP @ qwf (pwf, psi)", "pwf", 500,
-        min_value=100, max_value=2500, step=10, help=ipr_help,
+        "Flowing BHP @ qwf (pwf, psi)",
+        "pwf",
+        500,
+        min_value=100,
+        max_value=2500,
+        step=10,
+        help=ipr_help,
     )
     pres = _number_input(
-        "Reservoir Pressure (psi)", "res_pres", 1700,
-        min_value=400, max_value=5000, step=10, help=ipr_help,
+        "Reservoir Pressure (psi)",
+        "res_pres",
+        1700,
+        min_value=400,
+        max_value=5000,
+        step=10,
+        help=ipr_help,
     )
     form_wc = _number_input(
-        "Water Cut", "form_wc", 0.50,
-        min_value=0.0, max_value=1.0, step=0.01, format="%.2f", help=ipr_help,
+        "Water Cut",
+        "form_wc",
+        0.50,
+        min_value=0.0,
+        max_value=1.0,
+        step=0.01,
+        format="%.2f",
+        help=ipr_help,
     )
     form_gor = _number_input(
-        "Gas-Oil Ratio (scf/bbl)", "form_gor", 250,
-        min_value=20, max_value=10000, step=25, help=ipr_help,
+        "Gas-Oil Ratio (scf/bbl)",
+        "form_gor",
+        250,
+        min_value=20,
+        max_value=10000,
+        step=25,
+        help=ipr_help,
     )
     form_temp = _number_input(
-        "Formation Temperature (°F)", "form_temp", 70,
-        min_value=32, max_value=350, step=1, help=auto_help,
+        "Formation Temperature (°F)",
+        "form_temp",
+        70,
+        min_value=32,
+        max_value=350,
+        step=1,
+        help=auto_help,
     )
     return form_wc, form_gor, form_temp, qwf, pwf, pres
 
@@ -715,20 +759,40 @@ def _render_pvt_overrides(
         else "No per-well PVT data — using field-model preset."
     )
     oil_api = _number_input(
-        "Oil API", "oil_api", 22.0,
-        min_value=11.0, max_value=39.0, step=0.1, format="%.1f",
+        "Oil API",
+        "oil_api",
+        22.0,
+        min_value=11.0,
+        max_value=39.0,
+        step=0.1,
+        format="%.1f",
     )
     bubble_point = _number_input(
-        "Bubble Point (psig)", "bubble_point", 1750.0,
-        min_value=1001.0, max_value=2999.0, step=10.0, format="%.0f",
+        "Bubble Point (psig)",
+        "bubble_point",
+        1750.0,
+        min_value=1001.0,
+        max_value=2999.0,
+        step=10.0,
+        format="%.0f",
     )
     gas_sg = _number_input(
-        "Gas Specific Gravity", "gas_sg", 0.65,
-        min_value=0.51, max_value=1.19, step=0.01, format="%.2f",
+        "Gas Specific Gravity",
+        "gas_sg",
+        0.65,
+        min_value=0.51,
+        max_value=1.19,
+        step=0.01,
+        format="%.2f",
     )
     wat_sg = _number_input(
-        "Water Specific Gravity", "wat_sg", 1.02,
-        min_value=0.51, max_value=1.49, step=0.01, format="%.2f",
+        "Water Specific Gravity",
+        "wat_sg",
+        1.02,
+        min_value=0.51,
+        max_value=1.49,
+        step=0.01,
+        format="%.2f",
     )
     return oil_api, gas_sg, wat_sg, bubble_point
 
@@ -741,14 +805,11 @@ def _render_pf_live_caption() -> None:
     while it belongs to the currently selected well.
     """
     info = st.session_state.get("_pf_live_info")
-    if not info or info.get("well") != st.session_state.get(
-        "last_selected_well_all"
-    ):
+    if not info or info.get("well") != st.session_state.get("last_selected_well_all"):
         return
     if info.get("kind") == "fallback":
         st.caption(
-            f"No live PF reading — seeded pad default "
-            f"{info['pf_press']:,.0f} psi."
+            f"No live PF reading — seeded pad default " f"{info['pf_press']:,.0f} psi."
         )
         return
     from woffl.assembly.pf_pressure import PF_SOURCE_LABELS
@@ -768,13 +829,21 @@ def _render_pressures() -> tuple[int, int]:
     # widget bounds made Streamlit silently reset an out-of-range solved value
     # to the widget minimum (user saw "Auto-matched 4300 psi", solver ran 1500).
     ppf_surf = _number_input(
-        "Power Fluid Surface Pressure (psi)", "ppf_surf", 3168,
-        min_value=800, max_value=5500, step=10,
+        "Power Fluid Surface Pressure (psi)",
+        "ppf_surf",
+        3168,
+        min_value=800,
+        max_value=5500,
+        step=10,
     )
     _render_pf_live_caption()
     surf_pres = _number_input(
-        "Wellhead Surface Pressure (psi)", "surf_pres", 210,
-        min_value=10, max_value=600, step=10,
+        "Wellhead Surface Pressure (psi)",
+        "surf_pres",
+        210,
+        min_value=10,
+        max_value=600,
+        step=10,
     )
     return surf_pres, ppf_surf
 
@@ -783,17 +852,28 @@ def _render_geometry(well_data: dict | None) -> tuple[int, float]:
     """Render geometry widgets that mostly auto-populate (TVD + PF density)."""
     auto_help = "Auto-populated from well data" if well_data else None
     jpump_tvd = _number_input(
-        "Jetpump TVD (feet)", "jpump_tvd", 4065,
-        min_value=2500, max_value=8000, step=10, help=auto_help,
+        "Jetpump TVD (feet)",
+        "jpump_tvd",
+        4065,
+        min_value=2500,
+        max_value=8000,
+        step=10,
+        help=auto_help,
     )
     rho_pf = _number_input(
-        "Power Fluid Density (lbm/ft³)", "rho_pf", 62.4,
-        min_value=50.0, max_value=70.0, step=0.1,
+        "Power Fluid Density (lbm/ft³)",
+        "rho_pf",
+        62.4,
+        min_value=50.0,
+        max_value=70.0,
+        step=0.1,
     )
     return jpump_tvd, rho_pf
 
 
-def _multiselect(label: str, key: str, options: list[str], default: list[str]) -> list[str]:
+def _multiselect(
+    label: str, key: str, options: list[str], default: list[str]
+) -> list[str]:
     """Two-tier multiselect (logical key + widget key) — same pattern as
     ``_number_input``, so selections survive the widget-state GC when the
     sidebar unmounts (mode switches) instead of snapping back to defaults."""
@@ -923,16 +1003,28 @@ def _render_power_fluid_range_params() -> tuple[int, int, int]:
     """
     st.caption("Used by the Power Fluid Range view")
     power_fluid_min = _number_input(
-        "Min Power Fluid Pressure (psi)", "power_fluid_min", 1800,
-        min_value=1000, max_value=5000, step=100,
+        "Min Power Fluid Pressure (psi)",
+        "power_fluid_min",
+        1800,
+        min_value=1000,
+        max_value=5000,
+        step=100,
     )
     power_fluid_max = _number_input(
-        "Max Power Fluid Pressure (psi)", "power_fluid_max", 3600,
-        min_value=1000, max_value=5000, step=100,
+        "Max Power Fluid Pressure (psi)",
+        "power_fluid_max",
+        3600,
+        min_value=1000,
+        max_value=5000,
+        step=100,
     )
     power_fluid_step = _number_input(
-        "Pressure Step (psi)", "power_fluid_step", 200,
-        min_value=50, max_value=500, step=50,
+        "Pressure Step (psi)",
+        "power_fluid_step",
+        200,
+        min_value=50,
+        max_value=500,
+        step=50,
     )
     return power_fluid_min, power_fluid_max, power_fluid_step
 
@@ -942,7 +1034,9 @@ def _render_power_fluid_range_params() -> tuple[int, int, int]:
 # ---------------------------------------------------------------------------
 
 
-def render_sidebar(well_filter: list[str] | None = None) -> tuple[bool, SimulationParams]:
+def render_sidebar(
+    well_filter: list[str] | None = None,
+) -> tuple[bool, SimulationParams]:
     """Render the complete sidebar and collect all parameters.
 
     Inputs are grouped from most-edited (top) to least-edited (Advanced expander):
@@ -1040,8 +1134,13 @@ def render_sidebar(well_filter: list[str] | None = None) -> tuple[bool, Simulati
 
             st.markdown("**Field**")
             marginal_watercut = _number_input(
-                "Marginal Watercut", "marginal_watercut", 0.94,
-                min_value=0.0, max_value=1.0, step=0.01, format="%.2f",
+                "Marginal Watercut",
+                "marginal_watercut",
+                0.94,
+                min_value=0.0,
+                max_value=1.0,
+                step=0.01,
+                format="%.2f",
                 help="Economic threshold for water handling in the field",
             )
 

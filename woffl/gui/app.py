@@ -190,10 +190,20 @@ def main():
                 if "well_tests" in results:
                     st.session_state["all_well_tests_df"] = results["well_tests"]
                 else:
+                    # P1-18: don't pin a poisoned None into session_state — that
+                    # would flip `needs_tests` False forever (it only checks key
+                    # PRESENCE, not value), silently killing the workflow's
+                    # actuals for the rest of the session after one transient
+                    # blip. Leave the key ABSENT instead (mirrors how the
+                    # JP-history branch above already behaves when there's no
+                    # Excel fallback), so this warm-load retries
+                    # fetch_all_well_tests on every subsequent rerun until it
+                    # succeeds — and step3_configure_optimize's own read path
+                    # retries independently too (see _get_all_well_tests there).
                     st.warning(
-                        f"Could not fetch well tests: {errors.get('well_tests')}"
+                        f"Could not fetch well tests: {errors.get('well_tests')}. "
+                        "Will retry automatically."
                     )
-                    st.session_state["all_well_tests_df"] = None
 
         # Well properties — instant when the parallel warm above succeeded.
         # The uncached wrapper sets the missing-survey list into session_state
@@ -229,7 +239,7 @@ def main():
                 f"{len(missing)} well(s) missing deviation surveys — JP_TVD estimated "
                 f"via pad-average TVD/MD ratio. Run "
                 f"`python -m woffl.jp_data.check_missing_surveys` then "
-                f"`pull_surveys.py` to fix."
+                f"`python -m woffl.jp_data.pull_missing_surveys` to fix."
             )
             with st.expander("Wells with estimated JP_TVD"):
                 st.write(", ".join(missing))

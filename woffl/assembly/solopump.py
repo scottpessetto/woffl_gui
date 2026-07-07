@@ -12,7 +12,7 @@ from woffl.flow import InFlow
 from woffl.flow import jetflow as jf
 from woffl.flow import outflow as of
 from woffl.flow import singlephase as sp
-from woffl.flow.errors import ConvergenceError, ThroatEntryNoSolution
+from woffl.flow.errors import ConvergenceError, JetPumpError, ThroatEntryNoSolution
 from woffl.geometry import JetPump, PipeInPipe, WellProfile
 from woffl.pvt import FormWater, ResMix
 
@@ -275,11 +275,17 @@ def _residual_walk_inward(
     and a half-range walk would miss them.
 
     The first probe is ``psu_start`` itself, so a feasible endpoint is returned
-    unchanged and already-converging solves stay bit-identical. Only the
-    throat-mixture :class:`ConvergenceError` is walked past; other exceptions
-    (notably ``ThroatEntryNoSolution``, which drives the GUI's GOR recovery)
-    propagate unchanged. Raises :class:`ConvergenceError` if no feasible suction
-    is found within range.
+    unchanged and already-converging solves stay bit-identical. The
+    throat-mixture :class:`ConvergenceError` AND any other bare
+    :class:`JetPumpError` (e.g. ``nozzle_velocity`` raising when ``pni <=
+    pte`` — the nozzle can't overcome throat-entry pressure at this suction)
+    are walked past — both mean "infeasible at this suction, try the next
+    one". ``ThroatEntryNoSolution`` is the one exception that still propagates
+    unchanged, since it drives the GUI's GOR auto-recovery.
+    [P1-8 fix -> upstream PR to kwellis/woffl] Previously only ConvergenceError
+    was caught, so a bare JetPumpError from nozzle_velocity escaped the
+    fallback and aborted a solve this rescue exists for. Raises
+    :class:`ConvergenceError` if no feasible suction is found within range.
 
     Returns ``(psu, residual, (qoil_std, fwat_bwpd, qnz_bwpd, mach_te))``.
     [LIBRARY change -> upstream PR to kwellis/woffl]
@@ -319,8 +325,14 @@ def _residual_walk_inward(
                 jpump_direction,
             )
             return psu, res, (qoil, fwat, qnz, mach)
-        except ConvergenceError:
-            continue  # infeasible throat mixture at this suction — step inward
+        except ThroatEntryNoSolution:
+            raise  # drives the GUI's GOR auto-recovery — must propagate unchanged
+        except JetPumpError:
+            # infeasible throat mixture (ConvergenceError) OR nozzle inlet
+            # pressure below throat entry (bare JetPumpError from
+            # nozzle_velocity) at this suction — step inward.
+            # [P1-8 fix -> upstream PR to kwellis/woffl]
+            continue
     raise ConvergenceError("no feasible suction pressure for the inner throat solve")
 
 
@@ -726,17 +738,25 @@ def _bisection_solve(
                 prop_pf,
                 jpump_direction,
             )
-        except ThroatEntryNoSolution:
+        except JetPumpError:
             # Shouldn't occur inside [psu_min, psu_max] (psu_min is the
             # feasibility floor), but if a probe point has no throat-entry
-            # solution it is below the floor — the too-low side — so the root
-            # lies ABOVE it. [LIBRARY change -> upstream PR to kwellis/woffl]
-            # Mark res_mid as definitively negative so the NEXT iteration narrows
-            # psu_lo = psu_mid consistently. Previously res_mid was left STALE
-            # (from an earlier, different suction) and psu_mid was recomputed only
-            # to be overwritten at the top of the loop — a possibly-wrong
-            # side-pick. The bracket still shrank, so the final answer converged;
-            # this just makes the narrowing direction correct.
+            # solution (ThroatEntryNoSolution) it is below the floor — the
+            # too-low side — so the root lies ABOVE it. [LIBRARY change ->
+            # upstream PR to kwellis/woffl] Mark res_mid as definitively
+            # negative so the NEXT iteration narrows psu_lo = psu_mid
+            # consistently. Previously res_mid was left STALE (from an
+            # earlier, different suction) and psu_mid was recomputed only to
+            # be overwritten at the top of the loop — a possibly-wrong
+            # side-pick. The bracket still shrank, so the final answer
+            # converged; this just makes the narrowing direction correct.
+            #
+            # [P1-8 fix -> upstream PR to kwellis/woffl] Broadened from
+            # ``except ThroatEntryNoSolution`` to the ``JetPumpError`` family
+            # so a throat-mixture ConvergenceError OR nozzle_velocity's bare
+            # JetPumpError (pni <= pte) at an interior probe get the same
+            # "infeasible, too-low-side" treatment instead of escaping the
+            # bisection fallback uncaught.
             res_mid = -(res_tol + 1.0)
         n += 1
         if n == 60:

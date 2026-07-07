@@ -23,13 +23,13 @@ whenever the injector side is idle, even if the producer is running.
 from __future__ import annotations
 
 import logging
-import re
 from typing import Literal
 
 import numpy as np
 import pandas as pd
 
 from woffl.assembly.databricks_client import execute_query
+from woffl.assembly.well_test_client import _normalize_well_name
 
 logger = logging.getLogger(__name__)
 
@@ -228,29 +228,15 @@ LEFT JOIN (SELECT * FROM latest WHERE rn = 1) fl ON fl.Tag = tm.pf_tag
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
-def _normalize_well_name(name: str) -> str:
-    """Normalize well names to MPx-## (e.g., 'B-028' -> 'MPB-28').
-
-    Mirrors well_test_client._normalize_well_name so downstream code sees
-    consistent names across GUI pages.
-    """
-    if not isinstance(name, str):
-        return name
-    match = re.search(r"(\w+-\d+)", name)
-    if not match:
-        return name
-    well = match.group(1)
-    # DB names are 3-digit zero-padded (B-028, B-008). Strip ONE leading zero so
-    # the GUI form is 2-digit zero-padded to match jp_chars (B-028 -> MPB-28,
-    # B-008 -> MPB-08). Do NOT strip all zeros — jp_chars keys single-digit wells
-    # as e.g. MPH-08, so MPB-8 would not join.
-    well = re.sub(r"-(0)(?=\d+)", "-", well)
-    if not well.startswith("MP"):
-        well = "MP" + well
-    return well
+# _normalize_well_name used to be duplicated here; it's now imported from
+# well_test_client (the canonical copy — see R-10 / P2-7 dedup). Both
+# implementations were checked for drift before deleting this one: they were
+# identical except this copy had an extra `isinstance(name, str)` guard,
+# which has since been folded into the canonical, so behavior is unchanged.
 
 
 # ── fetchers ───────────────────────────────────────────────────────────────
+
 
 def fetch_current_shut_in_history() -> pd.DataFrame:
     """All daily shut-in rows for wells currently fully shut-in.
@@ -346,11 +332,23 @@ def fetch_recent_tests(days: int = TESTS_WINDOW_DAYS) -> pd.DataFrame:
     )
     df["well"] = df["well"].apply(_normalize_well_name)
     df["WtDate"] = pd.to_datetime(df["WtDate"], utc=True).dt.tz_localize(None)
-    for col in ["BHP", "WtOilVol", "WtWaterVol", "WtGasVol",
-                "whp", "form_wc", "fgor",
-                "lwat_rate", "lgas_rate",
-                "twat_rate", "tgas_rate", "totl_wc", "totl_gor",
-                "esp_amps", "esp_hz"]:
+    for col in [
+        "BHP",
+        "WtOilVol",
+        "WtWaterVol",
+        "WtGasVol",
+        "whp",
+        "form_wc",
+        "fgor",
+        "lwat_rate",
+        "lgas_rate",
+        "twat_rate",
+        "tgas_rate",
+        "totl_wc",
+        "totl_gor",
+        "esp_amps",
+        "esp_hz",
+    ]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     df["allocated"] = df["allocated"].astype(bool)
@@ -372,11 +370,28 @@ def fetch_last_tests_ever() -> pd.DataFrame:
         return df
     df = df.rename(columns={"well_name": "well", "allocated": "last_allocated"})
     df["well"] = df["well"].apply(_normalize_well_name)
-    df["last_date"] = pd.to_datetime(df["last_date"], utc=True, errors="coerce").dt.tz_localize(None)
-    numeric_cols = ["last_oil", "last_wat", "last_gas", "last_lwat", "last_lgas",
-                    "last_twat", "last_tgas", "last_wc", "last_totl_wc",
-                    "last_gor", "last_totl_gor", "last_esp_amps", "last_esp_hz",
-                    "near_avg_oil", "near_avg_wat", "near_avg_gas", "n_near_tests"]
+    df["last_date"] = pd.to_datetime(
+        df["last_date"], utc=True, errors="coerce"
+    ).dt.tz_localize(None)
+    numeric_cols = [
+        "last_oil",
+        "last_wat",
+        "last_gas",
+        "last_lwat",
+        "last_lgas",
+        "last_twat",
+        "last_tgas",
+        "last_wc",
+        "last_totl_wc",
+        "last_gor",
+        "last_totl_gor",
+        "last_esp_amps",
+        "last_esp_hz",
+        "near_avg_oil",
+        "near_avg_wat",
+        "near_avg_gas",
+        "n_near_tests",
+    ]
     for c in numeric_cols:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -392,9 +407,11 @@ def fetch_producer_catalog() -> pd.DataFrame:
     df["well"] = df["well"].apply(_normalize_well_name)
     # A well can appear multiple times if it has multiple bores; keep first
     # non-null reservoir.
-    return (df.sort_values("reservoir", na_position="last")
-              .drop_duplicates("well", keep="first")
-              .reset_index(drop=True))
+    return (
+        df.sort_values("reservoir", na_position="last")
+        .drop_duplicates("well", keep="first")
+        .reset_index(drop=True)
+    )
 
 
 def derive_lift_type(row: pd.Series) -> str:
@@ -432,10 +449,7 @@ def _trailing_avg_excluding(
     col: str,
 ) -> float:
     start = display_date - pd.Timedelta(days=days)
-    mask = (
-        (well_tests["WtDate"] >= start)
-        & (well_tests["WtDate"] < display_date)
-    )
+    mask = (well_tests["WtDate"] >= start) & (well_tests["WtDate"] < display_date)
     values = well_tests.loc[mask, col].dropna()
     if values.empty:
         return np.nan
@@ -519,18 +533,25 @@ def build_online_table(
     xv_map = _xv_lookup(xv_df)
     cat_map: dict[str, dict] = (
         catalog_df.set_index("well").to_dict("index")
-        if catalog_df is not None and not catalog_df.empty else {}
+        if catalog_df is not None and not catalog_df.empty
+        else {}
     )
 
     def _xv_cols(well: str) -> dict:
         x = xv_map.get(well)
         if x is None:
-            return {"ProdXV": np.nan, "PFXV": np.nan, "XVTime": pd.NaT,
-                    "JustRestarted": False}
+            return {
+                "ProdXV": np.nan,
+                "PFXV": np.nan,
+                "XVTime": pd.NaT,
+                "JustRestarted": False,
+            }
         return {
             "ProdXV": x.get("prod_value"),
             "PFXV": x.get("pf_value"),
-            "XVTime": x.get("prod_time") if pd.notna(x.get("prod_time")) else x.get("pf_time"),
+            "XVTime": (
+                x.get("prod_time") if pd.notna(x.get("prod_time")) else x.get("pf_time")
+            ),
             # Daily log still has well as shut-in but XV says it's flowing —
             # the well just came back online since the last vw_shut_in refresh.
             "JustRestarted": x.get("prod_value") == 1 and well in shut_log,
@@ -548,19 +569,34 @@ def build_online_table(
                 "Reservoir": cat.get("reservoir"),
                 "LiftType": None,
                 "PopsPad": False,
-                "TestDate": pd.NaT, "DaysSinceTest": np.nan,
-                "StaleTest": True, "Allocated": False, "FallbackUsed": True,
-                "Oil": np.nan, "Water": np.nan, "Gas": np.nan,
-                "LiftWater": np.nan, "LiftGas": np.nan,
-                "TotalWater": np.nan, "TotalGas": np.nan,
-                "EspHz": np.nan, "EspAmps": np.nan,
-                "WC": np.nan, "TotalWC": np.nan,
-                "GOR": np.nan, "TotalGOR": np.nan,
-                "BHP": np.nan, "WHP": np.nan,
-                "Oil_2moAvg": np.nan, "Wat_2moAvg": np.nan,
-                "OilDev": np.nan, "WatDev": np.nan, "FlagOutlier": False,
+                "TestDate": pd.NaT,
+                "DaysSinceTest": np.nan,
+                "StaleTest": True,
+                "Allocated": False,
+                "FallbackUsed": True,
+                "Oil": np.nan,
+                "Water": np.nan,
+                "Gas": np.nan,
+                "LiftWater": np.nan,
+                "LiftGas": np.nan,
+                "TotalWater": np.nan,
+                "TotalGas": np.nan,
+                "EspHz": np.nan,
+                "EspAmps": np.nan,
+                "WC": np.nan,
+                "TotalWC": np.nan,
+                "GOR": np.nan,
+                "TotalGOR": np.nan,
+                "BHP": np.nan,
+                "WHP": np.nan,
+                "Oil_2moAvg": np.nan,
+                "Wat_2moAvg": np.nan,
+                "OilDev": np.nan,
+                "WatDev": np.nan,
+                "FlagOutlier": False,
                 "AllocVsInfoOilPct": np.nan,
-                "LatestAllocDate": pd.NaT, "LatestInfoDate": pd.NaT,
+                "LatestAllocDate": pd.NaT,
+                "LatestInfoDate": pd.NaT,
             }
             row.update(_xv_cols(well))
             rows.append(row)
@@ -581,15 +617,16 @@ def build_online_table(
 
         days_since = (today - display["WtDate"].normalize()).days
 
-        oil_avg = _trailing_avg_excluding(wt, display["WtDate"],
-                                          TRAILING_AVG_DAYS, "WtOilVol")
-        wat_avg = _trailing_avg_excluding(wt, display["WtDate"],
-                                          TRAILING_AVG_DAYS, "WtWaterVol")
+        oil_avg = _trailing_avg_excluding(
+            wt, display["WtDate"], TRAILING_AVG_DAYS, "WtOilVol"
+        )
+        wat_avg = _trailing_avg_excluding(
+            wt, display["WtDate"], TRAILING_AVG_DAYS, "WtWaterVol"
+        )
         oil_dev = _pct_diff(display["WtOilVol"], oil_avg)
         wat_dev = _pct_diff(display["WtWaterVol"], wat_avg)
-        flag_outlier = (
-            (not pd.isna(oil_dev) and abs(oil_dev) > OUTLIER_PCT)
-            or (not pd.isna(wat_dev) and abs(wat_dev) > OUTLIER_PCT)
+        flag_outlier = (not pd.isna(oil_dev) and abs(oil_dev) > OUTLIER_PCT) or (
+            not pd.isna(wat_dev) and abs(wat_dev) > OUTLIER_PCT
         )
 
         alloc_vs_info_oil = np.nan
@@ -630,8 +667,12 @@ def build_online_table(
             "WatDev": wat_dev,
             "FlagOutlier": flag_outlier,
             "AllocVsInfoOilPct": alloc_vs_info_oil,
-            "LatestAllocDate": latest_alloc["WtDate"] if latest_alloc is not None else pd.NaT,
-            "LatestInfoDate": latest_info["WtDate"] if latest_info is not None else pd.NaT,
+            "LatestAllocDate": (
+                latest_alloc["WtDate"] if latest_alloc is not None else pd.NaT
+            ),
+            "LatestInfoDate": (
+                latest_info["WtDate"] if latest_info is not None else pd.NaT
+            ),
         }
         row.update(_xv_cols(well))
         rows.append(row)
@@ -659,11 +700,13 @@ def build_shut_in_table(
     xv_map = _xv_lookup(xv_df)
     cat_map: dict[str, dict] = (
         catalog_df.set_index("well").to_dict("index")
-        if catalog_df is not None and not catalog_df.empty else {}
+        if catalog_df is not None and not catalog_df.empty
+        else {}
     )
     last_map: dict[str, dict] = (
         last_tests_df.set_index("well").to_dict("index")
-        if last_tests_df is not None and not last_tests_df.empty else {}
+        if last_tests_df is not None and not last_tests_df.empty
+        else {}
     )
     if shut_in_df.empty and not shut_in_wells:
         return pd.DataFrame()
@@ -693,11 +736,13 @@ def build_shut_in_table(
             """
             if last is not None and pd.notna(last.get("last_date")):
                 # Build a synthetic "row" so derive_lift_type works.
-                synthetic = pd.Series({
-                    "esp_amps": last.get("last_esp_amps"),
-                    "lgas_rate": last.get("last_lgas"),
-                    "lwat_rate": last.get("last_lwat"),
-                })
+                synthetic = pd.Series(
+                    {
+                        "esp_amps": last.get("last_esp_amps"),
+                        "lgas_rate": last.get("last_lgas"),
+                        "lwat_rate": last.get("last_lwat"),
+                    }
+                )
                 return {
                     "LiftType": derive_lift_type(synthetic),
                     "Oil": last.get("last_oil"),
@@ -719,22 +764,38 @@ def build_shut_in_table(
                     "NTestsNear": last.get("n_near_tests"),
                 }
             # Fallback: use whatever's in tests_df
-            wt_all = tests_df[tests_df["well"] == well] if not tests_df.empty else pd.DataFrame()
+            wt_all = (
+                tests_df[tests_df["well"] == well]
+                if not tests_df.empty
+                else pd.DataFrame()
+            )
             if wt_all.empty:
                 return {
-                    "LiftType": None, "Oil": np.nan, "Water": np.nan, "Gas": np.nan,
-                    "LiftWater": np.nan, "LiftGas": np.nan,
-                    "TotalWater": np.nan, "TotalGas": np.nan,
-                    "EspHz": np.nan, "EspAmps": np.nan,
-                    "WC": np.nan, "TotalWC": np.nan,
-                    "GOR": np.nan, "TotalGOR": np.nan,
-                    "NearAvgOil": np.nan, "NearAvgWater": np.nan,
-                    "NearAvgGas": np.nan, "NTestsNear": np.nan,
+                    "LiftType": None,
+                    "Oil": np.nan,
+                    "Water": np.nan,
+                    "Gas": np.nan,
+                    "LiftWater": np.nan,
+                    "LiftGas": np.nan,
+                    "TotalWater": np.nan,
+                    "TotalGas": np.nan,
+                    "EspHz": np.nan,
+                    "EspAmps": np.nan,
+                    "WC": np.nan,
+                    "TotalWC": np.nan,
+                    "GOR": np.nan,
+                    "TotalGOR": np.nan,
+                    "NearAvgOil": np.nan,
+                    "NearAvgWater": np.nan,
+                    "NearAvgGas": np.nan,
+                    "NTestsNear": np.nan,
                 }
             r = wt_all.iloc[-1]
             return {
                 "LiftType": derive_lift_type(r),
-                "Oil": r["WtOilVol"], "Water": r["WtWaterVol"], "Gas": r["WtGasVol"],
+                "Oil": r["WtOilVol"],
+                "Water": r["WtWaterVol"],
+                "Gas": r["WtGasVol"],
                 "LiftWater": r.get("lwat_rate", np.nan),
                 "LiftGas": r.get("lgas_rate", np.nan),
                 "TotalWater": r.get("twat_rate", np.nan),
@@ -745,8 +806,10 @@ def build_shut_in_table(
                 "TotalWC": r.get("totl_wc", np.nan),
                 "GOR": r.get("fgor", np.nan),
                 "TotalGOR": r.get("totl_gor", np.nan),
-                "NearAvgOil": np.nan, "NearAvgWater": np.nan,
-                "NearAvgGas": np.nan, "NTestsNear": np.nan,
+                "NearAvgOil": np.nan,
+                "NearAvgWater": np.nan,
+                "NearAvgGas": np.nan,
+                "NTestsNear": np.nan,
             }
 
         # XV-only shut-ins (ProdXV=0 but absent from vw_shut_in) have no log
@@ -754,11 +817,14 @@ def build_shut_in_table(
         if grp.empty:
             streak_start = pd.NaT
             last_online = pd.NaT
-            current = pd.Series({
-                "down_code": None, "down_reason": None,
-                "down_notes": "Detected via ProdXV (not yet in daily log)",
-                "hrs": np.nan,
-            })
+            current = pd.Series(
+                {
+                    "down_code": None,
+                    "down_reason": None,
+                    "down_notes": "Detected via ProdXV (not yet in daily log)",
+                    "hrs": np.nan,
+                }
+            )
         else:
             # Seed the streak walk from THIS well's own latest log date, not the
             # field-wide max_date. For an XV-injected / stale-log well whose most
@@ -776,7 +842,9 @@ def build_shut_in_table(
                     break
 
             online_mask = grp["hrs"] < FULL_DAY_HOURS_THRESHOLD
-            last_online = grp.loc[online_mask, "dtdate"].max() if online_mask.any() else pd.NaT
+            last_online = (
+                grp.loc[online_mask, "dtdate"].max() if online_mask.any() else pd.NaT
+            )
 
             current = grp.iloc[0]
 
@@ -817,8 +885,11 @@ def build_shut_in_table(
             "LastTestGas": last_gas,
             "ProdXV": prod_xv,
             "PFXV": x.get("pf_value") if x else np.nan,
-            "XVTime": (x.get("prod_time") if x and pd.notna(x.get("prod_time"))
-                       else x.get("pf_time") if x else pd.NaT),
+            "XVTime": (
+                x.get("prod_time")
+                if x and pd.notna(x.get("prod_time"))
+                else x.get("pf_time") if x else pd.NaT
+            ),
         }
         row.update(_bench_cols())
         rows.append(row)
@@ -829,14 +900,19 @@ def build_shut_in_table(
     # missing "ShutInSince" column of an empty frame.
     if not rows:
         return pd.DataFrame()
-    return pd.DataFrame(rows).sort_values("ShutInSince", ascending=False).reset_index(drop=True)
+    return (
+        pd.DataFrame(rows)
+        .sort_values("ShutInSince", ascending=False)
+        .reset_index(drop=True)
+    )
 
 
 # ── recent down events ─────────────────────────────────────────────────────
 
+
 def compute_recent_down_events(
     history_df: pd.DataFrame,
-    producers: list[str],   # kept for signature symmetry; not currently used
+    producers: list[str],  # kept for signature symmetry; not currently used
     catalog_df: pd.DataFrame | None = None,
     window_days: int = 30,
     down_hours_threshold: float = NOTABLE_DOWN_HOURS,
@@ -862,8 +938,20 @@ def compute_recent_down_events(
     the data. Wells that have been down for years will look like they
     started ~60 days ago. Use the LTSI tab for those.
     """
-    cols = ["Well", "Pad", "Reservoir", "Started", "Ended", "Days",
-            "MaxHrs", "TotalHrs", "Code", "Reason", "Notes", "Ongoing"]
+    cols = [
+        "Well",
+        "Pad",
+        "Reservoir",
+        "Started",
+        "Ended",
+        "Days",
+        "MaxHrs",
+        "TotalHrs",
+        "Code",
+        "Reason",
+        "Notes",
+        "Ongoing",
+    ]
 
     if history_df is None or history_df.empty:
         return pd.DataFrame(columns=cols)
@@ -873,7 +961,8 @@ def compute_recent_down_events(
 
     cat_map: dict[str, dict] = (
         catalog_df.set_index("well").to_dict("index")
-        if catalog_df is not None and not catalog_df.empty else {}
+        if catalog_df is not None and not catalog_df.empty
+        else {}
     )
 
     max_date = history_df["dtdate"].max()
@@ -894,27 +983,30 @@ def compute_recent_down_events(
                 continue  # event finished before window — out of scope
             cat = cat_map.get(well, {})
             first = ev.iloc[0]
-            events.append({
-                "Well": well,
-                "Pad": cat.get("well_pad"),
-                "Reservoir": cat.get("reservoir"),
-                "Started": started,
-                "Ended": pd.NaT if ongoing else ended,
-                "Days": int(len(ev)),
-                "MaxHrs": float(ev["hrs"].max()),
-                "TotalHrs": float(ev["hrs"].sum()),
-                "Code": first["down_code"],
-                "Reason": first["down_reason"],
-                "Notes": first["down_notes"],
-                "Ongoing": bool(ongoing),
-            })
+            events.append(
+                {
+                    "Well": well,
+                    "Pad": cat.get("well_pad"),
+                    "Reservoir": cat.get("reservoir"),
+                    "Started": started,
+                    "Ended": pd.NaT if ongoing else ended,
+                    "Days": int(len(ev)),
+                    "MaxHrs": float(ev["hrs"].max()),
+                    "TotalHrs": float(ev["hrs"].sum()),
+                    "Code": first["down_code"],
+                    "Reason": first["down_reason"],
+                    "Notes": first["down_notes"],
+                    "Ongoing": bool(ongoing),
+                }
+            )
 
     if not events:
         return pd.DataFrame(columns=cols)
-    return (pd.DataFrame(events, columns=cols)
-              .sort_values(["Ongoing", "Days", "Started"],
-                           ascending=[False, False, False])
-              .reset_index(drop=True))
+    return (
+        pd.DataFrame(events, columns=cols)
+        .sort_values(["Ongoing", "Days", "Started"], ascending=[False, False, False])
+        .reset_index(drop=True)
+    )
 
 
 # ── bench helpers ──────────────────────────────────────────────────────────
@@ -940,63 +1032,11 @@ def split_offline_ltsi(
     )
 
 
-def compute_field_marginal_wc(
-    online_df: pd.DataFrame,
-    pops_pads: set[str] | list[str],
-    pops_overrides: dict[str, bool] | None = None,
-) -> dict | None:
-    """MAX of POPS-aware per-well WC across the online producers.
-
-    Per-well effective WC formulas — what the central facility sees, given
-    that POPS pads separate their lift water on-pad:
-
-      POPS pad well:     wc = form_water / (form_water + oil)
-      Non-POPS pad well: wc = (form_water + lift_water) /
-                              (form_water + lift_water + oil)
-
-    Returns a dict with the maximum value and the well that set it, so the
-    caller can show "Auto: 0.962 from MPB-30 (B pad, non-POPS)". A POPS
-    override dict (well_name -> bool) takes precedence over the pad lookup
-    for individual wells, matching the Well Sort tab's behavior.
-
-    Returns None when no online well has a positive denominator (no
-    contributing oil+water).
-    """
-    if online_df is None or online_df.empty:
-        return None
-
-    df = online_df.copy()
-    pops_set = set(pops_pads or ())
-    overrides = pops_overrides or {}
-
-    pad_is_pops = df["Pad"].isin(pops_set)
-    is_pops = pad_is_pops.copy()
-    for well_name, forced in overrides.items():
-        is_pops.loc[df["Well"] == well_name] = bool(forced)
-
-    oil = pd.to_numeric(df.get("Oil"), errors="coerce").fillna(0.0)
-    form_water = pd.to_numeric(df.get("Water"), errors="coerce").fillna(0.0)
-    lift_water = pd.to_numeric(df.get("LiftWater"), errors="coerce").fillna(0.0)
-
-    pops_denom = (form_water + oil).where(lambda s: s > 0)
-    pops_wc = form_water / pops_denom
-
-    non_pops_denom = (form_water + lift_water + oil).where(lambda s: s > 0)
-    non_pops_wc = (form_water + lift_water) / non_pops_denom
-
-    df["_marginal_wc"] = pops_wc.where(is_pops, non_pops_wc)
-
-    valid = df.dropna(subset=["_marginal_wc"])
-    if valid.empty:
-        return None
-
-    top = valid.loc[valid["_marginal_wc"].idxmax()]
-    return {
-        "wc": float(top["_marginal_wc"]),
-        "well": str(top["Well"]),
-        "pad": str(top.get("Pad") or ""),
-        "is_pops": bool(is_pops.loc[top.name]),
-    }
+# The field-wide marginal-WC calculator used to live here (a POPS-aware
+# max-per-well-WC algorithm). It diverged from the Well Sort tab's
+# cumulative-water-threshold walk (R-8 / P1-30) — deleted in favor of the
+# single canonical implementation: `woffl.gui.scotts_tools.well_sort
+# .compute_field_marginal_wc`. Do not re-add a second one here.
 
 
 def apply_pops_pad(
@@ -1047,45 +1087,93 @@ def add_cumulative_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 # Bench-sheet column order (matches MPU_Well_Bench spreadsheet exactly).
 _BENCH_BASE_COLS = [
-    "Well", "Pad", "Reservoir",
-    "Oil", "Water", "Gas",
-    "LiftWater", "LiftGas",
-    "TotalWater", "TotalGas",
-    "WC", "TotalWC",
-    "GOR", "TotalGOR",
-    "LiftType", "PopsPad",
+    "Well",
+    "Pad",
+    "Reservoir",
+    "Oil",
+    "Water",
+    "Gas",
+    "LiftWater",
+    "LiftGas",
+    "TotalWater",
+    "TotalGas",
+    "WC",
+    "TotalWC",
+    "GOR",
+    "TotalGOR",
+    "LiftType",
+    "PopsPad",
 ]
 _BENCH_CUM_COLS = ["cum_oil", "cum_fwat", "cum_fgas", "cum_twat", "cum_tgas"]
 _BENCH_OFFLINE_EXTRA = [
-    "LastTestDate", "NearAvgOil", "NearAvgWater", "NearAvgGas", "NTestsNear",
-    "CurrentReason", "Notes", "DownHours", "CurrentCode",
+    "LastTestDate",
+    "NearAvgOil",
+    "NearAvgWater",
+    "NearAvgGas",
+    "NTestsNear",
+    "CurrentReason",
+    "Notes",
+    "DownHours",
+    "CurrentCode",
 ]
 
 _BENCH_RENAME = {
-    "Well": "Well", "Pad": "Pad", "Reservoir": "Reservoir",
-    "Oil": "Oil", "Water": "Form Water", "Gas": "Form Gas",
-    "LiftWater": "Power Fluid", "LiftGas": "Lift Gas",
-    "TotalWater": "Total Water", "TotalGas": "Total Gas",
-    "WC": "Form WC", "TotalWC": "Total WC",
-    "GOR": "Form GOR", "TotalGOR": "Total GOR",
-    "LiftType": "Lift Type", "PopsPad": "Pops Pad",
-    "CurrentReason": "Down Reason", "Notes": "Down Note",
-    "DownHours": "Down Hrs", "CurrentCode": "Down Code",
+    "Well": "Well",
+    "Pad": "Pad",
+    "Reservoir": "Reservoir",
+    "Oil": "Oil",
+    "Water": "Form Water",
+    "Gas": "Form Gas",
+    "LiftWater": "Power Fluid",
+    "LiftGas": "Lift Gas",
+    "TotalWater": "Total Water",
+    "TotalGas": "Total Gas",
+    "WC": "Form WC",
+    "TotalWC": "Total WC",
+    "GOR": "Form GOR",
+    "TotalGOR": "Total GOR",
+    "LiftType": "Lift Type",
+    "PopsPad": "Pops Pad",
+    "CurrentReason": "Down Reason",
+    "Notes": "Down Note",
+    "DownHours": "Down Hrs",
+    "CurrentCode": "Down Code",
     "LastTestDate": "Last Test Date",
-    "NearAvgOil": "Near Avg Oil", "NearAvgWater": "Near Avg Water",
-    "NearAvgGas": "Near Avg Gas", "NTestsNear": "# Near Tests",
-    "cum_oil": "C_Oil", "cum_fwat": "C_Form Water", "cum_fgas": "C_Form Gas",
-    "cum_twat": "C_Total Water", "cum_tgas": "C_Total Gas",
+    "NearAvgOil": "Near Avg Oil",
+    "NearAvgWater": "Near Avg Water",
+    "NearAvgGas": "Near Avg Gas",
+    "NTestsNear": "# Near Tests",
+    "cum_oil": "C_Oil",
+    "cum_fwat": "C_Form Water",
+    "cum_fgas": "C_Form Gas",
+    "cum_twat": "C_Total Water",
+    "cum_tgas": "C_Total Gas",
 }
 
 # Bench columns that MUST be numeric when Excel opens (prevents the
 # "convert to number" prompt). Names match post-rename labels.
 _BENCH_NUMERIC_COLS = {
-    "Oil", "Form Water", "Form Gas", "Power Fluid", "Lift Gas",
-    "Total Water", "Total Gas", "Form WC", "Total WC", "Form GOR", "Total GOR",
-    "C_Oil", "C_Form Water", "C_Form Gas", "C_Total Water", "C_Total Gas",
+    "Oil",
+    "Form Water",
+    "Form Gas",
+    "Power Fluid",
+    "Lift Gas",
+    "Total Water",
+    "Total Gas",
+    "Form WC",
+    "Total WC",
+    "Form GOR",
+    "Total GOR",
+    "C_Oil",
+    "C_Form Water",
+    "C_Form Gas",
+    "C_Total Water",
+    "C_Total Gas",
     "Down Hrs",
-    "Near Avg Oil", "Near Avg Water", "Near Avg Gas", "# Near Tests",
+    "Near Avg Oil",
+    "Near Avg Water",
+    "Near Avg Gas",
+    "# Near Tests",
 }
 
 
@@ -1133,20 +1221,35 @@ def export_bench_xlsx(
       one decimal.
     """
     from io import BytesIO
+
     from openpyxl.utils import get_column_letter
 
     frames = {
-        "online":  _bench_frame(online_df, False),
+        "online": _bench_frame(online_df, False),
         "offline": _bench_frame(offline_df, True),
-        "ltsi":    _bench_frame(ltsi_df, True),
+        "ltsi": _bench_frame(ltsi_df, True),
     }
 
     # Per-column Excel display format (applied post-write).
     int_cols = {
-        "Oil", "Form Water", "Form Gas", "Power Fluid", "Lift Gas",
-        "Total Water", "Total Gas", "Form GOR", "Total GOR",
-        "C_Oil", "C_Form Water", "C_Form Gas", "C_Total Water", "C_Total Gas",
-        "Near Avg Oil", "Near Avg Water", "Near Avg Gas", "# Near Tests",
+        "Oil",
+        "Form Water",
+        "Form Gas",
+        "Power Fluid",
+        "Lift Gas",
+        "Total Water",
+        "Total Gas",
+        "Form GOR",
+        "Total GOR",
+        "C_Oil",
+        "C_Form Water",
+        "C_Form Gas",
+        "C_Total Water",
+        "C_Total Gas",
+        "Near Avg Oil",
+        "Near Avg Water",
+        "Near Avg Gas",
+        "# Near Tests",
     }
     one_decimal_cols = {"Form WC", "Total WC", "Down Hrs"}
 

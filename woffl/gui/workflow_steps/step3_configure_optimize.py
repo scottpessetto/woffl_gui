@@ -25,60 +25,28 @@ _DEFAULT_POPS_PADS = ("E", "F", "H", "I", "M", "S")
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _auto_marginal_wc(
-    pops_tuple: tuple[str, ...], overrides_tuple: tuple[str, ...]
+    pops_tuple: tuple[str, ...],
+    overrides_tuple: tuple[str, ...],
+    threshold_pct: float = 2.0,
 ) -> dict | None:
     """Compute the field marginal WC from current Well-Sort data, cached 1 h.
 
-    Hash key is the POPS list + per-well overrides so the cached value
-    invalidates correctly when the user changes the POPS settings on the
-    Well Sort tab. Returns None on any data-fetch failure so the caller
-    can fall back to the existing 0.94 default.
+    Delegates to the single canonical `compute_field_marginal_wc` (the Well
+    Sort tab's cumulative-water-threshold walk, POPS pads excluded — R-8 /
+    P1-30 unified this with the Batch-Run "Import" button and the Triage
+    tab, which already called it). That function reads the current POPS
+    pad set + per-well overrides from session_state itself, but this
+    wrapper's cache key still includes ``pops_tuple``/``overrides_tuple``
+    (+ ``threshold_pct``) so the cached value invalidates correctly when the
+    user changes POPS settings on the Well Sort tab or the threshold.
+    Returns None on any data-fetch failure so the caller can fall back to
+    the existing 0.94 default.
     """
+    del pops_tuple, overrides_tuple  # cache-key only; read fresh below
     try:
-        from woffl.assembly.well_sort_client import (
-            build_online_table,
-            classify_wells,
-            compute_field_marginal_wc,
-        )
+        from woffl.gui.scotts_tools.well_sort import compute_field_marginal_wc
 
-        # Use the CACHED Well-Sort fetchers (warmed by the app's startup
-        # prefetch thread) — the raw well_sort_client functions re-fired
-        # five sequential warehouse queries on every cache expiry.
-        from woffl.gui.scotts_tools.well_sort import (
-            _cached_producer_catalog,
-            _cached_producers,
-            _cached_recent_tests,
-            _cached_shut_in_history,
-            _cached_xv_status,
-        )
-
-        producers = _cached_producers()
-        if not producers:
-            return None
-        shut_in = _cached_shut_in_history()
-        tests = _cached_recent_tests(days=180)
-        catalog = _cached_producer_catalog()
-        xv = _cached_xv_status()
-        online_set, _ = classify_wells(
-            producers,
-            shut_in,
-            xv_df=xv,
-            trust_xv=True,
-        )
-        online_df = build_online_table(
-            tests,
-            shut_in,
-            producers,
-            mode="allocated",
-            xv_df=xv,
-            online_wells=online_set,
-            catalog_df=catalog,
-        )
-        return compute_field_marginal_wc(
-            online_df,
-            set(pops_tuple),
-            pops_overrides={w: True for w in overrides_tuple},
-        )
+        return compute_field_marginal_wc(threshold_pct=threshold_pct)
     except Exception:
         return None
 
@@ -86,6 +54,34 @@ def _auto_marginal_wc(
 def _on_marginal_wc_change() -> None:
     """Mark marginal_watercut as user-touched so the auto-fill stops firing."""
     st.session_state["uw_marginal_wc_touched"] = True
+
+
+def _get_all_well_tests() -> pd.DataFrame | None:
+    """Field-wide well-test frame for Step 3/4 "actuals", with retry (P1-18).
+
+    ``st.session_state["all_well_tests_df"]`` is populated once by app.py's
+    startup warm-load; historically a single transient Databricks failure at
+    startup left that key set to a poisoned ``None`` (or, before that,
+    permanently absent) for the rest of the session, so this step's actuals
+    silently stayed empty even after Databricks recovered.
+
+    Mirrors the self-healing pattern already used by
+    ``woffl/gui/utils.get_well_tests_for_well`` and
+    ``scotts_tools/_common.get_vogel_for_wells``: call the cached fetcher
+    directly first (a no-op fast cache hit if the startup warm-load already
+    succeeded; a fresh live retry if it didn't — ``st.cache_data`` never
+    caches an exception), and only fall back to the session_state snapshot if
+    that direct fetch also fails or comes back empty.
+    """
+    from woffl.gui.utils import DEFAULT_TEST_MONTHS, fetch_all_well_tests
+
+    try:
+        df = fetch_all_well_tests(DEFAULT_TEST_MONTHS)
+    except Exception:
+        df = None
+    if df is None or df.empty:
+        df = st.session_state.get("all_well_tests_df")
+    return df
 
 
 def _build_actual_maps(opt_wells: list[str], test_df) -> tuple[dict, dict, dict]:
@@ -335,20 +331,23 @@ def render_step3():
             step=0.1,
         )
 
-    # Auto-fill marginal_watercut from Well Sort data (POPS-aware MAX of
-    # online wells). Must run BEFORE the number_input widget — Streamlit
-    # forbids writing to a widget's key after the widget renders.
+    # Auto-fill marginal_watercut from Well Sort data (cumulative-water-
+    # threshold walk over online non-POPS wells, POPS pads excluded — same
+    # canonical calc as the Well Sort tab / Batch Run "Import" button).
+    # Must run BEFORE the number_input widget — Streamlit forbids writing
+    # to a widget's key after the widget renders.
     pops_pads = tuple(
         sorted(st.session_state.get("well_sort_pops_pads", _DEFAULT_POPS_PADS) or ())
     )
     pops_overrides = tuple(
         sorted(st.session_state.get("well_sort_pops_force_true", []) or ())
     )
-    auto = _auto_marginal_wc(pops_pads, pops_overrides)
+    marg_wc_threshold_pct = float(st.session_state.get("marg_wc_threshold_pct", 2.0))
+    auto = _auto_marginal_wc(pops_pads, pops_overrides, marg_wc_threshold_pct)
     if auto and not st.session_state.get("uw_marginal_wc_touched", False):
         # Clamp to the widget's [0, 1] bounds — an unclamped seed >1.0 (dirty
         # allocation data) is silently reset to the widget MINIMUM (0.0).
-        wc_seed = min(1.0, max(0.0, float(auto["wc"])))
+        wc_seed = min(1.0, max(0.0, float(auto["marginal_wc"])))
         st.session_state["uw_marginal_wc"] = wc_seed
         st.session_state["uw_marginal_wc_input"] = wc_seed
 
@@ -388,10 +387,11 @@ def render_step3():
             ),
         )
         if auto:
-            tag = "POPS" if auto["is_pops"] else "non-POPS"
             st.caption(
-                f"Auto: {auto['wc']:.3f} from {auto['well']} "
-                f"({auto['pad']} pad, {tag})"
+                f"Auto: {auto['marginal_wc']:.3f} from {auto['well']} "
+                f"({auto['pad']} pad, {auto['well_count']} online non-POPS "
+                f"wells, {auto['threshold_pct']:.1f}% cumulative-water "
+                "threshold)"
             )
             if st.session_state.get("uw_marginal_wc_touched", False):
                 if st.button(
@@ -401,7 +401,7 @@ def render_step3():
                 ):
                     st.session_state.pop("uw_marginal_wc_touched", None)
                     st.session_state["uw_marginal_wc"] = min(
-                        1.0, max(0.0, float(auto["wc"]))
+                        1.0, max(0.0, float(auto["marginal_wc"]))
                     )
                     st.session_state.pop("uw_marginal_wc_input", None)
                     st.rerun()
@@ -536,7 +536,7 @@ def render_step3():
             # Actual maps — built ONCE and stored unconditionally below, so a
             # re-run with calibration off can't leave a previous run's maps
             # feeding Step 4's "Current vs Optimized" comparison.
-            all_tests = st.session_state.get("all_well_tests_df")
+            all_tests = _get_all_well_tests()
             actual_oil_map, actual_pf_map, actual_bhp_map = _build_actual_maps(
                 opt_well_names, all_tests
             )
@@ -576,7 +576,6 @@ def render_step3():
             # plumbing: full-POPS pads (M/F/E) cap TOTAL water, PF-only pads
             # (S/H/I) and field-wide runs cap lift water.
             water_key = "totl_wat" if pad_stream == "total" else "lift_wat"
-            st.session_state["uw_water_key"] = water_key
             st.write("### Running Optimization")
             with st.spinner(f"Running {opt_method} optimization..."):
                 results = optimize(optimizer, method=opt_method, water_key=water_key)
@@ -614,7 +613,6 @@ def render_step3():
             st.session_state["uw_optimizer"] = optimizer
             st.session_state["uw_opt_results"] = results
             st.session_state["uw_calibration_results"] = calibration_results
-            st.session_state["uw_current_jp_map"] = current_jp_map
             # Actual maps stored unconditionally (computed above) — keyed to
             # THIS run's configured wells.
             st.session_state["uw_actual_oil_map"] = actual_oil_map

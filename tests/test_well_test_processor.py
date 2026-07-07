@@ -1,11 +1,11 @@
-"""Tests for WellTestProcessor and merge_tests_with_bhp."""
+"""Tests for WellTestProcessor."""
 
 import io
 
 import pandas as pd
 import pytest
 
-from woffl.assembly.well_test_processor import WellTestProcessor, merge_tests_with_bhp
+from woffl.assembly.well_test_processor import WellTestProcessor
 
 # --- Shared test CSV data ---
 SAMPLE_CSV = """\
@@ -163,68 +163,3 @@ class TestGetTestCountPerWell:
         proc.parse()
         counts = proc.get_test_count_per_well()
         assert isinstance(counts, pd.Series)
-
-
-# ── Merge with BHP ─────────────────────────────────────────────────────────
-
-
-class TestMergeTestsWithBhp:
-    @staticmethod
-    def _make_bhp_data():
-        """Create sample BHP data dict."""
-        dates = pd.to_datetime(["2024-01-15", "2024-02-20", "2024-03-01"])
-        bhp_df = pd.DataFrame(
-            {
-                "BHP": [800, 850, 900],
-                "HeaderP": [200, 210, 220],
-                "WHP": [150, 160, 170],
-            },
-            index=dates,
-        )
-        bhp_df.index.name = "date"
-        return {"MPB-28": bhp_df}
-
-    @staticmethod
-    def _make_well_tests():
-        proc = _make_processor()
-        return proc.parse()
-
-    def test_successful_merge(self):
-        bhp = self._make_bhp_data()
-        wt = self._make_well_tests()
-        merged = merge_tests_with_bhp(["MPB-28"], bhp, wt)
-        assert not merged.empty
-        assert "BHP" in merged.columns
-
-    def test_well_not_in_bhp_skipped(self):
-        bhp = self._make_bhp_data()
-        wt = self._make_well_tests()
-        merged = merge_tests_with_bhp(["MPE-41"], bhp, wt)
-        assert merged.empty
-
-    def test_empty_bhp_data(self):
-        wt = self._make_well_tests()
-        merged = merge_tests_with_bhp(["MPB-28"], {}, wt)
-        assert merged.empty
-
-    def test_no_overlapping_dates(self):
-        dates = pd.to_datetime(["2025-06-01", "2025-07-01"])
-        bhp_df = pd.DataFrame({"BHP": [100, 200]}, index=dates)
-        bhp_df.index.name = "date"
-        wt = self._make_well_tests()
-        merged = merge_tests_with_bhp(["MPB-28"], {"MPB-28": bhp_df}, wt)
-        assert merged.empty
-
-    def test_merge_date_column_dropped(self):
-        bhp = self._make_bhp_data()
-        wt = self._make_well_tests()
-        merged = merge_tests_with_bhp(["MPB-28"], bhp, wt)
-        assert "merge_date" not in merged.columns
-
-    def test_tz_aware_wtdate(self):
-        """Timezone-aware WtDate should still merge correctly."""
-        bhp = self._make_bhp_data()
-        wt = self._make_well_tests()
-        wt["WtDate"] = wt["WtDate"].dt.tz_localize("UTC")
-        merged = merge_tests_with_bhp(["MPB-28"], bhp, wt)
-        assert not merged.empty

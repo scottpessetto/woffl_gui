@@ -12,6 +12,7 @@ import re
 import pandas as pd
 
 from woffl.assembly.databricks_client import execute_query
+from woffl.assembly.sql_guards import validate_iso_date, validate_well_name
 
 WELL_HEADER_QUERY = """\
 SELECT well_name
@@ -84,7 +85,15 @@ def _normalize_well_name(name: str) -> str:
 
     Databricks vw_well_header returns names like 'B-028'.
     jp_chars.csv and the optimizer expect 'MPB-28'.
+
+    This is the CANONICAL implementation — well_sort_client imports it
+    rather than keeping its own copy (see R-10 / P2-7 dedup). Non-string
+    input (e.g. a stray NaN from a DataFrame column) is returned unchanged
+    rather than raising, matching the more defensive well_sort_client
+    version this superseded.
     """
+    if not isinstance(name, str):
+        return name
     match = re.search(r"(\w+-\d+)", name)
     if not match:
         return name
@@ -146,14 +155,15 @@ def fetch_milne_well_tests(
     if not well_names:
         return pd.DataFrame(), []
 
-    # Format well list for SQL IN clause
-    well_list = ", ".join(f"'{w}'" for w in well_names)
+    # Format well list for SQL IN clause. validate_well_name raises
+    # UnsafeSqlValueError before any of these reach the query text.
+    well_list = ", ".join(f"'{validate_well_name(w)}'" for w in well_names)
 
     # Step 2: query well tests with BHP
     query = WELL_TEST_QUERY.format(
         well_list=well_list,
-        start_date=start_date,
-        end_date=end_date,
+        start_date=validate_iso_date(start_date),
+        end_date=validate_iso_date(end_date),
     )
     df = execute_query(query)
 

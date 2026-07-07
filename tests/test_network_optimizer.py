@@ -8,7 +8,6 @@ from woffl.assembly.network_optimizer import (
     OptimizationResult,
     PowerFluidConstraint,
     WellConfig,
-    create_well_template_csv,
     validate_well_config,
 )
 
@@ -395,26 +394,3 @@ class TestValidateWellConfig:
         is_valid, errors = validate_well_config(wc)
         assert not is_valid
         assert any("watercut" in e.lower() for e in errors)
-
-
-# ── create_well_template_csv ───────────────────────────────────────────────
-
-
-class TestCreateWellTemplateCSV:
-    def test_non_empty(self):
-        csv = create_well_template_csv()
-        assert len(csv) > 0
-
-    def test_has_header_columns(self):
-        csv = create_well_template_csv()
-        header = csv.split("\n")[0]
-        for col in [
-            "Well",
-            "res_pres",
-            "form_temp",
-            "JP_TVD",
-            "field_model",
-            "qwf_blpd",
-            "pwf",
-        ]:
-            assert col in header

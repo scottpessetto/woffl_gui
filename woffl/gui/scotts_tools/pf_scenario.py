@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from woffl.assembly.batchpump import BatchPump
-from woffl.assembly.jp_history import get_current_pump
+from woffl.assembly.jp_history import get_current_pump, get_pump_at_date
 from woffl.assembly.network_optimizer import WellConfig
 from woffl.geometry.jetpump import JetPump
 from woffl.geometry.pipe import Pipe, PipeInPipe
@@ -24,12 +24,83 @@ from ._common import (
     create_well_objects,
     fetch_well_tests_raw,
     friction_coefs_from_chars,
-    get_latest_bhp_per_well,
     get_latest_whp_per_well,
     get_vogel_for_wells,
     normalize_short_name,
     pad_from_mp_name,
 )
+
+
+def _resolve_pump_for_test(
+    jp_hist: pd.DataFrame,
+    well_name: str,
+    test_date,
+    current_pump: dict | None = None,
+) -> tuple[dict | None, bool]:
+    """Resolve the pump installed AT a historical test's date.
+
+    [P1-29 fix] Historical BHP/production tests must be paired with the pump
+    that was actually in the hole on the test date via ``get_pump_at_date``
+    (Date Set -> next Date Set tenure; JPCOs are same-day pull+set so Date
+    Pulled is never used — see ``jp_history.get_pump_at_date``), not today's
+    current pump. Mirrors the pattern already used by ``jp_fric_trend.py`` /
+    ``jp_washout.py`` (also duplicated in ``jp_calibration.py`` — each
+    Scott's Tools tab is independently maintained).
+
+    Falls back to ``current_pump`` (looked up via ``get_current_pump`` when
+    not supplied) when no install record covers the test date.
+
+    Returns ``(pump_dict_or_None, pump_changed)``. ``pump_changed`` is True
+    when the resolved at-test pump differs from the well's current pump, or
+    when the current pump can't be determined at all.
+    """
+    if current_pump is None:
+        current_pump = get_current_pump(jp_hist, well_name)
+
+    pump_at = get_pump_at_date(jp_hist, well_name, test_date)
+    if not (pump_at and pump_at.get("nozzle_no") and pump_at.get("throat_ratio")):
+        pump_at = current_pump
+
+    if (
+        pump_at is None
+        or not pump_at.get("nozzle_no")
+        or not pump_at.get("throat_ratio")
+    ):
+        return None, False
+
+    if current_pump is None:
+        return pump_at, True
+
+    pump_changed = str(pump_at["nozzle_no"]) != str(
+        current_pump.get("nozzle_no")
+    ) or str(pump_at["throat_ratio"]) != str(current_pump.get("throat_ratio"))
+    return pump_at, pump_changed
+
+
+def _latest_bhp_with_date_per_well(
+    months_back: int,
+) -> dict[str, tuple[float, "pd.Timestamp"]]:
+    """Return ``{well: (bhp, test_date)}`` for the well's latest measured-BHP test.
+
+    ``get_latest_bhp_per_well`` (shared helper) returns just the BHP value,
+    which is enough for the calibration target but not enough to resolve
+    which pump was in the hole on that test's date. This local variant
+    keeps the date alongside the value so the friction-coef calibration
+    below can call ``get_pump_at_date`` / ``_resolve_pump_for_test`` — using
+    today's current pump against a historical BHP test silently miscalibrates
+    when the pump has been changed out since (see jp_fric_trend.py /
+    jp_washout.py / jp_calibration.py).
+    """
+    raw = fetch_well_tests_raw(months_back)
+    if raw is None or raw.empty or "BHP" not in raw.columns:
+        return {}
+    valid = raw.dropna(subset=["BHP"]).sort_values("WtDate")
+    if valid.empty:
+        return {}
+    latest = valid.groupby("well").tail(1)
+    return {
+        row["well"]: (float(row["BHP"]), row["WtDate"]) for _, row in latest.iterrows()
+    }
 
 
 # ── CSV parsing ────────────────────────────────────────────────────────────
@@ -46,7 +117,9 @@ def _parse_scenario_csv(uploaded_file) -> pd.DataFrame | None:
     """
     df = pd.read_csv(uploaded_file, header=None)
     if len(df.columns) < 3:
-        st.error("CSV must have 3 columns: well name, Scenario A pressure, Scenario B pressure.")
+        st.error(
+            "CSV must have 3 columns: well name, Scenario A pressure, Scenario B pressure."
+        )
         return None
 
     records = []
@@ -79,7 +152,16 @@ def _parse_scenario_csv(uploaded_file) -> pd.DataFrame | None:
 
 
 def _discharge_residual_fixed_rate(
-    psu, qoil_std, pwh, tsu, ppf_surf, jpump, wellbore, wellprof, prop_su, prop_pf,
+    psu,
+    qoil_std,
+    pwh,
+    tsu,
+    ppf_surf,
+    jpump,
+    wellbore,
+    wellprof,
+    prop_su,
+    prop_pf,
     jpump_direction="reverse",
 ):
     """Jet pump discharge residual with a FIXED oil rate (no IPR).
@@ -101,7 +183,9 @@ def _discharge_residual_fixed_rate(
     prop_c = prop_su.condition(psu, tsu)
     qtot = sum(prop_c.insitu_volm_flow(qoil_std))
     vte = sp.velocity(qtot, ate)
-    te_book = JetBook(psu, vte, prop_c.rho_mix(), prop_c.cmix(), jf.enterance_ke(jpump.ken, vte))
+    te_book = JetBook(
+        psu, vte, prop_c.rho_mix(), prop_c.cmix(), jf.enterance_ke(jpump.ken, vte)
+    )
 
     pdec = 25
     while (te_book.tde_ray[-1] > 0) and (te_book.prs_ray[-1] > 50):
@@ -109,7 +193,13 @@ def _discharge_residual_fixed_rate(
         prop_c = prop_c.condition(pte_step, tsu)
         qtot = sum(prop_c.insitu_volm_flow(qoil_std))
         vte = sp.velocity(qtot, ate)
-        te_book.append(pte_step, vte, prop_c.rho_mix(), prop_c.cmix(), jf.enterance_ke(jpump.ken, vte))
+        te_book.append(
+            pte_step,
+            vte,
+            prop_c.rho_mix(),
+            prop_c.cmix(),
+            jf.enterance_ke(jpump.ken, vte),
+        )
 
     pte, vte, rho_te, mach_te = te_book.dete_zero()
 
@@ -118,14 +208,36 @@ def _discharge_residual_fixed_rate(
     qpf_list = [2000.0, 3000.0]
     res_pf = []
     for qpf in qpf_list:
-        r, vnz, pni = so.powerfluid_residual(qpf, pte, ppf_surf, tsu, dp_stat, jpump, wellbore, wellprof, prop_pf, pf_path)
+        r, vnz, pni = so.powerfluid_residual(
+            qpf,
+            pte,
+            ppf_surf,
+            tsu,
+            dp_stat,
+            jpump,
+            wellbore,
+            wellprof,
+            prop_pf,
+            pf_path,
+        )
         res_pf.append(r)
     from woffl.flow.errors import ConvergenceError
 
     n = 0
     while abs(res_pf[-1]) > 5:
         qpf = so.qpf_secant(qpf_list[-2], qpf_list[-1], res_pf[-2], res_pf[-1])
-        r, vnz, pni = so.powerfluid_residual(qpf, pte, ppf_surf, tsu, dp_stat, jpump, wellbore, wellprof, prop_pf, pf_path)
+        r, vnz, pni = so.powerfluid_residual(
+            qpf,
+            pte,
+            ppf_surf,
+            tsu,
+            dp_stat,
+            jpump,
+            wellbore,
+            wellprof,
+            prop_pf,
+            pf_path,
+        )
         qpf_list.append(qpf)
         res_pf.append(r)
         n += 1
@@ -136,19 +248,35 @@ def _discharge_residual_fixed_rate(
     wc_tm, _ = jf.throat_wc(qoil_std, prop_su.wc, qnz)
 
     prop_tm = ResMix(wc_tm, prop_su.fgor, prop_su.oil, prop_su.wat, prop_su.gas)
-    ptm = jf.throat_discharge(pte, tsu, jpump.kth, vnz, jpump.anz, prop_pf.density, vte, ate, rho_te, prop_tm)
-    _, pdi_jp = jf.diffuser_discharge(ptm, tsu, jpump.kdi, jpump.ath, wellbore.inn_pipe.inn_area, qoil_std, prop_tm)
+    ptm = jf.throat_discharge(
+        pte, tsu, jpump.kth, vnz, jpump.anz, prop_pf.density, vte, ate, rho_te, prop_tm
+    )
+    _, pdi_jp = jf.diffuser_discharge(
+        ptm, tsu, jpump.kdi, jpump.ath, wellbore.inn_pipe.inn_area, qoil_std, prop_tm
+    )
 
     # Outflow
-    _, prs_ray, _ = of.production_top_down_press(pwh, tsu, qoil_std, prop_tm, wellbore, wellprof, prod_path)
+    _, prs_ray, _ = of.production_top_down_press(
+        pwh, tsu, qoil_std, prop_tm, wellbore, wellprof, prod_path
+    )
     pdi_of = prs_ray[-1]
 
     return pdi_jp - pdi_of
 
 
 def _estimate_bhp(
-    qoil_std, wc, fgor, pwh, tsu, ppf_surf, jpump, wellbore, wellprof, prop_pf,
-    field_model="Schrader", psu_max=1800.0,
+    qoil_std,
+    wc,
+    fgor,
+    pwh,
+    tsu,
+    ppf_surf,
+    jpump,
+    wellbore,
+    wellprof,
+    prop_pf,
+    field_model="Schrader",
+    psu_max=1800.0,
 ):
     """Estimate suction pressure (BHP) from known production + jet pump conditions.
 
@@ -163,7 +291,16 @@ def _estimate_bhp(
     def _safe_residual(psu):
         try:
             return _discharge_residual_fixed_rate(
-                psu, qoil_std, pwh, tsu, ppf_surf, jpump, wellbore, wellprof, prop_su, prop_pf,
+                psu,
+                qoil_std,
+                pwh,
+                tsu,
+                ppf_surf,
+                jpump,
+                wellbore,
+                wellprof,
+                prop_su,
+                prop_pf,
             )
         except Exception:
             return None
@@ -202,7 +339,11 @@ def _estimate_bhp(
 
 
 def _estimate_gaugeless_ipr(
-    missing_wells, months_back, test_pf_pres, jp_hist, jp_chars_dict,
+    missing_wells,
+    months_back,
+    test_pf_pres,
+    jp_hist,
+    jp_chars_dict,
     whp_map: dict[str, float] | None = None,
     pf_map: dict[str, float] | None = None,
 ):
@@ -230,7 +371,9 @@ def _estimate_gaugeless_ipr(
     for wn in missing_wells:
         well_tests = raw_df[raw_df["well"] == wn].copy()
         # Keep only rows that have production but NO BHP
-        well_tests = well_tests[well_tests["BHP"].isna() & well_tests["WtTotalFluid"].notna()]
+        well_tests = well_tests[
+            well_tests["BHP"].isna() & well_tests["WtTotalFluid"].notna()
+        ]
         if well_tests.empty:
             continue
 
@@ -249,8 +392,12 @@ def _estimate_gaugeless_ipr(
         if pd.isna(fgor):
             fgor = 250
 
-        # Get pump config
-        pump = get_current_pump(jp_hist, wn)
+        # Get pump config — [P1-29 fix] resolve the pump that was actually
+        # installed AT this test's date, not today's current pump. The
+        # back-calculated BHP is a physics inversion through the jet pump's
+        # own nozzle/throat areas at the time production was measured; using
+        # today's (possibly changed-out) pump silently poisons the estimate.
+        pump, pump_changed = _resolve_pump_for_test(jp_hist, wn, latest["WtDate"])
         if pump is None or pump["nozzle_no"] is None:
             continue
 
@@ -306,9 +453,18 @@ def _estimate_gaugeless_ipr(
         psu_max = _cnum("res_pres", 1800)
         pf_for_well = float((pf_map or {}).get(wn, test_pf_pres))
         bhp_est = _estimate_bhp(
-            oil_rate, wc, fgor, pwh, tsu, pf_for_well,
-            jpump, wellbore, well_profile, prop_pf,
-            field_model=fm, psu_max=psu_max,
+            oil_rate,
+            wc,
+            fgor,
+            pwh,
+            tsu,
+            pf_for_well,
+            jpump,
+            wellbore,
+            well_profile,
+            prop_pf,
+            field_model=fm,
+            psu_max=psu_max,
         )
         if bhp_est is None:
             continue
@@ -328,6 +484,10 @@ def _estimate_gaugeless_ipr(
             "num_tests": len(well_tests),
             "R2": 0,
             "_bhp_estimated": True,
+            # [P1-29 guard] surfaced by render_tab so the engineer knows this
+            # well's back-calc used the pump that WAS in the hole at test
+            # time, which differs from what's in the well today.
+            "_pump_changed": pump_changed,
         }
 
     return results
@@ -389,7 +549,9 @@ def render_tab():
     )
 
     # Sample CSV download
-    sample = "B-30,3400,3200\nI-15,2700,3400\nI-22,2700,3400\nC-14,3400,3200\nJ-27,3400,3200"
+    sample = (
+        "B-30,3400,3200\nI-15,2700,3400\nI-22,2700,3400\nC-14,3400,3200\nJ-27,3400,3200"
+    )
     st.download_button(
         "Download sample CSV",
         data=sample,
@@ -450,7 +612,11 @@ def render_tab():
         ["well_name", "pad", "pf_pres_a", "pf_a_source", "pf_pres_b"]
     ].copy()
     display_input.columns = [
-        "Well", "Pad", "Scenario A PF (psi)", "A source", "Scenario B PF (psi)",
+        "Well",
+        "Pad",
+        "Scenario A PF (psi)",
+        "A source",
+        "Scenario B PF (psi)",
     ]
     st.dataframe(display_input, use_container_width=True, hide_index=True)
 
@@ -513,19 +679,31 @@ def render_tab():
         fc1, fc2, fc3 = st.columns(3)
         with fc1:
             ken_ov = st.slider(
-                "ken (entry)", min_value=0.0, max_value=0.20, value=0.03, step=0.005,
+                "ken (entry)",
+                min_value=0.0,
+                max_value=0.20,
+                value=0.03,
+                step=0.005,
                 key="pf_scenario_ken",
                 help="Higher ken → higher modeled BHP, lower oil. JetPump default 0.03.",
             )
         with fc2:
             kth_ov = st.slider(
-                "kth (throat)", min_value=0.05, max_value=1.0, value=0.30, step=0.01,
+                "kth (throat)",
+                min_value=0.05,
+                max_value=1.0,
+                value=0.30,
+                step=0.01,
                 key="pf_scenario_kth",
                 help="Higher kth → higher modeled BHP, lower oil. JetPump default 0.30.",
             )
         with fc3:
             kdi_ov = st.slider(
-                "kdi (diffuser)", min_value=0.05, max_value=1.0, value=0.30, step=0.01,
+                "kdi (diffuser)",
+                min_value=0.05,
+                max_value=1.0,
+                value=0.30,
+                step=0.01,
                 key="pf_scenario_kdi",
                 help="Higher kdi → higher modeled BHP, lower oil. JetPump default 0.30.",
             )
@@ -542,7 +720,9 @@ def render_tab():
     # Prerequisites
     jp_hist = st.session_state.get("jp_history_df")
     if jp_hist is None:
-        st.error("JP history not loaded. Check Databricks connection or upload JP history Excel in the sidebar.")
+        st.error(
+            "JP history not loaded. Check Databricks connection or upload JP history Excel in the sidebar."
+        )
         return
 
     if not st.button("Run Scenario Analysis", type="primary", use_container_width=True):
@@ -571,11 +751,16 @@ def render_tab():
     with st.spinner("Pulling latest WHP per well from well tests..."):
         whp_map = get_latest_whp_per_well(months_back)
 
-    # Pull latest test BHP per well — only used when calibrating
+    # Pull latest test BHP per well — only used when calibrating. Keeps the
+    # test date alongside the value so Phase 2 can resolve the pump that was
+    # actually in the hole on that date (P1-29).
     bhp_map: dict[str, float] = {}
+    bhp_date_map: dict[str, "pd.Timestamp"] = {}
     if fric_mode == "calibrate":
         with st.spinner("Pulling latest measured BHP per well..."):
-            bhp_map = get_latest_bhp_per_well(months_back)
+            bhp_with_date = _latest_bhp_with_date_per_well(months_back)
+            bhp_map = {w: v[0] for w, v in bhp_with_date.items()}
+            bhp_date_map = {w: v[1] for w, v in bhp_with_date.items()}
 
     # Compute Vogel IPR from well test data (wells with BHP gauges)
     with st.spinner(f"Fetching well tests ({months_back} months) and computing IPR..."):
@@ -586,24 +771,48 @@ def render_tab():
     if missing:
         with st.spinner(f"Estimating BHP for {len(missing)} gaugeless wells..."):
             gaugeless = _estimate_gaugeless_ipr(
-                missing, months_back, test_pf_pres, jp_hist, jp_chars_dict,
+                missing,
+                months_back,
+                test_pf_pres,
+                jp_hist,
+                jp_chars_dict,
                 whp_map=whp_map,
             )
             vogel_dict.update(gaugeless)
 
     # Report IPR sources
-    gauged = [w for w in well_names if w in vogel_dict and not vogel_dict[w].get("_bhp_estimated")]
-    estimated = [w for w in well_names if w in vogel_dict and vogel_dict[w].get("_bhp_estimated")]
+    gauged = [
+        w
+        for w in well_names
+        if w in vogel_dict and not vogel_dict[w].get("_bhp_estimated")
+    ]
+    estimated = [
+        w for w in well_names if w in vogel_dict and vogel_dict[w].get("_bhp_estimated")
+    ]
     fallback = [w for w in well_names if w not in vogel_dict]
     if gauged:
         st.caption(f"IPR from BHP gauge: {', '.join(gauged)}")
     if estimated:
         st.caption(f"IPR from JP back-calc (estimated BHP): {', '.join(estimated)}")
+        # [P1-29 guard] flag estimates whose back-calc used a pump that's
+        # since been changed out — the estimate leaned on that pump's
+        # nozzle/throat areas at test time, not today's geometry.
+        pump_changed_est = [w for w in estimated if vogel_dict[w].get("_pump_changed")]
+        if pump_changed_est:
+            st.warning(
+                f"{len(pump_changed_est)} gaugeless well(s) had their pump "
+                f"changed out AFTER the test used for the BHP back-calc: "
+                f"{', '.join(pump_changed_est)}. The estimate used the pump "
+                "that was actually in the hole at test time — treat these "
+                "IPRs as lower-confidence."
+            )
     if fallback:
         st.caption(f"Using jp_chars defaults (no test data): {', '.join(fallback)}")
     no_whp = [w for w in well_names if w not in whp_map]
     if no_whp:
-        st.caption(f"Surface pressure fallback (210 psi, no WHP in tests): {', '.join(no_whp)}")
+        st.caption(
+            f"Surface pressure fallback (210 psi, no WHP in tests): {', '.join(no_whp)}"
+        )
     if fric_mode == "calibrate":
         no_bhp = [w for w in well_names if w not in bhp_map]
         if no_bhp:
@@ -645,6 +854,11 @@ def render_tab():
 
     # ── Phase 2: calibrate (only when mode == calibrate) ──────────────
     cal_results: dict[str, object] = {}
+    # [P1-29 guard] wells where the pump installed at the BHP test's date
+    # differs from the well's CURRENT pump — the calibration below still
+    # fits against the test-date pump (correct physics), but Phase 3 must
+    # NOT apply that fit's coefficients to today's (different) pump.
+    cal_pump_changed: dict[str, bool] = {}
     if fric_mode == "calibrate":
         eligible = [w for w in configured if w in bhp_map]
         if eligible:
@@ -659,6 +873,30 @@ def render_tab():
                 # ken from Databricks (or default), knz fixed at 0.01
                 fc = friction_coefs_from_chars(cfg["chars"])
                 ken_fixed = float(fc.get("ken", 0.03))
+
+                # [P1-29 fix] Calibrate against the pump that was actually
+                # installed on the BHP test's date (get_pump_at_date; JPCOs
+                # are same-day pull+set, Date Pulled is never used), not
+                # today's current pump — mirrors jp_fric_trend.py /
+                # jp_washout.py / jp_calibration.py. Falls back to the
+                # current pump when no install record covers the test date.
+                cal_pump, changed = _resolve_pump_for_test(
+                    jp_hist,
+                    wn,
+                    bhp_date_map.get(wn),
+                    current_pump={
+                        "nozzle_no": cfg["nozzle"],
+                        "throat_ratio": cfg["throat"],
+                    },
+                )
+                if cal_pump is None:
+                    cal_pump = {
+                        "nozzle_no": cfg["nozzle"],
+                        "throat_ratio": cfg["throat"],
+                    }
+                    changed = False
+                cal_pump_changed[wn] = changed
+
                 try:
                     result = calibrate_friction_coefs(
                         well_name=wn,
@@ -666,8 +904,8 @@ def render_tab():
                         pwh=cfg["wc"].surf_pres,
                         tsu=cfg["wc"].form_temp,
                         ppf_surf=float(test_pf_pres),
-                        nozzle=cfg["nozzle"],
-                        throat=cfg["throat"],
+                        nozzle=cal_pump["nozzle_no"],
+                        throat=cal_pump["throat_ratio"],
                         knz=0.01,
                         ken=ken_fixed,
                         wellbore=wellbore,
@@ -682,6 +920,18 @@ def render_tab():
                     errors.append(f"{wn}: calibration error — {e}")
                     cal_results[wn] = None
             cal_prog.progress(1.0, text="Calibration done.")
+
+        pump_changed_wells = [w for w in eligible if cal_pump_changed.get(w)]
+        if pump_changed_wells:
+            st.warning(
+                f"{len(pump_changed_wells)} well(s) had their pump changed "
+                f"out AFTER the BHP test used for calibration: "
+                f"{', '.join(pump_changed_wells)}. The fit used the pump "
+                "that was actually in the hole at test time, but those "
+                "coefficients are NOT applied to Scenario A/B below (which "
+                "model today's pump) — Databricks defaults are used for "
+                "these wells instead. See 'Fric Source' in the results."
+            )
         st.session_state["pf_scenario_calibration"] = cal_results
 
     # ── Phase 3: solve each well at both scenarios ────────────────────
@@ -709,7 +959,12 @@ def render_tab():
         if fric_override_values is not None:
             fric_coefs = dict(fric_override_values)
             fric_source = "manual"
-        elif fric_mode == "calibrate" and cal_results.get(wn) is not None and cal_results[wn].converged:
+        elif (
+            fric_mode == "calibrate"
+            and cal_results.get(wn) is not None
+            and cal_results[wn].converged
+            and not cal_pump_changed.get(wn, False)
+        ):
             cal = cal_results[wn]
             fric_coefs = {
                 "knz": cal.knz,
@@ -724,10 +979,19 @@ def render_tab():
             cal_kdi = cal.best_kdi
         else:
             fric_coefs = friction_coefs_from_chars(chars)
+            # [P1-29 guard] the calibration DID converge but its fit used a
+            # pump that's since been changed out — don't apply coefficients
+            # fitted to different nozzle/throat areas to today's pump.
+            if fric_mode == "calibrate" and cal_pump_changed.get(wn, False):
+                fric_source = "databricks (pump changed since test)"
 
         try:
-            res_a = _solve_at_pf(wc, well_objs, nozzle, throat, row["pf_pres_a"], fric_coefs)
-            res_b = _solve_at_pf(wc, well_objs, nozzle, throat, row["pf_pres_b"], fric_coefs)
+            res_a = _solve_at_pf(
+                wc, well_objs, nozzle, throat, row["pf_pres_a"], fric_coefs
+            )
+            res_b = _solve_at_pf(
+                wc, well_objs, nozzle, throat, row["pf_pres_b"], fric_coefs
+            )
         except Exception as e:
             errors.append(f"{wn}: solver error — {e}")
             continue
@@ -853,12 +1117,22 @@ def _render_results(results_df: pd.DataFrame):
         "Delta Oil": "{:+,.0f}",
         "Delta PF Rate": "{:+,.0f}",
     }
-    st.dataframe(results_df.style.format(fmt), use_container_width=True, hide_index=True)
+    st.dataframe(
+        results_df.style.format(fmt), use_container_width=True, hide_index=True
+    )
 
     # Bar chart — delta oil by well, colored by pad
     st.subheader("Oil Rate Change by Well (Scenario B vs A)")
     pad_colors = {}
-    palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2"]
+    palette = [
+        "#1f77b4",
+        "#ff7f0e",
+        "#2ca02c",
+        "#d62728",
+        "#9467bd",
+        "#8c564b",
+        "#e377c2",
+    ]
     for i, pad in enumerate(sorted(results_df["Pad"].unique())):
         pad_colors[pad] = palette[i % len(palette)]
 

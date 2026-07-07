@@ -59,33 +59,38 @@ from ._common import (
 )
 from .header_engine import (
     DONOR_GROUP_TOKENS,
+    FORMATION_PR_MAX,
     GROUP_LIFT,
     GROUP_PADFORMATION,
+    MODEL_FAILED_PREFIX,
     OWN_TOKEN,
     _chosen_method,
     _verdict,
     aggregate_response_curve,
-    FORMATION_PR_MAX,
     average_slope,
     average_vogel_rows,
     backpressure_consistency,
     backtest_anchors,
     bias_by_pad,
+    clamp_scenario_whp,
     corr_display_plan,
+    depletion_signature,
     describe_donor,
     donor_member_wells,
     donor_tokens,
-    pad_updown_lever,
-    predict_dbhp_from_curve,
-    pf_map_from_selected,
-    pr_hi_for_formation,
-    resolve_pad_pf,
-    depletion_signature,
     estimate_header_impacts,
     fit_well_ipr,
     group_correlation_stats,
+    pad_updown_lever,
+    pf_map_from_selected,
+    physics_slope,
+    pr_hi_for_formation,
+    predict_dbhp_from_curve,
+    recent_bhp_anchor,
+    resolve_pad_pf,
     sense_check_response,
     sense_check_table,
+    solver_error_note,
     summarize_sensitivity,
     vogel_oil,
 )
@@ -114,7 +119,10 @@ def _solve_at_whp(
     Mirrors ``pf_scenario._solve_at_pf`` but the swept variable is the
     wellhead pressure ``pwh`` (the header lever); power fluid ``ppf_surf`` is
     held fixed. Returns oil rate, PF (lift water) rate, suction pressure (BHP),
-    and sonic/Mach flags.
+    sonic/Mach flags, and ``error`` — the raw per-row error string from
+    ``batch_run`` ("na" on a converged solve, ``repr(exc)`` on a failed one;
+    see :func:`header_engine.solver_error_note`) so a non-converging solve can
+    be told apart from a genuine "no response" (P1-21).
     """
     wellbore, well_profile, inflow, res_mix, prop_pf = well_objects
     jp = JetPump(nozzle, throat, **(fric_coefs or {}))
@@ -132,7 +140,14 @@ def _solve_at_whp(
     )
     result_df = batch.batch_run([jp])
     if result_df.empty:
-        return dict(oil=np.nan, pf_rate=np.nan, psu=np.nan, sonic=False, mach=np.nan)
+        return dict(
+            oil=np.nan,
+            pf_rate=np.nan,
+            psu=np.nan,
+            sonic=False,
+            mach=np.nan,
+            error="empty batch result",
+        )
     r = result_df.iloc[0]
     return dict(
         oil=float(r["qoil_std"]) if pd.notna(r["qoil_std"]) else np.nan,
@@ -140,6 +155,7 @@ def _solve_at_whp(
         psu=float(r["psu_solv"]) if pd.notna(r["psu_solv"]) else np.nan,
         sonic=bool(r["sonic_status"]) if pd.notna(r.get("sonic_status")) else False,
         mach=float(r["mach_te"]) if pd.notna(r.get("mach_te")) else np.nan,
+        error=r.get("error"),
     )
 
 
@@ -184,13 +200,29 @@ def fetch_well_overview(months_back: int) -> pd.DataFrame:
 
 
 def _classify_lift(well: str, jp_hist, ov_row) -> str:
-    """JP (current pump) / ESP (esp_amps) / gas-lift (lift_gas) / flowing."""
+    """ESP (esp_amps) / JP (current pump) / gas-lift (lift_gas) / flowing.
+
+    Recency terminator (P1-26): ``ov_row`` is the well's LATEST test within
+    the caller's recency window (``fetch_well_overview``'s ``months_back``),
+    so a positive ``esp_amps`` there is live, recent evidence the well is
+    currently running an ESP. Check it FIRST, ahead of the JP-history
+    lookup — a jet pump never draws ESP amps, so this can't misfire against
+    a genuinely-current JP well; it only catches a JP→ESP conversion the
+    tracker never logged (JPCOs are same-day pull+set, and the tracker's
+    ``Date Pulled`` is unreliable per CLAUDE.md — a stale, never-updated JP
+    install must not out-rank fresh ESP amps, or the well models as JP
+    forever).
+    """
+    if (
+        ov_row is not None
+        and pd.notna(ov_row.get("esp_amps"))
+        and float(ov_row.get("esp_amps") or 0) > 0
+    ):
+        return "ESP"
     pump = get_current_pump(jp_hist, well)
     if pump is not None and pump.get("nozzle_no") and pump.get("throat_ratio"):
         return "JP"
     if ov_row is not None:
-        if pd.notna(ov_row.get("esp_amps")) and float(ov_row.get("esp_amps") or 0) > 0:
-            return "ESP"
         if pd.notna(ov_row.get("lift_gas")) and float(ov_row.get("lift_gas") or 0) > 0:
             return "gas-lift"
     return "flowing"
@@ -227,9 +259,11 @@ def _render_pad_pf_editor(pads: list[str]) -> dict[str, int]:
                         "live median"
                         if resolved[p] == int(live_pad_pf_default(p))
                         and resolved[p] != int(default_pad_pf(p))
-                        else "default"
-                        if resolved[p] == int(default_pad_pf(p))
-                        else "edited"
+                        else (
+                            "default"
+                            if resolved[p] == int(default_pad_pf(p))
+                            else "edited"
+                        )
                     ),
                 }
                 for p in pads
@@ -252,11 +286,16 @@ def _render_pad_pf_editor(pads: list[str]) -> dict[str, int]:
         column_config={
             "Pad": st.column_config.TextColumn("Pad", disabled=True),
             "PF (psi)": st.column_config.NumberColumn(
-                "PF (psi)", format="%d", min_value=1000, max_value=5000, step=50,
+                "PF (psi)",
+                format="%d",
+                min_value=1000,
+                max_value=5000,
+                step=50,
                 help="Power-fluid surface pressure for this pad's jet pumps.",
             ),
             "Source": st.column_config.TextColumn(
-                "Source", disabled=True,
+                "Source",
+                disabled=True,
                 help="'default' = pad default; 'edited' = you changed it.",
             ),
         },
@@ -289,7 +328,9 @@ def _render_pad_header_baseline(
     from dateutil.relativedelta import relativedelta
 
     end = datetime.now().strftime("%Y-%m-%d")
-    start = (datetime.now() - relativedelta(months=int(months_back))).strftime("%Y-%m-%d")
+    start = (datetime.now() - relativedelta(months=int(months_back))).strftime(
+        "%Y-%m-%d"
+    )
     try:
         live = ht.fetch_latest_pad_header(tuple(sorted(pads)), start, end)
     except Exception:
@@ -314,7 +355,9 @@ def _render_pad_header_baseline(
     if idf is not None and "WHP now (psi)" in idf.columns and "Pad" in idf.columns:
         w = pd.to_numeric(idf["WHP now (psi)"], errors="coerce")
         whp_avg = {
-            str(p): float(v) for p, v in w.groupby(idf["Pad"]).mean().items() if pd.notna(v)
+            str(p): float(v)
+            for p, v in w.groupby(idf["Pad"]).mean().items()
+            if pd.notna(v)
         }
 
     # STABLE editor base, rebuilt only when its non-editable context changes
@@ -333,8 +376,12 @@ def _render_pad_header_baseline(
             [
                 {
                     "Pad": p,
-                    "Header now (psi)": int(round(_base(p))) if _base(p) is not None else None,
-                    "WHP now (avg, psi)": int(round(whp_avg[p])) if p in whp_avg else None,
+                    "Header now (psi)": (
+                        int(round(_base(p))) if _base(p) is not None else None
+                    ),
+                    "WHP now (avg, psi)": (
+                        int(round(whp_avg[p])) if p in whp_avg else None
+                    ),
                     "→ WHP after Δ (psi)": (
                         int(round(whp_avg[p] + delta_p)) if p in whp_avg else None
                     ),
@@ -355,25 +402,37 @@ def _render_pad_header_baseline(
         "well table) re-baselines the wells, preserving each well's offset."
     )
     edited = st.data_editor(
-        grid, key="hpi_pad_header_editor", hide_index=True, use_container_width=True,
+        grid,
+        key="hpi_pad_header_editor",
+        hide_index=True,
+        use_container_width=True,
         column_config={
             "Pad": st.column_config.TextColumn("Pad", disabled=True),
             "Header now (psi)": st.column_config.NumberColumn(
-                "Header now (psi)", format="%d", min_value=0, max_value=2000, step=10,
+                "Header now (psi)",
+                format="%d",
+                min_value=0,
+                max_value=2000,
+                step=10,
                 help="Latest live pad header (manifold) pressure; edit to model a "
                 "different level, then Apply under the well table.",
             ),
             "WHP now (avg, psi)": st.column_config.NumberColumn(
-                "WHP now (avg, psi)", format="%d", disabled=True,
+                "WHP now (avg, psi)",
+                format="%d",
+                disabled=True,
                 help="Today's actual wellhead pressure the solve sweeps from "
                 "(pad average of the loaded wells' WHP now). Blank until wells load.",
             ),
             "→ WHP after Δ (psi)": st.column_config.NumberColumn(
-                "→ WHP after Δ (psi)", format="%d", disabled=True,
+                "→ WHP after Δ (psi)",
+                format="%d",
+                disabled=True,
                 help="WHP now (avg) + Δ — the target wellhead pressure (updates on Δ).",
             ),
             "Source": st.column_config.TextColumn(
-                "Source", disabled=True,
+                "Source",
+                disabled=True,
                 help="Header now: 'live' = queried historian · 'edited' = you changed "
                 "it · 'no tag' = no header tag/data for this pad.",
             ),
@@ -424,7 +483,12 @@ def _build_input_table(
             continue
         lift = _classify_lift(wn, jp_hist, ov)
         pump = get_current_pump(jp_hist, wn)
-        is_jp = lift == "JP" and pump is not None and pump.get("nozzle_no") and pump.get("throat_ratio")
+        is_jp = (
+            lift == "JP"
+            and pump is not None
+            and pump.get("nozzle_no")
+            and pump.get("throat_ratio")
+        )
         chars = jp_chars_dict.get(wn, {})
 
         is_sch = chars.get("is_sch", True)
@@ -500,7 +564,9 @@ def _fetch_empirical_fits(well_names: list[str], months_back: int):
     from dateutil.relativedelta import relativedelta
 
     end = datetime.now().strftime("%Y-%m-%d")
-    start = (datetime.now() - relativedelta(months=int(months_back))).strftime("%Y-%m-%d")
+    start = (datetime.now() - relativedelta(months=int(months_back))).strftime(
+        "%Y-%m-%d"
+    )
     well_dfs, missing = ht.fetch_header_trends(tuple(sorted(well_names)), start, end)
     fits = {wn: ht.fit_well(tdf) for wn, tdf in well_dfs.items()}
     return well_dfs, fits, missing
@@ -564,9 +630,15 @@ def _synthetic_fit(slope: float):
     responsive, so a donor / group-average correlation flows through
     ``_empirical_columns`` and ``_solve_nonjp_row`` unchanged."""
     return ht.WithinDayFit(
-        y_name="BHP", x_name="WHP",
-        mean_slope=float(slope), median_slope=float(slope), slope_std=0.0,
-        n_days=30, n_good_days=20, mean_r2=0.8, daily=pd.DataFrame(),
+        y_name="BHP",
+        x_name="WHP",
+        mean_slope=float(slope),
+        median_slope=float(slope),
+        slope_std=0.0,
+        n_days=30,
+        n_good_days=20,
+        mean_r2=0.8,
+        daily=pd.DataFrame(),
     )
 
 
@@ -599,9 +671,15 @@ def _resolve_corr_fits(well: str, token: str, rows_meta: dict, emp_fits: dict):
 
 
 def _solve_nonjp_row(
-    wn, row, emp_fits: dict, emp_well_dfs: dict, delta_p: float,
-    fit_override: dict | None = None, corr_prov: str = "own",
-    ipr_sink: dict | None = None, res_pres_override: float | None = None,
+    wn,
+    row,
+    emp_fits: dict,
+    emp_well_dfs: dict,
+    delta_p: float,
+    fit_override: dict | None = None,
+    corr_prov: str = "own",
+    ipr_sink: dict | None = None,
+    res_pres_override: float | None = None,
 ) -> dict:
     """Empirical-only result row for a non-JP well (ESP / gas-lift / flowing).
 
@@ -619,24 +697,36 @@ def _solve_nonjp_row(
     emp_class = ht.classify_response(fit) if fit is not None else "no data"
     emp_slope = fit.mean_slope if fit is not None else np.nan
 
+    # Robust "current BHP" anchor (P1-25): median of the last 24 readings above
+    # the shut-in/sentinel screen, NOT the single last raw reading — a lone
+    # low tail bin (shut-in, dead gauge) could otherwise anchor the whole
+    # generic Vogel IPR for the well.
     trend = emp_well_dfs.get(wn)
     bhp_now = np.nan
+    bhp_anchor_screened = True
     if trend is not None and "BHP" in getattr(trend, "columns", []):
-        bhp_s = trend["BHP"].dropna()
-        if not bhp_s.empty:
-            bhp_now = float(bhp_s.iloc[-1])
+        bhp_now, bhp_anchor_screened = recent_bhp_anchor(trend["BHP"])
 
     oil = row.get("Oil (BOPD)")
     pseudo = res_pres_override is not None and not pd.isna(res_pres_override)
-    res_pres = float(res_pres_override) if pseudo else float(row.get("ResP (psi)") or 1800.0)
+    res_pres = (
+        float(res_pres_override) if pseudo else float(row.get("ResP (psi)") or 1800.0)
+    )
     whp_now = row.get("WHP now (psi)")
 
     emp_dbhp = np.nan
     emp_doil = np.nan
     if pd.isna(bhp_now):
         verdict = "gaugeless — use Analog"
+    elif emp_class in ("no data", "insufficient"):
+        # Data absence, not a physical diagnosis (P1-23) — don't book a
+        # confident ΔOil = 0 under a mislabeled "slugging" verdict. Leave
+        # emp_dbhp/emp_doil as NaN so the well is EXCLUDED from the field
+        # uplift sum (Chosen ΔOil / oil_scen both come out NaN and
+        # DataFrame.sum() skips NaN) rather than silently zeroed in.
+        verdict = "insufficient data" if emp_class == "insufficient" else "no data"
     elif fit is None or emp_class != "responsive":
-        verdict = emp_class if emp_class in ("slugging", "insufficient") else "slugging"
+        verdict = "slugging"
         emp_dbhp = 0.0
         emp_doil = 0.0  # an unresponsive well won't move with the header
     elif oil is None or pd.isna(oil) or float(oil) <= 0:
@@ -665,7 +755,16 @@ def _solve_nonjp_row(
             "pwf": float(bhp_now),
             "form_wc": 0.0,  # qwf is already the oil rate for non-JP
         }
-    oil_scen = (float(oil) + emp_doil) if (pd.notna(oil) and pd.notna(emp_doil)) else np.nan
+    oil_scen = (
+        (float(oil) + emp_doil) if (pd.notna(oil) and pd.notna(emp_doil)) else np.nan
+    )
+
+    ipr_src = "empirical (pseudo-Pr)" if pseudo else "empirical (test + assumed ResP)"
+    if pd.notna(bhp_now) and not bhp_anchor_screened:
+        # No reading passed the shut-in/sentinel screen — recent_bhp_anchor fell
+        # back to the raw median, so flag the anchor as suspect rather than
+        # presenting it silently as a clean measurement.
+        ipr_src += " · BHP anchor unscreened"
 
     return {
         "Well": wn,
@@ -673,14 +772,18 @@ def _solve_nonjp_row(
         "Lift": row.get("Lift", ""),
         "Formation": row.get("Formation"),
         "Pump": "",
-        "IPR src": "empirical (pseudo-Pr)" if pseudo else "empirical (test + assumed ResP)",
+        "IPR src": ipr_src,
         "Fric src": "—",
         "BHP cal err": None,
         "PF held (psi)": None,
         "WHP now (psi)": int(round(whp_now)) if pd.notna(whp_now) else None,
         "WHP scen (psi)": int(round(whp_now + delta_p)) if pd.notna(whp_now) else None,
         "BHP now (psi)": bhp_now,
-        "BHP scen (psi)": (bhp_now + emp_dbhp) if (pd.notna(emp_dbhp) and pd.notna(bhp_now)) else np.nan,
+        "BHP scen (psi)": (
+            (bhp_now + emp_dbhp)
+            if (pd.notna(emp_dbhp) and pd.notna(bhp_now))
+            else np.nan
+        ),
         "ΔBHP (psi)": emp_dbhp,
         "Oil now (BOPD)": float(oil) if pd.notna(oil) else np.nan,
         "Oil scen (BOPD)": oil_scen,
@@ -761,7 +864,9 @@ def _apply_scenario(blob: dict, all_pads: list[str]) -> None:
     if blob.get("fric_mode") in ("calibrate", "databricks", "manual"):
         st.session_state["hpi_fric_mode"] = blob["fric_mode"]
     if blob.get("pad_pf"):
-        st.session_state["hpi_pad_pf"] = {str(k): int(v) for k, v in blob["pad_pf"].items()}
+        st.session_state["hpi_pad_pf"] = {
+            str(k): int(v) for k, v in blob["pad_pf"].items()
+        }
     if blob.get("input_table"):
         restored = pd.DataFrame(blob["input_table"])
         st.session_state["hpi_input_df"] = restored
@@ -771,7 +876,10 @@ def _apply_scenario(blob: dict, all_pads: list[str]) -> None:
         # stale snapshot from a different pad set) after a scenario load.
         if {"Well", "WHP now (psi)"}.issubset(restored.columns):
             st.session_state["hpi_whp_measured"] = dict(
-                zip(restored["Well"], pd.to_numeric(restored["WHP now (psi)"], errors="coerce"))
+                zip(
+                    restored["Well"],
+                    pd.to_numeric(restored["WHP now (psi)"], errors="coerce"),
+                )
             )
         else:
             st.session_state.pop("hpi_whp_measured", None)
@@ -783,8 +891,13 @@ def _apply_scenario(blob: dict, all_pads: list[str]) -> None:
         elif pads:
             st.session_state["hpi_loaded_pads"] = pads
     for k in (
-        "hpi_editor", "hpi_pad_pf_editor", "hpi_pad_pf_base", "hpi_pad_hdr_base",
-        "hpi_pad_header_editor", "hpi_results_df", "hpi_pdf_bytes", "hpi_curve",
+        "hpi_editor",
+        "hpi_pad_pf_editor",
+        "hpi_pad_pf_base",
+        "hpi_pad_hdr_base",
+        "hpi_pad_header_editor",
+        "hpi_results_df",
+        "hpi_curve",
     ):
         st.session_state.pop(k, None)
 
@@ -794,7 +907,9 @@ def _render_scenario_io(all_pads: list[str]) -> None:
     reproducible. Results aren't saved — reload restores inputs and you re-run."""
     import json
 
-    with st.expander("💾 Saved scenario — save / load inputs + overrides", expanded=False):
+    with st.expander(
+        "💾 Saved scenario — save / load inputs + overrides", expanded=False
+    ):
         up = st.file_uploader("Load scenario (.json)", type=["json"], key="hpi_scn_up")
         if up is not None:
             sig = f"{up.name}:{up.size}"
@@ -802,14 +917,17 @@ def _render_scenario_io(all_pads: list[str]) -> None:
                 try:
                     _apply_scenario(json.load(up), all_pads)
                     st.session_state["hpi_scn_sig"] = sig
-                    st.success("Scenario loaded — press **Run header impact** to compute.")
+                    st.success(
+                        "Scenario loaded — press **Run header impact** to compute."
+                    )
                     st.rerun()
                 except Exception as e:
                     st.warning(f"Could not load scenario ({type(e).__name__}: {e}).")
         st.download_button(
             "Download current scenario (.json)",
             data=json.dumps(_current_scenario(), indent=2, default=str).encode("utf-8"),
-            file_name="header_impact_scenario.json", mime="application/json",
+            file_name="header_impact_scenario.json",
+            mime="application/json",
             key="hpi_scn_dl",
         )
 
@@ -857,7 +975,10 @@ def render_tab() -> None:
     with c2:
         months_back = st.number_input(
             "Test/trend lookback (months)",
-            min_value=1, max_value=24, value=6, step=1,
+            min_value=1,
+            max_value=24,
+            value=6,
+            step=1,
             key="hpi_months",
             help="Window for well tests (IPR) and historian trends (empirical slope).",
         )
@@ -870,7 +991,10 @@ def render_tab() -> None:
 
     delta_p = st.number_input(
         "Header pressure change Δ (psi)",
-        min_value=-500, max_value=500, value=-50, step=10,
+        min_value=-500,
+        max_value=500,
+        value=-50,
+        step=10,
         key="hpi_delta",
         help="Applied to each well's wellhead pressure (assumes ΔWHP = ΔHeader, "
         "1:1). Negative = header reduction (expect oil uplift).",
@@ -929,7 +1053,9 @@ def render_tab() -> None:
         with st.spinner("Loading producers on the selected pad(s)..."):
             input_df = _build_input_table(pads, months_back, pad_pf)
         if input_df is None or input_df.empty:
-            st.warning("No producers with recent allocated tests on the selected pad(s).")
+            st.warning(
+                "No producers with recent allocated tests on the selected pad(s)."
+            )
             return
         st.session_state["hpi_input_df"] = input_df
         # STABLE frame for the data_editor (see CLAUDE.md data_editor gotcha):
@@ -943,7 +1069,10 @@ def render_tab() -> None:
         # the offset-preserving "Apply pad header" re-baseline (so re-applying or
         # editing the header recomputes cleanly instead of compounding).
         st.session_state["hpi_whp_measured"] = dict(
-            zip(input_df["Well"], pd.to_numeric(input_df["WHP now (psi)"], errors="coerce"))
+            zip(
+                input_df["Well"],
+                pd.to_numeric(input_df["WHP now (psi)"], errors="coerce"),
+            )
         )
         st.session_state.pop("hpi_results_df", None)
         st.session_state.pop("hpi_editor", None)
@@ -986,10 +1115,22 @@ def render_tab() -> None:
         base_df = input_df.copy()
         st.session_state["hpi_input_base"] = base_df
 
-    config_cols = [c for c in [
-        "Well", "Pad", "Lift", "Pump", "Oil (BOPD)", "PF held (psi)",
-        "WHP now (psi)", "ResP (psi)", "Formation", "Include",
-    ] if c in base_df.columns]
+    config_cols = [
+        c
+        for c in [
+            "Well",
+            "Pad",
+            "Lift",
+            "Pump",
+            "Oil (BOPD)",
+            "PF held (psi)",
+            "WHP now (psi)",
+            "ResP (psi)",
+            "Formation",
+            "Include",
+        ]
+        if c in base_df.columns
+    ]
     edited_cfg = st.data_editor(
         base_df[config_cols],
         key="hpi_editor",
@@ -1001,19 +1142,26 @@ def render_tab() -> None:
             "Pump": st.column_config.TextColumn("Pump", disabled=True),
             "Formation": st.column_config.TextColumn("Formation", disabled=True),
             "PF held (psi)": st.column_config.NumberColumn(
-                "PF held (psi)", format="%d",
-                min_value=1000, max_value=5000, step=50,
+                "PF held (psi)",
+                format="%d",
+                min_value=1000,
+                max_value=5000,
+                step=50,
                 help="Power-fluid pressure held fixed during the WHP sweep. "
                 "Seeds from the per-pad PF above; edit to override this well.",
             ),
             "WHP now (psi)": st.column_config.NumberColumn(
-                "WHP now (psi)", format="%d",
-                min_value=0, max_value=2000, step=10,
+                "WHP now (psi)",
+                format="%d",
+                min_value=0,
+                max_value=2000,
+                step=10,
                 help="Baseline wellhead pressure (latest test; the pad average where "
                 "a well's own test WHP is missing). Edit if the current header differs.",
             ),
             "Include": st.column_config.CheckboxColumn(
-                "Include", help="Uncheck to skip this well in the run.",
+                "Include",
+                help="Uncheck to skip this well in the run.",
             ),
         },
     )
@@ -1036,7 +1184,8 @@ def render_tab() -> None:
     bpf, bhdr = st.columns(2)
     if bpf.button(
         "↻ Re-apply pad PF to wells",
-        key="hpi_reapply_pf", use_container_width=True,
+        key="hpi_reapply_pf",
+        use_container_width=True,
         help="Reset each JP well's 'PF held' to its pad's current value above "
         "(discards per-well PF overrides; keeps Include / WHP edits).",
     ):
@@ -1051,7 +1200,8 @@ def render_tab() -> None:
         st.rerun()
     if bhdr.button(
         "⤓ Apply pad header → wells' WHP now",
-        key="hpi_apply_header", use_container_width=True,
+        key="hpi_apply_header",
+        use_container_width=True,
         help="Re-baseline each well's 'WHP now' to the pad header above, PRESERVING "
         "its flowline drop: WHP = edited header + (measured WHP − live header). "
         "Editing a pad header to a hypothetical level shifts its wells together by "
@@ -1101,7 +1251,10 @@ def render_tab() -> None:
     )
 
     run_clicked = st.button(
-        "Run header impact", type="primary", use_container_width=True, key="hpi_run",
+        "Run header impact",
+        type="primary",
+        use_container_width=True,
+        key="hpi_run",
         disabled=pads_stale,
     ) or st.session_state.pop("hpi_trigger_run", False)
     if pads_stale:
@@ -1126,11 +1279,14 @@ def render_tab() -> None:
     bhp_map: dict[str, float] = {}
     if fric_mode == "calibrate":
         from woffl.gui.fric_calibration import calibrate_friction_coefs
+
         with st.spinner("Pulling latest measured BHP per well..."):
             bhp_map = get_latest_bhp_per_well(months_back)
         no_bhp = [w for w in well_names if w not in bhp_map]
         if no_bhp:
-            st.caption(f"No measured BHP — Databricks coefs (no calibration): {', '.join(no_bhp)}")
+            st.caption(
+                f"No measured BHP — Databricks coefs (no calibration): {', '.join(no_bhp)}"
+            )
 
     # ── IPR: three tiers (gauge → gaugeless back-calc → jp_chars default) ──
     with st.spinner(f"Fetching well tests ({months_back} mo) and computing IPR..."):
@@ -1143,13 +1299,24 @@ def render_tab() -> None:
         with st.spinner(f"Estimating BHP for {len(missing)} gaugeless wells..."):
             vogel_dict.update(
                 _estimate_gaugeless_ipr(
-                    missing, months_back, PAD_PF_FALLBACK, jp_hist, jp_chars_dict,
-                    whp_map=whp_map, pf_map=pf_map_sel,
+                    missing,
+                    months_back,
+                    PAD_PF_FALLBACK,
+                    jp_hist,
+                    jp_chars_dict,
+                    whp_map=whp_map,
+                    pf_map=pf_map_sel,
                 )
             )
 
-    gauged = [w for w in well_names if w in vogel_dict and not vogel_dict[w].get("_bhp_estimated")]
-    estimated = [w for w in well_names if w in vogel_dict and vogel_dict[w].get("_bhp_estimated")]
+    gauged = [
+        w
+        for w in well_names
+        if w in vogel_dict and not vogel_dict[w].get("_bhp_estimated")
+    ]
+    estimated = [
+        w for w in well_names if w in vogel_dict and vogel_dict[w].get("_bhp_estimated")
+    ]
     fallback = [w for w in well_names if w not in vogel_dict]
     if gauged:
         st.caption(f"IPR from BHP gauge: {', '.join(gauged)}")
@@ -1165,9 +1332,13 @@ def render_tab() -> None:
     emp_well_dfs: dict = {}
     need_emp = bool(compare_emp or (selected["Lift"] != "JP").any())
     if need_emp:
-        with st.spinner("Pulling hourly historian trends and fitting empirical slopes..."):
+        with st.spinner(
+            "Pulling hourly historian trends and fitting empirical slopes..."
+        ):
             try:
-                emp_well_dfs, emp_fits, emp_missing = _fetch_empirical_fits(well_names, months_back)
+                emp_well_dfs, emp_fits, emp_missing = _fetch_empirical_fits(
+                    well_names, months_back
+                )
             except Exception as e:
                 emp_well_dfs, emp_fits, emp_missing = {}, {}, []
                 st.warning(
@@ -1198,8 +1369,11 @@ def render_tab() -> None:
         if traw_pp is not None and not traw_pp.empty:
             for wn in well_names:
                 tw = traw_pp[traw_pp["well"] == wn]
-                fit = fit_well_ipr(tw, pr_hi=pr_hi_for_formation(form_map.get(wn))) \
-                    if not tw.empty else None
+                fit = (
+                    fit_well_ipr(tw, pr_hi=pr_hi_for_formation(form_map.get(wn)))
+                    if not tw.empty
+                    else None
+                )
                 if fit:
                     pseudo_pr_map[wn] = float(fit["pr"])
         if pseudo_pr_map:
@@ -1211,7 +1385,7 @@ def render_tab() -> None:
     # ── solve each well at baseline WHP and at WHP + Δ ─────────────────
     results = []
     errors: list[str] = []
-    ipr_rows: dict = {}     # exact IPR (ResP/qwf/pwf/wc) used per JP well, for the review
+    ipr_rows: dict = {}  # exact IPR (ResP/qwf/pwf/wc) used per JP well, for the review
     curve_wells: dict = {}  # per-well swept oil for the response curves (if requested)
     # Un-edited "ResP (psi)" per well, so the JP branch can detect a GENUINE
     # manual edit (vs the as-loaded vw_prop_resvr/assumed value) and honor it.
@@ -1221,7 +1395,9 @@ def render_tab() -> None:
     # Like-wells donor metadata (G3): pad / lift / formation per selected well.
     rows_meta = {
         str(r["Well"]): {
-            "pad": r["Pad"], "lift": r.get("Lift"), "formation": r.get("Formation"),
+            "pad": r["Pad"],
+            "lift": r.get("Lift"),
+            "formation": r.get("Formation"),
         }
         for _, r in selected.iterrows()
     }
@@ -1237,8 +1413,15 @@ def render_tab() -> None:
         if str(row.get("Lift", "JP")) != "JP":
             fit_ov, corr_prov = _resolve_corr_fits(wn, corr_token, rows_meta, emp_fits)
             nrow = _solve_nonjp_row(
-                wn, row, emp_fits, emp_well_dfs, delta_p, fit_ov, corr_prov,
-                ipr_sink=ipr_rows, res_pres_override=pseudo_pr_map.get(wn),
+                wn,
+                row,
+                emp_fits,
+                emp_well_dfs,
+                delta_p,
+                fit_ov,
+                corr_prov,
+                ipr_sink=ipr_rows,
+                res_pres_override=pseudo_pr_map.get(wn),
             )
             results.append(nrow)
             if build_curves:
@@ -1250,8 +1433,15 @@ def render_tab() -> None:
             # Classified JP but no current pump now → fall back to empirical-only.
             fit_ov, corr_prov = _resolve_corr_fits(wn, corr_token, rows_meta, emp_fits)
             nrow = _solve_nonjp_row(
-                wn, row, emp_fits, emp_well_dfs, delta_p, fit_ov, corr_prov,
-                ipr_sink=ipr_rows, res_pres_override=pseudo_pr_map.get(wn),
+                wn,
+                row,
+                emp_fits,
+                emp_well_dfs,
+                delta_p,
+                fit_ov,
+                corr_prov,
+                ipr_sink=ipr_rows,
+                res_pres_override=pseudo_pr_map.get(wn),
             )
             results.append(nrow)
             if build_curves:
@@ -1264,7 +1454,11 @@ def render_tab() -> None:
             whp_now = float(whp_map.get(wn, 210.0))
         whp_now = float(whp_now)
         pf_held = float(row["PF held (psi)"])
-        ipr_src = "gauge" if wn in gauged else ("back-calc" if wn in estimated else "jp_chars")
+        ipr_src = (
+            "gauge"
+            if wn in gauged
+            else ("back-calc" if wn in estimated else "jp_chars")
+        )
 
         try:
             # IPR donor (G3): own, a specific well, or a like-wells group average.
@@ -1294,8 +1488,10 @@ def render_tab() -> None:
             base_resp = base_resp_map.get(str(wn))
             if (
                 donor_vogel is not None
-                and edited_resp is not None and not pd.isna(edited_resp)
-                and base_resp is not None and not pd.isna(base_resp)
+                and edited_resp is not None
+                and not pd.isna(edited_resp)
+                and base_resp is not None
+                and not pd.isna(base_resp)
                 and abs(float(edited_resp) - float(base_resp)) > 0.5
                 and float(edited_resp) > float(donor_vogel.get("pwf", 0) or 0)
             ):
@@ -1305,8 +1501,10 @@ def render_tab() -> None:
             well_objs = create_well_objects(wc)
             wellbore, well_profile, inflow, res_mix, prop_pf = well_objs
             ipr_rows[wn] = {
-                "res_pres": float(wc.res_pres), "qwf": float(wc.qwf),
-                "pwf": float(wc.pwf), "form_wc": float(wc.form_wc),
+                "res_pres": float(wc.res_pres),
+                "qwf": float(wc.qwf),
+                "pwf": float(wc.pwf),
+                "form_wc": float(wc.form_wc),
             }
 
             # Friction coefs by mode: Databricks defaults, manual override, or
@@ -1322,39 +1520,66 @@ def render_tab() -> None:
                 ken_fixed = float(friction_coefs_from_chars(chars).get("ken", 0.03))
                 try:
                     cal = calibrate_friction_coefs(
-                        well_name=wn, target_bhp=float(bhp_map[wn]),
-                        pwh=whp_now, tsu=wc.form_temp, ppf_surf=pf_held,
-                        nozzle=pump["nozzle_no"], throat=pump["throat_ratio"],
-                        knz=0.01, ken=ken_fixed,
-                        wellbore=wellbore, wellprof=well_profile,
-                        ipr_su=inflow, prop_su=res_mix, prop_pf=prop_pf,
+                        well_name=wn,
+                        target_bhp=float(bhp_map[wn]),
+                        pwh=whp_now,
+                        tsu=wc.form_temp,
+                        ppf_surf=pf_held,
+                        nozzle=pump["nozzle_no"],
+                        throat=pump["throat_ratio"],
+                        knz=0.01,
+                        ken=ken_fixed,
+                        wellbore=wellbore,
+                        wellprof=well_profile,
+                        ipr_su=inflow,
+                        prop_su=res_mix,
+                        prop_pf=prop_pf,
                         jpump_direction="reverse",
                     )
                     if cal.converged:
-                        fric = {"knz": cal.knz, "ken": cal.best_ken,
-                                "kth": cal.best_kth, "kdi": cal.best_kdi}
+                        fric = {
+                            "knz": cal.knz,
+                            "ken": cal.best_ken,
+                            "kth": cal.best_kth,
+                            "kdi": cal.best_kdi,
+                        }
                         fric_source = "calibrated"
                         cal_err = cal.best_modeled_bhp - cal.target_bhp
                 except Exception as ce:
                     errors.append(f"{wn}: calibration error — {ce}")
 
             res_now = _solve_at_whp(
-                wc, well_objs, pump["nozzle_no"], pump["throat_ratio"], whp_now, pf_held, fric
+                wc,
+                well_objs,
+                pump["nozzle_no"],
+                pump["throat_ratio"],
+                whp_now,
+                pf_held,
+                fric,
             )
-            # Clamp the scenario WHP to the sweep floor — delta_p reaches -500
-            # while typical WHPs run 100-400 psi, and the solver gets garbage
-            # (or dies into the skipped list) below the floor. The sweep
-            # already applies the same clamp via _WHP_FLOOR.
-            whp_scen = whp_now + delta_p
-            if whp_scen < _WHP_FLOOR:
+            # Clamp the scenario WHP to the sweep floor (P1-22) — delta_p reaches
+            # -500 while typical WHPs run 100-400 psi, and the solver gets garbage
+            # (or dies into the skipped list) below the floor. The sweep already
+            # applies the same clamp via _WHP_FLOOR. Both the displayed "WHP scen"
+            # and the physics-slope math below read this SAME clamped value, so
+            # display and math can't disagree.
+            whp_scen, whp_scen_clamped = clamp_scenario_whp(
+                whp_now, delta_p, floor=_WHP_FLOOR
+            )
+            if whp_scen_clamped:
                 errors.append(
-                    f"{wn}: note — scenario WHP {whp_scen:.0f} psi is below the "
-                    f"{_WHP_FLOOR:.0f}-psi floor; solved at the floor instead"
+                    f"{wn}: note — scenario WHP {whp_now + delta_p:.0f} psi is below "
+                    f"the {_WHP_FLOOR:.0f}-psi floor; solved at the floor "
+                    f"({whp_scen:.0f} psi) instead"
                 )
-                whp_scen = _WHP_FLOOR
             res_scen = _solve_at_whp(
-                wc, well_objs, pump["nozzle_no"], pump["throat_ratio"],
-                whp_scen, pf_held, fric,
+                wc,
+                well_objs,
+                pump["nozzle_no"],
+                pump["throat_ratio"],
+                whp_scen,
+                pf_held,
+                fric,
             )
             if build_curves:
                 # Capture model BHP (psu) + WHP at each swept point too — the
@@ -1372,21 +1597,36 @@ def render_tab() -> None:
                         bhps.append(res_now["psu"])
                     else:
                         rd = _solve_at_whp(
-                            wc, well_objs, pump["nozzle_no"], pump["throat_ratio"],
-                            whp_d, pf_held, fric,
+                            wc,
+                            well_objs,
+                            pump["nozzle_no"],
+                            pump["throat_ratio"],
+                            whp_d,
+                            pf_held,
+                            fric,
                         )
                         oils.append(rd["oil"])
                         bhps.append(rd["psu"])
-                curve_wells[wn] = {"pad": row["Pad"], "oil": oils, "bhp": bhps, "whp": whps}
+                curve_wells[wn] = {
+                    "pad": row["Pad"],
+                    "oil": oils,
+                    "bhp": bhps,
+                    "whp": whps,
+                }
         except Exception as e:
             errors.append(f"{wn}: solver error — {e}")
             continue
 
-        # Physics-implied dBHP/dWHP (the secant of the two solves)
-        if delta_p != 0 and pd.notna(res_scen["psu"]) and pd.notna(res_now["psu"]):
-            phys_slope = (res_scen["psu"] - res_now["psu"]) / delta_p
-        else:
-            phys_slope = np.nan
+        # Physics-implied dBHP/dWHP (the secant of the two solves), divided by the
+        # WHP delta the solver ACTUALLY saw (whp_scen − whp_now), never the raw
+        # requested delta_p (P1-22) — a clamped scenario would otherwise bias the
+        # slope low.
+        phys_slope = physics_slope(res_now["psu"], res_scen["psu"], whp_now, whp_scen)
+
+        # A solve that didn't converge (BatchPump's per-row "error", surfaced via
+        # _solve_at_whp) must read as "model failed", never a confident "no
+        # response" (P1-21).
+        solve_error = solver_error_note(res_now.get("error"), res_scen.get("error"))
 
         row_d = {
             "Well": wn,
@@ -1399,7 +1639,7 @@ def render_tab() -> None:
             "BHP cal err": cal_err,
             "PF held (psi)": int(pf_held),
             "WHP now (psi)": int(round(whp_now)),
-            "WHP scen (psi)": int(round(whp_now + delta_p)),
+            "WHP scen (psi)": int(round(whp_scen)),
             "BHP now (psi)": res_now["psu"],
             "BHP scen (psi)": res_scen["psu"],
             "ΔBHP (psi)": res_scen["psu"] - res_now["psu"],
@@ -1412,6 +1652,7 @@ def render_tab() -> None:
             "Sonic now": res_now["sonic"],
             "Sonic scen": res_scen["sonic"],
             "Mach scen": res_scen["mach"],
+            "Solve error": solve_error,
         }
         corr_fits, corr_prov = _resolve_corr_fits(wn, corr_token, rows_meta, emp_fits)
         emp_class = None
@@ -1424,7 +1665,12 @@ def render_tab() -> None:
         row_d["IPR donor"] = describe_donor(ipr_token, len(ipr_members or []))
         row_d["Corr donor"] = corr_prov
         row_d["Verdict"] = _verdict(
-            res_now["sonic"], res_scen["sonic"], row_d["ΔOil (BOPD)"], emp_class, compare_emp
+            res_now["sonic"],
+            res_scen["sonic"],
+            row_d["ΔOil (BOPD)"],
+            emp_class,
+            compare_emp,
+            error=solve_error,
         )
         results.append(row_d)
 
@@ -1451,7 +1697,8 @@ def render_tab() -> None:
         _traw = fetch_well_tests_raw(months_back)
         st.session_state["hpi_test_df"] = (
             _traw[_traw["well"].isin(well_names)].copy()
-            if _traw is not None and not _traw.empty else None
+            if _traw is not None and not _traw.empty
+            else None
         )
     except Exception as e:
         # Surface the failure (matches the empirical-fetch handling above) — a
@@ -1468,7 +1715,10 @@ def render_tab() -> None:
         str(r["Well"]): r.get("Oil (BOPD)") for _, r in selected.iterrows()
     }
     if build_curves and curve_wells:
-        st.session_state["hpi_curve"] = {"deltas": list(_SWEEP_DELTAS), "wells": curve_wells}
+        st.session_state["hpi_curve"] = {
+            "deltas": list(_SWEEP_DELTAS),
+            "wells": curve_wells,
+        }
     else:
         st.session_state.pop("hpi_curve", None)
     _render_results(results_df, delta_p)
@@ -1493,7 +1743,9 @@ def _render_header_estimate(results_df: pd.DataFrame, delta_p: float) -> None:
     # 0.0 (flagged). A silent 0.0 default counted the entire liquid delta as
     # oil for any well missing form_wc, inflating the field ΔOil rollup.
     wc_map: dict = {}
-    if test_df is not None and {"well", "WtDate"}.issubset(getattr(test_df, "columns", [])):
+    if test_df is not None and {"well", "WtDate"}.issubset(
+        getattr(test_df, "columns", [])
+    ):
         cols = set(test_df.columns)
         for w, g in test_df.groupby("well"):
             g = g.sort_values("WtDate")
@@ -1512,7 +1764,11 @@ def _render_header_estimate(results_df: pd.DataFrame, delta_p: float) -> None:
     pad_of = dict(
         zip(
             results_df["Well"],
-            results_df["Pad"] if "Pad" in results_df.columns else [""] * len(results_df),
+            (
+                results_df["Pad"]
+                if "Pad" in results_df.columns
+                else [""] * len(results_df)
+            ),
         )
     )
     _pad_wcs: dict = {}
@@ -1534,10 +1790,16 @@ def _render_header_estimate(results_df: pd.DataFrame, delta_p: float) -> None:
     # counts (own / group tokens fall through to the auto own→group resolution).
     wellset = set(results_df["Well"])
     not_specific = {OWN_TOKEN, "", "nan", "None", *DONOR_GROUP_TOKENS}
-    corr_tok = dict(zip(input_df["Well"], input_df["Corr donor"])) if (
-        input_df is not None and "Corr donor" in input_df.columns) else {}
-    ipr_tok = dict(zip(input_df["Well"], input_df["IPR donor"])) if (
-        input_df is not None and "IPR donor" in input_df.columns) else {}
+    corr_tok = (
+        dict(zip(input_df["Well"], input_df["Corr donor"]))
+        if (input_df is not None and "Corr donor" in input_df.columns)
+        else {}
+    )
+    ipr_tok = (
+        dict(zip(input_df["Well"], input_df["IPR donor"]))
+        if (input_df is not None and "IPR donor" in input_df.columns)
+        else {}
+    )
 
     def _specific(tok):
         t = str(tok)
@@ -1548,15 +1810,25 @@ def _render_header_estimate(results_df: pd.DataFrame, delta_p: float) -> None:
         w = r["Well"]
         cf = (emp_fits.get(w) or {}).get("BHP~WHP")
         own_corr = None
-        if cf is not None and ht.classify_response(cf) == "responsive" and pd.notna(cf.mean_slope):
+        if (
+            cf is not None
+            and ht.classify_response(cf) == "responsive"
+            and pd.notna(cf.mean_slope)
+        ):
             own_corr = float(cf.mean_slope)
         fit = (fit_map.get(w) or {}).get("fit") or {}
         wells[w] = {
-            "own_corr": own_corr, "sonic": bool(r.get("Sonic now", False)),
-            "lift": r.get("Lift", "?"), "qmax": fit.get("qmax"), "pr": fit.get("pr"),
-            "pad": r.get("Pad"), "formation": r.get("Formation"),
-            "bhp_now": r.get("BHP now (psi)"), "wc": _wc_for(w),
-            "corr_donor": _specific(corr_tok.get(w)), "ipr_donor": _specific(ipr_tok.get(w)),
+            "own_corr": own_corr,
+            "sonic": bool(r.get("Sonic now", False)),
+            "lift": r.get("Lift", "?"),
+            "qmax": fit.get("qmax"),
+            "pr": fit.get("pr"),
+            "pad": r.get("Pad"),
+            "formation": r.get("Formation"),
+            "bhp_now": r.get("BHP now (psi)"),
+            "wc": _wc_for(w),
+            "corr_donor": _specific(corr_tok.get(w)),
+            "ipr_donor": _specific(ipr_tok.get(w)),
         }
     est = estimate_header_impacts(wells, delta_p)
     # Field confidence interval: vary the GROUP correlation by ±1σ (the dominant shared
@@ -1568,15 +1840,24 @@ def _render_header_estimate(results_df: pd.DataFrame, delta_p: float) -> None:
     est_hi = estimate_header_impacts(wells, delta_p, hi_ovr)
     field_lo = sum(e["doil"] for e in est_lo.values() if pd.notna(e["doil"]))
     field_hi = sum(e["doil"] for e in est_hi.values() if pd.notna(e["doil"]))
-    df = pd.DataFrame([
-        {
-            "Well": w, "Pad": wells[w]["pad"], "Lift": wells[w]["lift"],
-            "dBHP/dWHP": e["corr"], "corr src": e["corr_src"], "ΔBHP (psi)": e["dbhp"],
-            "ΔLiquid (BPD)": e["dliquid"], "WC": wells[w]["wc"], "ΔOil (BOPD)": e["doil"],
-            "IPR src": e["ipr_src"], "Confidence": e["conf"],
-        }
-        for w, e in est.items()
-    ])
+    df = pd.DataFrame(
+        [
+            {
+                "Well": w,
+                "Pad": wells[w]["pad"],
+                "Lift": wells[w]["lift"],
+                "dBHP/dWHP": e["corr"],
+                "corr src": e["corr_src"],
+                "ΔBHP (psi)": e["dbhp"],
+                "ΔLiquid (BPD)": e["dliquid"],
+                "WC": wells[w]["wc"],
+                "ΔOil (BOPD)": e["doil"],
+                "IPR src": e["ipr_src"],
+                "Confidence": e["conf"],
+            }
+            for w, e in est.items()
+        ]
+    )
     if df.empty:
         return
 
@@ -1591,20 +1872,29 @@ def _render_header_estimate(results_df: pd.DataFrame, delta_p: float) -> None:
     valid = df["ΔOil (BOPD)"].notna()
     field = float(df.loc[valid, "ΔOil (BOPD)"].sum())
     by_conf = df.loc[valid].groupby("Confidence")["ΔOil (BOPD)"].agg(["sum", "count"])
-    band_lo, band_hi = sorted([field_lo, field_hi])   # CI on the field total
+    band_lo, band_hi = sorted([field_lo, field_hi])  # CI on the field total
     direction = "rise" if delta_p > 0 else "drop"
     c1, c2, c3 = st.columns(3)
-    c1.metric(f"Field ΔOil · {int(delta_p):+d} psi header {direction}",
-              f"{field:+,.0f} BOPD", f"CI [{band_lo:+,.0f}, {band_hi:+,.0f}]",
-              delta_color="off",
-              help="Sum over wells with a resolvable chain. CI = field total with the "
-              "borrowed group correlation varied ±1σ (the dominant shared uncertainty).")
+    c1.metric(
+        f"Field ΔOil · {int(delta_p):+d} psi header {direction}",
+        f"{field:+,.0f} BOPD",
+        f"CI [{band_lo:+,.0f}, {band_hi:+,.0f}]",
+        delta_color="off",
+        help="Sum over wells with a resolvable chain. CI = field total with the "
+        "borrowed group correlation varied ±1σ (the dominant shared uncertainty).",
+    )
     n_sonic = int((df["Confidence"] == "sonic").sum())
-    c2.metric("Sonic (no lever)", n_sonic,
-              help="JP wells in physics critical flow — header can't reach BHP, ΔOil=0.")
+    c2.metric(
+        "Sonic (no lever)",
+        n_sonic,
+        help="JP wells in physics critical flow — header can't reach BHP, ΔOil=0.",
+    )
     n_high = int((df["Confidence"] == "high").sum())
-    c3.metric("Own corr + own IPR", f"{n_high}/{len(df)}",
-              help="High-confidence wells (own data both steps); the rest borrow donors.")
+    c3.metric(
+        "Own corr + own IPR",
+        f"{n_high}/{len(df)}",
+        help="High-confidence wells (own data both steps); the rest borrow donors.",
+    )
     parts = " · ".join(
         f"**{idx}** {row['sum']:+,.0f} BOPD ({int(row['count'])}w)"
         for idx, row in by_conf.iterrows()
@@ -1626,39 +1916,59 @@ def _render_header_estimate(results_df: pd.DataFrame, delta_p: float) -> None:
         lo = sum(est_lo[w]["doil"] for w in ws if pd.notna(est_lo[w]["doil"]))
         hi = sum(est_hi[w]["doil"] for w in ws if pd.notna(est_hi[w]["doil"]))
         plo, phi = sorted([lo, hi])
-        roll.append({
-            "Pad": pad, "Wells": len(ws),
-            "ΔOil (BOPD)": d, "CI low": plo, "CI high": phi,
-            "BOPD/100psi": d * norm if pd.notna(norm) else np.nan,
-            "Sonic": sum(1 for w in ws if est[w]["conf"] == "sonic"),
-            "Own corr+IPR": sum(1 for w in ws if est[w]["conf"] == "high"),
-        })
-    roll.append({
-        "Pad": "ALL", "Wells": len(est), "ΔOil (BOPD)": field,
-        "CI low": band_lo, "CI high": band_hi,
-        "BOPD/100psi": field * norm if pd.notna(norm) else np.nan,
-        "Sonic": n_sonic, "Own corr+IPR": n_high,
-    })
+        roll.append(
+            {
+                "Pad": pad,
+                "Wells": len(ws),
+                "ΔOil (BOPD)": d,
+                "CI low": plo,
+                "CI high": phi,
+                "BOPD/100psi": d * norm if pd.notna(norm) else np.nan,
+                "Sonic": sum(1 for w in ws if est[w]["conf"] == "sonic"),
+                "Own corr+IPR": sum(1 for w in ws if est[w]["conf"] == "high"),
+            }
+        )
+    roll.append(
+        {
+            "Pad": "ALL",
+            "Wells": len(est),
+            "ΔOil (BOPD)": field,
+            "CI low": band_lo,
+            "CI high": band_hi,
+            "BOPD/100psi": field * norm if pd.notna(norm) else np.nan,
+            "Sonic": n_sonic,
+            "Own corr+IPR": n_high,
+        }
+    )
     st.markdown("**Per-pad rollup**")
     st.dataframe(
         pd.DataFrame(roll).style.format(
             {
-                "ΔOil (BOPD)": "{:+,.0f}", "CI low": "{:+,.0f}", "CI high": "{:+,.0f}",
+                "ΔOil (BOPD)": "{:+,.0f}",
+                "CI low": "{:+,.0f}",
+                "CI high": "{:+,.0f}",
                 "BOPD/100psi": "{:+,.1f}",
-            }, na_rep="—",
+            },
+            na_rep="—",
         ),
-        use_container_width=True, hide_index=True,
+        use_container_width=True,
+        hide_index=True,
     )
 
     with st.expander("Per-well chain detail", expanded=False):
         st.dataframe(
             df.style.format(
                 {
-                    "dBHP/dWHP": "{:.2f}", "ΔBHP (psi)": "{:+,.0f}", "ΔLiquid (BPD)": "{:+,.0f}",
-                    "WC": "{:.2f}", "ΔOil (BOPD)": "{:+,.0f}",
-                }, na_rep="—",
+                    "dBHP/dWHP": "{:.2f}",
+                    "ΔBHP (psi)": "{:+,.0f}",
+                    "ΔLiquid (BPD)": "{:+,.0f}",
+                    "WC": "{:.2f}",
+                    "ΔOil (BOPD)": "{:+,.0f}",
+                },
+                na_rep="—",
             ),
-            use_container_width=True, hide_index=True,
+            use_container_width=True,
+            hide_index=True,
         )
 
 
@@ -1697,14 +2007,19 @@ def _render_results(results_df: pd.DataFrame, delta_p: float) -> None:
     d_oil = results_df["Chosen ΔOil (BOPD)"].sum()
     oil_scen = oil_now + d_oil
     n_sonic = int(results_df["Sonic scen"].fillna(False).sum())
-    n_override = int(results_df["Method used"].astype(str).str.startswith("empirical").sum())
+    n_override = int(
+        results_df["Method used"].astype(str).str.startswith("empirical").sum()
+    )
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Wells", len(results_df))
     c2.metric("Oil now (modeled)", f"{oil_now:,.0f} BOPD")
-    c3.metric(f"Oil at {int(delta_p):+d} psi", f"{oil_scen:,.0f} BOPD", f"{d_oil:+,.0f}")
+    c3.metric(
+        f"Oil at {int(delta_p):+d} psi", f"{oil_scen:,.0f} BOPD", f"{d_oil:+,.0f}"
+    )
     c4.metric(
-        "Sonic in scenario", n_sonic,
+        "Sonic in scenario",
+        n_sonic,
         help="Wells that hit sonic flow at the new WHP — result unreliable / "
         "the header can't be dropped that far on these.",
     )
@@ -1721,19 +2036,35 @@ def _render_results(results_df: pd.DataFrame, delta_p: float) -> None:
         # empirical, exactly as the headline d_oil (sum of "Chosen ΔOil") does.
         # The raw-sum version disagreed with the headline on any pad with
         # ESP/gas-lift/flowing wells.
-        phys_tot = float(sum(
-            _chosen_method(r["ΔOil (BOPD)"], r.get("Emp ΔOil (BOPD)", np.nan), "physics")[0]
-            for _, r in results_df.iterrows()
-        ))
-        emp_tot = float(sum(
-            _chosen_method(r["ΔOil (BOPD)"], r.get("Emp ΔOil (BOPD)", np.nan), "empirical")[0]
-            for _, r in results_df.iterrows()
-        ))
-        auto_tot = float(sum(
-            _chosen_method(r["ΔOil (BOPD)"], r.get("Emp ΔOil (BOPD)", np.nan), "auto")[0]
-            for _, r in results_df.iterrows()
-        ))
-        n_emp = int(results_df["Emp ΔOil (BOPD)"].notna().sum()) if "Emp ΔOil (BOPD)" in results_df.columns else 0
+        phys_tot = float(
+            sum(
+                _chosen_method(
+                    r["ΔOil (BOPD)"], r.get("Emp ΔOil (BOPD)", np.nan), "physics"
+                )[0]
+                for _, r in results_df.iterrows()
+            )
+        )
+        emp_tot = float(
+            sum(
+                _chosen_method(
+                    r["ΔOil (BOPD)"], r.get("Emp ΔOil (BOPD)", np.nan), "empirical"
+                )[0]
+                for _, r in results_df.iterrows()
+            )
+        )
+        auto_tot = float(
+            sum(
+                _chosen_method(
+                    r["ΔOil (BOPD)"], r.get("Emp ΔOil (BOPD)", np.nan), "auto"
+                )[0]
+                for _, r in results_df.iterrows()
+            )
+        )
+        n_emp = (
+            int(results_df["Emp ΔOil (BOPD)"].notna().sum())
+            if "Emp ΔOil (BOPD)" in results_df.columns
+            else 0
+        )
         st.caption(
             f"Group ΔOil by method — Physics **{phys_tot:+,.0f}** · Empirical **{emp_tot:+,.0f}** · "
             f"Auto **{auto_tot:+,.0f}** BOPD. Only **{n_emp} of {len(results_df)}** wells have a "
@@ -1744,7 +2075,9 @@ def _render_results(results_df: pd.DataFrame, delta_p: float) -> None:
     # Verdict breakdown — how many wells fall in each response category.
     if "Verdict" in results_df.columns:
         vc = results_df["Verdict"].value_counts()
-        st.caption("Verdict mix — " + "  ·  ".join(f"**{k}**: {v}" for k, v in vc.items()))
+        st.caption(
+            "Verdict mix — " + "  ·  ".join(f"**{k}**: {v}" for k, v in vc.items())
+        )
 
     # PRIMARY estimate: the deterministic correlation→IPR→WC chain per well + field total.
     _render_header_estimate(results_df, delta_p)
@@ -1766,11 +2099,25 @@ def _render_results(results_df: pd.DataFrame, delta_p: float) -> None:
 
     # Well details — Verdict + provenance up front.
     st.subheader("Well Details")
-    front = [c for c in ["Well", "Pad", "Lift", "WHP now (psi)", "WHP scen (psi)",
-                          "Verdict", "Method used",
-                          "Chosen ΔOil (BOPD)", "Pump", "IPR src", "IPR donor",
-                          "Corr donor", "Fric src"]
-             if c in results_df.columns]
+    front = [
+        c
+        for c in [
+            "Well",
+            "Pad",
+            "Lift",
+            "WHP now (psi)",
+            "WHP scen (psi)",
+            "Verdict",
+            "Method used",
+            "Chosen ΔOil (BOPD)",
+            "Pump",
+            "IPR src",
+            "IPR donor",
+            "Corr donor",
+            "Fric src",
+        ]
+        if c in results_df.columns
+    ]
     disp_df = results_df[front + [c for c in results_df.columns if c not in front]]
     fmt = {
         "BHP cal err": "{:+,.0f}",
@@ -1810,7 +2157,8 @@ def _render_results(results_df: pd.DataFrame, delta_p: float) -> None:
                 "Primary method selector above.",
             ),
             "Chosen ΔOil (BOPD)": st.column_config.NumberColumn(
-                "Chosen ΔOil (BOPD)", format="%+,d",
+                "Chosen ΔOil (BOPD)",
+                format="%+,d",
                 help="The ΔOil used in the group total — physics or empirical per "
                 "Method used.",
             ),
@@ -1820,7 +2168,8 @@ def _render_results(results_df: pd.DataFrame, delta_p: float) -> None:
                 "vw_prop_mech defaults; manual = slider override.",
             ),
             "BHP cal err": st.column_config.NumberColumn(
-                "BHP cal err", format="%+d",
+                "BHP cal err",
+                format="%+d",
                 help="Modeled minus measured BHP after calibration (psi). Near 0 = "
                 "good match; large = model couldn't hit the gauge (see Sonic).",
             ),
@@ -1830,12 +2179,14 @@ def _render_results(results_df: pd.DataFrame, delta_p: float) -> None:
                 "from JP physics; jp_chars = Databricks defaults (least accurate).",
             ),
             "Phys dBHP/dWHP": st.column_config.NumberColumn(
-                "Phys dBHP/dWHP", format="%.2f",
+                "Phys dBHP/dWHP",
+                format="%.2f",
                 help="Physics-implied BHP sensitivity to wellhead pressure "
                 "(ΔBHP / Δ from the two solves).",
             ),
             "Emp dBHP/dWHP": st.column_config.NumberColumn(
-                "Emp dBHP/dWHP", format="%.2f",
+                "Emp dBHP/dWHP",
+                format="%.2f",
                 help="Empirical within-day BHP-vs-WHP slope from historian trends "
                 "— directly comparable to Phys dBHP/dWHP.",
             ),
@@ -1879,16 +2230,30 @@ def _render_results(results_df: pd.DataFrame, delta_p: float) -> None:
                         text=grp["Well"],
                         textposition="top center",
                         name=str(cls),
-                        marker=dict(size=10, color=class_color.get(str(cls), "#7f7f7f")),
+                        marker=dict(
+                            size=10, color=class_color.get(str(cls), "#7f7f7f")
+                        ),
                         hovertemplate="%{text}<br>Phys: %{x:.2f}<br>Emp: %{y:.2f}<extra></extra>",
                     )
                 )
-            lo = float(np.nanmin([comp["Phys dBHP/dWHP"].min(), comp["Emp dBHP/dWHP"].min(), 0]))
-            hi = float(np.nanmax([comp["Phys dBHP/dWHP"].max(), comp["Emp dBHP/dWHP"].max(), 1]))
+            lo = float(
+                np.nanmin(
+                    [comp["Phys dBHP/dWHP"].min(), comp["Emp dBHP/dWHP"].min(), 0]
+                )
+            )
+            hi = float(
+                np.nanmax(
+                    [comp["Phys dBHP/dWHP"].max(), comp["Emp dBHP/dWHP"].max(), 1]
+                )
+            )
             fig.add_trace(
                 go.Scatter(
-                    x=[lo, hi], y=[lo, hi], mode="lines", name="agree (y=x)",
-                    line=dict(dash="dash", color="gray"), hoverinfo="skip",
+                    x=[lo, hi],
+                    y=[lo, hi],
+                    mode="lines",
+                    name="agree (y=x)",
+                    line=dict(dash="dash", color="gray"),
+                    hoverinfo="skip",
                 )
             )
             fig.update_layout(
@@ -1905,14 +2270,24 @@ def _render_results(results_df: pd.DataFrame, delta_p: float) -> None:
 
     # ── chosen ΔOil by well, colored by pad ────────────────────────────
     st.subheader("Oil Change by Well (chosen method)")
-    palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2"]
+    palette = [
+        "#1f77b4",
+        "#ff7f0e",
+        "#2ca02c",
+        "#d62728",
+        "#9467bd",
+        "#8c564b",
+        "#e377c2",
+    ]
     pad_colors = {
         pad: palette[i % len(palette)]
         for i, pad in enumerate(sorted(results_df["Pad"].unique()))
     }
     fig = go.Figure()
     for pad in sorted(results_df["Pad"].unique()):
-        sub = results_df[results_df["Pad"] == pad].sort_values("Chosen ΔOil (BOPD)", ascending=False)
+        sub = results_df[results_df["Pad"] == pad].sort_values(
+            "Chosen ΔOil (BOPD)", ascending=False
+        )
         fig.add_trace(
             go.Bar(
                 x=sub["Well"],
@@ -1949,9 +2324,19 @@ def _render_results(results_df: pd.DataFrame, delta_p: float) -> None:
             "header change). Sonic-decoupled / no-response wells drop out — they're the "
             "ones a header move won't help."
         )
-        rcols = [c for c in ["Well", "Pad", "Verdict", "Method used",
-                             "Chosen ΔOil (BOPD)", "BOPD per 100 psi", "Sonic now"]
-                 if c in rank.columns]
+        rcols = [
+            c
+            for c in [
+                "Well",
+                "Pad",
+                "Verdict",
+                "Method used",
+                "Chosen ΔOil (BOPD)",
+                "BOPD per 100 psi",
+                "Sonic now",
+            ]
+            if c in rank.columns
+        ]
         st.dataframe(
             rank[rcols].style.format(
                 {"Chosen ΔOil (BOPD)": "{:+,.0f}", "BOPD per 100 psi": "{:+,.1f}"}
@@ -1967,21 +2352,34 @@ def _render_results(results_df: pd.DataFrame, delta_p: float) -> None:
 # ── v2 review surface: sensitivity, per-pad expanders, IPR, sense check ──────
 
 
-def _response_curve_fig(agg: dict, pads_to_show: list[str] | None = None, title: str = ""):
+def _response_curve_fig(
+    agg: dict, pads_to_show: list[str] | None = None, title: str = ""
+):
     """Line chart of ΔOil vs header change per pad (and the field total)."""
     if not agg or "deltas" not in agg:
         return None
     deltas = agg["deltas"]
     pads = agg.get("pads", {})
     keys = pads_to_show if pads_to_show is not None else sorted(pads.keys())
-    palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2"]
+    palette = [
+        "#1f77b4",
+        "#ff7f0e",
+        "#2ca02c",
+        "#d62728",
+        "#9467bd",
+        "#8c564b",
+        "#e377c2",
+    ]
     fig = go.Figure()
     for i, pad in enumerate(keys):
         if pad not in pads:
             continue
         fig.add_trace(
             go.Scatter(
-                x=deltas, y=pads[pad], mode="lines+markers", name=f"Pad {pad}",
+                x=deltas,
+                y=pads[pad],
+                mode="lines+markers",
+                name=f"Pad {pad}",
                 line=dict(color=palette[i % len(palette)]),
                 hovertemplate="Δ%{x:+d} psi<br>ΔOil %{y:+.0f} BOPD<extra></extra>",
             )
@@ -1989,7 +2387,10 @@ def _response_curve_fig(agg: dict, pads_to_show: list[str] | None = None, title:
     if pads_to_show is None and "ALL" in agg:
         fig.add_trace(
             go.Scatter(
-                x=deltas, y=agg["ALL"], mode="lines+markers", name="Field (ALL)",
+                x=deltas,
+                y=agg["ALL"],
+                mode="lines+markers",
+                name="Field (ALL)",
                 line=dict(color="black", width=3, dash="dot"),
                 hovertemplate="Δ%{x:+d} psi<br>ΔOil %{y:+.0f} BOPD<extra></extra>",
             )
@@ -1998,7 +2399,8 @@ def _response_curve_fig(agg: dict, pads_to_show: list[str] | None = None, title:
     fig.add_vline(x=0, line_dash="dash", line_color="gray")
     fig.update_layout(
         title=title or "Oil response vs header change",
-        xaxis_title="Header change Δ (psi)", yaxis_title="ΔOil vs current (BOPD)",
+        xaxis_title="Header change Δ (psi)",
+        yaxis_title="ΔOil vs current (BOPD)",
         height=420,
     )
     return fig
@@ -2014,12 +2416,15 @@ def _render_field_sensitivity(results_df: pd.DataFrame, delta_p: float) -> None:
     st.dataframe(
         table.style.format(
             {
-                "Oil now (BOPD)": "{:,.0f}", "ΔOil (BOPD)": "{:+,.0f}",
-                "Oil after Δ (BOPD)": "{:,.0f}", "BOPD per 100 psi": "{:+,.1f}",
+                "Oil now (BOPD)": "{:,.0f}",
+                "ΔOil (BOPD)": "{:+,.0f}",
+                "Oil after Δ (BOPD)": "{:,.0f}",
+                "BOPD per 100 psi": "{:+,.1f}",
             },
             na_rep="—",
         ),
-        use_container_width=True, hide_index=True,
+        use_container_width=True,
+        hide_index=True,
     )
     st.caption(
         f"ΔOil at the {int(delta_p):+d} psi run, normalized to BOPD per 100 psi of header "
@@ -2045,7 +2450,9 @@ def _render_field_sensitivity(results_df: pd.DataFrame, delta_p: float) -> None:
         )
 
 
-def _corr_review_fig(pad_df: pd.DataFrame, well_dfs: dict, fits: dict, driver: str = "WHP"):
+def _corr_review_fig(
+    pad_df: pd.DataFrame, well_dfs: dict, fits: dict, driver: str = "WHP"
+):
     """Per-pad WHP→BHP correlation grid for the review — one panel for EVERY well
     used in the impact: its own trend, the donor's trend, or (for group-average
     correlations / no data) a labeled note in the panel title. Returns a Figure
@@ -2074,9 +2481,13 @@ def _corr_review_fig(pad_df: pd.DataFrame, well_dfs: dict, fits: dict, driver: s
         else:
             titles.append(f"{w}<br>{note}" if note else f"{w} · no corr data")
     fig = make_subplots(
-        rows=rows, cols=cols, subplot_titles=titles,
-        vertical_spacing=0.10, horizontal_spacing=0.06,
-        x_title=f"{driver} (psi)", y_title="BHP (psi)",
+        rows=rows,
+        cols=cols,
+        subplot_titles=titles,
+        vertical_spacing=0.10,
+        horizontal_spacing=0.06,
+        x_title=f"{driver} (psi)",
+        y_title="BHP (psi)",
     )
     for i, w in enumerate(wells):
         r, c = i // cols + 1, i % cols + 1
@@ -2092,27 +2503,46 @@ def _corr_review_fig(pad_df: pd.DataFrame, well_dfs: dict, fits: dict, driver: s
         ords = (idx.normalize() - idx.normalize().min()).days
         fig.add_trace(
             go.Scatter(
-                x=d[driver], y=d["BHP"], mode="markers",
+                x=d[driver],
+                y=d["BHP"],
+                mode="markers",
                 marker=dict(size=4, color=ords, colorscale="Viridis", showscale=False),
                 hovertemplate=f"{driver}: %{{x:.0f}}<br>BHP: %{{y:.0f}}<extra>{w}</extra>",
                 showlegend=False,
             ),
-            row=r, col=c,
+            row=r,
+            col=c,
         )
         f_fit = (fits.get(source) or {}).get(key)
-        if f_fit is not None and getattr(f_fit, "daily", None) is not None \
-                and not f_fit.daily.empty and "good" in f_fit.daily.columns:
+        if (
+            f_fit is not None
+            and getattr(f_fit, "daily", None) is not None
+            and not f_fit.daily.empty
+            and "good" in f_fit.daily.columns
+        ):
             xseg: list = []
             yseg: list = []
             for _, dr in f_fit.daily[f_fit.daily["good"]].iterrows():
                 x0, x1 = dr["x_min"], dr["x_max"]
                 xseg += [x0, x1, None]
-                yseg += [dr["slope"] * x0 + dr["intercept"], dr["slope"] * x1 + dr["intercept"], None]
+                yseg += [
+                    dr["slope"] * x0 + dr["intercept"],
+                    dr["slope"] * x1 + dr["intercept"],
+                    None,
+                ]
             if xseg:
                 fig.add_trace(
-                    go.Scatter(x=xseg, y=yseg, mode="lines", line=dict(color="crimson", width=1),
-                               opacity=0.6, hoverinfo="skip", showlegend=False),
-                    row=r, col=c,
+                    go.Scatter(
+                        x=xseg,
+                        y=yseg,
+                        mode="lines",
+                        line=dict(color="crimson", width=1),
+                        opacity=0.6,
+                        hoverinfo="skip",
+                        showlegend=False,
+                    ),
+                    row=r,
+                    col=c,
                 )
         try:
             xlo, xhi = np.nanpercentile(d[driver], [1, 99])
@@ -2124,7 +2554,8 @@ def _corr_review_fig(pad_df: pd.DataFrame, well_dfs: dict, fits: dict, driver: s
         except Exception:
             pass
     fig.update_layout(
-        height=max(360, rows * 280), showlegend=False,
+        height=max(360, rows * 280),
+        showlegend=False,
         title_text=f"BHP vs {driver} — good daily fits in red",
         margin=dict(l=60, r=20, t=80, b=60),
     )
@@ -2144,10 +2575,7 @@ def _model_vs_obs_fig(pad_df, well_dfs: dict, curve: dict | None, sense_map: dic
     from plotly.subplots import make_subplots
 
     cwells = (curve or {}).get("wells", {}) or {}
-    wells = [
-        w for w in pad_df["Well"]
-        if w in cwells or w in (well_dfs or {})
-    ]
+    wells = [w for w in pad_df["Well"] if w in cwells or w in (well_dfs or {})]
     if not wells:
         return None
     n = len(wells)
@@ -2157,60 +2585,79 @@ def _model_vs_obs_fig(pad_df, well_dfs: dict, curve: dict | None, sense_map: dic
     bhp_now = dict(zip(pad_df["Well"], pad_df.get("BHP now (psi)", [])))
     titles = [f"{w} · {sense_map.get(w, '')}".rstrip(" ·") for w in wells]
     fig = make_subplots(
-        rows=rows, cols=cols, subplot_titles=titles,
-        vertical_spacing=0.12, horizontal_spacing=0.07,
-        x_title="WHP (psi)", y_title="BHP (psi)",
+        rows=rows,
+        cols=cols,
+        subplot_titles=titles,
+        vertical_spacing=0.12,
+        horizontal_spacing=0.07,
+        x_title="WHP (psi)",
+        y_title="BHP (psi)",
     )
     for i, w in enumerate(wells):
         r, c = i // cols + 1, i % cols + 1
         # actual historian cloud
         tdf = (well_dfs or {}).get(w)
-        if tdf is not None and "WHP" in getattr(tdf, "columns", []) and "BHP" in tdf.columns:
+        if (
+            tdf is not None
+            and "WHP" in getattr(tdf, "columns", [])
+            and "BHP" in tdf.columns
+        ):
             d = tdf[["WHP", "BHP"]].replace([np.inf, -np.inf], np.nan).dropna()
             d = d[d["BHP"] > 50]
             if not d.empty:
                 fig.add_trace(
                     go.Scatter(
-                        x=d["WHP"], y=d["BHP"], mode="markers",
+                        x=d["WHP"],
+                        y=d["BHP"],
+                        mode="markers",
                         marker=dict(size=3, color="lightslategray", opacity=0.45),
                         hovertemplate="WHP %{x:.0f}<br>BHP %{y:.0f}<extra>observed</extra>",
                         showlegend=False,
                     ),
-                    row=r, col=c,
+                    row=r,
+                    col=c,
                 )
         # model BHP-vs-WHP curve from the sweep
         cw = cwells.get(w, {})
         mw, mb = cw.get("whp"), cw.get("bhp")
         if mw and mb:
             pts = sorted(
-                (float(x), float(y)) for x, y in zip(mw, mb)
+                (float(x), float(y))
+                for x, y in zip(mw, mb)
                 if x is not None and y is not None and not pd.isna(x) and not pd.isna(y)
             )
             if pts:
                 xs, ys = zip(*pts)
                 fig.add_trace(
                     go.Scatter(
-                        x=list(xs), y=list(ys), mode="lines",
+                        x=list(xs),
+                        y=list(ys),
+                        mode="lines",
                         line=dict(color="royalblue", width=2),
                         hovertemplate="WHP %{x:.0f}<br>model BHP %{y:.0f}<extra>model</extra>",
                         showlegend=False,
                     ),
-                    row=r, col=c,
+                    row=r,
+                    col=c,
                 )
         # operating point (today)
         xn, yn = whp_now.get(w), bhp_now.get(w)
         if pd.notna(xn) and pd.notna(yn):
             fig.add_trace(
                 go.Scatter(
-                    x=[float(xn)], y=[float(yn)], mode="markers",
+                    x=[float(xn)],
+                    y=[float(yn)],
+                    mode="markers",
                     marker=dict(size=9, color="crimson", symbol="circle"),
                     hovertemplate="now: WHP %{x:.0f}<br>BHP %{y:.0f}<extra></extra>",
                     showlegend=False,
                 ),
-                row=r, col=c,
+                row=r,
+                col=c,
             )
     fig.update_layout(
-        height=max(340, rows * 300), showlegend=False,
+        height=max(340, rows * 300),
+        showlegend=False,
         title_text="Model BHP-vs-WHP (blue) over observed historian (grey) — ● = today",
         margin=dict(l=60, r=20, t=80, b=60),
     )
@@ -2225,24 +2672,37 @@ def _predict_doil(bhp_then, bhp_now, ir, fit, use_pseudo: bool, wc: float = 0.0)
     if pd.isna(bhp_then) or pd.isna(bhp_now):
         return np.nan
     if use_pseudo and fit:
-        dliq = vogel_oil(bhp_now, fit["qmax"], fit["pr"]) - vogel_oil(bhp_then, fit["qmax"], fit["pr"])
-        return dliq * (1.0 - float(wc))   # liquid IPR → oil via water cut
+        dliq = vogel_oil(bhp_now, fit["qmax"], fit["pr"]) - vogel_oil(
+            bhp_then, fit["qmax"], fit["pr"]
+        )
+        return dliq * (1.0 - float(wc))  # liquid IPR → oil via water cut
     if ir:
         try:
             from woffl.flow.inflow import InFlow
+
             fwc = float(ir.get("form_wc", 0.5))
-            inflow = InFlow(qwf=float(ir["qwf"]) * (1.0 - fwc), pwf=float(ir["pwf"]),
-                            pres=float(ir.get("res_pres", 1800.0)))
-            return float(inflow.oil_flow(float(bhp_now), "vogel")
-                         - inflow.oil_flow(float(bhp_then), "vogel"))
+            inflow = InFlow(
+                qwf=float(ir["qwf"]) * (1.0 - fwc),
+                pwf=float(ir["pwf"]),
+                pres=float(ir.get("res_pres", 1800.0)),
+            )
+            return float(
+                inflow.oil_flow(float(bhp_now), "vogel")
+                - inflow.oil_flow(float(bhp_then), "vogel")
+            )
         except Exception:
             return np.nan
     return np.nan
 
 
 def _backtest_table(
-    pad_df, test_df, curve, pump_changed: set | None = None, fit_map: dict | None = None,
-    ipr_rows: dict | None = None, use_pseudo: bool = False,
+    pad_df,
+    test_df,
+    curve,
+    pump_changed: set | None = None,
+    fit_map: dict | None = None,
+    ipr_rows: dict | None = None,
+    use_pseudo: bool = False,
 ) -> pd.DataFrame:
     """Per-well long-horizon back-test for a pad: the REAL header move that happened
     over the test window vs what the model would have predicted, plus the total-liquid
@@ -2262,19 +2722,27 @@ def _backtest_table(
         a = backtest_anchors(tw) if tw is not None else {}
         if not a:
             continue
-        dbhp_pred, extr = predict_dbhp_from_curve(cwells.get(w), a["whp_then"], a["whp_now"])
+        dbhp_pred, extr = predict_dbhp_from_curve(
+            cwells.get(w), a["whp_then"], a["whp_now"]
+        )
         diagnosis = backpressure_consistency(a["d_whp"], a["d_bhp"], a["d_liquid"])
         fm = fit_map.get(w) or {}
         fit, depl = fm.get("fit"), fm.get("depl") or {}
         wc = 0.0
         if tw is not None and "form_wc" in getattr(tw, "columns", []):
-            s = pd.to_numeric(tw.sort_values("WtDate")["form_wc"], errors="coerce").dropna()
+            s = pd.to_numeric(
+                tw.sort_values("WtDate")["form_wc"], errors="coerce"
+            ).dropna()
             if not s.empty:
                 wc = float(s.iloc[-1])
-        doil_pred = _predict_doil(a["bhp_then"], a["bhp_now"], ipr_rows.get(w), fit, use_pseudo, wc)
+        doil_pred = _predict_doil(
+            a["bhp_then"], a["bhp_now"], ipr_rows.get(w), fit, use_pseudo, wc
+        )
         # Single-fit pseudo-Pr (* = pinned at the formation cap → soft) + the
         # geometric depletion verdict (corr sign), which is the robust read.
-        pr_fit = (f"{fit['pr']:.0f}{'*' if fit.get('pr_at_bound') else ''}") if fit else "—"
+        pr_fit = (
+            (f"{fit['pr']:.0f}{'*' if fit.get('pr_at_bound') else ''}") if fit else "—"
+        )
         corr = depl.get("corr", np.nan)
         flags = []
         if w in pump_changed:
@@ -2285,12 +2753,19 @@ def _backtest_table(
             flags.append("extrap")
         rows.append(
             {
-                "Well": w, "n tests": a["n_tests"],
-                "ΔWHP (psi)": a["d_whp"], "ΔBHP actual (psi)": a["d_bhp"],
-                "ΔBHP pred (psi)": dbhp_pred, "ΔOil actual (BOPD)": a["d_oil"],
-                "ΔOil pred (BOPD)": doil_pred, "ΔLiquid (BPD)": a["d_liquid"],
-                "Pr fit": pr_fit, "BHP↔liq corr": corr, "Depletion": depl.get("verdict", "—"),
-                "Diagnosis": diagnosis, "Flags": " ".join(flags),
+                "Well": w,
+                "n tests": a["n_tests"],
+                "ΔWHP (psi)": a["d_whp"],
+                "ΔBHP actual (psi)": a["d_bhp"],
+                "ΔBHP pred (psi)": dbhp_pred,
+                "ΔOil actual (BOPD)": a["d_oil"],
+                "ΔOil pred (BOPD)": doil_pred,
+                "ΔLiquid (BPD)": a["d_liquid"],
+                "Pr fit": pr_fit,
+                "BHP↔liq corr": corr,
+                "Depletion": depl.get("verdict", "—"),
+                "Diagnosis": diagnosis,
+                "Flags": " ".join(flags),
             }
         )
     return pd.DataFrame(rows)
@@ -2309,10 +2784,14 @@ def _backtest_parity_fig(bt: pd.DataFrame, use_pseudo: bool):
         ("ΔBHP", "ΔBHP actual (psi)", "ΔBHP pred (psi)"),
         ("ΔOil", "ΔOil actual (BOPD)", "ΔOil pred (BOPD)"),
     ]
-    avail = [(t, xa, ya) for t, xa, ya in panels if xa in bt.columns and ya in bt.columns]
+    avail = [
+        (t, xa, ya) for t, xa, ya in panels if xa in bt.columns and ya in bt.columns
+    ]
     if not avail:
         return None
-    fig = make_subplots(rows=1, cols=len(avail), subplot_titles=[t for t, _, _ in avail])
+    fig = make_subplots(
+        rows=1, cols=len(avail), subplot_titles=[t for t, _, _ in avail]
+    )
     for i, (t, xa, ya) in enumerate(avail, start=1):
         x = pd.to_numeric(bt[xa], errors="coerce")
         y = pd.to_numeric(bt[ya], errors="coerce")
@@ -2324,27 +2803,40 @@ def _backtest_parity_fig(bt: pd.DataFrame, use_pseudo: bool):
         pad = max((hi - lo) * 0.1, 5.0)
         lo, hi = lo - pad, hi + pad
         fig.add_trace(
-            go.Scatter(x=[lo, hi], y=[lo, hi], mode="lines",
-                       line=dict(color="lightgray", dash="dash", width=1),
-                       hoverinfo="skip", showlegend=False),
-            row=1, col=i,
+            go.Scatter(
+                x=[lo, hi],
+                y=[lo, hi],
+                mode="lines",
+                line=dict(color="lightgray", dash="dash", width=1),
+                hoverinfo="skip",
+                showlegend=False,
+            ),
+            row=1,
+            col=i,
         )
         unit = "psi" if t == "ΔBHP" else "BOPD"
         fig.add_trace(
             go.Scatter(
-                x=x[m], y=y[m], mode="markers+text", text=bt["Well"][m],
-                textposition="top center", textfont=dict(size=8),
+                x=x[m],
+                y=y[m],
+                mode="markers+text",
+                text=bt["Well"][m],
+                textposition="top center",
+                textfont=dict(size=8),
                 marker=dict(size=9, color="#1f77b4"),
                 hovertemplate=f"%{{text}}<br>actual %{{x:.0f}} {unit}<br>pred %{{y:.0f}} {unit}<extra></extra>",
                 showlegend=False,
             ),
-            row=1, col=i,
+            row=1,
+            col=i,
         )
         fig.update_xaxes(title_text=f"actual ({unit})", row=1, col=i)
         fig.update_yaxes(title_text=f"predicted ({unit})", row=1, col=i)
     src = "fitted pseudo-Pr" if use_pseudo else "database/assumed Pr"
     fig.update_layout(
-        height=380, showlegend=False, margin=dict(l=60, r=20, t=60, b=50),
+        height=380,
+        showlegend=False,
+        margin=dict(l=60, r=20, t=60, b=50),
         title_text=f"Back-test parity — predicted vs actual (ΔOil IPR: {src}); on the dashed line = model matched reality",
     )
     fig.update_annotations(font_size=11)
@@ -2415,7 +2907,9 @@ def _build_backtest_export(results_df, delta_p) -> dict:
     for pad in pads:
         pad_df = results_df[results_df["Pad"] == pad]
         fm = _pad_single_fits_cached(pad_df, test_df)
-        bt = _backtest_table(pad_df, test_df, curve, pump_changed, fm, ipr_rows, use_pseudo)
+        bt = _backtest_table(
+            pad_df, test_df, curve, pump_changed, fm, ipr_rows, use_pseudo
+        )
         for rec in bt.to_dict("records"):
             rec["Pad"] = pad
             rows.append(rec)
@@ -2472,7 +2966,11 @@ def _render_backtest_export(results_df, delta_p) -> None:
         blob = json.dumps(payload, indent=2)
         wrote = None
         try:
-            out = Path(__file__).resolve().parents[3] / "temp" / "hpi_backtest_latest.json"
+            out = (
+                Path(__file__).resolve().parents[3]
+                / "temp"
+                / "hpi_backtest_latest.json"
+            )
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(blob, encoding="utf-8")
             wrote = str(out)
@@ -2486,7 +2984,9 @@ def _render_backtest_export(results_df, delta_p) -> None:
         }
         st.session_state["_hpi_bt_dump"] = cached
 
-    with st.expander("🧪 Back-test result dump (for review / iteration)", expanded=False):
+    with st.expander(
+        "🧪 Back-test result dump (for review / iteration)", expanded=False
+    ):
         st.caption(
             f"Captured **{cached['n_wells']}** back-tested well(s)"
             + (
@@ -2498,9 +2998,12 @@ def _render_backtest_export(results_df, delta_p) -> None:
             "pseudo-Pr fits, and the run config — the shared substrate for tuning the back-test."
         )
         st.download_button(
-            "Download back-test JSON", data=cached["blob"].encode("utf-8"),
-            file_name="hpi_backtest_latest.json", mime="application/json",
-            key="hpi_bt_dump_dl", use_container_width=True,
+            "Download back-test JSON",
+            data=cached["blob"].encode("utf-8"),
+            file_name="hpi_backtest_latest.json",
+            mime="application/json",
+            key="hpi_bt_dump_dl",
+            use_container_width=True,
         )
 
 
@@ -2572,12 +3075,20 @@ def _ipr_fit_fig(pad_df, test_df, fit_map: dict):
     for w in wells:
         fm = fit_map[w]
         fit, depl = fm.get("fit"), fm.get("depl") or {}
-        pr_txt = f"Pr {fit['pr']:.0f}{'*' if fit.get('pr_at_bound') else ''}" if fit else "no fit"
+        pr_txt = (
+            f"Pr {fit['pr']:.0f}{'*' if fit.get('pr_at_bound') else ''}"
+            if fit
+            else "no fit"
+        )
         titles.append(f"{w} · {pr_txt} · {depl.get('verdict', '—')}")
     fig = make_subplots(
-        rows=rows, cols=cols, subplot_titles=titles,
-        vertical_spacing=0.14, horizontal_spacing=0.08,
-        x_title="Total liquid (BPD)", y_title="BHP (psi)",
+        rows=rows,
+        cols=cols,
+        subplot_titles=titles,
+        vertical_spacing=0.14,
+        horizontal_spacing=0.08,
+        x_title="Total liquid (BPD)",
+        y_title="BHP (psi)",
     )
     by_well = pad_df.set_index("Well")
     has_well = test_df is not None and "well" in getattr(test_df, "columns", [])
@@ -2588,15 +3099,25 @@ def _ipr_fit_fig(pad_df, test_df, fit_map: dict):
         if fit:
             liq, pwf = _vogel_curve(fit["qmax"], fit["pr"])
             fig.add_trace(
-                go.Scatter(x=liq, y=pwf, mode="lines", line=dict(color="#1f77b4", width=2),
-                           showlegend=False,
-                           hovertemplate=f"fit IPR · Pr {fit['pr']:.0f}<br>Liquid %{{x:.0f}}<br>BHP %{{y:.0f}}<extra></extra>"),
-                row=r, col=c,
+                go.Scatter(
+                    x=liq,
+                    y=pwf,
+                    mode="lines",
+                    line=dict(color="#1f77b4", width=2),
+                    showlegend=False,
+                    hovertemplate=f"fit IPR · Pr {fit['pr']:.0f}<br>Liquid %{{x:.0f}}<br>BHP %{{y:.0f}}<extra></extra>",
+                ),
+                row=r,
+                col=c,
             )
         wt = test_df[test_df["well"] == w] if has_well else None
         wc_w = 0.0
-        if wt is not None and {"BHP", "WtTotalFluid", "WtDate"}.issubset(getattr(wt, "columns", [])):
-            wt = wt.dropna(subset=["BHP", "WtTotalFluid", "WtDate"]).sort_values("WtDate")
+        if wt is not None and {"BHP", "WtTotalFluid", "WtDate"}.issubset(
+            getattr(wt, "columns", [])
+        ):
+            wt = wt.dropna(subset=["BHP", "WtTotalFluid", "WtDate"]).sort_values(
+                "WtDate"
+            )
             if "form_wc" in wt.columns:
                 wcs = pd.to_numeric(wt["form_wc"], errors="coerce").dropna()
                 wc_w = float(wcs.iloc[-1]) if not wcs.empty else 0.0
@@ -2605,32 +3126,60 @@ def _ipr_fit_fig(pad_df, test_df, fit_map: dict):
                 ords = (pd.DatetimeIndex(wt["WtDate"]).normalize() - base).days
                 fig.add_trace(
                     go.Scatter(
-                        x=wt["WtTotalFluid"], y=wt["BHP"], mode="markers",
-                        marker=dict(size=6, color=ords, colorscale="Turbo",
-                                    showscale=not showed_scale,
-                                    colorbar=dict(title="days") if not showed_scale else None,
-                                    line=dict(width=0.4, color="white")),
+                        x=wt["WtTotalFluid"],
+                        y=wt["BHP"],
+                        mode="markers",
+                        marker=dict(
+                            size=6,
+                            color=ords,
+                            colorscale="Turbo",
+                            showscale=not showed_scale,
+                            colorbar=dict(title="days") if not showed_scale else None,
+                            line=dict(width=0.4, color="white"),
+                        ),
                         showlegend=False,
                         hovertemplate="Liquid %{x:.0f}<br>BHP %{y:.0f}<extra></extra>",
                     ),
-                    row=r, col=c,
+                    row=r,
+                    col=c,
                 )
                 showed_scale = True
         wr = by_well.loc[w] if w in by_well.index else None
         if wr is not None:
-            denom = max(1.0 - wc_w, 0.05)   # oil → liquid for the operating-point markers
+            denom = max(
+                1.0 - wc_w, 0.05
+            )  # oil → liquid for the operating-point markers
             o0, b0 = wr.get("Oil now (BOPD)"), wr.get("BHP now (psi)")
             o1, b1 = wr.get("Oil scen (BOPD)"), wr.get("BHP scen (psi)")
             if pd.notna(o0) and pd.notna(b0):
-                fig.add_trace(go.Scatter(x=[o0 / denom], y=[b0], mode="markers",
-                    marker=dict(color="black", size=11, symbol="circle"), showlegend=False,
-                    hovertemplate="now %{x:.0f} BLPD @ %{y:.0f} psi<extra></extra>"), row=r, col=c)
+                fig.add_trace(
+                    go.Scatter(
+                        x=[o0 / denom],
+                        y=[b0],
+                        mode="markers",
+                        marker=dict(color="black", size=11, symbol="circle"),
+                        showlegend=False,
+                        hovertemplate="now %{x:.0f} BLPD @ %{y:.0f} psi<extra></extra>",
+                    ),
+                    row=r,
+                    col=c,
+                )
             if pd.notna(o1) and pd.notna(b1):
-                fig.add_trace(go.Scatter(x=[o1 / denom], y=[b1], mode="markers",
-                    marker=dict(color="crimson", size=12, symbol="x"), showlegend=False,
-                    hovertemplate="scenario %{x:.0f} BLPD @ %{y:.0f} psi<extra></extra>"), row=r, col=c)
+                fig.add_trace(
+                    go.Scatter(
+                        x=[o1 / denom],
+                        y=[b1],
+                        mode="markers",
+                        marker=dict(color="crimson", size=12, symbol="x"),
+                        showlegend=False,
+                        hovertemplate="scenario %{x:.0f} BLPD @ %{y:.0f} psi<extra></extra>",
+                    ),
+                    row=r,
+                    col=c,
+                )
     fig.update_layout(
-        height=max(360, rows * 320), showlegend=False,
+        height=max(360, rows * 320),
+        showlegend=False,
         title_text="IPR — one Vogel fit per well on TOTAL LIQUID (blue) + tests colored by time · ● now ✕ scenario",
         margin=dict(l=60, r=20, t=80, b=60),
     )
@@ -2668,7 +3217,9 @@ def _render_pad_review(results_df: pd.DataFrame, delta_p: float) -> None:
         pad_df = results_df[results_df["Pad"] == pad].copy()
         prow = per_pad[per_pad["Pad"] == pad]
         doil = float(prow["ΔOil (BOPD)"].iloc[0]) if not prow.empty else float("nan")
-        bopd100 = float(prow["BOPD per 100 psi"].iloc[0]) if not prow.empty else float("nan")
+        bopd100 = (
+            float(prow["BOPD per 100 psi"].iloc[0]) if not prow.empty else float("nan")
+        )
         title = f"Pad {pad}  ·  ΔOil {doil:+,.0f} BOPD  ·  {bopd100:+,.1f}/100psi  ·  {len(pad_df)} wells"
         with st.expander(title, expanded=(pi == 0)):
             # ── Where we sit today ──────────────────────────────────────────
@@ -2677,18 +3228,24 @@ def _render_pad_review(results_df: pd.DataFrame, delta_p: float) -> None:
             oil_now = pd.to_numeric(pad_df.get("Oil now (BOPD)"), errors="coerce").sum()
             down, up = pad_updown_lever(curve, pad, ref=100)
             m1, m2, m3 = st.columns(3)
-            m1.metric("WHP now (avg)", f"{whp_avg:,.0f} psi" if pd.notna(whp_avg) else "—")
-            m2.metric("BHP now (avg)", f"{bhp_avg:,.0f} psi" if pd.notna(bhp_avg) else "—")
+            m1.metric(
+                "WHP now (avg)", f"{whp_avg:,.0f} psi" if pd.notna(whp_avg) else "—"
+            )
+            m2.metric(
+                "BHP now (avg)", f"{bhp_avg:,.0f} psi" if pd.notna(bhp_avg) else "—"
+            )
             m3.metric("Oil now", f"{oil_now:,.0f} BOPD" if pd.notna(oil_now) else "—")
             # ── Up/down lever from today ────────────────────────────────────
             d1, d2 = st.columns(2)
             d1.metric(
-                "↓ Header −100 psi", f"{down:+,.0f} BOPD" if pd.notna(down) else "—",
+                "↓ Header −100 psi",
+                f"{down:+,.0f} BOPD" if pd.notna(down) else "—",
                 help="Oil change for a 100-psi header DROP from today (summed over "
                 "the pad). Flattens if wells choke sonic on the way down.",
             )
             d2.metric(
-                "↑ Header +100 psi", f"{up:+,.0f} BOPD" if pd.notna(up) else "—",
+                "↑ Header +100 psi",
+                f"{up:+,.0f} BOPD" if pd.notna(up) else "—",
                 help="Oil change for a 100-psi header RISE from today. Asymmetry vs "
                 "the drop = the lever is nonlinear at this operating level.",
             )
@@ -2706,8 +3263,9 @@ def _render_pad_review(results_df: pd.DataFrame, delta_p: float) -> None:
                     )
             # ── Long-horizon back-test: the real header move vs the model ────
             fit_map = _pad_single_fits_cached(pad_df, test_df)
-            bt = _backtest_table(pad_df, test_df, curve, pump_changed, fit_map,
-                                 ipr_rows, use_pseudo)
+            bt = _backtest_table(
+                pad_df, test_df, curve, pump_changed, fit_map, ipr_rows, use_pseudo
+            )
             if not bt.empty:
                 src = "fitted pseudo-Pr" if use_pseudo else "database/assumed Pr"
                 st.markdown(
@@ -2719,14 +3277,18 @@ def _render_pad_review(results_df: pd.DataFrame, delta_p: float) -> None:
                 st.dataframe(
                     bt.style.format(
                         {
-                            "ΔWHP (psi)": "{:+,.0f}", "ΔBHP actual (psi)": "{:+,.0f}",
-                            "ΔBHP pred (psi)": "{:+,.0f}", "ΔOil actual (BOPD)": "{:+,.0f}",
-                            "ΔOil pred (BOPD)": "{:+,.0f}", "ΔLiquid (BPD)": "{:+,.0f}",
+                            "ΔWHP (psi)": "{:+,.0f}",
+                            "ΔBHP actual (psi)": "{:+,.0f}",
+                            "ΔBHP pred (psi)": "{:+,.0f}",
+                            "ΔOil actual (BOPD)": "{:+,.0f}",
+                            "ΔOil pred (BOPD)": "{:+,.0f}",
+                            "ΔLiquid (BPD)": "{:+,.0f}",
                             "BHP↔liq corr": "{:+.2f}",
                         },
                         na_rep="—",
                     ),
-                    use_container_width=True, hide_index=True,
+                    use_container_width=True,
+                    hide_index=True,
                 )
                 st.caption(
                     "**ΔBHP / ΔOil actual vs pred** = did the well move as the model expects "
@@ -2739,10 +3301,14 @@ def _render_pad_review(results_df: pd.DataFrame, delta_p: float) -> None:
                 )
                 par = _backtest_parity_fig(bt, use_pseudo)
                 if par is not None:
-                    st.plotly_chart(par, use_container_width=True, key=f"hpi_parity_{pad}")
+                    st.plotly_chart(
+                        par, use_container_width=True, key=f"hpi_parity_{pad}"
+                    )
             dep = _ipr_fit_fig(pad_df, test_df, fit_map)
             if dep is not None:
-                st.markdown("**IPR fit + depletion read** — does the cloud ride the curve (back pressure), or form a flat both-falling line (depletion)?")
+                st.markdown(
+                    "**IPR fit + depletion read** — does the cloud ride the curve (back pressure), or form a flat both-falling line (depletion)?"
+                )
                 st.plotly_chart(dep, use_container_width=True, key=f"hpi_iprfit_{pad}")
                 st.caption(
                     "Blue = ONE Vogel IPR fit to all the well's tests, on **total liquid**; dots = "
@@ -2752,53 +3318,90 @@ def _render_pad_review(results_df: pd.DataFrame, delta_p: float) -> None:
                     "together) = **depletion**. `Pr*` in a title = fit pinned at the formation cap (soft)."
                 )
             # ── Intraday BHP↔WHP coupling (advanced, collapsed) ─────────────
-            sense_pad = sense_all[sense_all["Pad"] == pad] if not sense_all.empty else pd.DataFrame()
+            sense_pad = (
+                sense_all[sense_all["Pad"] == pad]
+                if not sense_all.empty
+                else pd.DataFrame()
+            )
             if not sense_pad.empty:
-                with st.expander("Intraday BHP↔WHP coupling (does it respond at all?)", expanded=False):
+                with st.expander(
+                    "Intraday BHP↔WHP coupling (does it respond at all?)",
+                    expanded=False,
+                ):
                     st.dataframe(
-                        sense_pad[[
-                            "Well", "WHP now (psi)", "BHP now (psi)", "Model dBHP/dWHP",
-                            "Obs dBHP/dWHP", "Obs/Model", "Sense-check", "Note",
-                        ]].style.format(
+                        sense_pad[
+                            [
+                                "Well",
+                                "WHP now (psi)",
+                                "BHP now (psi)",
+                                "Model dBHP/dWHP",
+                                "Obs dBHP/dWHP",
+                                "Obs/Model",
+                                "Sense-check",
+                                "Note",
+                            ]
+                        ].style.format(
                             {
-                                "WHP now (psi)": "{:,.0f}", "BHP now (psi)": "{:,.0f}",
-                                "Model dBHP/dWHP": "{:.2f}", "Obs dBHP/dWHP": "{:.2f}",
+                                "WHP now (psi)": "{:,.0f}",
+                                "BHP now (psi)": "{:,.0f}",
+                                "Model dBHP/dWHP": "{:.2f}",
+                                "Obs dBHP/dWHP": "{:.2f}",
                                 "Obs/Model": "{:.2f}",
                             },
                             na_rep="—",
                         ),
-                        use_container_width=True, hide_index=True,
+                        use_container_width=True,
+                        hide_index=True,
                     )
                     sense_map = dict(zip(sense_pad["Well"], sense_pad["Sense-check"]))
                     mvo = _model_vs_obs_fig(pad_df, well_dfs, curve, sense_map)
                     if mvo is not None:
-                        st.plotly_chart(mvo, use_container_width=True, key=f"hpi_mvo_{pad}")
+                        st.plotly_chart(
+                            mvo, use_container_width=True, key=f"hpi_mvo_{pad}"
+                        )
                         st.caption(
                             "Intraday: blue = model BHP across WHP; grey = historian; ● today. "
                             "Hourly co-movement — tests whether BHP responds to WHP *at all*, "
                             "complementing the long-horizon back-test above."
                         )
             wcols = [
-                c for c in ["Well", "Lift", "Verdict", "Method used", "Chosen ΔOil (BOPD)",
-                            "BHP now (psi)", "BHP scen (psi)", "Oil now (BOPD)", "Oil scen (BOPD)",
-                            "Emp class"]
+                c
+                for c in [
+                    "Well",
+                    "Lift",
+                    "Verdict",
+                    "Method used",
+                    "Chosen ΔOil (BOPD)",
+                    "BHP now (psi)",
+                    "BHP scen (psi)",
+                    "Oil now (BOPD)",
+                    "Oil scen (BOPD)",
+                    "Emp class",
+                ]
                 if c in pad_df.columns
             ]
             st.dataframe(
                 pad_df[wcols].style.format(
                     {
-                        "Chosen ΔOil (BOPD)": "{:+,.0f}", "BHP now (psi)": "{:,.0f}",
-                        "BHP scen (psi)": "{:,.0f}", "Oil now (BOPD)": "{:,.0f}",
+                        "Chosen ΔOil (BOPD)": "{:+,.0f}",
+                        "BHP now (psi)": "{:,.0f}",
+                        "BHP scen (psi)": "{:,.0f}",
+                        "Oil now (BOPD)": "{:,.0f}",
                         "Oil scen (BOPD)": "{:,.0f}",
                     },
                     na_rep="—",
                 ),
-                use_container_width=True, hide_index=True,
+                use_container_width=True,
+                hide_index=True,
             )
             if agg and pad in agg.get("pads", {}):
-                f = _response_curve_fig(agg, pads_to_show=[pad], title=f"Pad {pad} — oil vs header change")
+                f = _response_curve_fig(
+                    agg, pads_to_show=[pad], title=f"Pad {pad} — oil vs header change"
+                )
                 if f is not None:
-                    st.plotly_chart(f, use_container_width=True, key=f"hpi_padcurve_{pad}")
+                    st.plotly_chart(
+                        f, use_container_width=True, key=f"hpi_padcurve_{pad}"
+                    )
             pad_wells = pad_df["Well"].tolist()
             sub_dfs = {w: well_dfs[w] for w in pad_wells if w in well_dfs}
             sub_fits = {w: fits.get(w, {}) for w in pad_wells if w in well_dfs}
@@ -2812,12 +3415,15 @@ def _render_pad_review(results_df: pd.DataFrame, delta_p: float) -> None:
             if sub_dfs:
                 drill = st.selectbox(
                     f"Drill-down well (Pad {pad})",
-                    options=["—"] + sorted(sub_dfs.keys()), key=f"hpi_drill_{pad}",
+                    options=["—"] + sorted(sub_dfs.keys()),
+                    key=f"hpi_drill_{pad}",
                 )
                 if drill and drill != "—":
                     wf = _plot_well_fits(drill, sub_dfs[drill], sub_fits.get(drill, {}))
                     if wf is not None:
-                        st.plotly_chart(wf, use_container_width=True, key=f"hpi_drillfig_{pad}")
+                        st.plotly_chart(
+                            wf, use_container_width=True, key=f"hpi_drillfig_{pad}"
+                        )
 
 
 def _render_sense_check(results_df: pd.DataFrame) -> None:
@@ -2831,14 +3437,18 @@ def _render_sense_check(results_df: pd.DataFrame) -> None:
     st.dataframe(
         tbl.style.format(
             {
-                "Phys ΔOil (BOPD)": "{:+,.0f}", "Emp ΔOil (BOPD)": "{:+,.0f}",
-                "Chosen ΔOil (BOPD)": "{:+,.0f}", "Oil now modeled (BOPD)": "{:,.0f}",
-                "Oil now measured (BOPD)": "{:,.0f}", "Oil residual (BOPD)": "{:+,.0f}",
+                "Phys ΔOil (BOPD)": "{:+,.0f}",
+                "Emp ΔOil (BOPD)": "{:+,.0f}",
+                "Chosen ΔOil (BOPD)": "{:+,.0f}",
+                "Oil now modeled (BOPD)": "{:,.0f}",
+                "Oil now measured (BOPD)": "{:,.0f}",
+                "Oil residual (BOPD)": "{:+,.0f}",
                 "Oil residual %": "{:+,.0f}%",
             },
             na_rep="—",
         ),
-        use_container_width=True, hide_index=True,
+        use_container_width=True,
+        hide_index=True,
     )
     st.caption(
         "**Oil residual** = modeled Oil-now − the well's measured test oil. Large residuals mean "
@@ -2850,7 +3460,8 @@ def _render_sense_check(results_df: pd.DataFrame) -> None:
         st.markdown("**Per-pad optimism bias** — Emp ÷ Phys ΔOil over responsive wells")
         st.dataframe(
             bias.style.format({"Emp/Phys bias": "{:.2f}"}, na_rep="—"),
-            use_container_width=True, hide_index=True,
+            use_container_width=True,
+            hide_index=True,
         )
         st.caption(
             "A soft flag, not a gate: <0.8 the physics looks optimistic vs the field; "
@@ -2858,7 +3469,9 @@ def _render_sense_check(results_df: pd.DataFrame) -> None:
         )
 
 
-def _autodownload(data: bytes, filename: str, dom_id: str, mime: str = "application/pdf") -> None:
+def _autodownload(
+    data: bytes, filename: str, dom_id: str, mime: str = "application/pdf"
+) -> None:
     """Trigger an immediate browser download of ``data`` — single-click, no second
     button. ALL Generate-PDF buttons use this so generating = downloading.
     Thin wrapper preserving this module's historical arg order; the one real
@@ -2921,8 +3534,11 @@ def _render_coverage_panel(results_df: pd.DataFrame) -> None:
     # "refresh on every change" from rebuilding + writing back every render.
     token = st.session_state.get("hpi_run_token", 0)
     cov = st.session_state.get("hpi_cov_df")
-    if cov is None or st.session_state.get("hpi_cov_token") != token \
-            or list(cov.get("Well", [])) != list(results_df["Well"]):
+    if (
+        cov is None
+        or st.session_state.get("hpi_cov_token") != token
+        or list(cov.get("Well", [])) != list(results_df["Well"])
+    ):
         # Auto-default a group donor for wells lacking their own data — but only
         # the FIRST time a well appears in coverage (tracked in hpi_cov_seen), so
         # an explicit user clear-to-(own) on a later re-run isn't fought:
@@ -2938,16 +3554,28 @@ def _render_coverage_panel(results_df: pd.DataFrame) -> None:
             ipr_donor = cur_ipr.get(wn, OWN_TOKEN)
             corr_donor = cur_corr.get(wn, OWN_TOKEN)
             first_time = wn not in seen
-            if first_time and ipr_miss and str(ipr_donor) in (OWN_TOKEN, "", "nan", "None"):
+            if (
+                first_time
+                and ipr_miss
+                and str(ipr_donor) in (OWN_TOKEN, "", "nan", "None")
+            ):
                 ipr_donor = GROUP_PADFORMATION
-            if first_time and corr_miss and str(corr_donor) in (OWN_TOKEN, "", "nan", "None"):
+            if (
+                first_time
+                and corr_miss
+                and str(corr_donor) in (OWN_TOKEN, "", "nan", "None")
+            ):
                 corr_donor = GROUP_LIFT
             rows.append(
                 {
                     "Flag": ("🟥" if ipr_miss else "") + ("🟧" if corr_miss else ""),
-                    "Well": wn, "Pad": r.get("Pad"), "Lift": r.get("Lift"),
-                    "IPR status": _ipr_status(r), "Corr status": _corr_status(r),
-                    "IPR donor": ipr_donor, "Corr donor": corr_donor,
+                    "Well": wn,
+                    "Pad": r.get("Pad"),
+                    "Lift": r.get("Lift"),
+                    "IPR status": _ipr_status(r),
+                    "Corr status": _corr_status(r),
+                    "IPR donor": ipr_donor,
+                    "Corr donor": corr_donor,
                 }
             )
         cov = pd.DataFrame(rows)
@@ -2970,10 +3598,16 @@ def _render_coverage_panel(results_df: pd.DataFrame) -> None:
     )
     donor_opts = donor_tokens(list(results_df["Well"]))
     edited = st.data_editor(
-        base, key="hpi_coverage_editor", hide_index=True, use_container_width=True,
+        base,
+        key="hpi_coverage_editor",
+        hide_index=True,
+        use_container_width=True,
         column_config={
             "Flag": st.column_config.TextColumn(
-                "⚑", disabled=True, pinned="left", width="small",
+                "⚑",
+                disabled=True,
+                pinned="left",
+                width="small",
                 help="🟥 no IPR test data (borrowing a pad+formation group IPR) · "
                 "🟧 no usable WHP→BHP correlation (borrowing a like-lift group).",
             ),
@@ -2983,11 +3617,15 @@ def _render_coverage_panel(results_df: pd.DataFrame) -> None:
             "IPR status": st.column_config.TextColumn("IPR status", disabled=True),
             "Corr status": st.column_config.TextColumn("Corr status", disabled=True),
             "IPR donor": st.column_config.SelectboxColumn(
-                "IPR donor", options=donor_opts, required=False,
+                "IPR donor",
+                options=donor_opts,
+                required=False,
                 help="Borrow an IPR (JP wells): a specific well or a like-wells group average.",
             ),
             "Corr donor": st.column_config.SelectboxColumn(
-                "Corr donor", options=donor_opts, required=False,
+                "Corr donor",
+                options=donor_opts,
+                required=False,
                 help="Borrow a WHP→BHP correlation: a specific well or a group average.",
             ),
         },
@@ -2999,20 +3637,32 @@ def _render_coverage_panel(results_df: pd.DataFrame) -> None:
     new_ipr = dict(zip(edited["Well"], edited["IPR donor"]))
     new_corr = dict(zip(edited["Well"], edited["Corr donor"]))
     idf = input_df.copy()
-    idf["IPR donor"] = idf["Well"].map(lambda w: new_ipr.get(w, cur_ipr.get(w, OWN_TOKEN)))
-    idf["Corr donor"] = idf["Well"].map(lambda w: new_corr.get(w, cur_corr.get(w, OWN_TOKEN)))
+    idf["IPR donor"] = idf["Well"].map(
+        lambda w: new_ipr.get(w, cur_ipr.get(w, OWN_TOKEN))
+    )
+    idf["Corr donor"] = idf["Well"].map(
+        lambda w: new_corr.get(w, cur_corr.get(w, OWN_TOKEN))
+    )
     st.session_state["hpi_input_df"] = idf
 
     b1, b2 = st.columns(2)
-    if b1.button("🔄 Re-run impact with these donor assignments", key="hpi_cov_rerun",
-                 type="primary", use_container_width=True):
+    if b1.button(
+        "🔄 Re-run impact with these donor assignments",
+        key="hpi_cov_rerun",
+        type="primary",
+        use_container_width=True,
+    ):
         st.session_state["hpi_trigger_run"] = True
         st.rerun()
-    if b2.button("📄 Download per-well review PDF (IPR + correlation)",
-                 key="hpi_cov_wellpdf", use_container_width=True):
+    if b2.button(
+        "📄 Download per-well review PDF (IPR + correlation)",
+        key="hpi_cov_wellpdf",
+        use_container_width=True,
+    ):
         from datetime import datetime
 
         from .header_report import build_per_well_pdf
+
         with st.spinner("Building per-well PDF..."):
             try:
                 wpdf = build_per_well_pdf(
@@ -3061,8 +3711,12 @@ def _csv_dl(container, label: str, df: pd.DataFrame, fname: str, key: str) -> No
     if df is None or df.empty:
         return
     container.download_button(
-        label, data=df.to_csv(index=False).encode("utf-8"),
-        file_name=fname, mime="text/csv", key=key, use_container_width=True,
+        label,
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name=fname,
+        mime="text/csv",
+        key=key,
+        use_container_width=True,
     )
 
 
@@ -3083,7 +3737,8 @@ def _render_exports(results_df: pd.DataFrame, delta_p: float) -> None:
     per_pad, overall = summarize_sensitivity(results_df, delta_p)
     sens_tbl = (
         pd.concat([per_pad, pd.DataFrame([overall])], ignore_index=True)
-        if not per_pad.empty else pd.DataFrame()
+        if not per_pad.empty
+        else pd.DataFrame()
     )
     sense_tbl = sense_check_table(results_df, test_oil)
     corr_tbl = _correlation_table(results_df, emp_fits)
@@ -3092,17 +3747,46 @@ def _render_exports(results_df: pd.DataFrame, delta_p: float) -> None:
         with st.expander("WHP→BHP correlation summary (per well)", expanded=False):
             st.dataframe(
                 corr_tbl.style.format(
-                    {"BHP~WHP slope": "{:.2f}", "r²": "{:.2f}", "BHP~HeaderP slope": "{:.2f}"},
+                    {
+                        "BHP~WHP slope": "{:.2f}",
+                        "r²": "{:.2f}",
+                        "BHP~HeaderP slope": "{:.2f}",
+                    },
                     na_rep="—",
                 ),
-                use_container_width=True, hide_index=True,
+                use_container_width=True,
+                hide_index=True,
             )
 
     cols = st.columns(4)
-    _csv_dl(cols[0], "Results CSV", results_df, "header_impact_results.csv", "hpi_dl_results")
-    _csv_dl(cols[1], "Sensitivity CSV", sens_tbl, "header_impact_sensitivity.csv", "hpi_dl_sens")
-    _csv_dl(cols[2], "Sense-check CSV", sense_tbl, "header_impact_sensecheck.csv", "hpi_dl_sense")
-    _csv_dl(cols[3], "Correlations CSV", corr_tbl, "header_impact_correlations.csv", "hpi_dl_corr")
+    _csv_dl(
+        cols[0],
+        "Results CSV",
+        results_df,
+        "header_impact_results.csv",
+        "hpi_dl_results",
+    )
+    _csv_dl(
+        cols[1],
+        "Sensitivity CSV",
+        sens_tbl,
+        "header_impact_sensitivity.csv",
+        "hpi_dl_sens",
+    )
+    _csv_dl(
+        cols[2],
+        "Sense-check CSV",
+        sense_tbl,
+        "header_impact_sensecheck.csv",
+        "hpi_dl_sense",
+    )
+    _csv_dl(
+        cols[3],
+        "Correlations CSV",
+        corr_tbl,
+        "header_impact_correlations.csv",
+        "hpi_dl_corr",
+    )
 
     if st.button("Generate PDF report (downloads)", key="hpi_pdf_btn"):
         from .header_report import build_report_pdf
@@ -3110,9 +3794,15 @@ def _render_exports(results_df: pd.DataFrame, delta_p: float) -> None:
         with st.spinner("Building PDF report (rendering figures)..."):
             try:
                 pdf = build_report_pdf(
-                    results_df, delta_p, ipr_rows=ipr_rows, test_oil=test_oil,
-                    curve=curve, corr_table=corr_tbl, test_df=test_df,
-                    well_dfs=well_dfs, fits=emp_fits,
+                    results_df,
+                    delta_p,
+                    ipr_rows=ipr_rows,
+                    test_oil=test_oil,
+                    curve=curve,
+                    corr_table=corr_tbl,
+                    test_df=test_df,
+                    well_dfs=well_dfs,
+                    fits=emp_fits,
                     stamp=datetime.now().strftime("%Y-%m-%d %H:%M"),
                 )
                 _autodownload(pdf, "header_impact_report.pdf", "hpipdf")
@@ -3137,7 +3827,8 @@ def _plot_well_fits(well: str, trend_df: pd.DataFrame, well_fits: dict):
 
     panels = [(drv, f"BHP~{drv}") for drv in ("WHP", "HeaderP")]
     avail = [
-        (drv, key) for drv, key in panels
+        (drv, key)
+        for drv, key in panels
         if drv in trend_df.columns and "BHP" in trend_df.columns
     ]
     if not avail:
@@ -3162,16 +3853,22 @@ def _plot_well_fits(well: str, trend_df: pd.DataFrame, well_fits: dict):
         ords = (pd.DatetimeIndex(d.index).normalize() - base_min).days
         fig.add_trace(
             go.Scatter(
-                x=d[drv], y=d["BHP"], mode="markers",
+                x=d[drv],
+                y=d["BHP"],
+                mode="markers",
                 marker=dict(
-                    size=4, color=ords, colorscale="Viridis",
+                    size=4,
+                    color=ords,
+                    colorscale="Viridis",
                     showscale=(i == 1),
                     colorbar=dict(title="Days") if i == 1 else None,
                 ),
-                name="hourly", showlegend=False,
+                name="hourly",
+                showlegend=False,
                 hovertemplate=f"{drv}: %{{x:.0f}} psi<br>BHP: %{{y:.0f}} psi<extra></extra>",
             ),
-            row=1, col=i,
+            row=1,
+            col=i,
         )
         f = well_fits.get(key)
         if f is not None and not f.daily.empty:
@@ -3185,15 +3882,25 @@ def _plot_well_fits(well: str, trend_df: pd.DataFrame, well_fits: dict):
                     continue
                 x0, x1 = dr["x_min"], dr["x_max"]
                 xseg += [x0, x1, None]
-                yseg += [dr["slope"] * x0 + dr["intercept"], dr["slope"] * x1 + dr["intercept"], None]
+                yseg += [
+                    dr["slope"] * x0 + dr["intercept"],
+                    dr["slope"] * x1 + dr["intercept"],
+                    None,
+                ]
             if xseg:
                 fig.add_trace(
                     go.Scatter(
-                        x=xseg, y=yseg, mode="lines",
-                        line=dict(color="crimson", width=1), opacity=0.6,
-                        name="good daily fits", showlegend=(i == 1), hoverinfo="skip",
+                        x=xseg,
+                        y=yseg,
+                        mode="lines",
+                        line=dict(color="crimson", width=1),
+                        opacity=0.6,
+                        name="good daily fits",
+                        showlegend=(i == 1),
+                        hoverinfo="skip",
                     ),
-                    row=1, col=i,
+                    row=1,
+                    col=i,
                 )
         fig.update_xaxes(title_text=f"{drv} (psi)", row=1, col=i)
         fig.update_yaxes(title_text="BHP (psi)", row=1, col=i)
@@ -3217,8 +3924,10 @@ def _grid_fig(well_dfs: dict, fits: dict, driver: str = "WHP"):
 
     key = f"BHP~{driver}"
     wells = sorted(
-        w for w, d in well_dfs.items()
-        if driver in d.columns and "BHP" in d.columns
+        w
+        for w, d in well_dfs.items()
+        if driver in d.columns
+        and "BHP" in d.columns
         and not d[[driver, "BHP"]].dropna().empty
     )
     if not wells:
@@ -3235,9 +3944,13 @@ def _grid_fig(well_dfs: dict, fits: dict, driver: str = "WHP"):
         titles.append(f"{w}  m={slope:.2f} · {cls}")
 
     fig = make_subplots(
-        rows=rows, cols=cols, subplot_titles=titles,
-        vertical_spacing=0.09, horizontal_spacing=0.06,
-        x_title=f"{driver} (psi)", y_title="BHP (psi)",
+        rows=rows,
+        cols=cols,
+        subplot_titles=titles,
+        vertical_spacing=0.09,
+        horizontal_spacing=0.06,
+        x_title=f"{driver} (psi)",
+        y_title="BHP (psi)",
     )
     for i, w in enumerate(wells):
         r = i // cols + 1
@@ -3250,15 +3963,23 @@ def _grid_fig(well_dfs: dict, fits: dict, driver: str = "WHP"):
         ords = (idx.normalize() - idx.normalize().min()).days
         fig.add_trace(
             go.Scatter(
-                x=d[driver], y=d["BHP"], mode="markers",
+                x=d[driver],
+                y=d["BHP"],
+                mode="markers",
                 marker=dict(size=4, color=ords, colorscale="Viridis", showscale=False),
                 hovertemplate=f"{driver}: %{{x:.0f}}<br>BHP: %{{y:.0f}}<extra>{w}</extra>",
-                showlegend=False, name=w,
+                showlegend=False,
+                name=w,
             ),
-            row=r, col=c,
+            row=r,
+            col=c,
         )
         f_fit = fits.get(w, {}).get(key)
-        if f_fit is not None and not f_fit.daily.empty and "good" in f_fit.daily.columns:
+        if (
+            f_fit is not None
+            and not f_fit.daily.empty
+            and "good" in f_fit.daily.columns
+        ):
             xseg: list = []
             yseg: list = []
             for _, dr in f_fit.daily[f_fit.daily["good"]].iterrows():
@@ -3272,11 +3993,16 @@ def _grid_fig(well_dfs: dict, fits: dict, driver: str = "WHP"):
             if xseg:
                 fig.add_trace(
                     go.Scatter(
-                        x=xseg, y=yseg, mode="lines",
-                        line=dict(color="crimson", width=1), opacity=0.6,
-                        hoverinfo="skip", showlegend=False,
+                        x=xseg,
+                        y=yseg,
+                        mode="lines",
+                        line=dict(color="crimson", width=1),
+                        opacity=0.6,
+                        hoverinfo="skip",
+                        showlegend=False,
                     ),
-                    row=r, col=c,
+                    row=r,
+                    col=c,
                 )
         # Clip axes to the bulk (1–99th pct) so sensor spikes don't compress the cloud.
         xlo, xhi = np.nanpercentile(d[driver], [1, 99])
@@ -3323,14 +4049,17 @@ def _render_diagnostics() -> None:
         # and PNG bytes on every rerun just to feed the download button.
         if st.button("Download this plot (PNG)", key="hpi_diag_png"):
             from .header_report import fig_to_png_bytes, well_fit_mpl
+
             try:
                 with st.spinner("Rendering PNG..."):
                     mf = well_fit_mpl(well, well_dfs[well], fits.get(well, {}))
                     png = fig_to_png_bytes(mf) if mf is not None else None
                 if png is not None:
                     _autodownload(
-                        png, f"header_fit_{well}.png",
-                        "hpidiagpng", mime="image/png",
+                        png,
+                        f"header_fit_{well}.png",
+                        "hpidiagpng",
+                        mime="image/png",
                     )
             except Exception as e:
                 st.caption(
@@ -3348,7 +4077,9 @@ def _render_diagnostics() -> None:
     )
     gc1, _ = st.columns([1, 3])
     with gc1:
-        grid_driver = st.selectbox("Grid driver", ["WHP", "HeaderP"], key="hpi_grid_driver")
+        grid_driver = st.selectbox(
+            "Grid driver", ["WHP", "HeaderP"], key="hpi_grid_driver"
+        )
     if st.button("Build grid", key="hpi_grid_btn"):
         with st.spinner("Rendering grid..."):
             gfig = _grid_fig(well_dfs, fits, grid_driver)
@@ -3367,6 +4098,7 @@ def _render_diagnostics() -> None:
         # rerun once the grid existed, just to feed the download button.
         if st.button("Download grid PNG", key="hpi_grid_dl"):
             from .header_report import corr_grid_mpl, fig_to_png_bytes
+
             try:
                 # rasterization (fig_to_png_bytes) is the expensive half —
                 # keep it inside the spinner too
@@ -3375,8 +4107,10 @@ def _render_diagnostics() -> None:
                     png = fig_to_png_bytes(mf) if mf is not None else None
                 if png is not None:
                     _autodownload(
-                        png, f"header_fit_grid_{used}.png",
-                        "hpigridpng", mime="image/png",
+                        png,
+                        f"header_fit_grid_{used}.png",
+                        "hpigridpng",
+                        mime="image/png",
                     )
             except Exception as e:
                 st.caption(f"PNG export unavailable ({type(e).__name__}).")
@@ -3421,7 +4155,9 @@ def _render_analog(months_back: int, delta_p: float) -> None:
 
     from ._common import normalize_short_name
 
-    with st.expander("Analog estimate — gaugeless / non-JP wells (e.g. ESP)", expanded=False):
+    with st.expander(
+        "Analog estimate — gaugeless / non-JP wells (e.g. ESP)", expanded=False
+    ):
         st.caption(
             "No jet pump and no BHP gauge? Pick a similar **gauged, responsive** well "
             "as a donor. The donor supplies the empirical dBHP/dWHP slope and its "
@@ -3440,19 +4176,26 @@ def _render_analog(months_back: int, delta_p: float) -> None:
         if results_df is not None and "Verdict" in results_df.columns:
             resp_map: dict = {}
             if input_df is not None and "ResP (psi)" in input_df.columns:
-                resp_map = {row["Well"]: row.get("ResP (psi)") for _, row in input_df.iterrows()}
+                resp_map = {
+                    row["Well"]: row.get("ResP (psi)") for _, row in input_df.iterrows()
+                }
             flagged = results_df[results_df["Verdict"] == "gaugeless — use Analog"]
             for _, r in flagged.iterrows():
                 wn = r["Well"]
-                gaugeless_seed.append({
-                    "Target": wn,
-                    "Donor": "",
-                    "Target oil (BOPD)": float(r.get("Oil now (BOPD)") or 0.0),
-                    "Target ResP (psi)": float(resp_map.get(wn) or 1800.0),
-                })
+                gaugeless_seed.append(
+                    {
+                        "Target": wn,
+                        "Donor": "",
+                        "Target oil (BOPD)": float(r.get("Oil now (BOPD)") or 0.0),
+                        "Target ResP (psi)": float(resp_map.get(wn) or 1800.0),
+                    }
+                )
             if "Emp class" in results_df.columns:
                 donor_options = sorted(
-                    results_df[results_df["Emp class"] == "responsive"]["Well"].dropna().unique().tolist()
+                    results_df[results_df["Emp class"] == "responsive"]["Well"]
+                    .dropna()
+                    .unique()
+                    .tolist()
                 )
 
         if gaugeless_seed:
@@ -3472,11 +4215,19 @@ def _render_analog(months_back: int, delta_p: float) -> None:
         default = pd.DataFrame(
             gaugeless_seed
             if gaugeless_seed
-            else [{"Target": "", "Donor": "", "Target oil (BOPD)": 0.0, "Target ResP (psi)": 1800.0}]
+            else [
+                {
+                    "Target": "",
+                    "Donor": "",
+                    "Target oil (BOPD)": 0.0,
+                    "Target ResP (psi)": 1800.0,
+                }
+            ]
         )
         donor_col = (
             st.column_config.SelectboxColumn(
-                "Donor (responsive)", options=donor_options,
+                "Donor (responsive)",
+                options=donor_options,
                 help=f"Pick from {len(donor_options)} responsive wells in the last run.",
             )
             if donor_options
@@ -3488,7 +4239,9 @@ def _render_analog(months_back: int, delta_p: float) -> None:
 
         ed = st.data_editor(
             st.session_state.get("hpi_analog_df", default),
-            num_rows="dynamic", hide_index=True, use_container_width=True,
+            num_rows="dynamic",
+            hide_index=True,
+            use_container_width=True,
             key="hpi_analog_editor",
             column_config={
                 "Target": st.column_config.TextColumn(
@@ -3496,9 +4249,15 @@ def _render_analog(months_back: int, delta_p: float) -> None:
                     help="Well to estimate — pre-filled from the last run's flagged wells.",
                 ),
                 "Donor": donor_col,
-                "Target oil (BOPD)": st.column_config.NumberColumn("Target oil (BOPD)", format="%.0f"),
+                "Target oil (BOPD)": st.column_config.NumberColumn(
+                    "Target oil (BOPD)", format="%.0f"
+                ),
                 "Target ResP (psi)": st.column_config.NumberColumn(
-                    "Target ResP (psi)", format="%.0f", min_value=500, max_value=5000, step=50,
+                    "Target ResP (psi)",
+                    format="%.0f",
+                    min_value=500,
+                    max_value=5000,
+                    step=50,
                 ),
             },
         )
@@ -3511,7 +4270,9 @@ def _render_analog(months_back: int, delta_p: float) -> None:
         st.session_state.pop("hpi_analog_editor", None)
 
         end = datetime.now().strftime("%Y-%m-%d")
-        start = (datetime.now() - relativedelta(months=int(months_back))).strftime("%Y-%m-%d")
+        start = (datetime.now() - relativedelta(months=int(months_back))).strftime(
+            "%Y-%m-%d"
+        )
         rows = []
         for _, r in ed.iterrows():
             tgt = normalize_short_name(str(r.get("Target", "")).strip())
@@ -3524,34 +4285,59 @@ def _render_analog(months_back: int, delta_p: float) -> None:
             except (TypeError, ValueError):
                 continue
             if tgt_oil <= 0 or tgt_resp <= 0:
-                rows.append({"Target": tgt, "Donor": donor, "Note": "need oil > 0 and ResP > 0"})
+                rows.append(
+                    {"Target": tgt, "Donor": donor, "Note": "need oil > 0 and ResP > 0"}
+                )
                 continue
             try:
                 dwd, _ = ht.fetch_header_trends((donor,), start, end)
             except Exception as e:
-                rows.append({"Target": tgt, "Donor": donor, "Note": f"donor trend error: {e}"})
+                rows.append(
+                    {"Target": tgt, "Donor": donor, "Note": f"donor trend error: {e}"}
+                )
                 continue
             dfit = ht.fit_well(dwd[donor]).get("BHP~WHP") if donor in dwd else None
             if dfit is None or ht.classify_response(dfit) != "responsive":
-                rows.append({"Target": tgt, "Donor": donor, "Note": "donor not responsive / no gauge"})
+                rows.append(
+                    {
+                        "Target": tgt,
+                        "Donor": donor,
+                        "Note": "donor not responsive / no gauge",
+                    }
+                )
                 continue
             dvogel = get_vogel_for_wells([donor], months_back).get(donor)
             if not dvogel or not dvogel.get("ResP"):
-                rows.append({"Target": tgt, "Donor": donor, "Note": "donor has no Vogel IPR (needs gauge tests)"})
+                rows.append(
+                    {
+                        "Target": tgt,
+                        "Donor": donor,
+                        "Note": "donor has no Vogel IPR (needs gauge tests)",
+                    }
+                )
                 continue
             pwf, dbhp, doil = _analog_doil(
-                dfit.mean_slope, float(dvogel["pwf"]), float(dvogel["ResP"]),
-                tgt_oil, tgt_resp, delta_p,
+                dfit.mean_slope,
+                float(dvogel["pwf"]),
+                float(dvogel["ResP"]),
+                tgt_oil,
+                tgt_resp,
+                delta_p,
             )
-            rows.append({
-                "Target": tgt, "Donor": donor,
-                "Donor slope": round(dfit.mean_slope, 2),
-                "Donor drawdown": round(float(dvogel["pwf"]) / float(dvogel["ResP"]), 2),
-                "Target pwf (psi)": round(pwf, 0),
-                "ΔBHP (psi)": round(dbhp, 0),
-                "ΔOil (BOPD)": round(doil, 0),
-                "Note": "ok",
-            })
+            rows.append(
+                {
+                    "Target": tgt,
+                    "Donor": donor,
+                    "Donor slope": round(dfit.mean_slope, 2),
+                    "Donor drawdown": round(
+                        float(dvogel["pwf"]) / float(dvogel["ResP"]), 2
+                    ),
+                    "Target pwf (psi)": round(pwf, 0),
+                    "ΔBHP (psi)": round(dbhp, 0),
+                    "ΔOil (BOPD)": round(doil, 0),
+                    "Note": "ok",
+                }
+            )
         if rows:
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
         else:

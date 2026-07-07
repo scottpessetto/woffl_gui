@@ -582,13 +582,18 @@ def render_tab(
         _icon = "🎯" if _jm.get("ok") else "⚠️"
         (st.success if _jm.get("ok") else st.warning)(_jm["text"], icon=_icon)
 
-    # IPR-anchor selector + comparison-test picker FIRST — hoisted to the TOP of
-    # the tab so the *driving test* is chosen right where the solve happens. A
-    # watered-out or otherwise bad most-recent test no longer dead-ends the
-    # solver: pick an earlier oil-bearing test in the IPR-anchor selector and the
-    # sidebar (qwf/pwf/ResP/WC/GOR) reseeds and the solver re-runs against it.
-    # The selector seeds the sidebar (single source of truth) and returns its
-    # Vogel fit so Model-vs-Actual can reuse it below without recomputing.
+    # The IPR group renders as one unit — provisional-test entry, IPR-anchor
+    # selector, comparison-test picker, and the IPR chart — so the control that
+    # pins the IPR sits right next to the curve it moves (Scott: "the IPR test
+    # selector needs to be right above the IPR graph, just below provisional
+    # test"). The SEED still runs here at the TOP of the tab, before the solve,
+    # so choosing the *driving test* reseeds the sidebar (qwf/pwf/ResP/WC/GOR)
+    # and the solver re-runs against it — a watered-out most-recent test can't
+    # dead-end the solve. Only the CHART is drawn later (in Model-vs-Actual, once
+    # the fit is computed) into this same ``_anchor_box``, so it lands with the
+    # group rather than far below. On the Single-Well page ``_anchor_box`` is a
+    # container created here (group at the top of the tab); the pad-review page
+    # passes its own (group under the "Save review" title).
     test_df = _get_well_tests(params.selected_well)
 
     # Same gate Model-vs-Actual uses for its anchor control: oil workflow, JP
@@ -603,6 +608,13 @@ def render_tab(
     )
     _anchor_box = anchor_container if anchor_container is not None else st.container()
     with _anchor_box:
+        # Provisional-test entry sits at the top of the group — "just below" it
+        # comes the anchor selector. Always available (a well with no Databricks
+        # tests can still be modeled once a manual test is added); gated only on
+        # a real well. Moved up from Model-vs-Actual so the group reads
+        # provisional → selector → chart.
+        if params.selected_well != "Custom":
+            _render_manual_test_entry(params.selected_well)
         if anchor_selector_shown:
             anchor_fit = _render_ipr_anchor_and_seed(params, test_df)
         else:
@@ -687,7 +699,7 @@ def render_tab(
         if anchor_selector_shown:
             _water_fix = (
                 "Anchor the IPR on an earlier **oil-bearing** test using the "
-                "**IPR anchor** selector at the top of this tab (set it to "
+                "**IPR anchor** selector (above the IPR chart — set it to "
                 "*Specific test* and pick a test with oil) — the sidebar reseeds "
                 "and the solver re-runs against it. Or lower the **Water Cut** "
                 "below 100% in the sidebar."
@@ -1043,10 +1055,12 @@ def render_tab(
         well_profile,
         selected_test_row=selected_test_row,
         anchor_fit=anchor_fit,
-        # Pad review: draw the IPR chart into the same box as the anchor
-        # pickers, so the curve sits right next to the control that moves it.
-        # None (Single-Well) keeps the chart inline in Model-vs-Actual.
-        ipr_chart_container=anchor_container,
+        # Draw the IPR chart into the same box as the provisional-test entry +
+        # anchor pickers, so the curve sits right next to the control that moves
+        # it. On Single-Well ``_anchor_box`` is the top-of-tab group; on pad
+        # review it's the box under the "Save review" title. The comparison
+        # TABLE + calibration below stay in the Model-vs-Actual section.
+        ipr_chart_container=_anchor_box,
     )
 
     # Deferred fill of the pump-history placeholder reserved at the top —
@@ -2637,9 +2651,8 @@ def _render_model_vs_actual(
     test_df = _get_well_tests(params.selected_well)
     n_tests = 0 if test_df is None or test_df.empty else len(test_df)
 
-    # Manual provisional-test entry — always available (a well with no
-    # Databricks tests can still be modeled once a manual test is added).
-    _render_manual_test_entry(params.selected_well)
+    # Provisional-test entry now renders at the TOP of the IPR group (with the
+    # anchor selector + chart), not here — see render_tab's _anchor_box.
 
     # IPR anchor selection, Vogel fit, and the sidebar seed all happen at the TOP
     # of the tab now (see _render_ipr_anchor_and_seed), before the solve, so a

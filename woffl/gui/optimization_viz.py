@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import numpy as np
 
+from woffl.gui import vogel
+
 if TYPE_CHECKING:
     from woffl.assembly.calibration import CalibrationResult
     from woffl.assembly.network_optimizer import NetworkOptimizer, OptimizationResult
@@ -361,7 +363,6 @@ def create_ipr_comparison_pdf(
         PDF file contents as bytes
     """
     import io
-    import math
 
     from matplotlib.backends.backend_pdf import PdfPages
     from matplotlib.lines import Line2D
@@ -387,15 +388,13 @@ def create_ipr_comparison_pdf(
             # pres==0 row would ZeroDivisionError ahead of its own guard.
             if pres <= 0 or pwf >= pres:
                 continue
-            vogel_frac = 1 - 0.2 * (pwf / pres) - 0.8 * (pwf / pres) ** 2
+            vogel_frac = vogel.vogel_fraction(pwf, pres)
             if vogel_frac <= 0:
                 continue
             qmax = qwf / vogel_frac
             qmax_oil = qmax * (1 - wc)
             pressures = np.linspace(0, pres, 200)
-            oil_rates = qmax_oil * (
-                1 - 0.2 * (pressures / pres) - 0.8 * (pressures / pres) ** 2
-            )
+            oil_rates = vogel.vogel_rate(pressures, qmax_oil, pres)
 
             # Optimized operating point
             opt_bhp = r.suction_pressure
@@ -411,14 +410,8 @@ def create_ipr_comparison_pdf(
             # the liquid qmax understated the ratio ~1/(1-wc)x, floating the
             # "Current" point well above the curve for gaugeless wells.
             current_bhp = actual_bhp_map.get(r.well_name)
-            if (
-                current_bhp is None
-                and actual_oil is not None
-                and 0 < actual_oil < qmax_oil
-            ):
-                disc = 0.04 + 3.2 * (1 - actual_oil / qmax_oil)
-                if disc >= 0:
-                    current_bhp = (-0.2 + math.sqrt(disc)) / 1.6 * pres
+            if current_bhp is None and actual_oil is not None:
+                current_bhp = vogel.vogel_pwf_from_rate(actual_oil, qmax_oil, pres)
 
             # --- Create figure (letter size) ---
             fig = plt.figure(figsize=(8.5, 11))

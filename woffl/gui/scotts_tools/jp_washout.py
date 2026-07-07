@@ -44,10 +44,7 @@ def _build_scan_input(months_back: int) -> pd.DataFrame | None:
     valid = valid[valid["lift_wat"] > 0]
     if valid.empty:
         return None
-    latest = (valid.sort_values("WtDate")
-                   .groupby("well")
-                   .tail(1)
-                   .copy())
+    latest = valid.sort_values("WtDate").groupby("well").tail(1).copy()
 
     jp_hist = st.session_state.get("jp_history_df")
     if jp_hist is None:
@@ -77,28 +74,29 @@ def _build_scan_input(months_back: int) -> pd.DataFrame | None:
         pump_at = get_pump_at_date(jp_hist, wn, t["WtDate"])
         if not (pump_at and pump_at.get("nozzle_no") and pump_at.get("throat_ratio")):
             pump_at = pump
-        pump_changed = (
-            str(pump_at["nozzle_no"]) != str(pump["nozzle_no"])
-            or str(pump_at["throat_ratio"]) != str(pump["throat_ratio"])
-        )
+        pump_changed = str(pump_at["nozzle_no"]) != str(pump["nozzle_no"]) or str(
+            pump_at["throat_ratio"]
+        ) != str(pump["throat_ratio"])
         whp = float(t["whp"]) if pd.notna(t.get("whp")) else 210.0
-        rows.append({
-            "Well": wn,
-            "Pad": pad_from_mp_name(wn),
-            "Pump": f"{pump_at['nozzle_no']}{pump_at['throat_ratio']}",
-            "Nozzle": str(pump_at["nozzle_no"]),
-            "Throat": str(pump_at["throat_ratio"]),
-            "PumpChangedSinceTest": pump_changed,
-            "_vogel": vogel_map.get(wn),
-            "WtDate": t["WtDate"],
-            "Oil": float(t.get("WtOilVol") or 0.0),
-            "Water": float(t.get("WtWaterVol") or 0.0),
-            "Gas": float(t.get("WtGasVol") or 0.0),
-            "LiftWat": float(t["lift_wat"]),
-            "WHP": whp,
-            "BHP": float(t["BHP"]) if pd.notna(t.get("BHP")) else None,
-            "_chars": chars,
-        })
+        rows.append(
+            {
+                "Well": wn,
+                "Pad": pad_from_mp_name(wn),
+                "Pump": f"{pump_at['nozzle_no']}{pump_at['throat_ratio']}",
+                "Nozzle": str(pump_at["nozzle_no"]),
+                "Throat": str(pump_at["throat_ratio"]),
+                "PumpChangedSinceTest": pump_changed,
+                "_vogel": vogel_map.get(wn),
+                "WtDate": t["WtDate"],
+                "Oil": float(t.get("WtOilVol") or 0.0),
+                "Water": float(t.get("WtWaterVol") or 0.0),
+                "Gas": float(t.get("WtGasVol") or 0.0),
+                "LiftWat": float(t["lift_wat"]),
+                "WHP": whp,
+                "BHP": float(t["BHP"]) if pd.notna(t.get("BHP")) else None,
+                "_chars": chars,
+            }
+        )
     if not rows:
         return None
     return pd.DataFrame(rows).sort_values(["Pad", "Well"]).reset_index(drop=True)
@@ -113,6 +111,12 @@ def _calibrate_one(row_dict: dict) -> dict:
     """
     wn = row_dict["Well"]
     chars = row_dict["_chars"]
+    # P1-32: carry the pump-changed flag computed in _build_scan_input
+    # through into the result row (both success and error branches) — it
+    # was previously computed there and never propagated, so a well whose
+    # pump had already been changed out since the scanned test still got
+    # flagged for a changeout that already happened.
+    pump_changed = bool(row_dict.get("PumpChangedSinceTest", False))
     try:
         wc = build_well_config(
             wn, {wn: chars}, row_dict.get("_vogel"), surf_pres=row_dict["WHP"]
@@ -130,15 +134,24 @@ def _calibrate_one(row_dict: dict) -> dict:
             ken=cur.get("ken", 0.03),
             kth=cur.get("kth", 0.30),
             kdi=cur.get("kdi", 0.30),
-            wellbore=wellbore, wellprof=well_profile,
-            ipr_su=inflow, prop_su=res_mix, prop_pf=prop_pf,
+            wellbore=wellbore,
+            wellprof=well_profile,
+            ipr_su=inflow,
+            prop_su=res_mix,
+            prop_pf=prop_pf,
         )
         return {
-            "Well": wn, "Pad": row_dict["Pad"], "Pump": row_dict["Pump"],
+            "Well": wn,
+            "Pad": row_dict["Pad"],
+            "Pump": row_dict["Pump"],
+            "PumpChangedSinceTest": pump_changed,
             "WtDate": row_dict["WtDate"],
-            "Oil": row_dict["Oil"], "Water": row_dict["Water"],
-            "Gas": row_dict["Gas"], "LiftWat": row_dict["LiftWat"],
-            "BHP": row_dict["BHP"], "WHP": row_dict["WHP"],
+            "Oil": row_dict["Oil"],
+            "Water": row_dict["Water"],
+            "Gas": row_dict["Gas"],
+            "LiftWat": row_dict["LiftWat"],
+            "BHP": row_dict["BHP"],
+            "WHP": row_dict["WHP"],
             "PpfRequired": result.ppf_surf,
             "ModeledQnz": result.modeled_qnz,
             "LiftResidual": result.lift_residual,
@@ -146,20 +159,31 @@ def _calibrate_one(row_dict: dict) -> dict:
             "Bounded": result.bounded,
             "Sonic": result.sonic,
             "Iterations": result.iterations,
-            "Status": "ok", "Error": "",
+            "Status": "ok",
+            "Error": "",
         }
     except Exception as e:
         return {
-            "Well": wn, "Pad": row_dict["Pad"], "Pump": row_dict["Pump"],
+            "Well": wn,
+            "Pad": row_dict["Pad"],
+            "Pump": row_dict["Pump"],
+            "PumpChangedSinceTest": pump_changed,
             "WtDate": row_dict["WtDate"],
-            "Oil": row_dict["Oil"], "Water": row_dict["Water"],
-            "Gas": row_dict["Gas"], "LiftWat": row_dict["LiftWat"],
-            "BHP": row_dict["BHP"], "WHP": row_dict["WHP"],
-            "PpfRequired": float("nan"), "ModeledQnz": float("nan"),
+            "Oil": row_dict["Oil"],
+            "Water": row_dict["Water"],
+            "Gas": row_dict["Gas"],
+            "LiftWat": row_dict["LiftWat"],
+            "BHP": row_dict["BHP"],
+            "WHP": row_dict["WHP"],
+            "PpfRequired": float("nan"),
+            "ModeledQnz": float("nan"),
             "LiftResidual": float("nan"),
-            "Converged": False, "Bounded": False, "Sonic": False,
+            "Converged": False,
+            "Bounded": False,
+            "Sonic": False,
             "Iterations": 0,
-            "Status": "error", "Error": str(e)[:200],
+            "Status": "error",
+            "Error": str(e)[:200],
         }
 
 
@@ -183,7 +207,8 @@ def _run_scan(input_df: pd.DataFrame, workers: int = 1) -> pd.DataFrame:
             rows.append(_calibrate_one(rd))
             done += 1
             progress.progress(
-                done / n, text=f"{rd['Well']} done ({done}/{n})",
+                done / n,
+                text=f"{rd['Well']} done ({done}/{n})",
             )
     else:
         with ProcessPoolExecutor(max_workers=workers) as pool:
@@ -193,18 +218,24 @@ def _run_scan(input_df: pd.DataFrame, workers: int = 1) -> pd.DataFrame:
                 try:
                     rows.append(fut.result())
                 except Exception as e:  # pragma: no cover — defensive
-                    rows.append({
-                        "Well": wn, "Status": "error",
-                        "Error": f"worker crashed: {str(e)[:160]}",
-                        "PpfRequired": float("nan"),
-                        "ModeledQnz": float("nan"),
-                        "LiftResidual": float("nan"),
-                        "Converged": False, "Bounded": False, "Sonic": False,
-                        "Iterations": 0,
-                    })
+                    rows.append(
+                        {
+                            "Well": wn,
+                            "Status": "error",
+                            "Error": f"worker crashed: {str(e)[:160]}",
+                            "PpfRequired": float("nan"),
+                            "ModeledQnz": float("nan"),
+                            "LiftResidual": float("nan"),
+                            "Converged": False,
+                            "Bounded": False,
+                            "Sonic": False,
+                            "Iterations": 0,
+                        }
+                    )
                 done += 1
                 progress.progress(
-                    done / n, text=f"{wn} done ({done}/{n})",
+                    done / n,
+                    text=f"{wn} done ({done}/{n})",
                 )
     progress.empty()
     return pd.DataFrame(rows)
@@ -223,7 +254,10 @@ def render_tab() -> None:
     c1, c2, c3 = st.columns([1.3, 1.5, 1.5])
     with c1:
         months_back = st.slider(
-            "Test lookback (months)", 1, 24, 6,
+            "Test lookback (months)",
+            1,
+            24,
+            6,
             key="jp_washout_months",
             help="How far back to look for a recent lift-wat test per well.",
         )
@@ -231,7 +265,10 @@ def render_tab() -> None:
         ceiling = worker_ceiling()
         if ceiling > 1:
             workers = st.slider(
-                "Parallel workers", 1, ceiling, ceiling,
+                "Parallel workers",
+                1,
+                ceiling,
+                ceiling,
                 key="jp_washout_workers",
                 help=f"ProcessPool workers. Capped by WOFFL_MAX_WORKERS "
                 f"(current={ceiling}). Defaults to the cap; drag down to "
@@ -298,10 +335,13 @@ def render_tab() -> None:
         with pad_cols[i % n_cols]:
             pad_thresholds[pad] = st.number_input(
                 f"Pad {pad}",
-                min_value=1000, max_value=5000,
-                value=int(st.session_state.get(
-                    f"jp_washout_pad_th_{pad}", default_pad_pf(pad)
-                )),
+                min_value=1000,
+                max_value=5000,
+                value=int(
+                    st.session_state.get(
+                        f"jp_washout_pad_th_{pad}", default_pad_pf(pad)
+                    )
+                ),
                 step=50,
                 key=f"jp_washout_pad_th_{pad}",
             )
@@ -310,7 +350,10 @@ def render_tab() -> None:
     with col_run:
         run_clicked = st.button("Run wash-out scan", type="primary")
     with col_clear:
-        if "jp_washout_results" in st.session_state and not st.session_state["jp_washout_results"].empty:
+        if (
+            "jp_washout_results" in st.session_state
+            and not st.session_state["jp_washout_results"].empty
+        ):
             if st.button("Clear results"):
                 st.session_state.pop("jp_washout_results", None)
                 st.rerun()
@@ -332,53 +375,98 @@ def render_tab() -> None:
     # gets flagged. Bounded-low has ppf=1000, below any threshold, stays
     # unflagged.
     disp = results.copy()
+    # Defensive: a cached jp_washout_results from before P1-32 wired this
+    # column through won't have it yet.
+    if "PumpChangedSinceTest" not in disp.columns:
+        disp["PumpChangedSinceTest"] = False
+    disp["PumpChangedSinceTest"] = (
+        disp["PumpChangedSinceTest"].fillna(False).astype(bool)
+    )
+
     disp["PadThreshold"] = (
         disp["Pad"].map(pad_thresholds).fillna(PAD_PF_FALLBACK).astype(int)
     )
-    disp["FlagWashOut"] = disp["PpfRequired"] > disp["PadThreshold"]
-    disp = disp.sort_values("PpfRequired", ascending=False, na_position="last").reset_index(drop=True)
+    over_threshold = disp["PpfRequired"] > disp["PadThreshold"]
+    # P1-32: PumpChangedSinceTest was computed in _build_scan_input but
+    # never propagated or used — a well whose current pump already differs
+    # from the pump modeled at the scanned test has ALREADY been changed
+    # out, so recommending a changeout for it is stale advice. Exclude
+    # those rows from the actionable flag; they're still visible (and
+    # explained) via the "Pump Changed" column + the metric/caption below.
+    disp["FlagWashOut"] = over_threshold & ~disp["PumpChangedSinceTest"]
+    disp = disp.sort_values(
+        "PpfRequired", ascending=False, na_position="last"
+    ).reset_index(drop=True)
 
     n_flagged = int(disp["FlagWashOut"].sum())
     n_bounded = int(disp["Bounded"].sum())
     n_sonic = int(disp["Sonic"].sum())
     n_error = int((disp["Status"] == "error").sum())
-    m1, m2, m3, m4, m5 = st.columns(5)
+    n_stale = int((over_threshold & disp["PumpChangedSinceTest"]).sum())
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Wells scanned", len(disp))
     m2.metric("Flagged wash-out", n_flagged)
     m3.metric("Bounded", n_bounded, help="Binary search hit ppf_lo or ppf_hi")
     m4.metric("Sonic", n_sonic)
     m5.metric("Errored", n_error)
+    m6.metric(
+        "Pump already changed",
+        n_stale,
+        help="Over the pad threshold, but the pump modeled (installed at "
+        "the scanned test) has already been changed out since — excluded "
+        "from 'Flagged wash-out' since that recommendation is already "
+        "moot. See the 'Pump Changed' column.",
+    )
+    if n_stale:
+        st.caption(
+            f"{n_stale} well(s) exceeded their pad's PF threshold but the "
+            "pump has already been changed out since the scanned test — "
+            "not counted in 'Flagged wash-out'."
+        )
 
     st.dataframe(
         disp,
-        use_container_width=True, hide_index=True,
+        use_container_width=True,
+        hide_index=True,
         column_config={
             "Well": st.column_config.TextColumn("Well", pinned="left"),
             "Pad": st.column_config.TextColumn("Pad"),
             "Pump": st.column_config.TextColumn("Pump"),
+            "PumpChangedSinceTest": st.column_config.CheckboxColumn(
+                "Pump Changed",
+                help="Current pump differs from the pump modeled (installed "
+                "at the scanned test's date) — a changeout has already "
+                "happened, so 'Wash-out?' is suppressed for this row.",
+            ),
             "WtDate": st.column_config.DatetimeColumn(
-                "Test Date", format="YYYY-MM-DD",
+                "Test Date",
+                format="YYYY-MM-DD",
             ),
             "Oil": st.column_config.NumberColumn("Oil (BOPD)", format="%.0f"),
             "Water": st.column_config.NumberColumn("Water (BWPD)", format="%.0f"),
             "Gas": st.column_config.NumberColumn("Gas (MCFD)", format="%.0f"),
             "LiftWat": st.column_config.NumberColumn(
-                "Lift Wat (BWPD)", format="%.0f",
+                "Lift Wat (BWPD)",
+                format="%.0f",
                 help="Observed power-fluid rate from well test",
             ),
             "BHP": st.column_config.NumberColumn("BHP (psi)", format="%.0f"),
             "WHP": st.column_config.NumberColumn("WHP (psi)", format="%.0f"),
             "PpfRequired": st.column_config.NumberColumn(
-                "PF Required (psi)", format="%.0f",
+                "PF Required (psi)",
+                format="%.0f",
                 help="ppf_surf that makes modeled qnz match observed lift_wat",
             ),
             "PadThreshold": st.column_config.NumberColumn(
-                "Pad Threshold (psi)", format="%.0f",
+                "Pad Threshold (psi)",
+                format="%.0f",
                 help="Wash-out threshold for this well's pad (see inputs above)",
             ),
             "FlagWashOut": st.column_config.CheckboxColumn(
                 "Wash-out?",
-                help="PF Required exceeds the pad's threshold",
+                help="PF Required exceeds the pad's threshold AND the pump "
+                "hasn't already been changed out since the scanned test "
+                "(see 'Pump Changed')",
             ),
             "Bounded": st.column_config.CheckboxColumn(
                 "Bounded",
@@ -389,16 +477,19 @@ def render_tab() -> None:
                 help="Throat at sonic velocity at the recovered ppf_surf",
             ),
             "ModeledQnz": st.column_config.NumberColumn(
-                "Modeled Qnz (BWPD)", format="%.0f",
+                "Modeled Qnz (BWPD)",
+                format="%.0f",
             ),
             "LiftResidual": st.column_config.NumberColumn(
-                "Residual (BWPD)", format="%.1f",
+                "Residual (BWPD)",
+                format="%.1f",
                 help="Modeled qnz - target lift_wat",
             ),
             "Iterations": st.column_config.NumberColumn("Iters", format="%.0f"),
             "Status": st.column_config.TextColumn("Status"),
             "Error": st.column_config.TextColumn(
-                "Error", help="Error message if scan failed",
+                "Error",
+                help="Error message if scan failed",
             ),
         },
     )

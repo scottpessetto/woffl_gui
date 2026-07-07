@@ -66,7 +66,10 @@ def test_no_errors() -> None:
 
 
 def test_sonic_count() -> None:
-    assert df["sonic_status"].sum() == 7
+    # 7 -> 6 with the 9b20c65 Beggs-Brill corrections (see note below): the
+    # higher discharge back-pressure dropped one marginal combo below Mach 1
+    # at the throat entry. Remaining sonic: 9X, 9A, 10X, 11X, 12X, 13X.
+    assert df["sonic_status"].sum() == 6
 
 
 # Reference values re-baselined 2026-06 after fixing the solopump psu secant
@@ -84,24 +87,44 @@ def test_sonic_count() -> None:
 # qoil_std / totl_wat / psu_solv are unchanged (the operating point is the same);
 # only the derived mach_te moved. 9X and 12B crossed the 1% tolerance and were
 # updated; 9D's shift stayed within tolerance.
+#
+# Re-baselined 2026-07-06 for commit 9b20c65, which wired the canonical
+# Beggs-Brill corrections into the outflow traverse (Ek acceleration term,
+# HL >= no-slip holdup floor, C >= 0 clamp — all previously UNDERSTATING the
+# tubing gradient). The discharge back-pressure the pump works against rose,
+# so psu_solv moves UP and qoil/totl_wat/mach_te move DOWN, scaling with total
+# rate: 16E (~7,300 bwpd, highest velocity) moves most, 9X/12B stay in
+# tolerance. Attribution verified by bisection: at 9b20c65 with ONLY
+# outflow.py/twophase.py reverted, every pre-9b20c65 pin passes — the
+# solopump/jetflow solver patches in the same commit were bit-identical here.
+#
+# Re-baselined 2026-07-06 (restored ee3886e Vogel IPR, clobbered by the
+# woffl-2.0 sync): jetflow.throat_entry_zero_tde/throat_entry_mach_one now
+# evaluate ipr_su.oil_flow(psu, method="vogel") instead of "pidx" (see
+# docs/upstream_sync.md #15). At all four reference psu_solv values (1123 to
+# 1323 psig — strictly between the E-41 anchor pwf=1049 and pres=1400), the
+# Vogel curve sits above the straight-line PI chord, so qoil_std/totl_wat move
+# UP. 9X's mach_te and 9D/16E's mach_te/psu_solv also shifted (operating point
+# re-balances); 12B stayed within the existing 1% tolerance and its pin is
+# unchanged.
 
 
 def test_9X_reference() -> None:
     """Nozzle 9, Throat X — known sonic case."""
     row = df[(df["nozzle"] == "9") & (df["throat"] == "X")].iloc[0]
-    assert row["qoil_std"] == pytest.approx(58.83, rel=0.01)
-    assert row["totl_wat"] == pytest.approx(1937.17, rel=0.01)
-    assert row["mach_te"] == pytest.approx(0.9694, rel=0.01)
-    assert row["psu_solv"] == pytest.approx(1316.06, rel=0.01)
+    assert row["qoil_std"] == pytest.approx(59.04, rel=0.01)
+    assert row["totl_wat"] == pytest.approx(1937.83, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.9572, rel=0.01)
+    assert row["psu_solv"] == pytest.approx(1323.28, rel=0.01)
 
 
 def test_9D_reference() -> None:
     """Nozzle 9, Throat D — subsonic case."""
     row = df[(df["nozzle"] == "9") & (df["throat"] == "D")].iloc[0]
-    assert row["qoil_std"] == pytest.approx(151.96, rel=0.01)
-    assert row["totl_wat"] == pytest.approx(2643.21, rel=0.01)
-    assert row["mach_te"] == pytest.approx(0.2759, rel=0.01)
-    assert row["psu_solv"] == pytest.approx(1183.17, rel=0.01)
+    assert row["qoil_std"] == pytest.approx(144.72, rel=0.01)
+    assert row["totl_wat"] == pytest.approx(2574.10, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.2512, rel=0.01)
+    assert row["psu_solv"] == pytest.approx(1204.37, rel=0.01)
 
 
 def test_12B_reference() -> None:
@@ -116,10 +139,10 @@ def test_12B_reference() -> None:
 def test_16E_reference() -> None:
     """Nozzle 16, Throat E — largest pump."""
     row = df[(df["nozzle"] == "16") & (df["throat"] == "E")].iloc[0]
-    assert row["qoil_std"] == pytest.approx(97.09, rel=0.01)
-    assert row["totl_wat"] == pytest.approx(7588.98, rel=0.01)
-    assert row["mach_te"] == pytest.approx(0.0175, rel=0.02)
-    assert row["psu_solv"] == pytest.approx(1261.47, rel=0.01)
+    assert row["qoil_std"] == pytest.approx(75.07, rel=0.01)
+    assert row["totl_wat"] == pytest.approx(7365.77, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.0131, rel=0.02)
+    assert row["psu_solv"] == pytest.approx(1301.76, rel=0.01)
 
 
 def test_oil_always_positive() -> None:

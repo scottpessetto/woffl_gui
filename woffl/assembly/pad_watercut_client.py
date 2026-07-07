@@ -21,6 +21,7 @@ from __future__ import annotations
 import pandas as pd
 
 from woffl.assembly.databricks_client import execute_query
+from woffl.assembly.sql_guards import validate_iso_date
 
 PADS = ("G", "H", "I", "J")
 RECYCLE_PADS = {"H", "I"}
@@ -71,12 +72,19 @@ def _pad_of(well_name: str) -> str:
 
 
 def _fetch_tests(start_date: str, end_date: str) -> pd.DataFrame:
-    tests_start = (pd.Timestamp(start_date) - pd.Timedelta(days=TEST_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
-    query = TESTS_QUERY.format(tests_start=tests_start, end_date=end_date)
+    tests_start = (
+        pd.Timestamp(start_date) - pd.Timedelta(days=TEST_LOOKBACK_DAYS)
+    ).strftime("%Y-%m-%d")
+    query = TESTS_QUERY.format(
+        tests_start=validate_iso_date(tests_start),
+        end_date=validate_iso_date(end_date),
+    )
     df = execute_query(query)
     if df.empty:
         return df
-    df["wt_date"] = pd.to_datetime(df["wt_date"], utc=True).dt.tz_localize(None).dt.normalize()
+    df["wt_date"] = (
+        pd.to_datetime(df["wt_date"], utc=True).dt.tz_localize(None).dt.normalize()
+    )
     for col in ("oil_rate", "fwat_rate", "lwat_rate"):
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
     df = df.sort_values(["well_name", "wt_date"])
@@ -84,28 +92,40 @@ def _fetch_tests(start_date: str, end_date: str) -> pd.DataFrame:
 
 
 def _fetch_shut_in(start_date: str, end_date: str) -> pd.DataFrame:
-    query = SHUT_IN_QUERY.format(start_date=start_date, end_date=end_date)
+    query = SHUT_IN_QUERY.format(
+        start_date=validate_iso_date(start_date),
+        end_date=validate_iso_date(end_date),
+    )
     df = execute_query(query)
     if df.empty:
         return df
-    df["dtdate"] = pd.to_datetime(df["dtdate"], utc=True).dt.tz_localize(None).dt.normalize()
+    df["dtdate"] = (
+        pd.to_datetime(df["dtdate"], utc=True).dt.tz_localize(None).dt.normalize()
+    )
     df["hrs"] = pd.to_numeric(df["hrs"], errors="coerce").fillna(0.0)
     return df
 
 
-def _forward_fill_tests(tests_df: pd.DataFrame, date_index: pd.DatetimeIndex) -> pd.DataFrame:
+def _forward_fill_tests(
+    tests_df: pd.DataFrame, date_index: pd.DatetimeIndex
+) -> pd.DataFrame:
     """Build a wide daily table: one row per (well, date) with last-known rates."""
     if tests_df.empty:
-        return pd.DataFrame(columns=["well_name", "date", "oil_rate", "fwat_rate", "lwat_rate"])
+        return pd.DataFrame(
+            columns=["well_name", "date", "oil_rate", "fwat_rate", "lwat_rate"]
+        )
 
     frames = []
     for well, grp in tests_df.groupby("well_name", sort=False):
         grp = grp.drop_duplicates(subset="wt_date", keep="last").set_index("wt_date")
         # Reindex to every day in the target range, forward-fill from the
         # most recent prior test (lookback window is included in grp).
-        daily = grp[["oil_rate", "fwat_rate", "lwat_rate"]].reindex(
-            date_index.union(grp.index)
-        ).ffill().reindex(date_index)
+        daily = (
+            grp[["oil_rate", "fwat_rate", "lwat_rate"]]
+            .reindex(date_index.union(grp.index))
+            .ffill()
+            .reindex(date_index)
+        )
         daily = daily.dropna(how="all")
         if daily.empty:
             continue
@@ -115,7 +135,9 @@ def _forward_fill_tests(tests_df: pd.DataFrame, date_index: pd.DatetimeIndex) ->
         frames.append(daily)
 
     if not frames:
-        return pd.DataFrame(columns=["well_name", "date", "oil_rate", "fwat_rate", "lwat_rate"])
+        return pd.DataFrame(
+            columns=["well_name", "date", "oil_rate", "fwat_rate", "lwat_rate"]
+        )
     return pd.concat(frames, ignore_index=True)
 
 
@@ -124,7 +146,9 @@ def _apply_shut_in_mask(daily: pd.DataFrame, si_df: pd.DataFrame) -> pd.DataFram
     if daily.empty or si_df.empty:
         return daily
     si = si_df.rename(columns={"dtdate": "date"}).copy()
-    merged = daily.merge(si[["well_name", "date", "hrs"]], on=["well_name", "date"], how="left")
+    merged = daily.merge(
+        si[["well_name", "date", "hrs"]], on=["well_name", "date"], how="left"
+    )
     mask = merged["hrs"].fillna(0.0) > SI_HOURS_THRESHOLD
     for col in ("oil_rate", "fwat_rate", "lwat_rate"):
         merged.loc[mask, col] = 0.0
@@ -142,16 +166,16 @@ def _aggregate_pads(daily: pd.DataFrame) -> pd.DataFrame:
     lift_factor = (~daily["pad"].isin(RECYCLE_PADS)).astype(float)
     daily["water_contrib"] = daily["fwat_rate"] + lift_factor * daily["lwat_rate"]
 
-    per_pad = (
-        daily.groupby(["date", "pad"], as_index=False)
-        .agg(oil=("oil_rate", "sum"), water=("water_contrib", "sum"))
+    per_pad = daily.groupby(["date", "pad"], as_index=False).agg(
+        oil=("oil_rate", "sum"), water=("water_contrib", "sum")
     )
-    combined = (
-        daily.groupby("date", as_index=False)
-        .agg(oil=("oil_rate", "sum"), water=("water_contrib", "sum"))
+    combined = daily.groupby("date", as_index=False).agg(
+        oil=("oil_rate", "sum"), water=("water_contrib", "sum")
     )
     combined["pad"] = "All"
-    out = pd.concat([per_pad, combined[["date", "pad", "oil", "water"]]], ignore_index=True)
+    out = pd.concat(
+        [per_pad, combined[["date", "pad", "oil", "water"]]], ignore_index=True
+    )
 
     total = out["oil"] + out["water"]
     out["wc"] = (out["water"] / total).where(total > 0, 0.0)

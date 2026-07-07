@@ -35,7 +35,14 @@ md_seg, prs_ray, slh_ray = of.production_top_down_press(
 
 
 def test_bottom_pressure() -> None:
-    assert prs_ray[-1] == pytest.approx(1754.88, rel=0.001)
+    # Re-baselined 1754.88 -> 1856.89 for commit 9b20c65, which wired the
+    # canonical Beggs-Brill corrections into the traverse: the Ek acceleration
+    # term (beggs_ek existed but had no call site), the HL >= no-slip holdup
+    # floor, and the C >= 0 incline-factor clamp. All three fixed a gradient
+    # UNDERSTATEMENT, so the top-down traverse now ends ~102 psi higher.
+    # Verified by bisection: reverting only outflow.py/twophase.py to the
+    # pre-9b20c65 versions reproduces the old value exactly.
+    assert prs_ray[-1] == pytest.approx(1856.89, rel=0.001)
 
 
 def test_top_pressure() -> None:

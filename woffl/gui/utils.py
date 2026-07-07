@@ -3,6 +3,7 @@
 This module contains helper functions for the Streamlit GUI.
 """
 
+import logging
 import os
 
 import numpy as np
@@ -19,6 +20,8 @@ from woffl.pvt.blackoil import BlackOil
 from woffl.pvt.formgas import FormGas
 from woffl.pvt.formwat import FormWater
 from woffl.pvt.resmix import ResMix
+
+logger = logging.getLogger(__name__)
 
 
 def render_input_summary(params) -> None:
@@ -259,7 +262,14 @@ def _fetch_pf_latest_cached() -> pd.DataFrame:
     return fetch_pf_latest()
 
 
-_PF_LATEST_COLS = ["well", "pf_press", "pf_source", "pf_date", "tubing_prs", "inn_ann_prs"]
+_PF_LATEST_COLS = [
+    "well",
+    "pf_press",
+    "pf_source",
+    "pf_date",
+    "tubing_prs",
+    "inn_ann_prs",
+]
 
 
 def load_pf_latest() -> pd.DataFrame:
@@ -987,7 +997,10 @@ def render_pf_quickfix_widget(
             _ack_pf(params.selected_well)
             with st.spinner("Solving effective nozzle area at measured PF..."):
                 st.session_state["_pf_wear_msg"] = _estimate_wear_message(
-                    params, wellbore, well_profile, inputs,
+                    params,
+                    wellbore,
+                    well_profile,
+                    inputs,
                     target_lift_wat=float(target_lift_wat),
                     measured_pf=float(measured_pf),
                 )
@@ -1063,9 +1076,7 @@ def _estimate_wear_message(
         return "warning", f"Nozzle-wear estimate failed: {e}"
 
     pump = f"{inputs['nozzle']}{inputs['throat']}"
-    if not is_valid_number(r.wear_factor) or (
-        not r.converged and not r.bounded
-    ):
+    if not is_valid_number(r.wear_factor) or (not r.converged and not r.bounded):
         return (
             "warning",
             "Nozzle-wear estimate could not converge — the solver failed "
@@ -1237,8 +1248,26 @@ def create_well_profile(field_model=None, jpump_tvd=None):
                 jetpump_md=jpump_md,
             )
         except ValueError as e:
-            # If the TVD is outside the well profile's range, log a warning and use the default
-            print(f"Warning: {e}. Using default jetpump MD.")
+            # If the TVD is outside the well profile's range, surface a
+            # VISIBLE warning instead of a bare print() — invisible on
+            # Databricks Apps (P1-20, docs/code_review_2026-07-01.md).
+            # create_well_profile runs on the Streamlit script thread (the
+            # optimizer's own _create_well_objects builds WellProfile
+            # directly for its ProcessPool workers, bypassing this GUI
+            # wrapper — see woffl/assembly/network_optimizer.py), so
+            # st.warning is the right call here. Still guarded: a caller
+            # that imports/uses this module outside a running Streamlit
+            # script (e.g. a standalone script, or module-level use in
+            # tests) falls back to the logger instead of depending on the
+            # Streamlit runtime being present.
+            msg = (
+                f"jetpump_tvd={jpump_tvd} is outside the well profile's range "
+                f"({e}); using the default jetpump MD instead."
+            )
+            try:
+                st.warning(msg)
+            except Exception:
+                logger.warning(msg)
 
     return well_profile
 
@@ -1590,6 +1619,30 @@ def run_batch_pump(
             return None
 
 
+def pressure_sweep_range(power_fluid_min, power_fluid_max, power_fluid_step):
+    """Build the PF-pressure sweep points for the Best Performers sweep.
+
+    ``np.arange(min, max, step)``'s stop is exclusive, so a naive
+    ``np.arange(min, max, step)`` would DROP an exact-multiple max (e.g.
+    min=1000, max=2000, step=250 → last point is 1750, not 2000). Adding one
+    extra ``step`` to the stop fixes that — but when the range ISN'T evenly
+    divisible by the step, it then overshoots max by up to a whole step
+    (e.g. min=1000, max=1700, step=300 → arange(..., 2000, 300) yields
+    ..., 1900, past the requested 1700). Clip back to ``power_fluid_max``
+    (with a tiny epsilon so an exact-multiple max survives float rounding)
+    so a swept point can never land outside the requested range — Best
+    Performers must not crown a pressure the engineer didn't ask for.
+    [P1-16] docs/code_review_2026-07-01.md
+
+    Returns:
+        np.ndarray: sorted pressures in [power_fluid_min, power_fluid_max]
+    """
+    pressure_range = np.arange(
+        power_fluid_min, power_fluid_max + power_fluid_step, power_fluid_step
+    )
+    return pressure_range[pressure_range <= power_fluid_max + 1e-9]
+
+
 def run_power_fluid_range_batch(
     surf_pres,
     form_temp,
@@ -1636,9 +1689,10 @@ def run_power_fluid_range_batch(
     _, prop_pf, _ = create_pvt_components(field_model)
     prop_pf = prop_pf.condition(0, 60)
 
-    # Create pressure range
-    pressure_range = np.arange(
-        power_fluid_min, power_fluid_max + power_fluid_step, power_fluid_step
+    # Create pressure range (clipped to power_fluid_max — see helper docstring
+    # for why np.arange alone overshoots it). [P1-16] docs/code_review_2026-07-01.md
+    pressure_range = pressure_sweep_range(
+        power_fluid_min, power_fluid_max, power_fluid_step
     )
 
     # Create a list of jet pumps with all combinations of nozzles and throats

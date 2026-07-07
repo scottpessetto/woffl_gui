@@ -1,7 +1,7 @@
 """Check for wells in Databricks vw_prop_mech that lack a deviation survey CSV.
 
 Run this before deploying or after the data team adds new wells to flag any
-that need surveys pulled from Oracle PDB via pull_surveys.py.
+that need surveys pulled from Oracle PDB via pull_missing_surveys.py.
 
 Usage:
     python -m woffl.jp_data.check_missing_surveys
@@ -14,7 +14,9 @@ from woffl.assembly.databricks_client import fetch_well_props
 
 
 def main() -> int:
-    survey_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "well_surveys")
+    survey_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "well_surveys"
+    )
     if not os.path.isdir(survey_dir):
         print(f"ERROR: survey directory not found: {survey_dir}", file=sys.stderr)
         return 2
@@ -41,8 +43,8 @@ def main() -> int:
         for w in missing:
             print(f"  - {w}")
         print()
-        print("To pull missing surveys, edit pull_surveys.py to query these wells")
-        print("and run it from a machine with Oracle PDB access.")
+        print("To pull missing surveys, run pull_missing_surveys.py")
+        print("from a machine with Oracle PDB access.")
     if extra:
         print(f"\nLocal-only (not in Databricks): {len(extra)}")
         for w in extra:

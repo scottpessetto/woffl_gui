@@ -236,8 +236,8 @@ def mckp_optimization(
 ) -> list["OptimizationResult"]:
     """Optimal allocation via Multi-Choice Knapsack (OR-Tools CP-SAT).
 
-    Bridges the GUI's NetworkOptimizer interface to Kaelin's upstream
-    WellNetwork.optimize() which uses the CP-SAT constraint solver.
+    Bridges the GUI's NetworkOptimizer interface to
+    network.optimize_jet_pumps() which uses the CP-SAT constraint solver.
 
     Each well picks exactly one jet pump from its semi-finalists to maximize
     total oil production subject to the power-fluid budget constraint.

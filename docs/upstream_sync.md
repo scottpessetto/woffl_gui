@@ -228,6 +228,152 @@ the normal path, each tagged in-code with `upstream PR`:
   Guarded by `test_pvt_formgas.py::test_gas_sg_bounds_inclusive` and
   `test_pvt_formwater.py::test_wat_sg_bounds_inclusive`.
 
+### 13. `woffl/assembly/databricks_client.py` — connection retry + OAuth lock scope (P2-6, 2026-07-06)
+Two additive robustness fixes in `_query_via_connector` / `_oauth_token`:
+
+- **First-attempt connect failure now retries.** `_new_connection()` was called
+  OUTSIDE the try/except in `_query_via_connector`'s retry loop, so a failure on
+  the very first connection attempt (attempt 0) raised immediately and never
+  reached attempt 2. It's now called INSIDE the try, so a first-connect failure
+  (warehouse cold-start, transient network blip) takes the same
+  reset-conn/force-token-refresh/retry path a mid-query failure already did.
+  Already-successful first connections are unaffected.
+- **`_oauth_token` no longer holds `_TOKEN_LOCK` across the ~30 s HTTP token
+  fetch.** It now: checks the cache under the lock → if stale, releases the
+  lock → does the HTTP fetch unlocked → re-acquires the lock and keeps
+  whichever token is newer (another thread may have refreshed meanwhile)
+  before writing. Previously every thread serialized behind one thread's
+  network call (e.g. the app's concurrent startup warm queries in
+  `CLAUDE.md`'s "databricks_client design" note). A cache hit (common case)
+  is unaffected — it still returns under the lock without any fetch.
+
+**Guarded by:** `tests/test_databricks_client.py::TestQueryViaConnectorRetriesFirstAttempt`
+(`test_first_connect_failure_retries_and_succeeds`,
+`test_first_connect_failure_forces_token_refresh_and_clears_cache`,
+`test_two_connect_failures_raise_the_last_error`) and
+`::TestOauthTokenReleasesLockDuringFetch`
+(`test_lock_is_not_held_during_the_http_call` — event-gated, not sleep-based —
+`test_returns_fresh_token_and_populates_cache`).
+
+### 14. P1-8/P1-9/P1-10 — fallback exception widening, zero-flow guard, z-factor clamp (2026-07-06)
+Three additive robustness fixes from the 2026-07-01 review, all bit-identical on
+the normal/in-range path:
+
+- **`woffl/assembly/solopump.py` (P1-8)** — `_residual_walk_inward` previously
+  only caught `ConvergenceError`; `_bisection_solve`'s midpoint retry previously
+  only caught `ThroatEntryNoSolution`. Neither walked past a **bare
+  `JetPumpError`** raised by `jetflow.nozzle_velocity` when `pni <= pte` (nozzle
+  inlet pressure below throat entry pressure) — exactly the "works in the well,
+  not in the model" failure class #1 exists to rescue, just from a different
+  inner exception type. `_residual_walk_inward` now catches the `JetPumpError`
+  family broadly but still explicitly re-raises `ThroatEntryNoSolution`
+  unchanged (it drives the GUI's GOR auto-recovery — must not be swallowed);
+  `_bisection_solve`'s midpoint retry is broadened from
+  `except ThroatEntryNoSolution` to `except JetPumpError` (now also covers
+  `ConvergenceError` and the bare base class), keeping the same
+  too-low-side/`res_mid` narrowing logic.
+- **`woffl/flow/singlephase.py` (P1-9)** — `ffactor_darcy` computed
+  `64 / reynolds` with no guard; `reynolds == 0` (zero flow, e.g. a shut-in
+  segment) raised a bare, untyped `ZeroDivisionError`. Every caller pairs `ff`
+  with a velocity term (`dp_fric ~ ff * vel**2`), and `reynolds == 0` implies
+  `vel == 0` too, so the physically correct friction contribution in that limit
+  is zero. Now returns `0.0` for `reynolds <= 0` before the laminar branch;
+  `reynolds > 0` path unchanged.
+- **`woffl/pvt/formgas.py` (P1-10)** — `_zfactor_grad_school`'s cubic
+  correlation is unguarded outside its documented validity range (very high
+  `ppr` / very low `tpr`) and could return `z <= 0` or an implausibly large `z`,
+  silently poisoning `_compute_density` (division by `zfactor`) and
+  `ResMix.cmix`'s `math.sqrt(...)` downstream with a domain error or a
+  negative/huge density. The raw output is now clamped to
+  `[FormGas._ZFACTOR_MIN, FormGas._ZFACTOR_MAX] = [0.05, 3.0]` — a no-op for
+  every realistic natural-gas z-factor (well within that band).
+
+**Guarded by:** `tests/test_asm_solopump.py::TestFallbackWalksPastBareJetPumpError`
+(`test_walk_inward_passes_bare_jetpumperror`,
+`test_walk_inward_still_reraises_throat_entry_no_solution`,
+`test_bisection_midpoint_passes_bare_jetpumperror`);
+`tests/test_multiphase.py::test_ffactor_darcy_zero_reynolds_does_not_raise`
+(+ `test_ffactor_darcy_in_range_unchanged` precondition guard);
+`tests/test_pvt_formgas.py::test_zfactor_gradschool_clamped_outside_correlation_range`,
+`::test_zfactor_property_clamped_and_finite`
+(+ `::test_zfactor_gradschool_in_range_unchanged` precondition guard).
+
+### 15. `woffl/flow/jetflow.py` + `woffl/flow/jetplot.py` — solve the IPR on Vogel, not straight-line PI (restores ee3886e, 2026-07-06)
+Commit `ee3886e` (2026-03-11, "change woffl to solve on ipr not straightline PI.
+t'isnt right") flipped the three throat-entry IPR evaluations —
+`jetflow.throat_entry_zero_tde`, `jetflow.throat_entry_mach_one`, and
+`jetplot.throat_entry_book` — from `ipr_su.oil_flow(psu, method="pidx")` to
+`method="vogel"`, and re-pinned `tests/batch_test.py` accordingly. A later
+upstream sync (`0f147fb`, "incorporate woffl 2.0") **silently reverted all
+three sites back to `"pidx"`** — this is exactly the clobber scenario this
+document's sync protocol exists to catch, and it slipped through because the
+`batch_test.py` pins were loose enough (1% rel tolerance) that only 3 of the 4
+reference tests actually went red, and the discrepancy was small enough to
+read as ordinary re-baselining noise from unrelated solver/outflow patches.
+**Upstream `kwellis/woffl` still uses `"pidx"`** — this divergence is
+intentional and permanent, not a bug to reconcile away on the next sync.
+
+Both curves pass through `(pwf, qwf)` and `(pres, 0)`; strictly BETWEEN those
+two points the Vogel curve sits ABOVE the straight-line PI chord (more oil at
+a given psu), and BELOW `pwf` it sits below the chord (less oil/water at a
+given psu). At the E-41 batch fixture (`pwf=1049`, `pres=1400`), all four
+reference `psu_solv` values (1117–1323 psig) land strictly between `pwf` and
+`pres`, so `qoil_std`/`totl_wat` moved up; re-pinned in `tests/batch_test.py`
+(9X, 9D, 16E — 12B stayed within the existing 1% tolerance).
+`tests/test_asm_solopump.py::TestWaterPumpMode::test_water_solve_outflow_includes_power_fluid`
+solves BELOW its water-IPR's anchor `pwf` (`psu≈698` vs `pwf=1000`), so
+`fwat` moved down — also re-pinned.
+
+**Guarded by:** `tests/test_asm_solopump.py::TestSolverUsesVogelIPR`
+(`test_solver_qoil_matches_vogel_not_pidx` — a single cheap E-41 solve
+asserting `qoil_std == ipr.oil_flow(psu, "vogel")` AND
+`qoil_std != ipr.oil_flow(psu, "pidx")` at a psu strictly between `pwf` and
+`pres`). Goes red immediately if any of the three call sites reverts to
+`method="pidx"`.
+
+---
+
+## Dead-code deletions from `woffl/assembly/` (R-10, 2026-07-06)
+
+Not patches — these are GUI-fork-only removals of confirmed-zero-caller code
+inside the shared library dirs. Recorded here so a future upstream merge
+doesn't silently resurrect them (if `kwellis/woffl` still carries these
+symbols, decide deliberately whether to re-delete the merged-in copy rather
+than assume the merge "restored" something we need):
+
+- `woffl/assembly/optimization_analyzer.py` — entire file deleted (zero
+  callers anywhere in the tree; `compare_scenarios` and friends were never
+  imported outside their own module).
+- `woffl/assembly/network_optimizer.py` — deleted `validate_allocation`
+  (dead + superseded), `create_well_template_csv`, `load_wells_from_csv`
+  (zero callers incl. tests). Deleted `get_calibrated_results` (dead
+  duplicate of `calibration.apply_calibration`, which `step4_results.py`
+  actually uses). **Kept** `validate_well_config` (still unwired — see B-2 —
+  but not dead, it's exercised by `tests/test_network_optimizer.py`).
+- `woffl/assembly/network.py` — deleted the `WellNetwork` class (dead;
+  `woffl/assembly/__init__.py`'s `from .network import WellNetwork` was its
+  only "caller", also removed). **Kept** the module-level `optimize_jet_pumps`
+  function + `SCALE` constant — these are live (used by
+  `optimization_algorithms.mckp_optimization` and covered by
+  `tests/test_asm_network.py`).
+- `woffl/assembly/well_test_processor.py` — deleted `merge_tests_with_bhp`
+  (zero callers outside its own test file; the app never merges test data
+  with BHP this way anymore — `vw_bhp_daily_clean` / live PF replaced this
+  path). **Kept** the `WellTestProcessor` class itself (out of R-10's
+  explicit scope, though note under NOTES in the W11 handoff: it too has no
+  callers outside its own test file — worth a follow-up look).
+- Legacy BHP chain in `woffl/assembly/databricks_client.py`
+  (`load_tag_dict`, `query_bhp_for_well_tests`) and the `bhp_dict.csv` data
+  file it reads — **NOT deleted this pass** (file was excluded from this
+  work item to avoid clobbering concurrent edits); still dead per the same
+  review finding, deferred to a follow-up pass.
+  **Follow-up (2026-07-06): deleted** — both functions, their dedicated test
+  classes (`TestLoadTagDict`, `TestQueryBhpForWellTests`), and
+  `woffl/jp_data/bhp_dict.csv` are gone; zero callers confirmed repo-wide
+  (`vw_bhp_tags` / `vw_bhp_daily_clean` fully replaced this path). **Kept**
+  `get_tags_for_wells` (out of this item's explicit scope) even though it's
+  now orphaned with `query_bhp_for_well_tests` gone — worth a follow-up look.
+
 ---
 
 ## NOT upstream — safe to change freely

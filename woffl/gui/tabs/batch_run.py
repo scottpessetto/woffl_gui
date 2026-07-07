@@ -332,6 +332,52 @@ def _render_data_table(batch_pump, params: SimulationParams) -> None:
     _render_recommender_table(batch_pump, params, water)
 
 
+def batch_success_stats(df: pd.DataFrame) -> tuple[int, int, float]:
+    """Return (total, successful, success_pct) for a batch sweep dataframe.
+
+    Pulled out as a standalone, Streamlit-free function (P1-17) so the
+    counting logic — "successful" means the solver converged, i.e.
+    ``qoil_std`` is not NaN — is unit-testable and shared between the
+    metrics display and any future consumer, mirroring how
+    ``power_fluid_range.py`` computes its own Successful-Runs metric.
+    """
+    total = len(df)
+    if total == 0:
+        return 0, 0, 0.0
+    successful = int((~df["qoil_std"].isna()).sum())
+    return total, successful, (successful / total * 100)
+
+
+def _render_success_metrics(batch_pump) -> None:
+    """Surface how many nozzle x throat combos actually converged.
+
+    P1-17: failed combos (solver couldn't converge — ``qoil_std`` is NaN)
+    were being silently filtered out of the performance graph, data table,
+    and recommender with no visible count, so a partially-failed sweep
+    rendered identically to a fully-successful one. Mirrors
+    ``power_fluid_range.py``'s "Analysis Summary" Successful-Runs /
+    Success-Rate metrics.
+    """
+    total, successful, success_pct = batch_success_stats(batch_pump.df)
+    if total == 0:
+        return
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Combinations", total)
+    with col2:
+        st.metric("Successful Runs", successful)
+    with col3:
+        st.metric("Success Rate", f"{success_pct:.1f}%")
+
+    if successful < total:
+        st.warning(
+            f"{total - successful} of {total} nozzle/throat combinations "
+            "failed to converge and are excluded from the graph, table, and "
+            "recommender below."
+        )
+
+
 def _render_recommender_table(batch_pump, params: SimulationParams, water: str) -> None:
     """Render the recommender results table."""
     st.subheader("Jet Pump Recommender Results")
@@ -898,12 +944,45 @@ def _render_batch_hero_no_actuals(batch_pump, params: SimulationParams) -> None:
         st.metric("Suction Pressure", f"{row['psu_solv']:,.0f} psig")
 
 
-def _render_nelder_mead_section(batch_pump, params: SimulationParams) -> None:
+def nm_comparison_factor(
+    calibration: CalibrationResult | None, calibration_applied: bool
+) -> float:
+    """Factor to apply to a raw Nelder-Mead oil rate for an apples-to-apples
+    comparison against the (possibly calibrated) seed pump row.
+
+    Standalone + Streamlit-free (P1-14) so the reconciliation rule is
+    unit-testable: returns the calibration factor only when calibration is
+    both available AND actually applied to ``batch_pump.df``; otherwise 1.0
+    (a no-op), matching the raw-vs-raw comparison that was already correct
+    when calibration is off.
+    """
+    if calibration_applied and calibration is not None:
+        return calibration.calibration_factor
+    return 1.0
+
+
+def _render_nelder_mead_section(
+    batch_pump,
+    params: SimulationParams,
+    calibration: CalibrationResult | None = None,
+    calibration_applied: bool = False,
+) -> None:
     """Render the Nelder-Mead continuous optimization section.
 
     Uses the best semi-finalist from the batch run as a seed for Nelder-Mead
     optimization to find the continuous optimal nozzle/throat diameters, then
     snaps to the nearest catalog pump.
+
+    P1-14: when the calibration toggle above is ON, ``batch_pump.df`` (and
+    therefore the semi-finalist "seed" row read below) carries CALIBRATED
+    ``qoil_std``. But ``batch_pump.search_run`` re-runs the raw jet-pump
+    physics with no knowledge of that scalar, so its result is always
+    uncalibrated. Comparing the two directly mixed bases and produced a
+    phantom "uplift" (or shortfall) driven entirely by the calibration
+    factor rather than a real continuous-vs-catalog difference. Fix: apply
+    the SAME factor to the NM oil rate before displaying/comparing it, so
+    both sides sit on the calibrated basis (factor is 1.0 — a no-op — when
+    calibration isn't active).
     """
     semi_df = (
         batch_pump.df[batch_pump.df["semi"]].copy()
@@ -1019,14 +1098,30 @@ def _render_nelder_mead_section(batch_pump, params: SimulationParams) -> None:
                 return
 
             row = result_df.iloc[0]
+
+            # P1-14: put the NM oil rate on the same basis as the seed row
+            # (calibrated iff the toggle above is applying calibration to
+            # batch_pump.df — see the function docstring).
+            factor = nm_comparison_factor(calibration, calibration_applied)
+            nm_oil = (
+                row["qoil_std"] * factor if not pd.isna(row.get("qoil_std")) else None
+            )
+
             st.markdown("#### Optimization Result")
+            if calibration_applied and calibration is not None:
+                st.caption(
+                    f"Calibration factor {factor:.3f} applied to the Nelder-Mead "
+                    "oil rate below so it compares on the same (calibrated) "
+                    "basis as the seed pump — both calibrated, not calibrated-"
+                    "vs-raw."
+                )
 
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.markdown("**Catalog Pump (Snapped)**")
                 st.metric("Pump", f"{row['nozzle']}{row['throat']}")
-                if not pd.isna(row.get("qoil_std")):
-                    st.metric("Oil Rate", f"{row['qoil_std']:.1f} BOPD")
+                if nm_oil is not None:
+                    st.metric("Oil Rate", f"{nm_oil:.1f} BOPD")
                 else:
                     st.metric("Oil Rate", "N/A (solver failed)")
             with col2:
@@ -1040,9 +1135,9 @@ def _render_nelder_mead_section(batch_pump, params: SimulationParams) -> None:
                 if not pd.isna(row.get("psu_solv")):
                     st.metric("Suction P", f"{row['psu_solv']:.0f} psi")
 
-            # Compare to seed pump
-            if not pd.isna(row.get("qoil_std")):
-                delta = row["qoil_std"] - selected_semi["qoil_std"]
+            # Compare to seed pump (same basis as nm_oil above).
+            if nm_oil is not None:
+                delta = nm_oil - selected_semi["qoil_std"]
                 if abs(delta) > 0.5:
                     st.caption(
                         f"Nelder-Mead catalog pump produces **{delta:+.1f} BOPD** vs seed pump "
@@ -1166,6 +1261,11 @@ def render_tab(
     if not batch_pump:
         return
 
+    # P1-17: surface convergence rate for the raw sweep before any
+    # downstream filtering (graph/table/recommender all drop NaN rows
+    # silently) or calibration scaling touches the dataframe.
+    _render_success_metrics(batch_pump)
+
     # Compute mofwr + coeff_form so the formation-water axis works without
     # a library change. Done before any downstream consumer (graph, table,
     # recommender) reads the dataframe.
@@ -1196,6 +1296,12 @@ def render_tab(
     # so the scaling affects the data table and recommender below it
     # (not the graph above). Disabled while PF mismatch is too large to
     # trust the rate-scalar approach.
+    # P1-14: tracks whether the calibration factor was actually applied to
+    # batch_pump.df below, so the Nelder-Mead section (which reads a
+    # semi-finalist row from that same df as its comparison "seed") knows
+    # to put its own raw-physics result on the same calibrated basis
+    # instead of comparing calibrated-seed vs raw-NM.
+    calibration_applied = False
     cal = st.session_state.get("batch_calibration_result")
     if cal and cal.well_name == params.selected_well:
         cal_help = (
@@ -1210,7 +1316,11 @@ def render_tab(
         )
         apply_cal = st.checkbox(
             f"Apply calibration factor ({cal.calibration_factor:.2f}) to results below",
-            value=False,
+            # P1-19: a hardcoded value=False stomps a programmatically-set
+            # session value on the next render (e.g. after a Solver-tab
+            # detour GC's this widget's state) — seed from session_state so
+            # a previously-checked box survives the round-trip.
+            value=st.session_state.get("batch_apply_calibration", False),
             key="batch_apply_calibration",
             disabled=pf_blocked,
             help=cal_help,
@@ -1219,6 +1329,7 @@ def render_tab(
         # checkbox is disabled — explicitly suppress the calibration when
         # PF is blocked so a stale-checked box doesn't slip through.
         if apply_cal and not pf_blocked:
+            calibration_applied = True
             batch_pump.df["qoil_std_raw"] = batch_pump.df["qoil_std"]
             batch_pump.df["form_wat_raw"] = batch_pump.df["form_wat"]
             batch_pump.df["qoil_std"] = (
@@ -1271,5 +1382,10 @@ def render_tab(
     # Data table + recommender (reflects calibration toggle above).
     _render_data_table(batch_pump, params)
 
-    # Nelder-Mead continuous optimization
-    _render_nelder_mead_section(batch_pump, params)
+    # Nelder-Mead continuous optimization. Pass along whether the
+    # calibration factor is live so the section can put the raw-physics NM
+    # result on the same basis as the (possibly calibrated) seed row it
+    # reads from batch_pump.df — see P1-14 comment inside the function.
+    _render_nelder_mead_section(
+        batch_pump, params, calibration=cal, calibration_applied=calibration_applied
+    )

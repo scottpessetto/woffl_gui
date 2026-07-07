@@ -1,5 +1,25 @@
 # Codebase Review — 2026-07-01
 
+> **STATUS (2026-07-06, orchestrated fix run):** The P1/P2/R backlog below is
+> now closed in the working tree. Fixed this run: P1-8/9/10 (physics
+> robustness, upstream-tagged), P1-14/15/16/17/19/20 + P1-13's safe half (GUI
+> core), P1-21/22/25 (dead header_engine helpers wired), P1-23/26 (header-impact
+> verdicts/lift), P1-29 + P1-35 (pump tenure + same-test coupling), P1-18
+> (startup-failure retry), P1-31/32/33/34 (Well Sort UI); P2-2..P2-7; R-8
+> (canonical marginal WC — Step-3's auto-fill changes 1.00 → 0.97), R-10 + R-11
+> (dead code/hygiene), Vogel consolidation (`woffl/gui/vogel.py`); the 4 red
+> physics tests re-pinned to commit 9b20c65's Beggs-Brill corrections
+> (attribution bisect-verified). Full per-finding evidence:
+> `docs/review_status_2026-07-06.md`. Suite: 1186 passed / 1 skipped (opt-in
+> live marker). Still open: R-7 (blocked on the uncommitted jetpump_solver.py
+> edit), R-9 context-builder consolidation (deferred to the file-splits plan),
+> R-2..R-5 file splits, the rho_pf wire-or-remove decision (P1-13's
+> behavior-changing half), and new findings from this run — the dead
+> out-of-range check in `wellprofile._depth_interp` (`is False` on numpy bool),
+> the now-orphaned `databricks_client.get_tags_for_wells`, the unguarded
+> tag-list f-string in databricks_client, and the zero-caller
+> `WellTestProcessor` class.
+
 > **STATUS (2026-07-01, same day):** All P0 findings below are FIXED in the
 > working tree, plus the safety-net tests (pad plants pinned values, review-store
 > round-trip, GUI smoke imports). Suite: 724 passed (was 565). P1/P2 and the

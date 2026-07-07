@@ -50,6 +50,7 @@ import streamlit as st
 
 from woffl.gui import pad_optimize
 from woffl.gui.pad_helpers import build_comparison_rows as _build_comparison_rows
+from woffl.gui.pad_helpers import build_ipr_grid_figure as _build_ipr_grid_figure
 from woffl.gui.pad_helpers import parse_pump as _parse_pump
 from woffl.gui.pad_helpers import recent_test_rates as _recent_test_rates
 from woffl.gui.pad_helpers import (
@@ -459,7 +460,9 @@ def _render_results(spec: PadSpec) -> None:
     rates = {w: _recent_test_rates(w) for w in active}
     mc = st.session_state.get(f"{p}_matchcheck")
     mc_rows = {r["well"]: r for r in mc["rows"]} if mc else {}
-    rows = _build_comparison_rows(results, active, si_wells, rates, mc_rows)
+    rows = _build_comparison_rows(
+        results, active, si_wells, rates, mc_rows, header_psi=meta.get("header_psi")
+    )
     cur_oil = sum(r["Current oil"] or 0 for r in rows)
     cur_pf = sum(r["Current PF"] or 0 for r in rows)
     cur_hdr = None
@@ -517,6 +520,10 @@ def _render_results(spec: PadSpec) -> None:
         "Optimized pump",
         "Opt oil",
         "Opt PF",
+        "Current BHP",
+        "Opt BHP",
+        "Current PF psi",
+        "Opt PF psi",
         "Δ oil",
         "Change",
         "Model÷Test",
@@ -527,7 +534,6 @@ def _render_results(spec: PadSpec) -> None:
         "Optimized pump",
         "Form. water (BPD)",
         "Total WC",
-        "Suction (psi)",
         "Status",
     ]
     df = pd.DataFrame(rows)
@@ -547,13 +553,34 @@ def _render_results(spec: PadSpec) -> None:
         "**Current oil/PF** = measured (median of recent tests); **Opt oil/PF** = "
         "model. **Δ oil** therefore mixes model vs measured — check **Model÷Test** "
         "(model ÷ test at the CURRENT pump, from the pre-flight match check): a well "
-        "at 1.3 over-predicts by ~30%, so read its Δ as optimistic. **Change**: "
-        "▲ bigger / ▼ smaller = nozzle size up / down; ▲/▼ throat = same nozzle, "
-        "larger / smaller throat. Sorted by biggest mover. Wells with no installed "
-        "pump or no valid tests show —."
+        "at 1.3 over-predicts by ~30%, so read its Δ as optimistic. **Current BHP** / "
+        "**Current PF psi** are the REVIEWED store values (the well's IPR anchor); "
+        "**Opt BHP** is the optimizer's solved pump-intake suction pressure; "
+        "**Opt PF psi** is the pad-level settled header (same for every optimized "
+        "row). **Change**: ▲ bigger / ▼ smaller = nozzle size up / down; ▲/▼ throat "
+        "= same nozzle, larger / smaller throat. Sorted by biggest mover. Wells with "
+        "no installed pump or no valid tests show —."
     )
-    with st.expander("Full optimizer detail (formation water, WC, suction)"):
+    with st.expander("Full optimizer detail (formation water, WC)"):
         st.dataframe(df[_DETAIL_COLS], use_container_width=True, hide_index=True)
+
+    with st.expander("Per-well IPR — current vs optimized", expanded=False):
+        ipr_fig = _build_ipr_grid_figure(results, active, si_wells)
+        if ipr_fig is None:
+            st.caption(
+                "No wells have enough reviewed IPR data (pwf/qwf/reservoir "
+                "pressure) to draw a curve — review the wells in **Review "
+                "Wells** first."
+            )
+        else:
+            st.caption(
+                "The curve is the well's Vogel IPR through the reviewed anchor "
+                "(green ●) — both operating points sit on it because the "
+                "jet-pump solver solves on this same curve."
+            )
+            st.plotly_chart(
+                ipr_fig, use_container_width=True, key=f"{spec.prefix}_ipr_grid"
+            )
 
     op_points = [
         {

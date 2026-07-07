@@ -31,8 +31,14 @@ def _result(**overrides):
     return OptimizationResult(**defaults)
 
 
-def _entry(nozzle="12", throat="B"):
-    return {"review_nozzle": nozzle, "review_throat": throat}
+def _entry(nozzle="12", throat="B", pwf=None, ppf_surf_well=None, **extra):
+    e = {"review_nozzle": nozzle, "review_throat": throat}
+    if pwf is not None:
+        e["pwf"] = pwf
+    if ppf_surf_well is not None:
+        e["ppf_surf_well"] = ppf_surf_well
+    e.update(extra)
+    return e
 
 
 class TestBuildComparisonRows:
@@ -139,8 +145,93 @@ class TestBuildComparisonRows:
         rows = build_comparison_rows(
             [_result()], {"MPS-01": _entry()}, [], {"MPS-01": (200.0, 450.0)}
         )
-        for col in ("Form. water (BPD)", "Total WC", "Suction (psi)"):
+        for col in ("Form. water (BPD)", "Total WC"):
             assert col in rows[0]
+
+    def test_suction_psi_column_removed(self):
+        # "Suction (psi)" was replaced by "Opt BHP" (same value, new name).
+        rows = build_comparison_rows(
+            [_result()], {"MPS-01": _entry()}, [], {"MPS-01": (200.0, 450.0)}
+        )
+        assert "Suction (psi)" not in rows[0]
+
+
+class TestBhpAndPfPsiColumns:
+    """Current/Opt BHP + Current/Opt PF psi — new columns backing the
+    per-well IPR grid and the results table's pressure detail."""
+
+    def test_optimized_row_bhp_and_pf_psi(self):
+        rows = build_comparison_rows(
+            [_result(suction_pressure=1234.4)],
+            {"MPS-01": _entry("12", "B", pwf=1500.4, ppf_surf_well=3200.6)},
+            [],
+            {"MPS-01": (200.0, 450.0)},
+            header_psi=3300.2,
+        )
+        (row,) = rows
+        assert row["Current BHP"] == 1500
+        assert row["Opt BHP"] == 1234
+        assert row["Current PF psi"] == 3201
+        assert row["Opt PF psi"] == 3300
+
+    def test_header_psi_repeated_across_optimized_rows(self):
+        # Opt PF psi is pad-level — same value on every optimized row.
+        results = [
+            _result(well_name="A", suction_pressure=1000),
+            _result(well_name="B", suction_pressure=2000),
+        ]
+        active = {
+            "A": _entry(pwf=1400, ppf_surf_well=3000),
+            "B": _entry(pwf=1500, ppf_surf_well=3100),
+        }
+        rates = {"A": (200.0, 450.0), "B": (200.0, 450.0)}
+        rows = build_comparison_rows(results, active, [], rates, header_psi=3250.0)
+        assert {r["Opt PF psi"] for r in rows} == {3250}
+
+    def test_missing_pwf_and_ppf_surf_well_are_none(self):
+        rows = build_comparison_rows(
+            [_result()],
+            {"MPS-01": _entry("12", "B")},  # no pwf/ppf_surf_well set
+            [],
+            {"MPS-01": (200.0, 450.0)},
+        )
+        (row,) = rows
+        assert row["Current BHP"] is None
+        assert row["Current PF psi"] is None
+
+    def test_opt_bhp_and_opt_pf_psi_none_without_header_psi(self):
+        rows = build_comparison_rows(
+            [_result()],
+            {"MPS-01": _entry("12", "B", pwf=1500, ppf_surf_well=3200)},
+            [],
+            {"MPS-01": (200.0, 450.0)},
+        )
+        assert rows[0]["Opt PF psi"] is None
+        assert rows[0]["Opt BHP"] == round(_result().suction_pressure)
+
+    def test_shut_in_row_bhp_and_pf_psi(self):
+        # SI wells keep their CURRENT BHP/PF psi (reviewed store values) but
+        # have no Opt BHP / Opt PF psi (never ran through the optimizer).
+        rows = build_comparison_rows(
+            [],
+            {"MPS-02": _entry(pwf=1600, ppf_surf_well=2900)},
+            ["MPS-02"],
+            {"MPS-02": (80.0, 300.0)},
+            header_psi=3300.0,
+        )
+        (row,) = rows
+        assert row["Current BHP"] == 1600
+        assert row["Current PF psi"] == 2900
+        assert row["Opt BHP"] is None
+        assert row["Opt PF psi"] is None
+
+    def test_shut_in_row_missing_store_values_are_none(self):
+        rows = build_comparison_rows(
+            [], {"MPS-02": _entry()}, ["MPS-02"], {"MPS-02": (80.0, 300.0)}
+        )
+        (row,) = rows
+        assert row["Current BHP"] is None
+        assert row["Current PF psi"] is None
 
 
 class TestPumpSizeChange:

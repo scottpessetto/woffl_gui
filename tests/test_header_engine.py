@@ -13,7 +13,6 @@ import pytest
 
 from woffl.gui.scotts_tools import header_engine as he
 
-
 # ── resolve_pad_pf (per-pad PF, distinct G/H/I/J) ────────────────────────────
 
 _DEFAULTS = {"G": 2200, "H": 3400, "I": 3400, "J": 2200}
@@ -95,6 +94,147 @@ def test_verdict_importable_from_engine():
     assert he._verdict(True, True, 0.0, "responsive", True) == "sonic-decoupled"
 
 
+# ── solver_error_note (P1-21) ─────────────────────────────────────────────────
+
+
+def test_solver_error_note_both_converged_returns_none():
+    assert he.solver_error_note("na", "na") is None
+    assert he.solver_error_note(None, np.nan) is None
+    assert he.solver_error_note("nan", "none") is None
+
+
+def test_solver_error_note_picks_first_real_error():
+    err = he.solver_error_note("ConvergenceError('no zero crossing')", "na")
+    assert err == "ConvergenceError('no zero crossing')"
+
+
+def test_solver_error_note_falls_back_to_scenario_error():
+    # baseline converged ("na"), scenario failed — still surfaced.
+    err = he.solver_error_note("na", "ThroatEntryNoSolution()")
+    assert err == "ThroatEntryNoSolution()"
+
+
+def test_solver_error_note_truncates_long_message():
+    long_msg = "ConvergenceError(" + "x" * 200 + ")"
+    err = he.solver_error_note(long_msg, None, max_len=20)
+    assert err is not None
+    assert len(err) == 20
+    assert err.endswith("…")
+
+
+def test_verdict_error_wins_over_sonic_and_response():
+    # A failed solve must read "model failed", never "sonic-decoupled" or a
+    # confident response verdict — exactly the marginal-well population.
+    v = he._verdict(True, True, 0.0, "responsive", True, error="ConvergenceError(...)")
+    assert v.startswith(he.MODEL_FAILED_PREFIX)
+    assert "ConvergenceError" in v
+    v2 = he._verdict(False, False, 50.0, "responsive", True, error="boom")
+    assert v2 == f"{he.MODEL_FAILED_PREFIX} — boom"
+
+
+def test_verdict_no_error_unaffected():
+    assert (
+        he._verdict(False, False, 50.0, "responsive", True, error=None)
+        == "responsive ✓"
+    )
+
+
+# ── clamp_scenario_whp + physics_slope (P1-22) ────────────────────────────────
+
+
+def test_clamp_scenario_whp_no_clamp_needed():
+    scen, clamped = he.clamp_scenario_whp(whp_now=250.0, delta_p=-50.0)
+    assert scen == pytest.approx(200.0)
+    assert clamped is False
+
+
+def test_clamp_scenario_whp_clamps_at_floor():
+    # 100 + (-500) = -400, well below the 30-psi floor.
+    scen, clamped = he.clamp_scenario_whp(whp_now=100.0, delta_p=-500.0, floor=30.0)
+    assert scen == pytest.approx(30.0)
+    assert clamped is True
+
+
+def test_clamp_scenario_whp_custom_floor():
+    scen, clamped = he.clamp_scenario_whp(whp_now=100.0, delta_p=-90.0, floor=50.0)
+    assert scen == pytest.approx(50.0)
+    assert clamped is True
+
+
+def test_physics_slope_uses_actual_solved_delta():
+    # BHP moved 40 psi over a WHP move the solver actually saw of 50 (not the
+    # requested delta_p, which the caller never even passes in here).
+    slope = he.physics_slope(
+        psu_now=500.0, psu_scen=460.0, whp_now=250.0, whp_scen=200.0
+    )
+    assert slope == pytest.approx(40.0 / 50.0)
+
+
+def test_physics_slope_clamped_scenario_does_not_understate():
+    # Requested delta_p = -500 would give slope 80/-500 = -0.16 (biased low);
+    # the clamped whp_scen=30 makes the effective delta -220, giving the
+    # correct (larger-magnitude) slope.
+    psu_now, psu_scen = 500.0, 420.0
+    whp_now, whp_scen = 250.0, 30.0  # clamped scenario WHP
+    slope = he.physics_slope(psu_now, psu_scen, whp_now, whp_scen)
+    assert slope == pytest.approx((420.0 - 500.0) / (30.0 - 250.0))
+    wrong_slope_using_raw_delta = (psu_scen - psu_now) / -500.0
+    assert abs(slope) > abs(wrong_slope_using_raw_delta)
+
+
+def test_physics_slope_missing_input_is_nan():
+    assert np.isnan(he.physics_slope(np.nan, 460.0, 250.0, 200.0))
+    assert np.isnan(he.physics_slope(500.0, 460.0, None, 200.0))
+
+
+def test_physics_slope_zero_effective_delta_is_nan():
+    # Fully clamped move: whp_scen == whp_now → no denominator to divide by.
+    assert np.isnan(he.physics_slope(500.0, 500.0, 250.0, 250.0))
+
+
+# ── recent_bhp_anchor (P1-25) ─────────────────────────────────────────────────
+
+
+def test_recent_bhp_anchor_median_of_last_n_above_floor():
+    # 30 readings; last 24 are a clean plateau around 500, oldest 6 are noise.
+    bhp = [0.0] * 6 + [498.0, 500.0, 502.0] * 8
+    anchor, screened = he.recent_bhp_anchor(bhp, n=24, min_bhp=50.0)
+    assert screened is True
+    assert anchor == pytest.approx(500.0)
+
+
+def test_recent_bhp_anchor_single_low_tail_reading_does_not_anchor():
+    # One dead-gauge/shut-in reading (12 psi) at the very tail must NOT set the
+    # anchor — this is the exact bug the helper fixes (a single 12-psi tail bin
+    # anchoring the whole generic Vogel IPR).
+    bhp = [500.0] * 23 + [12.0]
+    anchor, screened = he.recent_bhp_anchor(bhp, n=24, min_bhp=50.0)
+    assert screened is True
+    assert anchor == pytest.approx(500.0)
+
+
+def test_recent_bhp_anchor_all_below_floor_falls_back_unscreened():
+    bhp = [10.0, 20.0, 5.0, 15.0]
+    anchor, screened = he.recent_bhp_anchor(bhp, n=24, min_bhp=50.0)
+    assert screened is False
+    assert anchor == pytest.approx(np.median(bhp))
+
+
+def test_recent_bhp_anchor_empty_or_none():
+    assert he.recent_bhp_anchor(None) == (pytest.approx(np.nan, nan_ok=True), False)
+    anchor, screened = he.recent_bhp_anchor([])
+    assert np.isnan(anchor) and screened is False
+    anchor2, screened2 = he.recent_bhp_anchor(pd.Series([np.nan, np.nan]))
+    assert np.isnan(anchor2) and screened2 is False
+
+
+def test_recent_bhp_anchor_fewer_than_n_readings_uses_all_available():
+    bhp = [400.0, 420.0, 440.0]
+    anchor, screened = he.recent_bhp_anchor(bhp, n=24, min_bhp=50.0)
+    assert screened is True
+    assert anchor == pytest.approx(420.0)
+
+
 # ── sensitivity / sense-check / bias / curve (v2 / M2) ───────────────────────
 
 
@@ -106,7 +246,12 @@ def _results_df():
             "Well": ["MPG-01", "MPG-02", "MPH-01", "MPH-02"],
             "Pad": ["G", "G", "H", "H"],
             "Lift": ["JP", "JP", "JP", "ESP"],
-            "Verdict": ["responsive ✓", "sonic-decoupled", "responsive (physics)", "no response"],
+            "Verdict": [
+                "responsive ✓",
+                "sonic-decoupled",
+                "responsive (physics)",
+                "no response",
+            ],
             "Sonic now": [False, True, False, False],
             "Oil now (BOPD)": [100.0, 200.0, 150.0, 80.0],
             "ΔOil (BOPD)": [50.0, 0.0, 30.0, np.nan],
@@ -121,7 +266,9 @@ def _results_df():
 def test_verdict_bucket():
     assert he.verdict_bucket("responsive ✓") == "responsive"
     assert he.verdict_bucket("sonic-decoupled") == "sonic"
-    assert he.verdict_bucket("responsive (physics)", sonic_now=True) == "sonic"  # flag wins
+    assert (
+        he.verdict_bucket("responsive (physics)", sonic_now=True) == "sonic"
+    )  # flag wins
     assert he.verdict_bucket("no response") == "no-response"
     assert he.verdict_bucket("disagree — check") == "other"
 
@@ -133,7 +280,9 @@ def test_summarize_sensitivity_per_pad_and_overall():
     assert g["Responsive"] == 1 and g["Sonic"] == 1 and g["No-response"] == 0
     assert g["Oil now (BOPD)"] == 300.0
     assert g["ΔOil (BOPD)"] == 50.0
-    assert g["BOPD per 100 psi"] == pytest.approx(100.0)  # 50 BOPD over 50 psi → 100/100psi
+    assert g["BOPD per 100 psi"] == pytest.approx(
+        100.0
+    )  # 50 BOPD over 50 psi → 100/100psi
     h = per_pad[per_pad["Pad"] == "H"].iloc[0]
     assert h["Responsive"] == 1 and h["No-response"] == 1
     assert h["ΔOil (BOPD)"] == 40.0
@@ -222,8 +371,11 @@ _META = {
 def test_donor_tokens_shape():
     toks = he.donor_tokens(["MPH-01", "MPG-01"])
     assert toks[:5] == [
-        he.OWN_TOKEN, he.GROUP_PADLIFT, he.GROUP_PADFORMATION,
-        he.GROUP_FORMATION, he.GROUP_LIFT,
+        he.OWN_TOKEN,
+        he.GROUP_PADLIFT,
+        he.GROUP_PADFORMATION,
+        he.GROUP_FORMATION,
+        he.GROUP_LIFT,
     ]
     assert toks[5:] == ["MPG-01", "MPH-01"]  # wells sorted after the tokens
 
@@ -240,7 +392,11 @@ def test_donor_member_wells_group_padlift():
 
 def test_donor_member_wells_group_formation():
     m = he.donor_member_wells("MPG-01", he.GROUP_FORMATION, _META)
-    assert sorted(m) == ["MPG-01", "MPG-02", "MPG-03"]  # all Schrader, regardless of lift
+    assert sorted(m) == [
+        "MPG-01",
+        "MPG-02",
+        "MPG-03",
+    ]  # all Schrader, regardless of lift
 
 
 def test_donor_member_wells_group_padformation():
@@ -303,10 +459,14 @@ def test_corr_display_plan():
         }
     )
     plan = he.corr_display_plan(df, available_wells=["A", "B"])
-    assert plan["A"]["source"] == "A" and plan["A"]["note"] == ""        # own + has trend
-    assert plan["B"]["source"] == "B" and "using B corr" in plan["B"]["note"]  # donor B present
-    assert plan["C"]["source"] is None and "group" in plan["C"]["note"]  # group avg → note only
-    assert plan["D"]["source"] is None                                   # own but no trend
+    assert plan["A"]["source"] == "A" and plan["A"]["note"] == ""  # own + has trend
+    assert (
+        plan["B"]["source"] == "B" and "using B corr" in plan["B"]["note"]
+    )  # donor B present
+    assert (
+        plan["C"]["source"] is None and "group" in plan["C"]["note"]
+    )  # group avg → note only
+    assert plan["D"]["source"] is None  # own but no trend
 
 
 # ── model-vs-observed response sense check ───────────────────────────────────
@@ -358,10 +518,14 @@ def test_sense_check_response_sonic_and_slope():
         }
     )
     out = he.sense_check_response(df).set_index("Well")
-    assert out.loc["A", "Sense-check"] == "confirmed ✓"        # slopes agree
-    assert out.loc["B", "Sense-check"] == "sonic-decoupled"     # sonic → reported separately
-    assert "history flat — agrees" in out.loc["B", "Note"]      # slugging history agrees w/ choke
-    assert out.loc["C", "Sense-check"] == "no observed slope"   # no history to confirm
+    assert out.loc["A", "Sense-check"] == "confirmed ✓"  # slopes agree
+    assert (
+        out.loc["B", "Sense-check"] == "sonic-decoupled"
+    )  # sonic → reported separately
+    assert (
+        "history flat — agrees" in out.loc["B", "Note"]
+    )  # slugging history agrees w/ choke
+    assert out.loc["C", "Sense-check"] == "no observed slope"  # no history to confirm
 
 
 def test_pad_updown_lever_asymmetry():
@@ -376,8 +540,8 @@ def test_pad_updown_lever_asymmetry():
         },
     }
     down, up = he.pad_updown_lever(curve, "G", ref=100)
-    assert down == pytest.approx((1120 + 560) - (1000 + 500))   # +180 going down
-    assert up == pytest.approx((910 + 470) - (1000 + 500))      # -120 going up
+    assert down == pytest.approx((1120 + 560) - (1000 + 500))  # +180 going down
+    assert up == pytest.approx((910 + 470) - (1000 + 500))  # -120 going up
 
 
 def test_pad_updown_lever_missing_points():
@@ -402,8 +566,14 @@ def _tests_frame():
     return pd.DataFrame(
         {
             "WtDate": pd.to_datetime(
-                ["2025-06-01", "2025-07-01", "2025-08-01",
-                 "2026-03-01", "2026-04-01", "2026-05-01"]
+                [
+                    "2025-06-01",
+                    "2025-07-01",
+                    "2025-08-01",
+                    "2026-03-01",
+                    "2026-04-01",
+                    "2026-05-01",
+                ]
             ),
             "whp": [180, 185, 190, 280, 285, 290],
             "BHP": [450, 455, 460, 540, 545, 550],
@@ -417,13 +587,17 @@ def _tests_frame():
 def test_backtest_anchors_medians_and_deltas():
     a = he.backtest_anchors(_tests_frame(), frac=0.34)  # k = round(6*.34)=2
     assert a["k"] == 2 and a["n_tests"] == 6
-    assert a["whp_then"] == pytest.approx(182.5)   # median(180,185)
-    assert a["whp_now"] == pytest.approx(287.5)    # median(285,290)
+    assert a["whp_then"] == pytest.approx(182.5)  # median(180,185)
+    assert a["whp_now"] == pytest.approx(287.5)  # median(285,290)
     assert a["d_whp"] == pytest.approx(105.0)
-    assert a["bhp_then"] == pytest.approx(452.5) and a["bhp_now"] == pytest.approx(547.5)
+    assert a["bhp_then"] == pytest.approx(452.5) and a["bhp_now"] == pytest.approx(
+        547.5
+    )
     assert a["d_bhp"] == pytest.approx(95.0)
-    assert a["liquid_then"] == pytest.approx(995.0) and a["liquid_now"] == pytest.approx(852.5)
-    assert a["d_liquid"] == pytest.approx(-142.5)   # liquid fell as header rose
+    assert a["liquid_then"] == pytest.approx(995.0) and a[
+        "liquid_now"
+    ] == pytest.approx(852.5)
+    assert a["d_liquid"] == pytest.approx(-142.5)  # liquid fell as header rose
 
 
 def test_backtest_anchors_too_few():
@@ -438,7 +612,10 @@ def test_backtest_anchors_liquid_falls_back_to_oil():
 
 
 def test_predict_dbhp_from_curve_interp():
-    cw = {"whp": [150, 200, 250, 300, 350], "bhp": [400, 450, 500, 550, 600]}  # slope 1.0
+    cw = {
+        "whp": [150, 200, 250, 300, 350],
+        "bhp": [400, 450, 500, 550, 600],
+    }  # slope 1.0
     dbhp, extr = he.predict_dbhp_from_curve(cw, whp_then=182.5, whp_now=287.5)
     assert dbhp == pytest.approx(105.0)  # slope 1.0 over a 105-psi move
     assert extr is False
@@ -451,7 +628,10 @@ def test_predict_dbhp_from_curve_extrapolated_flag():
 
 
 def test_predict_dbhp_from_curve_empty():
-    assert he.predict_dbhp_from_curve(None, 1, 2) == (pytest.approx(np.nan, nan_ok=True), False)
+    assert he.predict_dbhp_from_curve(None, 1, 2) == (
+        pytest.approx(np.nan, nan_ok=True),
+        False,
+    )
     assert np.isnan(he.predict_dbhp_from_curve({"whp": [1], "bhp": [2]}, 1, 2)[0])
 
 
@@ -465,9 +645,13 @@ def test_backpressure_consistency_classes():
     # header barely moved → nothing to test
     assert he.backpressure_consistency(5, 50, -50) == "header ~flat (n/a)"
     # gaugeless but liquid opposes the header → consistent on liquid alone
-    assert he.backpressure_consistency(105, np.nan, -150) == "liquid consistent (no BHP)"
+    assert (
+        he.backpressure_consistency(105, np.nan, -150) == "liquid consistent (no BHP)"
+    )
     # BHP tracked WHP but liquid rose (wrong way)
-    assert he.backpressure_consistency(105, 90, 150) == "BHP tracks WHP; liquid wrong way"
+    assert (
+        he.backpressure_consistency(105, 90, 150) == "BHP tracks WHP; liquid wrong way"
+    )
 
 
 # ── Vogel pseudo-pr fits (Standing back-out) ─────────────────────────────────
@@ -486,7 +670,7 @@ def test_fit_vogel_ipr_recovers_known_pr():
     q = _vogel_q(pwf, pr_true, qmax_true)
     fit = he.fit_vogel_ipr(pwf, q)
     assert fit is not None
-    assert fit["pr"] == pytest.approx(pr_true, abs=40)      # back out p_r within ~40 psi
+    assert fit["pr"] == pytest.approx(pr_true, abs=40)  # back out p_r within ~40 psi
     assert fit["qmax"] == pytest.approx(qmax_true, rel=0.03)
     assert fit["rmse"] < 5.0
     assert fit["pr_at_bound"] is False
@@ -532,16 +716,22 @@ def test_fit_well_ipr_uses_all_points():
     fit = he.fit_well_ipr(df, pr_hi=2200.0)
     assert fit is not None and fit["pr"] == pytest.approx(pr_true, abs=60)
     assert fit["n"] == 6
-    assert he.fit_well_ipr(pd.DataFrame({"BHP": [500, 600], "WtTotalFluid": [800, 700]})) is None  # <3
+    assert (
+        he.fit_well_ipr(pd.DataFrame({"BHP": [500, 600], "WtTotalFluid": [800, 700]}))
+        is None
+    )  # <3
 
 
 def test_depletion_signature_depleting():
     # BHP and liquid fall together over the year → positive corr → depleting
-    dates = pd.to_datetime([f"2025-{m:02d}-15" for m in range(6, 12)]
-                           + ["2026-01-15", "2026-02-15"])
+    dates = pd.to_datetime(
+        [f"2025-{m:02d}-15" for m in range(6, 12)] + ["2026-01-15", "2026-02-15"]
+    )
     bhp = [1400, 1350, 1300, 1200, 1150, 1100, 1000, 950]
     liq = [900, 870, 840, 760, 730, 700, 640, 600]
-    sig = he.depletion_signature(pd.DataFrame({"WtDate": dates, "BHP": bhp, "WtTotalFluid": liq}))
+    sig = he.depletion_signature(
+        pd.DataFrame({"WtDate": dates, "BHP": bhp, "WtTotalFluid": liq})
+    )
     assert sig["verdict"] == "depleting"
     assert sig["corr"] > 0.35 and sig["bhp_per_mo"] < 0 and sig["rate_per_mo"] < 0
 
@@ -550,34 +740,51 @@ def test_depletion_signature_back_pressure():
     # liquid rises when BHP falls (Vogel inverse) → negative corr → back-pressure
     dates = pd.to_datetime([f"2025-{m:02d}-15" for m in range(6, 14 - 1)][:6])
     bhp = [500, 800, 1100, 600, 900, 1200]
-    liq = [1000, 760, 520, 940, 700, 460]   # high liquid at low BHP
-    sig = he.depletion_signature(pd.DataFrame({"WtDate": dates, "BHP": bhp, "WtTotalFluid": liq}))
+    liq = [1000, 760, 520, 940, 700, 460]  # high liquid at low BHP
+    sig = he.depletion_signature(
+        pd.DataFrame({"WtDate": dates, "BHP": bhp, "WtTotalFluid": liq})
+    )
     assert sig["verdict"] == "back-pressure"
     assert sig["corr"] < -0.35
 
 
 def test_depletion_signature_improving():
     # BHP and liquid rise together materially → IPR rising, not depleting
-    dates = pd.to_datetime([f"2025-{m:02d}-15" for m in range(6, 12)] + ["2026-01-15", "2026-02-15"])
+    dates = pd.to_datetime(
+        [f"2025-{m:02d}-15" for m in range(6, 12)] + ["2026-01-15", "2026-02-15"]
+    )
     bhp = [900, 950, 1000, 1080, 1150, 1200, 1300, 1360]
     liq = [600, 640, 680, 760, 830, 880, 980, 1040]
-    sig = he.depletion_signature(pd.DataFrame({"WtDate": dates, "BHP": bhp, "WtTotalFluid": liq}))
+    sig = he.depletion_signature(
+        pd.DataFrame({"WtDate": dates, "BHP": bhp, "WtTotalFluid": liq})
+    )
     assert sig["verdict"] == "improving"
     assert sig["corr"] > 0.35 and sig["rate_per_mo"] > 10
 
 
 def test_depletion_signature_correlated_but_flat():
     # positive corr but only a tiny rate trend (< rate_eps) → flat/mixed, NOT depleting
-    dates = pd.to_datetime([f"2025-{m:02d}-15" for m in range(6, 12)] + ["2026-01-15", "2026-02-15"])
+    dates = pd.to_datetime(
+        [f"2025-{m:02d}-15" for m in range(6, 12)] + ["2026-01-15", "2026-02-15"]
+    )
     bhp = [1000, 1005, 998, 1003, 1001, 1006, 999, 1004]
-    liq = [700, 703, 699, 702, 701, 704, 700, 703]      # ~flat
-    sig = he.depletion_signature(pd.DataFrame({"WtDate": dates, "BHP": bhp, "WtTotalFluid": liq}))
+    liq = [700, 703, 699, 702, 701, 704, 700, 703]  # ~flat
+    sig = he.depletion_signature(
+        pd.DataFrame({"WtDate": dates, "BHP": bhp, "WtTotalFluid": liq})
+    )
     assert sig["verdict"] == "flat/mixed"
 
 
 def test_depletion_signature_insufficient():
-    sig = he.depletion_signature(pd.DataFrame({"WtDate": pd.to_datetime(["2025-06-01"]),
-                                               "BHP": [500], "WtTotalFluid": [800]}))
+    sig = he.depletion_signature(
+        pd.DataFrame(
+            {
+                "WtDate": pd.to_datetime(["2025-06-01"]),
+                "BHP": [500],
+                "WtTotalFluid": [800],
+            }
+        )
+    )
     assert sig["verdict"] == "insufficient" and sig["n"] == 1
 
 
@@ -587,88 +794,177 @@ def test_depletion_signature_insufficient():
 def test_estimate_header_impact_full_chain():
     # +100 header, dBHP/dWHP=0.8 → ΔBHP=+80; liquid IPR (qmax=2000, pr=2000) at BHP 900→980;
     # ΔOil = ΔLiquid × (1−WC).
-    r = he.estimate_header_impact(d_whp=100, dbhp_dwhp=0.8, qmax=2000.0, pr=2000.0,
-                                  bhp_now=900.0, wc=0.5)
+    r = he.estimate_header_impact(
+        d_whp=100, dbhp_dwhp=0.8, qmax=2000.0, pr=2000.0, bhp_now=900.0, wc=0.5
+    )
     assert r["dbhp"] == pytest.approx(80.0)
     assert r["bhp_scen"] == pytest.approx(980.0)
     dliq = he.vogel_oil(980.0, 2000.0, 2000.0) - he.vogel_oil(900.0, 2000.0, 2000.0)
     assert r["dliquid"] == pytest.approx(dliq)
-    assert r["doil"] == pytest.approx(dliq * 0.5)        # raising BHP lowers liquid → ΔOil < 0
+    assert r["doil"] == pytest.approx(
+        dliq * 0.5
+    )  # raising BHP lowers liquid → ΔOil < 0
     assert r["doil"] < 0
 
 
 def test_estimate_header_impact_sonic_zero():
     # sonic JP: header can't reach BHP → everything 0 regardless of the slope passed
-    r = he.estimate_header_impact(d_whp=100, dbhp_dwhp=0.8, qmax=2000.0, pr=2000.0,
-                                  bhp_now=900.0, wc=0.5, sonic=True)
-    assert r["dbhp"] == 0.0 and r["dliquid"] == pytest.approx(0.0) and r["doil"] == pytest.approx(0.0)
+    r = he.estimate_header_impact(
+        d_whp=100,
+        dbhp_dwhp=0.8,
+        qmax=2000.0,
+        pr=2000.0,
+        bhp_now=900.0,
+        wc=0.5,
+        sonic=True,
+    )
+    assert (
+        r["dbhp"] == 0.0
+        and r["dliquid"] == pytest.approx(0.0)
+        and r["doil"] == pytest.approx(0.0)
+    )
 
 
 def test_estimate_header_impact_missing_inputs():
     # no resolved correlation → can't compute ΔBHP/ΔOil
-    r = he.estimate_header_impact(d_whp=100, dbhp_dwhp=np.nan, qmax=2000.0, pr=2000.0,
-                                  bhp_now=900.0, wc=0.5)
+    r = he.estimate_header_impact(
+        d_whp=100, dbhp_dwhp=np.nan, qmax=2000.0, pr=2000.0, bhp_now=900.0, wc=0.5
+    )
     assert np.isnan(r["dbhp"]) and np.isnan(r["doil"])
     # have correlation but no IPR → ΔBHP known, ΔOil unknown
-    r2 = he.estimate_header_impact(d_whp=100, dbhp_dwhp=0.8, qmax=np.nan, pr=np.nan,
-                                   bhp_now=900.0, wc=0.5)
+    r2 = he.estimate_header_impact(
+        d_whp=100, dbhp_dwhp=0.8, qmax=np.nan, pr=np.nan, bhp_now=900.0, wc=0.5
+    )
     assert r2["dbhp"] == pytest.approx(80.0) and np.isnan(r2["doil"])
 
 
 def test_estimate_header_impacts_donor_ladder():
     wells = {
         # A: own correlation + own IPR → high confidence
-        "A": {"own_corr": 0.8, "sonic": False, "lift": "JP", "qmax": 2000.0, "pr": 2000.0,
-              "pad": "G", "formation": "Schrader", "bhp_now": 900.0, "wc": 0.4},
+        "A": {
+            "own_corr": 0.8,
+            "sonic": False,
+            "lift": "JP",
+            "qmax": 2000.0,
+            "pr": 2000.0,
+            "pad": "G",
+            "formation": "Schrader",
+            "bhp_now": 900.0,
+            "wc": 0.4,
+        },
         # B: no own corr, JP + physics sonic → ΔBHP forced 0 (no lever)
-        "B": {"own_corr": None, "sonic": True, "lift": "JP", "qmax": 1800.0, "pr": 1900.0,
-              "pad": "G", "formation": "Schrader", "bhp_now": 850.0, "wc": 0.5},
+        "B": {
+            "own_corr": None,
+            "sonic": True,
+            "lift": "JP",
+            "qmax": 1800.0,
+            "pr": 1900.0,
+            "pad": "G",
+            "formation": "Schrader",
+            "bhp_now": 850.0,
+            "wc": 0.5,
+        },
         # C: no own corr, not sonic → borrows the group-by-lift correlation (A's 0.8);
         #    no own IPR → borrows the pad+formation group IPR (A's qmax/pr)
-        "C": {"own_corr": None, "sonic": False, "lift": "JP", "qmax": None, "pr": None,
-              "pad": "G", "formation": "Schrader", "bhp_now": 880.0, "wc": 0.3},
+        "C": {
+            "own_corr": None,
+            "sonic": False,
+            "lift": "JP",
+            "qmax": None,
+            "pr": None,
+            "pad": "G",
+            "formation": "Schrader",
+            "bhp_now": 880.0,
+            "wc": 0.3,
+        },
     }
     out = he.estimate_header_impacts(wells, d_whp=100)
     assert out["A"]["conf"] == "high" and out["A"]["corr_src"] == "own"
-    assert out["B"]["conf"] == "sonic" and out["B"]["dbhp"] == 0.0 and out["B"]["doil"] == pytest.approx(0.0)
+    assert (
+        out["B"]["conf"] == "sonic"
+        and out["B"]["dbhp"] == 0.0
+        and out["B"]["doil"] == pytest.approx(0.0)
+    )
     assert out["C"]["corr_src"] == "group" and out["C"]["corr"] == pytest.approx(0.8)
     assert out["C"]["ipr_src"] == "group" and out["C"]["conf"] == "med"
-    assert out["A"]["doil"] < 0 and out["C"]["doil"] < 0   # +100 psi header → oil down
+    assert out["A"]["doil"] < 0 and out["C"]["doil"] < 0  # +100 psi header → oil down
 
 
 def test_estimate_header_impacts_specific_well_override():
     wells = {
-        "A": {"own_corr": 0.9, "sonic": False, "lift": "JP", "qmax": 2000.0, "pr": 2000.0,
-              "pad": "G", "formation": "Schrader", "bhp_now": 900.0, "wc": 0.4},
+        "A": {
+            "own_corr": 0.9,
+            "sonic": False,
+            "lift": "JP",
+            "qmax": 2000.0,
+            "pr": 2000.0,
+            "pad": "G",
+            "formation": "Schrader",
+            "bhp_now": 900.0,
+            "wc": 0.4,
+        },
         # B: would auto-resolve to sonic(0), but user overrides correlation to well A
-        "B": {"own_corr": None, "sonic": True, "lift": "JP", "qmax": 1800.0, "pr": 1900.0,
-              "pad": "G", "formation": "Schrader", "bhp_now": 850.0, "wc": 0.5,
-              "corr_donor": "A"},
+        "B": {
+            "own_corr": None,
+            "sonic": True,
+            "lift": "JP",
+            "qmax": 1800.0,
+            "pr": 1900.0,
+            "pad": "G",
+            "formation": "Schrader",
+            "bhp_now": 850.0,
+            "wc": 0.5,
+            "corr_donor": "A",
+        },
     }
     out = he.estimate_header_impacts(wells, d_whp=100)
     assert out["B"]["corr_src"] == "donor" and out["B"]["corr"] == pytest.approx(0.9)
-    assert out["B"]["dbhp"] != 0.0          # the override beat the sonic→0 default
+    assert out["B"]["dbhp"] != 0.0  # the override beat the sonic→0 default
 
 
 def test_estimate_header_impacts_group_corr_override_for_ci():
     wells = {
-        "A": {"own_corr": 0.8, "sonic": False, "lift": "JP", "qmax": 2000.0, "pr": 2000.0,
-              "pad": "G", "formation": "Schrader", "bhp_now": 900.0, "wc": 0.0},
-        "B": {"own_corr": None, "sonic": False, "lift": "JP", "qmax": 2000.0, "pr": 2000.0,
-              "pad": "G", "formation": "Schrader", "bhp_now": 900.0, "wc": 0.0},
+        "A": {
+            "own_corr": 0.8,
+            "sonic": False,
+            "lift": "JP",
+            "qmax": 2000.0,
+            "pr": 2000.0,
+            "pad": "G",
+            "formation": "Schrader",
+            "bhp_now": 900.0,
+            "wc": 0.0,
+        },
+        "B": {
+            "own_corr": None,
+            "sonic": False,
+            "lift": "JP",
+            "qmax": 2000.0,
+            "pr": 2000.0,
+            "pad": "G",
+            "formation": "Schrader",
+            "bhp_now": 900.0,
+            "wc": 0.0,
+        },
     }
     base = he.estimate_header_impacts(wells, 100)
     lo = he.estimate_header_impacts(wells, 100, group_corr_override={"JP": 0.4})
     # B borrows the group correlation; halving it halves its ΔBHP (and ~ΔOil magnitude)
     assert lo["B"]["corr"] == pytest.approx(0.4)
     assert abs(lo["B"]["doil"]) < abs(base["B"]["doil"])
-    assert base["A"]["doil"] == lo["A"]["doil"]   # own-corr well A unaffected by the override
+    assert (
+        base["A"]["doil"] == lo["A"]["doil"]
+    )  # own-corr well A unaffected by the override
 
 
 def test_vogel_oil_matches_curve():
     # qmax at pwf=0; ~0 at pwf=pr; clamps beyond pr
     assert he.vogel_oil(0.0, 1000.0, 1800.0) == pytest.approx(1000.0)
     assert he.vogel_oil(1800.0, 1000.0, 1800.0) == pytest.approx(0.0, abs=1e-6)
-    assert he.vogel_oil(2500.0, 1000.0, 1800.0) == pytest.approx(0.0, abs=1e-6)  # clamped
+    assert he.vogel_oil(2500.0, 1000.0, 1800.0) == pytest.approx(
+        0.0, abs=1e-6
+    )  # clamped
     # round-trips a fit_vogel_ipr point
-    assert he.vogel_oil(900.0, 1000.0, 1800.0) == pytest.approx(_vogel_q(900.0, 1800.0, 1000.0))
+    assert he.vogel_oil(900.0, 1000.0, 1800.0) == pytest.approx(
+        _vogel_q(900.0, 1800.0, 1000.0)
+    )

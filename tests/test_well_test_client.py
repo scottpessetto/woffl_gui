@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
+from woffl.assembly.sql_guards import UnsafeSqlValueError
 from woffl.assembly.well_test_client import (
     _denormalize_well_name,
     _normalize_well_name,
@@ -239,6 +240,27 @@ class TestFetchMilneWellTests:
         assert df.empty
         assert dropped == []
 
+    @patch("woffl.assembly.well_test_client.execute_query")
+    def test_malicious_well_name_raises_before_query(self, mock_query):
+        """A well name that could break out of the SQL string literal must
+        raise UnsafeSqlValueError before execute_query ever runs (P2-7)."""
+        with pytest.raises(UnsafeSqlValueError):
+            fetch_milne_well_tests(
+                "2024-01-01",
+                "2024-12-31",
+                ["B-028'; DROP TABLE mpu.wells.vw_well_test --"],
+            )
+        mock_query.assert_not_called()
+
+    @patch("woffl.assembly.well_test_client.execute_query")
+    def test_malicious_date_raises_before_query(self, mock_query):
+        """A malformed/unsafe date string must raise before execute_query runs."""
+        with pytest.raises(UnsafeSqlValueError):
+            fetch_milne_well_tests(
+                "2024-01-01'; DROP TABLE --", "2024-12-31", ["B-028"]
+            )
+        mock_query.assert_not_called()
+
 
 # ── test-day PF pressure (vw_pressure_daily join) ─────────────────────────
 
@@ -249,9 +271,7 @@ class TestTestDayPFPressure:
         mock_query.return_value = pd.DataFrame(
             {
                 "well_name": ["B-028", "S-017", "B-028"],
-                "wt_date": pd.to_datetime(
-                    ["2026-06-17", "2026-06-22", "2026-06-29"]
-                ),
+                "wt_date": pd.to_datetime(["2026-06-17", "2026-06-22", "2026-06-29"]),
                 "bhp": [1230.0, None, 1175.0],
                 "oil_rate": [353.0, 579.0, 328.0],
                 "fwat_rate": [200.0, 250.0, 210.0],
@@ -265,9 +285,7 @@ class TestTestDayPFPressure:
                 "pf_inn_ann_prs": [2418.0, 242.0, None],
             }
         )
-        df, _ = fetch_milne_well_tests(
-            "2026-01-01", "2026-12-31", ["B-028", "S-017"]
-        )
+        df, _ = fetch_milne_well_tests("2026-01-01", "2026-12-31", ["B-028", "S-017"])
         by_date = df.set_index("WtDate")
         assert by_date.loc["2026-06-17", "pf_press"] == pytest.approx(2418.0)
         assert by_date.loc["2026-06-17", "pf_source"] == "annulus"

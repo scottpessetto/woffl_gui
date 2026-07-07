@@ -57,9 +57,12 @@ def render_tab(params: SimulationParams, well_profile) -> None:
         st.write(f"- Jetpump MD: {well_profile.jetpump_md:.1f} ft")
         st.write(f"- Jetpump TVD: {jpump_tvd:.1f} ft")
 
-        max_deviation = max(
-            abs(well_profile.md_ray[i] - well_profile.vd_ray[i])
-            for i in range(len(well_profile.md_ray))
+        # P1-15: use the profile's own Pythagorean horizontal-distance ray
+        # (hd_ray = cumulative sqrt(md_diff^2 - vd_diff^2)) rather than the
+        # md - vd proxy, which understates true horizontal displacement on
+        # slant/deviated sections (>2x error on strongly deviated wells).
+        max_deviation = (
+            float(well_profile.hd_ray.max()) if len(well_profile.hd_ray) else 0.0
         )
         st.write(f"- Max Deviation: {max_deviation:.1f} ft")
 
@@ -104,14 +107,16 @@ def _render_trajectory_plots(well_profile, jpump_tvd: int) -> None:
 
     with col1:
         fig1 = go.Figure()
-        fig1.add_trace(go.Scatter(
-            x=well_profile.md_ray.tolist(),
-            y=well_profile.vd_ray.tolist(),
-            mode="lines",
-            name="Well Path",
-            line=dict(color="blue", width=2),
-            hovertemplate="MD: %{x:.0f} ft<br>TVD: %{y:.0f} ft<extra></extra>",
-        ))
+        fig1.add_trace(
+            go.Scatter(
+                x=well_profile.md_ray.tolist(),
+                y=well_profile.vd_ray.tolist(),
+                mode="lines",
+                name="Well Path",
+                line=dict(color="blue", width=2),
+                hovertemplate="MD: %{x:.0f} ft<br>TVD: %{y:.0f} ft<extra></extra>",
+            )
+        )
         fig1.add_hline(
             y=jpump_tvd,
             line=dict(color="red", dash="dash", width=2),
@@ -124,14 +129,16 @@ def _render_trajectory_plots(well_profile, jpump_tvd: int) -> None:
             annotation_text=f"Jetpump MD ({well_profile.jetpump_md:.0f} ft)",
             annotation_position="top right",
         )
-        fig1.add_trace(go.Scatter(
-            x=[well_profile.jetpump_md],
-            y=[jpump_tvd],
-            mode="markers",
-            name="Jetpump Location",
-            marker=dict(color="red", size=14, symbol="star"),
-            hovertemplate="Jetpump<br>MD: %{x:.0f} ft<br>TVD: %{y:.0f} ft<extra></extra>",
-        ))
+        fig1.add_trace(
+            go.Scatter(
+                x=[well_profile.jetpump_md],
+                y=[jpump_tvd],
+                mode="markers",
+                name="Jetpump Location",
+                marker=dict(color="red", size=14, symbol="star"),
+                hovertemplate="Jetpump<br>MD: %{x:.0f} ft<br>TVD: %{y:.0f} ft<extra></extra>",
+            )
+        )
         fig1.update_layout(
             title=dict(text="Well Profile: TVD vs MD", font=dict(size=14)),
             xaxis_title="Measured Depth (ft)",
@@ -142,19 +149,21 @@ def _render_trajectory_plots(well_profile, jpump_tvd: int) -> None:
         st.plotly_chart(fig1, use_container_width=True)
 
     with col2:
-        deviation = [
-            well_profile.md_ray[i] - well_profile.vd_ray[i]
-            for i in range(len(well_profile.md_ray))
-        ]
+        # P1-15: plot the profile's own Pythagorean horizontal-distance ray
+        # (hd_ray) instead of md - vd, which is not the true horizontal
+        # departure and renders a deviated well's offset wrong.
+        deviation = well_profile.hd_ray.tolist()
         fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(
-            x=deviation,
-            y=well_profile.vd_ray.tolist(),
-            mode="lines",
-            name="Deviation",
-            line=dict(color="green", width=2),
-            hovertemplate="Deviation: %{x:.0f} ft<br>TVD: %{y:.0f} ft<extra></extra>",
-        ))
+        fig2.add_trace(
+            go.Scatter(
+                x=deviation,
+                y=well_profile.vd_ray.tolist(),
+                mode="lines",
+                name="Deviation",
+                line=dict(color="green", width=2),
+                hovertemplate="Deviation: %{x:.0f} ft<br>TVD: %{y:.0f} ft<extra></extra>",
+            )
+        )
         fig2.add_hline(
             y=jpump_tvd,
             line=dict(color="red", dash="dash", width=2),
@@ -176,14 +185,16 @@ def _render_inclination_plot(survey_data, well_profile) -> None:
     st.subheader("Well Inclination Profile")
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=survey_data["inclination"].tolist(),
-        y=survey_data["meas_depth"].tolist(),
-        mode="lines",
-        name="Inclination",
-        line=dict(color="blue", width=2),
-        hovertemplate="Inclination: %{x:.0f}°<br>MD: %{y:.0f} ft<extra></extra>",
-    ))
+    fig.add_trace(
+        go.Scatter(
+            x=survey_data["inclination"].tolist(),
+            y=survey_data["meas_depth"].tolist(),
+            mode="lines",
+            name="Inclination",
+            line=dict(color="blue", width=2),
+            hovertemplate="Inclination: %{x:.0f}°<br>MD: %{y:.0f} ft<extra></extra>",
+        )
+    )
     fig.add_hline(
         y=well_profile.jetpump_md,
         line=dict(color="red", dash="dash", width=2),

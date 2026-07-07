@@ -130,5 +130,44 @@ def test_gas_sg_bounds_inclusive() -> None:
         FormGas(gas_sg=0.49)
 
 
+def test_zfactor_gradschool_clamped_outside_correlation_range() -> None:
+    """Tripwire for the P1-10 fix (upstream PR to kwellis/woffl).
+
+    _zfactor_grad_school's cubic is unguarded outside its documented validity
+    range (very high ppr / very low tpr) and can return z <= 0 or an
+    implausibly large z. An unclamped z-factor silently poisons
+    _compute_density (division by zfactor) and ResMix.cmix's math.sqrt(...)
+    downstream. These (ppr, tpr) pairs drove the raw, unguarded correlation to
+    -7.0 / -9.8 / -10.1 before the fix -- goes red (result <= 0, outside
+    [_ZFACTOR_MIN, _ZFACTOR_MAX]) if the clamp is ever lost.
+    """
+    for ppr, tpr in ((20, 0.9), (15, 0.85), (10, 0.8)):
+        zf = FormGas._zfactor_grad_school(ppr, tpr)
+        assert FormGas._ZFACTOR_MIN <= zf <= FormGas._ZFACTOR_MAX
+
+
+def test_zfactor_property_clamped_and_finite() -> None:
+    """The public zfactor property (used by density/compress/cmix) must never
+    return a non-physical value, even fed degenerate conditions."""
+    gas = FormGas(gas_sg=0.65)
+    # extreme low temp / high pressure pushes (ppr, tpr) into the degenerate
+    # zone confirmed above (ppc~670 psia, tpc~365 R for this gas_sg)
+    gas.condition(press=13000, temp=-140)
+    zf = gas.zfactor
+    assert FormGas._ZFACTOR_MIN <= zf <= FormGas._ZFACTOR_MAX
+    # density and compress must stay finite (no domain error, no negative rho)
+    assert gas.density > 0
+    import math as _math
+
+    assert _math.isfinite(gas.density)
+
+
+def test_zfactor_gradschool_in_range_unchanged() -> None:
+    """Precondition guard: the clamp must not touch the normal, in-range path
+    (already-converging solves stay bit-identical)."""
+    grad_zf = FormGas._zfactor_grad_school(blasing_ppr, blasing_tpr)
+    assert grad_zf == pytest.approx(blasing_zf, rel=0.01)
+
+
 if __name__ == "__main__":
     plot_formgas_compare(hygas, pygas)

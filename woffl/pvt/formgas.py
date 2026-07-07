@@ -4,6 +4,10 @@ import math
 class FormGas:
     # ideal gas constant
     _R = 10.73  # psia*ft^3/(lbmol*Rankine)
+    # [LIBRARY change -> upstream PR to kwellis/woffl] P1-10: physical bounds
+    # clamped onto _zfactor_grad_school's raw cubic output (see that method).
+    _ZFACTOR_MIN = 0.05
+    _ZFACTOR_MAX = 3.0
 
     def __init__(self, gas_sg) -> None:
         """Initialize a Formation Gas Stream
@@ -244,6 +248,17 @@ class FormGas:
         m = 0.51 * (tpr) ** (-4.133)
         n = 0.038 - 0.026 * (tpr) ** (1 / 2)
         zfactor = 1 - m * ppr + n * ppr**2 + 0.0003 * ppr**3
+        # [LIBRARY change -> upstream PR to kwellis/woffl] P1-10: this cubic
+        # correlation is unguarded and, fed a (ppr, tpr) pair outside its
+        # documented validity range (very high ppr / very low tpr), can return
+        # z <= 0 or an implausibly large z. An unclamped z-factor silently
+        # poisons _compute_density (division by zfactor) and, downstream,
+        # ResMix.cmix's math.sqrt(...) with a domain error or a negative/huge
+        # density. Real natural-gas z-factors sit well within [0.05, 3.0], so
+        # clamping there is a no-op for every in-range input (already-
+        # converging solves are bit-identical) and turns a silent/uncaught
+        # failure into a bounded, physically-sane value.
+        zfactor = min(max(zfactor, FormGas._ZFACTOR_MIN), FormGas._ZFACTOR_MAX)
         return zfactor
 
     @staticmethod

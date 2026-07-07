@@ -7,4 +7,3 @@ its own set of unique results to be analyzed.
 """
 
 from .batchpump import BatchPump
-from .network import WellNetwork

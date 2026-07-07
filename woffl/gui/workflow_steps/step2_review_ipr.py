@@ -12,16 +12,8 @@ from woffl.assembly.ipr_analyzer import (
 from woffl.assembly.network_optimizer import load_wells_from_dataframe
 from woffl.gui.ipr_viz import create_ipr_grid_png, create_ipr_pdf, create_ipr_plotly
 from woffl.gui.utils import load_well_characteristics
+from woffl.gui.vogel import vogel_fraction
 from woffl.gui.workflow_page import _clear_downstream
-
-
-def _trigger_browser_download(data: bytes, filename: str, mime: str) -> None:
-    """Single-click download — delegates to the shared implementation in
-    woffl.gui.components.download (kept under this name because step4 also
-    imports it from here)."""
-    from woffl.gui.components.download import autodownload
-
-    autodownload(data, filename, mime)
 
 
 def render_step2():
@@ -285,9 +277,9 @@ def _render_ipr_review():
         ):
             with st.spinner(f"Generating PDF for {len(ipr_curves)} wells..."):
                 pdf_bytes = create_ipr_pdf(ipr_curves, merged_with_rp)
-            _trigger_browser_download(
-                pdf_bytes, "ipr_review_all_wells.pdf", "application/pdf"
-            )
+            from woffl.gui.components.download import autodownload
+
+            autodownload(pdf_bytes, "ipr_review_all_wells.pdf", "application/pdf")
     with exp2:
         if st.button(
             "Download IPR Grid PNG (all wells)",
@@ -297,7 +289,9 @@ def _render_ipr_review():
         ):
             with st.spinner(f"Rendering {len(ipr_curves)} wells..."):
                 png_bytes = create_ipr_grid_png(ipr_curves, merged_with_rp, dpi=200)
-            _trigger_browser_download(png_bytes, "ipr_review_grid.png", "image/png")
+            from woffl.gui.components.download import autodownload
+
+            autodownload(png_bytes, "ipr_review_grid.png", "image/png")
 
     # --- Upload-edited-template re-visualizer ---
     _render_edited_template_viewer(merged_with_rp)
@@ -415,7 +409,9 @@ def _render_ipr_curves(
         ):
             with st.spinner(f"Rendering {len(wells)} wells..."):
                 png_bytes = create_ipr_grid_png(ipr_curves, merged_data, dpi=200)
-            _trigger_browser_download(png_bytes, png_filename, "image/png")
+            from woffl.gui.components.download import autodownload
+
+            autodownload(png_bytes, png_filename, "image/png")
     with exp_col2:
         if st.button(
             "Download PDF",
@@ -424,7 +420,9 @@ def _render_ipr_curves(
         ):
             with st.spinner(f"Generating PDF for {len(wells)} wells..."):
                 pdf_bytes = create_ipr_pdf(ipr_curves, merged_data)
-            _trigger_browser_download(pdf_bytes, pdf_filename, "application/pdf")
+            from woffl.gui.components.download import autodownload
+
+            autodownload(pdf_bytes, pdf_filename, "application/pdf")
 
 
 def _template_to_vogel_coeffs(df: pd.DataFrame) -> pd.DataFrame:
@@ -452,9 +450,8 @@ def _template_to_vogel_coeffs(df: pd.DataFrame) -> pd.DataFrame:
     coeffs["num_tests"] = float("nan")  # not carried in template
     coeffs["most_recent_date"] = pd.NaT
 
-    # QMax_recent via Vogel: qmax = qwf / (1 − 0.2·x − 0.8·x²)  where x = pwf/ResP
-    x = coeffs["pwf"] / coeffs["ResP"]
-    vogel_frac = 1 - 0.2 * x - 0.8 * x * x
+    # QMax_recent via Vogel (canonical formula in woffl.gui.vogel).
+    vogel_frac = vogel_fraction(coeffs["pwf"], coeffs["ResP"])
     coeffs["QMax_recent"] = coeffs["qwf"] / vogel_frac.where(vogel_frac > 0, 1.0)
 
     # Drop rows that can't produce a curve (missing or non-positive ResP)

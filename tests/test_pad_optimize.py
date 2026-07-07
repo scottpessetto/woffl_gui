@@ -536,6 +536,78 @@ class TestMatchCheck:
         assert by_well["W2"]["oil_flag"] == "— no data"
 
 
+# ── P1-13: PowerFluidConstraint.rho_pf plumbing ─────────────────────────────
+
+
+class TestRhoPfDefault:
+    """docs/code_review_2026-07-01.md P1-13: the 5 PowerFluidConstraint call
+    sites in this module used to spell out ``rho_pf=62.4`` independently.
+    They now share one ``_RHO_PF_DEFAULT`` constant. Confirms (a) the
+    constant is numerically identical to PowerFluidConstraint's own default
+    (so de-duplicating it changed no behavior — rho_pf isn't read anywhere
+    downstream of the dataclass's own range validation) and (b) it actually
+    reaches the constructed PowerFluidConstraint at every call site."""
+
+    def test_constant_matches_dataclass_default(self):
+        from woffl.assembly.network_optimizer import PowerFluidConstraint
+
+        assert (
+            po._RHO_PF_DEFAULT
+            == PowerFluidConstraint(total_rate=1000, pressure=2000).rho_pf
+        )
+
+    def test_fixed_curve_run(self, fake_core):
+        fake_core.optimize_fn = lambda opt: [_result("W1", 10000.0, 100.0)]
+        _, optimizer, _ = po.run_optimization(
+            _wells("W1"), CurvePlant(), 3, ["12"], ["B"], "milp", 0.7
+        )
+        assert optimizer.power_fluid.rho_pf == po._RHO_PF_DEFAULT
+
+    def test_free_pressure_run(self, fake_core):
+        fake_core.optimize_fn = lambda opt: [_result("W1", 1000.0, 50.0)]
+        _, optimizer, _ = po.run_optimization(
+            _wells("W1"), FreePlant(), None, ["12"], ["B"], "mckp", 1.0, n_steps=5
+        )
+        assert optimizer.power_fluid.rho_pf == po._RHO_PF_DEFAULT
+
+    def test_evaluate_fixed_scenario(self, fake_core):
+        fake_core.Optimizer.perf_table = {
+            ("W1", "12", "B"): {"oil_rate": 100.0, "lift_water": 200.0},
+        }
+        po.evaluate_fixed_scenario(_wells("W1"), CurvePlant(), 3, {"W1": ("12", "B")})
+        opt = fake_core.Optimizer.instances[-1]
+        assert opt.power_fluid.rho_pf == po._RHO_PF_DEFAULT
+
+    def test_evaluate_existing_scenario(self, fake_core):
+        fake_core.Optimizer.perf_table = {
+            ("W1", "12", "B"): {"oil_rate": 100.0, "lift_water": 200.0},
+        }
+        po.evaluate_existing_scenario(
+            _wells("W1"),
+            CurvePlant(),
+            3,
+            {"W1": ("12", "B")},
+            {"W1": ("12", "B")},
+            test_rates={"W1": (100.0, 200.0)},
+        )
+        opt = fake_core.Optimizer.instances[-1]
+        assert opt.power_fluid.rho_pf == po._RHO_PF_DEFAULT
+
+    def test_match_check(self, fake_core):
+        fake_core.Optimizer.perf_table = {
+            ("W1", "12", "B"): {"oil_rate": 100.0, "lift_water": 200.0},
+        }
+        po.match_check(
+            _wells("W1"),
+            CurvePlant(),
+            3,
+            {"W1": ("12", "B")},
+            {"W1": (100.0, 200.0)},
+        )
+        opt = fake_core.Optimizer.instances[-1]
+        assert opt.power_fluid.rho_pf == po._RHO_PF_DEFAULT
+
+
 # ── settled_header ──────────────────────────────────────────────────────────
 
 

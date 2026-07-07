@@ -9,46 +9,85 @@ shut well back to online (catches just-restarted wells).
 import pandas as pd
 import streamlit as st
 
+# ---------------------------------------------------------------------------
+# POPS pad config — widget-key GC-safe mirrors (P1-31)
+# ---------------------------------------------------------------------------
+# The Wells tab's "Pads with on-pad production separation" / per-well override
+# multiselects are read back by three OTHER call sites (the Marginal WC tab,
+# the per-pad section, and Triage) via
+# ``st.session_state.get("well_sort_pops_pads", ...)``. Per this repo's
+# CLAUDE.md ("Widget state is garbage-collected when its view isn't
+# rendered"), a Scott's Tools sub-tab detour can drop these widget keys
+# entirely, which used to silently reset every reader back to the hard-coded
+# default. These non-widget mirror keys hold the last known-good value; the
+# widgets' fallback defaults are computed from the mirror (a no-op once the
+# widget key itself survives, since Streamlit ignores `default` then).
+_DEFAULT_POPS_PADS = ["E", "F", "H", "I", "M", "S"]
+_POPS_PADS_MIRROR_KEY = "well_sort_pops_pads_mirror"
+_POPS_FORCE_TRUE_MIRROR_KEY = "well_sort_pops_force_true_mirror"
+
+
+def _pops_pads_fallback() -> list[str]:
+    """Best available default for the POPs-pads multiselect (P1-31).
+
+    Prefers the mirror (the last value the widget actually held) over the
+    hard-coded field default, so a GC'd widget key restores the user's
+    selection instead of silently reverting.
+    """
+    return list(st.session_state.get(_POPS_PADS_MIRROR_KEY, _DEFAULT_POPS_PADS))
+
+
+def _pops_force_true_fallback() -> list[str]:
+    """Best available default for the per-well PopsPad=True overrides (P1-31)."""
+    return list(st.session_state.get(_POPS_FORCE_TRUE_MIRROR_KEY, []))
+
 
 @st.cache_data(ttl=3600, show_spinner="Loading shut-in history from Databricks...")
 def _cached_shut_in_history() -> pd.DataFrame:
     from woffl.assembly.well_sort_client import fetch_current_shut_in_history
+
     return fetch_current_shut_in_history()
 
 
 @st.cache_data(ttl=3600, show_spinner="Loading 30-day shut-in history...")
 def _cached_recent_shut_in_history(days: int = 60) -> pd.DataFrame:
     from woffl.assembly.well_sort_client import fetch_recent_shut_in_history
+
     return fetch_recent_shut_in_history(days=days)
 
 
 @st.cache_data(ttl=3600, show_spinner="Loading well tests from Databricks...")
 def _cached_recent_tests(days: int) -> pd.DataFrame:
     from woffl.assembly.well_sort_client import fetch_recent_tests
+
     return fetch_recent_tests(days=days)
 
 
 @st.cache_data(ttl=3600, show_spinner="Loading producer list...")
 def _cached_producers() -> list[str]:
     from woffl.assembly.well_sort_client import fetch_mpu_producers
+
     return fetch_mpu_producers()
 
 
 @st.cache_data(ttl=3600, show_spinner="Loading producer catalog...")
 def _cached_producer_catalog() -> pd.DataFrame:
     from woffl.assembly.well_sort_client import fetch_producer_catalog
+
     return fetch_producer_catalog()
 
 
 @st.cache_data(ttl=3600, show_spinner="Loading all-time last tests...")
 def _cached_last_tests_ever() -> pd.DataFrame:
     from woffl.assembly.well_sort_client import fetch_last_tests_ever
+
     return fetch_last_tests_ever()
 
 
 @st.cache_data(ttl=300, show_spinner="Loading safety-valve status...")
 def _cached_xv_status() -> pd.DataFrame:
     from woffl.assembly.well_sort_client import fetch_xv_status
+
     return fetch_xv_status()
 
 
@@ -90,7 +129,10 @@ def render_tab() -> None:
         )
     with ctrl3:
         stale_days = st.slider(
-            "Stale-test threshold (days)", 14, 180, 60,
+            "Stale-test threshold (days)",
+            14,
+            180,
+            60,
             key="well_sort_stale_days",
             help="Flag wells whose most-recent test is older than this.",
         )
@@ -124,7 +166,11 @@ def render_tab() -> None:
     # missing from options (empty catalog on a transient Databricks failure,
     # a well dropping out of vw_well_header) raises StreamlitAPIException
     # and kills the whole page.
-    all_pads = sorted(catalog["well_pad"].dropna().unique().tolist()) if not catalog.empty else []
+    all_pads = (
+        sorted(catalog["well_pad"].dropna().unique().tolist())
+        if not catalog.empty
+        else []
+    )
     if "well_sort_pops_pads" in st.session_state:
         st.session_state["well_sort_pops_pads"] = [
             p for p in st.session_state["well_sort_pops_pads"] if p in all_pads
@@ -134,46 +180,64 @@ def render_tab() -> None:
         options=all_pads,
         default=[
             p
-            for p in st.session_state.get(
-                "well_sort_pops_pads", ["E", "F", "H", "I", "M", "S"]
-            )
+            for p in st.session_state.get("well_sort_pops_pads", _pops_pads_fallback())
             if p in all_pads
         ],
         key="well_sort_pops_pads",
         help="Wells on these pads get PopsPad=True. Per-well overrides apply after.",
     )
+    # Mirror to a non-widget key so a later tab detour (which GC's the widget
+    # key above) can restore this instead of silently reverting to the
+    # hard-coded default (P1-31).
+    st.session_state[_POPS_PADS_MIRROR_KEY] = list(pops_pads)
+
     # Per-well PopsPad=True overrides (wells that get True even if their pad
     # doesn't have separation — e.g. MPS-08 in the Apr-20 bench sheet).
     producer_opts = sorted(producers)
     if "well_sort_pops_force_true" in st.session_state:
         st.session_state["well_sort_pops_force_true"] = [
-            w for w in st.session_state["well_sort_pops_force_true"] if w in producer_opts
+            w
+            for w in st.session_state["well_sort_pops_force_true"]
+            if w in producer_opts
         ]
     force_true_wells = st.multiselect(
         "Per-well PopsPad=True overrides",
         options=producer_opts,
         default=[
             w
-            for w in st.session_state.get("well_sort_pops_force_true", [])
+            for w in st.session_state.get(
+                "well_sort_pops_force_true", _pops_force_true_fallback()
+            )
             if w in producer_opts
         ],
         key="well_sort_pops_force_true",
         help="These wells are treated as having on-pad separation regardless "
         "of the pad-level setting above.",
     )
+    # Same GC-survival mirror as pops_pads above (P1-31).
+    st.session_state[_POPS_FORCE_TRUE_MIRROR_KEY] = list(force_true_wells)
     overrides = {w: True for w in force_true_wells}
 
     online_set, shut_set = classify_wells(
         producers, shut_in_hist, xv_df=xv, trust_xv=True
     )
     online_df = build_online_table(
-        tests, shut_in_hist, producers, mode=mode,
-        stale_days=stale_days, xv_df=xv, online_wells=online_set,
+        tests,
+        shut_in_hist,
+        producers,
+        mode=mode,
+        stale_days=stale_days,
+        xv_df=xv,
+        online_wells=online_set,
         catalog_df=catalog,
     )
     shut_df = build_shut_in_table(
-        shut_in_hist, tests, xv_df=xv, shut_in_wells=shut_set,
-        catalog_df=catalog, last_tests_df=last_tests,
+        shut_in_hist,
+        tests,
+        xv_df=xv,
+        shut_in_wells=shut_set,
+        catalog_df=catalog,
+        last_tests_df=last_tests,
     )
     online_df = apply_pops_pad(online_df, set(pops_pads), overrides)
     shut_df = apply_pops_pad(shut_df, set(pops_pads), overrides)
@@ -200,6 +264,7 @@ def render_tab() -> None:
     # openpyxl per-cell formatting on every rerun of this page just to feed
     # the download button.
     from datetime import date
+
     if st.button(
         f"Download bench xlsx  ({len(online_df)} online, {len(offline_df)} offline, "
         f"{len(ltsi_df)} ltsi)",
@@ -216,10 +281,12 @@ def render_tab() -> None:
         )
 
     sub_online, sub_off, sub_ltsi, sub_changes = st.tabs(
-        [f"Online ({len(online_df)})",
-         f"Offline ({len(offline_df)})",
-         f"LTSI ({len(ltsi_df)})",
-         "30-Day Changes"]
+        [
+            f"Online ({len(online_df)})",
+            f"Offline ({len(offline_df)})",
+            f"LTSI ({len(ltsi_df)})",
+            "30-Day Changes",
+        ]
     )
 
     with sub_online:
@@ -251,7 +318,8 @@ def render_tab() -> None:
                         "Test Date", format="YYYY-MM-DD"
                     ),
                     "DaysSinceTest": st.column_config.NumberColumn(
-                        "Days since", format="%.0f",
+                        "Days since",
+                        format="%.0f",
                         help="Days between today and the displayed test date",
                     ),
                     "StaleTest": st.column_config.CheckboxColumn(
@@ -259,15 +327,18 @@ def render_tab() -> None:
                         help=f"Displayed test older than {stale_days} days",
                     ),
                     "ProdXV": st.column_config.NumberColumn(
-                        "Prod XV", format="%.0f",
+                        "Prod XV",
+                        format="%.0f",
                         help="Production safety valve: 1=open, 0=closed",
                     ),
                     "PFXV": st.column_config.NumberColumn(
-                        "PF XV", format="%.0f",
+                        "PF XV",
+                        format="%.0f",
                         help="Power-fluid safety valve: 1=open, 0=closed",
                     ),
                     "XVTime": st.column_config.DatetimeColumn(
-                        "XV Time", format="MM-DD HH:mm",
+                        "XV Time",
+                        format="MM-DD HH:mm",
                         help="Timestamp of most recent XV reading",
                     ),
                     "JustRestarted": st.column_config.CheckboxColumn(
@@ -282,12 +353,20 @@ def render_tab() -> None:
                         "(or there are no tests at all for this well)",
                     ),
                     "Oil": st.column_config.NumberColumn("Oil (BOPD)", format="%.0f"),
-                    "Water": st.column_config.NumberColumn("Water (BWPD)", format="%.0f"),
+                    "Water": st.column_config.NumberColumn(
+                        "Water (BWPD)", format="%.0f"
+                    ),
                     "Gas": st.column_config.NumberColumn("Gas (MCFD)", format="%.0f"),
                     "WC": st.column_config.NumberColumn("WC (%)", format="%.1f"),
-                    "TotalWC": st.column_config.NumberColumn("Total WC (%)", format="%.1f"),
-                    "GOR": st.column_config.NumberColumn("GOR (scf/bbl)", format="%.0f"),
-                    "TotalGOR": st.column_config.NumberColumn("Total GOR", format="%.0f"),
+                    "TotalWC": st.column_config.NumberColumn(
+                        "Total WC (%)", format="%.1f"
+                    ),
+                    "GOR": st.column_config.NumberColumn(
+                        "GOR (scf/bbl)", format="%.0f"
+                    ),
+                    "TotalGOR": st.column_config.NumberColumn(
+                        "Total GOR", format="%.0f"
+                    ),
                     "BHP": st.column_config.NumberColumn("BHP (psi)", format="%.0f"),
                     "WHP": st.column_config.NumberColumn("WHP (psi)", format="%.0f"),
                     "LiftWater": st.column_config.NumberColumn(
@@ -303,11 +382,13 @@ def render_tab() -> None:
                         "Total Gas (MCFD)", format="%.0f"
                     ),
                     "EspHz": st.column_config.NumberColumn(
-                        "ESP Hz", format="%.1f",
+                        "ESP Hz",
+                        format="%.1f",
                         help="ESP frequency from displayed test (blank for non-ESP wells)",
                     ),
                     "EspAmps": st.column_config.NumberColumn(
-                        "ESP Amps", format="%.0f",
+                        "ESP Amps",
+                        format="%.0f",
                         help="ESP motor amps from displayed test (blank for non-ESP wells)",
                     ),
                     "Oil_2moAvg": st.column_config.NumberColumn(
@@ -368,16 +449,24 @@ def render_tab() -> None:
             "Oil": st.column_config.NumberColumn("Oil (BOPD)", format="%.0f"),
             "Water": st.column_config.NumberColumn("Water (BWPD)", format="%.0f"),
             "Gas": st.column_config.NumberColumn("Gas (MCFD)", format="%.0f"),
-            "LiftWater": st.column_config.NumberColumn("Lift Wat (BWPD)", format="%.0f"),
+            "LiftWater": st.column_config.NumberColumn(
+                "Lift Wat (BWPD)", format="%.0f"
+            ),
             "LiftGas": st.column_config.NumberColumn("Lift Gas (MCFD)", format="%.0f"),
-            "TotalWater": st.column_config.NumberColumn("Total Wat (BWPD)", format="%.0f"),
-            "TotalGas": st.column_config.NumberColumn("Total Gas (MCFD)", format="%.0f"),
+            "TotalWater": st.column_config.NumberColumn(
+                "Total Wat (BWPD)", format="%.0f"
+            ),
+            "TotalGas": st.column_config.NumberColumn(
+                "Total Gas (MCFD)", format="%.0f"
+            ),
             "EspHz": st.column_config.NumberColumn(
-                "ESP Hz", format="%.1f",
+                "ESP Hz",
+                format="%.1f",
                 help="ESP frequency from last test (blank for non-ESP wells)",
             ),
             "EspAmps": st.column_config.NumberColumn(
-                "ESP Amps", format="%.0f",
+                "ESP Amps",
+                format="%.0f",
                 help="ESP motor amps from last test (blank for non-ESP wells)",
             ),
             "WC": st.column_config.NumberColumn("WC (%)", format="%.1f"),
@@ -386,17 +475,22 @@ def render_tab() -> None:
             "TotalGOR": st.column_config.NumberColumn("Total GOR", format="%.0f"),
             "LastOnlineDate": st.column_config.DateColumn("Last Online"),
             "LastTestDate": st.column_config.DatetimeColumn(
-                "Last Test", format="YYYY-MM-DD",
+                "Last Test",
+                format="YYYY-MM-DD",
                 help="Absolute-latest test date, any age (not bounded by 180d window)",
             ),
             "NearAvgOil": st.column_config.NumberColumn(
-                "Near Avg Oil", format="%.0f",
+                "Near Avg Oil",
+                format="%.0f",
                 help="Avg oil rate over tests within 90 days of last test",
             ),
-            "NearAvgWater": st.column_config.NumberColumn("Near Avg Wat", format="%.0f"),
+            "NearAvgWater": st.column_config.NumberColumn(
+                "Near Avg Wat", format="%.0f"
+            ),
             "NearAvgGas": st.column_config.NumberColumn("Near Avg Gas", format="%.0f"),
             "NTestsNear": st.column_config.NumberColumn(
-                "# Near Tests", format="%.0f",
+                "# Near Tests",
+                format="%.0f",
                 help="How many tests in the 90-day near-last window",
             ),
             "ProdXV": st.column_config.NumberColumn("Prod XV", format="%.0f"),
@@ -405,15 +499,38 @@ def render_tab() -> None:
         }
 
     _shut_col_order = [
-        "Well", "Pad", "Reservoir", "LiftType",
-        "ShutInSince", "CurrentCode", "CurrentReason", "Notes", "DownHours",
-        "Oil", "Water", "Gas",
-        "LastOnlineDate", "LastTestDate",
-        "WC", "TotalWC", "GOR", "TotalGOR",
-        "LiftWater", "LiftGas", "TotalWater", "TotalGas",
-        "EspHz", "EspAmps",
-        "NearAvgOil", "NearAvgWater", "NearAvgGas", "NTestsNear",
-        "ProdXV", "PFXV", "XVTime", "PopsPad",
+        "Well",
+        "Pad",
+        "Reservoir",
+        "LiftType",
+        "ShutInSince",
+        "CurrentCode",
+        "CurrentReason",
+        "Notes",
+        "DownHours",
+        "Oil",
+        "Water",
+        "Gas",
+        "LastOnlineDate",
+        "LastTestDate",
+        "WC",
+        "TotalWC",
+        "GOR",
+        "TotalGOR",
+        "LiftWater",
+        "LiftGas",
+        "TotalWater",
+        "TotalGas",
+        "EspHz",
+        "EspAmps",
+        "NearAvgOil",
+        "NearAvgWater",
+        "NearAvgGas",
+        "NTestsNear",
+        "ProdXV",
+        "PFXV",
+        "XVTime",
+        "PopsPad",
     ]
 
     def _render_shut_section(df: pd.DataFrame, label: str, key: str):
@@ -428,7 +545,9 @@ def render_tab() -> None:
         extras = [c for c in disp.columns if c not in ordered]
         disp = disp[ordered + extras]
         st.dataframe(
-            disp, use_container_width=True, hide_index=True,
+            disp,
+            use_container_width=True,
+            hide_index=True,
             column_config=_shut_columns_config(),
         )
         st.download_button(
@@ -447,12 +566,16 @@ def render_tab() -> None:
 
     with sub_changes:
         from woffl.assembly.well_sort_client import (
-            NOTABLE_DOWN_HOURS, compute_recent_down_events,
+            NOTABLE_DOWN_HOURS,
+            compute_recent_down_events,
         )
+
         th_col, _ = st.columns([1, 3])
         with th_col:
             threshold = st.slider(
-                "Min hrs/day to count as 'down'", 1, 24,
+                "Min hrs/day to count as 'down'",
+                1,
+                24,
                 int(NOTABLE_DOWN_HOURS),
                 key="well_sort_down_threshold",
                 help="A day counts as a down day when its total down_hours "
@@ -468,8 +591,11 @@ def render_tab() -> None:
         )
         recent_hist = _cached_recent_shut_in_history(60)
         events_df = compute_recent_down_events(
-            recent_hist, producers, catalog_df=catalog,
-            window_days=30, down_hours_threshold=float(threshold),
+            recent_hist,
+            producers,
+            catalog_df=catalog,
+            window_days=30,
+            down_hours_threshold=float(threshold),
         )
         if events_df.empty:
             st.info("No shut-in events in the last 30 days.")
@@ -484,25 +610,31 @@ def render_tab() -> None:
             c4.metric("Wells affected", n_wells)
 
             st.dataframe(
-                events_df, use_container_width=True, hide_index=True,
+                events_df,
+                use_container_width=True,
+                hide_index=True,
                 column_config={
                     "Well": st.column_config.TextColumn("Well", pinned="left"),
                     "Pad": st.column_config.TextColumn("Pad"),
                     "Reservoir": st.column_config.TextColumn("Reservoir"),
                     "Started": st.column_config.DateColumn("Started"),
                     "Ended": st.column_config.DateColumn(
-                        "Ended", help="Blank when the event is still ongoing",
+                        "Ended",
+                        help="Blank when the event is still ongoing",
                     ),
                     "Days": st.column_config.NumberColumn(
-                        "Days", format="%.0f",
+                        "Days",
+                        format="%.0f",
                         help="Consecutive days at or above the threshold",
                     ),
                     "MaxHrs": st.column_config.NumberColumn(
-                        "Max Hrs", format="%.1f",
+                        "Max Hrs",
+                        format="%.1f",
                         help="Peak single-day down_hours in this event",
                     ),
                     "TotalHrs": st.column_config.NumberColumn(
-                        "Total Hrs", format="%.1f",
+                        "Total Hrs",
+                        format="%.1f",
                         help="Sum of down_hours across the event",
                     ),
                     "Code": st.column_config.TextColumn("Code"),
@@ -582,16 +714,23 @@ def _build_online_full(stale_days: int = 60) -> "pd.DataFrame":
     catalog = _cached_producer_catalog()
     xv = _cached_xv_status()
 
-    pops_pads = st.session_state.get(
-        "well_sort_pops_pads", ["E", "F", "H", "I", "M", "S"]
+    # P1-31: fall back to the GC-survival mirror, not a hard-coded default,
+    # if the Wells tab's widget keys aren't present this rerun.
+    pops_pads = st.session_state.get("well_sort_pops_pads", _pops_pads_fallback())
+    force_true = st.session_state.get(
+        "well_sort_pops_force_true", _pops_force_true_fallback()
     )
-    force_true = st.session_state.get("well_sort_pops_force_true", [])
     overrides = {w: True for w in force_true}
 
     online_set, _ = classify_wells(producers, shut_in_hist, xv_df=xv, trust_xv=True)
     online_df = build_online_table(
-        tests, shut_in_hist, producers, mode="allocated",
-        stale_days=stale_days, xv_df=xv, online_wells=online_set,
+        tests,
+        shut_in_hist,
+        producers,
+        mode="allocated",
+        stale_days=stale_days,
+        xv_df=xv,
+        online_wells=online_set,
         catalog_df=catalog,
     )
     return apply_pops_pad(online_df, set(pops_pads), overrides)
@@ -694,9 +833,7 @@ def compute_pad_marginal_wc(pad: str, pump_limit: float) -> dict | None:
     if water_col not in pad_df.columns or "Oil" not in pad_df.columns:
         return None
 
-    valid = pad_df[
-        pad_df[water_col].notna() & pad_df["Oil"].notna()
-    ].copy()
+    valid = pad_df[pad_df[water_col].notna() & pad_df["Oil"].notna()].copy()
     # Drop rows where both rates are zero — no per-well WC defined.
     valid = valid[(valid[water_col] > 0) | (valid["Oil"] > 0)].copy()
     if valid.empty:
@@ -816,9 +953,7 @@ def render_marginal_wc_tab() -> None:
             st.session_state.pop("marginal_watercut_input", None)
             # Also pop the batch-run quickfix key so it picks up the new value.
             st.session_state.pop("_batch_marg_wc_box", None)
-            st.success(
-                f"Imported {marginal_wc:.3f} into sidebar Marginal Watercut."
-            )
+            st.success(f"Imported {marginal_wc:.3f} into sidebar Marginal Watercut.")
 
     # Ranked-wells table
     st.subheader("Ranked Online Wells (non-POPs)")
@@ -827,8 +962,16 @@ def render_marginal_wc_tab() -> None:
     display.insert(0, "Rank", range(1, len(display) + 1))
     display["Marginal"] = display.index == marg_idx
     cols = [
-        "Rank", "Marginal", "Well", "Pad", "Reservoir",
-        "Oil", "TotalWater", "TotalWC", "CumWater", "CumWaterPct",
+        "Rank",
+        "Marginal",
+        "Well",
+        "Pad",
+        "Reservoir",
+        "Oil",
+        "TotalWater",
+        "TotalWC",
+        "CumWater",
+        "CumWaterPct",
     ]
     cols = [c for c in cols if c in display.columns]
     display = display[cols]
@@ -840,24 +983,29 @@ def render_marginal_wc_tab() -> None:
         column_config={
             "Rank": st.column_config.NumberColumn("Rank", format="%d"),
             "Marginal": st.column_config.CheckboxColumn(
-                "Marginal?", help="Well at which cumulative water crosses the threshold",
+                "Marginal?",
+                help="Well at which cumulative water crosses the threshold",
             ),
             "Well": st.column_config.TextColumn("Well", pinned="left"),
             "Pad": st.column_config.TextColumn("Pad"),
             "Reservoir": st.column_config.TextColumn("Reservoir"),
             "Oil": st.column_config.NumberColumn("Oil (BOPD)", format="%.0f"),
             "TotalWater": st.column_config.NumberColumn(
-                "Total Water (BWPD)", format="%.0f",
+                "Total Water (BWPD)",
+                format="%.0f",
             ),
             "TotalWC": st.column_config.NumberColumn(
-                "Total WC", format="%.3f",
+                "Total WC",
+                format="%.3f",
             ),
             "CumWater": st.column_config.NumberColumn(
-                "Cum Water (BWPD)", format="%.0f",
+                "Cum Water (BWPD)",
+                format="%.0f",
                 help="Running total of TotalWater from the worst-WC well downward",
             ),
             "CumWaterPct": st.column_config.NumberColumn(
-                "Cum %", format="%.1f%%",
+                "Cum %",
+                format="%.1f%%",
                 help="Cumulative water as a percentage of total field water",
             ),
         },
@@ -875,14 +1023,47 @@ def _pad_limit_key(pad: str) -> str:
     return f"_pad_pump_limit_{pad}"
 
 
+def _pad_limit_mirror_key(pad: str) -> str:
+    """Non-widget mirror of a pad's pump limit — survives widget-key GC.
+
+    ``_pad_limit_key`` is used directly as the ``st.number_input`` key; a
+    Scott's Tools tab detour can GC that widget key, which used to silently
+    re-seed the input from ``PUMP_LIMIT_PRESETS`` and drop the user's edit
+    (P1-31). This mirror holds the last value the widget actually held so the
+    input can restore it instead.
+    """
+    return f"_pad_pump_limit_mirror_{pad}"
+
+
 def _reset_pad_limit(pad: str) -> None:
     """on_click callback — restore a pad's pump limit to its preset.
 
     Runs before the widget renders on the next rerun, so writing to the
     widget's session-state key is safe here.
     """
-    preset = PUMP_LIMIT_PRESETS.get(pad, 0)
-    st.session_state[_pad_limit_key(pad)] = int(preset)
+    preset = int(PUMP_LIMIT_PRESETS.get(pad, 0))
+    st.session_state[_pad_limit_key(pad)] = preset
+    st.session_state[_pad_limit_mirror_key(pad)] = preset
+
+
+def _seed_pad_limit_widget(pad: str) -> None:
+    """Seed a pad's pump-limit widget key before it renders (P1-31).
+
+    * Widget key already holds a value (survived the rerun) → no-op; the
+      widget owns it from here (Streamlit ignores any default we'd pass).
+    * Widget key absent — either first visit, or a Scott's Tools tab detour
+      just GC'd it — re-seed from the non-widget mirror (the user's last
+      edit) when one exists, falling back to the static preset only when it
+      doesn't. Without this, a GC'd key used to always re-seed from the
+      preset, silently discarding the user's edit.
+    """
+    pump_limit_key = _pad_limit_key(pad)
+    if pump_limit_key in st.session_state:
+        return
+    mirror_key = _pad_limit_mirror_key(pad)
+    st.session_state[pump_limit_key] = int(
+        st.session_state.get(mirror_key, PUMP_LIMIT_PRESETS.get(pad, 0))
+    )
 
 
 def _render_pad_marginal_wc_section() -> None:
@@ -896,17 +1077,19 @@ def _render_pad_marginal_wc_section() -> None:
     st.subheader("Per-Pad Marginal Water Cut")
     st.caption(
         "POPs pads have their own water-handling pumps. The marginal WC is "
-        "the WC of the highest-WC well still kept online after shedding the "
-        "worst-WC wells down to the pump's capacity. **E / F / M** handle "
+        "simply the WC of the single worst-performing online well on the pad "
+        "pump (a plain max, not a shedding calculation) — measured against "
+        "whichever stream that pad's pump actually sees. **E / F / M** handle "
         "the full produced stream (formation + PF). **I / H / S** are "
         "PF-only — their pump only sees lift water, and formation water "
-        "passes through to the central facility."
+        "passes through to the central facility. The pump limit below does "
+        "**not** change which well is marginal; it only sets the **headroom** "
+        "(capacity still available, or how far over capacity the pad is)."
     )
 
+    # P1-31: fall back to the GC-survival mirror, not a hard-coded default.
     pops_pads = sorted(
-        st.session_state.get(
-            "well_sort_pops_pads", ["E", "F", "H", "I", "M", "S"]
-        )
+        st.session_state.get("well_sort_pops_pads", _pops_pads_fallback())
     )
     if not pops_pads:
         st.info(
@@ -929,11 +1112,9 @@ def _render_pad_marginal_wc_section() -> None:
     water_basis = POPS_PUMP_HANDLES.get(pad, "total")
     basis_label = "PF water" if water_basis == "lift" else "total water"
 
-    # Seed the pump-limit widget key from the preset on first visit so the
-    # number_input picks it up; subsequent edits persist in session_state.
     pump_limit_key = _pad_limit_key(pad)
-    if pump_limit_key not in st.session_state:
-        st.session_state[pump_limit_key] = int(PUMP_LIMIT_PRESETS.get(pad, 0))
+    mirror_key = _pad_limit_mirror_key(pad)
+    _seed_pad_limit_widget(pad)
 
     with col_limit:
         st.number_input(
@@ -961,6 +1142,9 @@ def _render_pad_marginal_wc_section() -> None:
         )
 
     pump_limit = int(st.session_state[pump_limit_key])
+    # Keep the mirror current so a later GC of the widget key restores this
+    # value rather than the static preset (P1-31).
+    st.session_state[mirror_key] = pump_limit
     pad_result = compute_pad_marginal_wc(pad=pad, pump_limit=pump_limit)
 
     # Surface a previous-rerun import message (st.button click triggers a
@@ -994,7 +1178,8 @@ def _render_pad_marginal_wc_section() -> None:
         ),
     )
     summary_cols[1].metric(
-        "Pump Limit", f"{pump_limit:,.0f} BWPD",
+        "Pump Limit",
+        f"{pump_limit:,.0f} BWPD",
         help="Editable above. Reset returns to the preset.",
     )
     if headroom is not None:
@@ -1002,9 +1187,7 @@ def _render_pad_marginal_wc_section() -> None:
         # specifically PF capacity to allocate to more wells.
         capacity_label = "PF" if water_basis == "lift" else "water"
         if headroom >= 0:
-            delta_label = (
-                f"{headroom:,.0f} BWPD {capacity_label} available to allocate"
-            )
+            delta_label = f"{headroom:,.0f} BWPD {capacity_label} available to allocate"
         else:
             delta_label = f"OVER by {abs(headroom):,.0f} BWPD"
         summary_cols[2].metric(
@@ -1051,10 +1234,12 @@ def _render_pad_marginal_wc_section() -> None:
     # For full POPs we use the existing TotalWater + TotalWC names; our
     # WC_pad equals TotalWC by definition, so we drop the duplicate column.
     if water_basis == "lift":
-        pad_display = pad_valid.rename(columns={
-            "LiftWater": "PFRate",
-            "WC_pad": "PFWC",
-        })
+        pad_display = pad_valid.rename(
+            columns={
+                "LiftWater": "PFRate",
+                "WC_pad": "PFWC",
+            }
+        )
         water_col_display = "PFRate"
         water_col_label = "PF Rate (BWPD)"
         wc_col_display = "PFWC"
@@ -1072,8 +1257,13 @@ def _render_pad_marginal_wc_section() -> None:
     )
     pad_display.insert(0, "Rank", range(1, len(pad_display) + 1))
     cols = [
-        "Rank", "Well", "Pad", "Reservoir",
-        "Oil", water_col_display, wc_col_display,
+        "Rank",
+        "Well",
+        "Pad",
+        "Reservoir",
+        "Oil",
+        water_col_display,
+        wc_col_display,
     ]
     cols = [c for c in cols if c in pad_display.columns]
     pad_display = pad_display[cols]
@@ -1089,14 +1279,16 @@ def _render_pad_marginal_wc_section() -> None:
             "Reservoir": st.column_config.TextColumn("Reservoir"),
             "Oil": st.column_config.NumberColumn("Oil (BOPD)", format="%.0f"),
             water_col_display: st.column_config.NumberColumn(
-                water_col_label, format="%.0f",
+                water_col_label,
+                format="%.0f",
                 help=(
                     "Water stream the pad's pump actually handles "
                     f"({pad_result['water_col']} from the source data)."
                 ),
             ),
             wc_col_display: st.column_config.NumberColumn(
-                wc_col_label, format="%.3f",
+                wc_col_label,
+                format="%.3f",
                 help=(
                     f"{wc_col_label} = {water_col_display} / "
                     f"({water_col_display} + Oil). Marginal WC = max."
@@ -1144,10 +1336,7 @@ def _form_basis_note(wc_basis: str | None) -> str:
     """Why-suffix flagging a decision made on form-basis WC (P1-27)."""
     if wc_basis != "form":
         return ""
-    return (
-        " [form-basis WC — test has no total WC; reads low vs the "
-        "total-WC line]"
-    )
+    return " [form-basis WC — test has no total WC; reads low vs the " "total-WC line]"
 
 
 def add_online_decision(online_df: pd.DataFrame, marginal_wc: float) -> pd.DataFrame:
@@ -1354,30 +1543,74 @@ def add_shut_decision(shut_df: pd.DataFrame, marginal_wc: float) -> pd.DataFrame
 
 
 _TRIAGE_ONLINE_COMPACT = [
-    "Decision", "Why", "Well", "Pad", "Oil", "TotalWC", "WCvsMarginal",
-    "GOR", "DaysSinceTest", "StaleTest", "FlagOutlier", "PopsPad",
+    "Decision",
+    "Why",
+    "Well",
+    "Pad",
+    "Oil",
+    "TotalWC",
+    "WCvsMarginal",
+    "GOR",
+    "DaysSinceTest",
+    "StaleTest",
+    "FlagOutlier",
+    "PopsPad",
 ]
 _TRIAGE_ONLINE_DETAIL = _TRIAGE_ONLINE_COMPACT + [
-    "Reservoir", "LiftType", "Water", "LiftWater", "TotalWater", "Gas",
-    "TotalGas", "Oil_2moAvg", "OilDev", "BHP", "WHP", "ProdXV", "XVTime",
-    "TestDate", "Allocated", "FallbackUsed",
+    "Reservoir",
+    "LiftType",
+    "Water",
+    "LiftWater",
+    "TotalWater",
+    "Gas",
+    "TotalGas",
+    "Oil_2moAvg",
+    "OilDev",
+    "BHP",
+    "WHP",
+    "ProdXV",
+    "XVTime",
+    "TestDate",
+    "Allocated",
+    "FallbackUsed",
 ]
 
 _TRIAGE_SHUT_COMPACT = [
-    "Decision", "Why", "Well", "Pad", "Oil", "TotalWC", "WCvsMarginal",
-    "NearAvgWC", "NearAvgOil", "ShutInSince", "CurrentCode", "CurrentReason",
+    "Decision",
+    "Why",
+    "Well",
+    "Pad",
+    "Oil",
+    "TotalWC",
+    "WCvsMarginal",
+    "NearAvgWC",
+    "NearAvgOil",
+    "ShutInSince",
+    "CurrentCode",
+    "CurrentReason",
     "LastTestDate",
 ]
 _TRIAGE_SHUT_DETAIL = _TRIAGE_SHUT_COMPACT + [
-    "Reservoir", "LiftType", "Water", "Gas", "LiftWater", "TotalWater",
-    "NearAvgWater", "NTestsNear", "Notes", "DownHours", "LastOnlineDate",
+    "Reservoir",
+    "LiftType",
+    "Water",
+    "Gas",
+    "LiftWater",
+    "TotalWater",
+    "NearAvgWater",
+    "NTestsNear",
+    "Notes",
+    "DownHours",
+    "LastOnlineDate",
     "ProdXV",
 ]
 
 
 def _triage_online_cfg(marginal_wc: float, stale_days: int) -> dict:
     return {
-        "Decision": st.column_config.TextColumn("Decision", pinned="left", width="medium"),
+        "Decision": st.column_config.TextColumn(
+            "Decision", pinned="left", width="medium"
+        ),
         "Why": st.column_config.TextColumn("Why", width="large"),
         "Well": st.column_config.TextColumn("Well", pinned="left"),
         "Pad": st.column_config.TextColumn("Pad"),
@@ -1386,36 +1619,44 @@ def _triage_online_cfg(marginal_wc: float, stale_days: int) -> dict:
         "Oil": st.column_config.NumberColumn("Oil (BOPD)", format="%.0f"),
         "Water": st.column_config.NumberColumn("Form Water (BWPD)", format="%.0f"),
         "LiftWater": st.column_config.NumberColumn("Lift Water (BWPD)", format="%.0f"),
-        "TotalWater": st.column_config.NumberColumn("Total Water (BWPD)", format="%.0f"),
+        "TotalWater": st.column_config.NumberColumn(
+            "Total Water (BWPD)", format="%.0f"
+        ),
         "Gas": st.column_config.NumberColumn("Gas (MCFD)", format="%.0f"),
         "TotalGas": st.column_config.NumberColumn("Total Gas (MCFD)", format="%.0f"),
         "TotalWC": st.column_config.NumberColumn(
-            "Total WC (%)", format="%.1f",
+            "Total WC (%)",
+            format="%.1f",
             help="Latest-test total water cut (%). Compared to the marginal line.",
         ),
         "WCvsMarginal": st.column_config.NumberColumn(
-            "WC − Marg (pp)", format="%+.1f",
+            "WC − Marg (pp)",
+            format="%+.1f",
             help=f"Total WC minus the marginal WC, in percentage points. "
             f"Positive = above the line (SI lean). Marginal = {marginal_wc * 100:.0f}%.",
         ),
         "GOR": st.column_config.NumberColumn("GOR (scf/bbl)", format="%.0f"),
         "DaysSinceTest": st.column_config.NumberColumn("Days since", format="%.0f"),
         "StaleTest": st.column_config.CheckboxColumn(
-            "Stale?", help=f"Latest test older than {stale_days} days",
+            "Stale?",
+            help=f"Latest test older than {stale_days} days",
         ),
         "FlagOutlier": st.column_config.CheckboxColumn(
             "Outlier?",
             help="Latest test deviates >25% from the 2-month average on oil or water",
         ),
         "PopsPad": st.column_config.CheckboxColumn(
-            "POPS?", help="Pad has on-pad water separation",
+            "POPS?",
+            help="Pad has on-pad water separation",
         ),
         "Oil_2moAvg": st.column_config.NumberColumn("Oil 2mo avg", format="%.0f"),
         "OilDev": st.column_config.NumberColumn("Oil Δ vs 2mo (%)", format="%.0f"),
         "BHP": st.column_config.NumberColumn("BHP (psi)", format="%.0f"),
         "WHP": st.column_config.NumberColumn("WHP (psi)", format="%.0f"),
         "ProdXV": st.column_config.NumberColumn(
-            "Prod XV", format="%.0f", help="1=open, 0=closed",
+            "Prod XV",
+            format="%.0f",
+            help="1=open, 0=closed",
         ),
         "XVTime": st.column_config.DatetimeColumn("XV Time", format="MM-DD HH:mm"),
         "TestDate": st.column_config.DatetimeColumn("Test Date", format="YYYY-MM-DD"),
@@ -1426,36 +1667,50 @@ def _triage_online_cfg(marginal_wc: float, stale_days: int) -> dict:
 
 def _triage_shut_cfg(marginal_wc: float) -> dict:
     return {
-        "Decision": st.column_config.TextColumn("Decision", pinned="left", width="medium"),
+        "Decision": st.column_config.TextColumn(
+            "Decision", pinned="left", width="medium"
+        ),
         "Why": st.column_config.TextColumn("Why", width="large"),
         "Well": st.column_config.TextColumn("Well", pinned="left"),
         "Pad": st.column_config.TextColumn("Pad"),
         "Reservoir": st.column_config.TextColumn("Reservoir"),
         "LiftType": st.column_config.TextColumn("Lift Type"),
         "Oil": st.column_config.NumberColumn(
-            "Last Oil (BOPD)", format="%.0f", help="Oil from the last test on record",
+            "Last Oil (BOPD)",
+            format="%.0f",
+            help="Oil from the last test on record",
         ),
         "Water": st.column_config.NumberColumn("Last Form Water (BWPD)", format="%.0f"),
-        "LiftWater": st.column_config.NumberColumn("Last Lift Water (BWPD)", format="%.0f"),
-        "TotalWater": st.column_config.NumberColumn("Last Total Water (BWPD)", format="%.0f"),
+        "LiftWater": st.column_config.NumberColumn(
+            "Last Lift Water (BWPD)", format="%.0f"
+        ),
+        "TotalWater": st.column_config.NumberColumn(
+            "Last Total Water (BWPD)", format="%.0f"
+        ),
         "Gas": st.column_config.NumberColumn("Last Gas (MCFD)", format="%.0f"),
         "TotalWC": st.column_config.NumberColumn("Last Total WC (%)", format="%.1f"),
         "WCvsMarginal": st.column_config.NumberColumn(
-            "WC − Marg (pp)", format="%+.1f",
+            "WC − Marg (pp)",
+            format="%+.1f",
             help=f"Last-test Total WC minus the marginal WC, in percentage points. "
             f"Negative = below the line (BOL lean). Marginal = {marginal_wc * 100:.0f}%.",
         ),
         "NearAvgWC": st.column_config.NumberColumn(
-            "90-day Hist WC (%)", format="%.1f",
+            "90-day Hist WC (%)",
+            format="%.1f",
             help="Form WC (%) averaged over tests within 90 days of the last test — "
             "the 'was it healthy recently' signal behind BOL-trial.",
         ),
         "NearAvgOil": st.column_config.NumberColumn("90-day Avg Oil", format="%.0f"),
-        "NearAvgWater": st.column_config.NumberColumn("90-day Avg Water", format="%.0f"),
+        "NearAvgWater": st.column_config.NumberColumn(
+            "90-day Avg Water", format="%.0f"
+        ),
         "NTestsNear": st.column_config.NumberColumn("# Near Tests", format="%.0f"),
         "ShutInSince": st.column_config.DateColumn("Shut-In Since"),
         "LastOnlineDate": st.column_config.DateColumn("Last Online"),
-        "LastTestDate": st.column_config.DatetimeColumn("Last Test", format="YYYY-MM-DD"),
+        "LastTestDate": st.column_config.DatetimeColumn(
+            "Last Test", format="YYYY-MM-DD"
+        ),
         "CurrentCode": st.column_config.TextColumn("Code"),
         "CurrentReason": st.column_config.TextColumn("Reason"),
         "Notes": st.column_config.TextColumn("Notes"),
@@ -1465,8 +1720,11 @@ def _triage_shut_cfg(marginal_wc: float) -> dict:
 
 
 def _render_triage_online(
-    df: pd.DataFrame, marginal_wc: float, stale_days: int,
-    only_action: bool, show_all: bool,
+    df: pd.DataFrame,
+    marginal_wc: float,
+    stale_days: int,
+    only_action: bool,
+    show_all: bool,
 ) -> None:
     if df.empty:
         st.info("No online wells.")
@@ -1489,13 +1747,16 @@ def _render_triage_online(
     if "OilDev" in disp.columns:
         disp["OilDev"] = disp["OilDev"] * 100
     st.dataframe(
-        disp, use_container_width=True, hide_index=True,
+        disp,
+        use_container_width=True,
+        hide_index=True,
         column_config=_triage_online_cfg(marginal_wc, stale_days),
     )
     st.download_button(
         "Download Online triage CSV",
         data=work.drop(columns=["_rank"], errors="ignore")
-            .to_csv(index=False, float_format="%.4f").encode("utf-8"),
+        .to_csv(index=False, float_format="%.4f")
+        .encode("utf-8"),
         file_name="well_sort_triage_online.csv",
         mime="text/csv",
         key="triage_dl_online",
@@ -1503,7 +1764,10 @@ def _render_triage_online(
 
 
 def _render_triage_shut(
-    df: pd.DataFrame, marginal_wc: float, only_action: bool, show_all: bool,
+    df: pd.DataFrame,
+    marginal_wc: float,
+    only_action: bool,
+    show_all: bool,
 ) -> None:
     if df.empty:
         st.info("No shut-in (offline) wells.")
@@ -1524,13 +1788,16 @@ def _render_triage_shut(
         if c in disp.columns:
             disp[c] = disp[c] * 100
     st.dataframe(
-        disp, use_container_width=True, hide_index=True,
+        disp,
+        use_container_width=True,
+        hide_index=True,
         column_config=_triage_shut_cfg(marginal_wc),
     )
     st.download_button(
         "Download Shut/BOL triage CSV",
         data=work.drop(columns=["_rank"], errors="ignore")
-            .to_csv(index=False, float_format="%.4f").encode("utf-8"),
+        .to_csv(index=False, float_format="%.4f")
+        .encode("utf-8"),
         file_name="well_sort_triage_shut.csv",
         mime="text/csv",
         key="triage_dl_shut",
@@ -1567,19 +1834,28 @@ def render_triage_tab() -> None:
     c1, c2, c3, c4 = st.columns([1.1, 1.7, 1.5, 1.5])
     with c1:
         if st.button(
-            "Refresh data", key="triage_refresh",
+            "Refresh data",
+            key="triage_refresh",
             help="Clear cache and re-query Databricks",
         ):
             for fn in (
-                _cached_shut_in_history, _cached_recent_tests, _cached_producers,
-                _cached_producer_catalog, _cached_last_tests_ever, _cached_xv_status,
+                _cached_shut_in_history,
+                _cached_recent_tests,
+                _cached_producers,
+                _cached_producer_catalog,
+                _cached_last_tests_ever,
+                _cached_xv_status,
             ):
                 fn.clear()
             st.rerun()
     with c2:
         threshold = st.number_input(
             "Marginal WC buffer (% of field water)",
-            min_value=0.0, max_value=100.0, value=2.0, step=0.5, format="%.1f",
+            min_value=0.0,
+            max_value=100.0,
+            value=2.0,
+            step=0.5,
+            format="%.1f",
             key="triage_marg_threshold",
             help="Noise buffer on the marginal WC. Skips the worst-WC wells that "
             "make up this % of the field's water before reading the marginal — so "
@@ -1588,17 +1864,25 @@ def render_triage_tab() -> None:
         )
     with c3:
         stale_days = st.slider(
-            "Stale-test threshold (days)", 14, 180, 60, key="triage_stale_days",
+            "Stale-test threshold (days)",
+            14,
+            180,
+            60,
+            key="triage_stale_days",
             help="Wells whose latest test is older than this are sent to 'verify'.",
         )
     with c4:
         only_action = st.toggle(
-            "Only wells needing a decision", value=True, key="triage_only_action",
+            "Only wells needing a decision",
+            value=True,
+            key="triage_only_action",
             help="Hide healthy 'keep' / 'leave shut' wells; show only "
             "SI / BOL / verify candidates.",
         )
         show_all = st.toggle(
-            "Show all columns", value=False, key="triage_show_all",
+            "Show all columns",
+            value=False,
+            key="triage_show_all",
             help="Expand from the triage columns to the full detail set.",
         )
 
@@ -1608,28 +1892,48 @@ def render_triage_tab() -> None:
     catalog = _cached_producer_catalog()
     last_tests = _cached_last_tests_ever()
     xv = _cached_xv_status()
+    if xv.empty:
+        # P1-33: match the Wells tab's warning — Triage was silently
+        # degrading to the shut-in log alone with no indication why.
+        st.caption(
+            "ℹ️ Safety-valve (XV) status unavailable — ProdXV/PFXV columns are "
+            "blank and classification falls back to the shut-in log only. (On "
+            "Databricks this usually means the app lacks access to the "
+            "`reporting` catalog.)"
+        )
 
     if not producers:
         st.error("No producers returned from vw_well_header.")
         return
 
-    # Inherit POPs-pad config from the Wells tab (same session keys).
-    pops_pads = list(
-        st.session_state.get("well_sort_pops_pads", ["E", "F", "H", "I", "M", "S"])
+    # Inherit POPs-pad config from the Wells tab (same session keys, GC-safe
+    # mirror fallback per P1-31).
+    pops_pads = list(st.session_state.get("well_sort_pops_pads", _pops_pads_fallback()))
+    force_true = st.session_state.get(
+        "well_sort_pops_force_true", _pops_force_true_fallback()
     )
-    force_true = st.session_state.get("well_sort_pops_force_true", [])
     overrides = {w: True for w in force_true}
 
     online_set, shut_set = classify_wells(
         producers, shut_in_hist, xv_df=xv, trust_xv=True
     )
     online_df = build_online_table(
-        tests, shut_in_hist, producers, mode="allocated",
-        stale_days=stale_days, xv_df=xv, online_wells=online_set, catalog_df=catalog,
+        tests,
+        shut_in_hist,
+        producers,
+        mode="allocated",
+        stale_days=stale_days,
+        xv_df=xv,
+        online_wells=online_set,
+        catalog_df=catalog,
     )
     shut_df = build_shut_in_table(
-        shut_in_hist, tests, xv_df=xv, shut_in_wells=shut_set,
-        catalog_df=catalog, last_tests_df=last_tests,
+        shut_in_hist,
+        tests,
+        xv_df=xv,
+        shut_in_wells=shut_set,
+        catalog_df=catalog,
+        last_tests_df=last_tests,
     )
     online_df = apply_pops_pad(online_df, set(pops_pads), overrides)
     shut_df = apply_pops_pad(shut_df, set(pops_pads), overrides)
@@ -1666,21 +1970,26 @@ def render_triage_tab() -> None:
 
     mc1, mc2, mc3 = st.columns(3)
     mc1.metric(
-        "Marginal WC (cut line)", f"{marginal_wc * 100:.0f}%",
-        delta=f"set by {marg['well']} ({marg['pad']})", delta_color="off",
+        "Marginal WC (cut line)",
+        f"{marginal_wc * 100:.0f}%",
+        delta=f"set by {marg['well']} ({marg['pad']})",
+        delta_color="off",
         help="The decision line, AFTER the buffer. Online wells above it lean SI; "
         "shut wells below it lean BOL.",
     )
     mc2.metric(
-        "Buffer", f"{threshold:.1f}% of field water",
+        "Buffer",
+        f"{threshold:.1f}% of field water",
         help="Set in the box above. Skips the worst-WC wells making up this % of "
         "field water before reading the marginal — stops one tiny high-WC well "
         "from setting the line.",
     )
     if raw_wc is not None:
         mc3.metric(
-            "Worst single well (no buffer)", f"{raw_wc * 100:.0f}%",
-            delta=f"{raw_well} · {raw_water:,.0f} BWPD", delta_color="off",
+            "Worst single well (no buffer)",
+            f"{raw_wc * 100:.0f}%",
+            delta=f"{raw_well} · {raw_water:,.0f} BWPD",
+            delta_color="off",
             help="What the line would be with NO buffer — usually a small stripper. "
             "The buffer skips past it.",
         )
@@ -1705,20 +2014,24 @@ def render_triage_tab() -> None:
     st.markdown("**Decisions**")
     h2, h3, h4, h5 = st.columns(4)
     h2.metric(
-        "🔴 SI candidates", n_si,
+        "🔴 SI candidates",
+        n_si,
         help="Online, WC above marginal, latest test looks representative.",
     )
     h3.metric(
-        "⚠️ Verify", n_verify,
+        "⚠️ Verify",
+        n_verify,
         help="WC above marginal but latest oil is an outlier-low, or stale/no test "
         "— confirm before SI.",
     )
     h4.metric(
-        "🟢 BOL candidates", n_bol,
+        "🟢 BOL candidates",
+        n_bol,
         help="Shut, last WC below marginal — worth bringing on.",
     )
     h5.metric(
-        "🔬 BOL trials", n_trial,
+        "🔬 BOL trials",
+        n_trial,
         help="Shut, last test poor but recent history was good — BOL to confirm recovery.",
     )
 
@@ -1738,10 +2051,14 @@ def render_triage_tab() -> None:
         )
 
     sub_online, sub_shut = st.tabs(
-        [f"Online — SI review ({len(online_dec)})",
-         f"Shut — BOL review ({len(offline_dec)})"]
+        [
+            f"Online — SI review ({len(online_dec)})",
+            f"Shut — BOL review ({len(offline_dec)})",
+        ]
     )
     with sub_online:
-        _render_triage_online(online_dec, marginal_wc, stale_days, only_action, show_all)
+        _render_triage_online(
+            online_dec, marginal_wc, stale_days, only_action, show_all
+        )
     with sub_shut:
         _render_triage_shut(offline_dec, marginal_wc, only_action, show_all)

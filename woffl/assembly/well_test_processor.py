@@ -7,7 +7,7 @@ Adapted from header_pressure_impact/process_data/welltests.py and merge.py.
 """
 
 import io
-from typing import Dict, List, Optional, Union
+from typing import List, Optional, Union
 
 import pandas as pd
 
@@ -43,13 +43,16 @@ class WellTestProcessor:
         # Sort by well and date
         df = df.sort_values(by=["EntName1", "WtDate"])
 
-        # Extract well name from EntName1 (e.g., "B-028A" -> "MPB-28")
-        df["well"] = df["EntName1"].str.extract(r"(\w+-\d+)")
-        # DB names are 3-digit zero-padded; strip ONE leading zero so the GUI
-        # form is 2-digit zero-padded to match jp_chars (B-028 -> MPB-28,
-        # B-008 -> MPB-08, NOT MPB-8 — jp_chars keys single-digit wells as MPH-08)
-        df["well"] = df["well"].str.replace(r"-(0)(?=\d+)", "-", regex=True)
-        df["well"] = "MP" + df["well"]
+        # Extract + normalize well name from EntName1 (e.g., "B-028A" -> "MPB-28").
+        # Delegates to the canonical well_test_client._normalize_well_name so
+        # this parsing doesn't drift from the other name-normalization call
+        # sites (DB names are 3-digit zero-padded; it strips ONE leading zero
+        # so the GUI form is 2-digit zero-padded to match jp_chars: B-028 ->
+        # MPB-28, B-008 -> MPB-08, NOT MPB-8 — jp_chars keys single-digit
+        # wells as MPH-08).
+        from woffl.assembly.well_test_client import _normalize_well_name
+
+        df["well"] = df["EntName1"].apply(_normalize_well_name)
 
         # Drop columns that conflict with gauge data or are unnecessary
         columns_to_drop = [
@@ -142,84 +145,3 @@ class WellTestProcessor:
         if self._processed_df is None:
             self.parse()
         return self._processed_df.groupby("well").size().sort_values(ascending=False)
-
-
-def merge_tests_with_bhp(
-    well_list: List[str],
-    bhp_data: Dict[str, pd.DataFrame],
-    well_tests: pd.DataFrame,
-) -> pd.DataFrame:
-    """Merge well test data with BHP data from Databricks.
-
-    For each well, performs an inner join on date to get rows where
-    both test data and BHP gauge data exist.
-
-    Adapted from header_pressure_impact/process_data/merge.py merge_data().
-
-    Args:
-        well_list: List of well names to merge
-        bhp_data: Dictionary mapping well name to DataFrame with BHP/HeaderP/WHP columns
-        well_tests: DataFrame with well test data (must have 'well' and 'WtDate' columns)
-
-    Returns:
-        Merged DataFrame with test data + BHP/HeaderP/WHP columns
-    """
-    merged_data = pd.DataFrame()
-
-    for well in well_list:
-        if well not in bhp_data:
-            continue
-
-        filtered_tag_data = bhp_data[well].copy()
-        filtered_tests = well_tests[well_tests["well"] == well].copy()
-
-        if filtered_tests.empty or filtered_tag_data.empty:
-            continue
-
-        # Normalize timezone on WtDate
-        if filtered_tests["WtDate"].dt.tz is not None:
-            filtered_tests["WtDate"] = (
-                filtered_tests["WtDate"].dt.tz_convert("UTC").dt.tz_localize(None)
-            )
-
-        # Normalize timezone on BHP data index
-        if filtered_tag_data.index.tz is not None:
-            filtered_tag_data.index = filtered_tag_data.index.tz_convert(
-                "UTC"
-            ).tz_localize(None)
-
-        # Convert WtDate to date-only for matching (BHP data is daily)
-        filtered_tests["merge_date"] = filtered_tests["WtDate"].dt.normalize()
-
-        # Capture the index (the date) BEFORE reset_index turns it into a plain
-        # RangeIndex — the old else-branch read the post-reset 0,1,2 RangeIndex
-        # as dates -> 1970 epoch timestamps -> the well silently dropped from the
-        # join. Reset index on tag data to get the date column.
-        orig_index = filtered_tag_data.index
-        filtered_tag_data = filtered_tag_data.reset_index()
-        if "date" in filtered_tag_data.columns:
-            filtered_tag_data["merge_date"] = pd.to_datetime(
-                filtered_tag_data["date"]
-            ).dt.normalize()
-        elif "datetime" in filtered_tag_data.columns:
-            filtered_tag_data["merge_date"] = pd.to_datetime(
-                filtered_tag_data["datetime"]
-            ).dt.normalize()
-        else:
-            # Index was the date (captured before the reset above)
-            filtered_tag_data["merge_date"] = pd.to_datetime(orig_index).normalize()
-
-        merged_well_data = pd.merge(
-            filtered_tests,
-            filtered_tag_data,
-            on="merge_date",
-            how="inner",
-        )
-
-        # Drop the temporary merge column
-        if "merge_date" in merged_well_data.columns:
-            merged_well_data = merged_well_data.drop("merge_date", axis=1)
-
-        merged_data = pd.concat([merged_data, merged_well_data], ignore_index=True)
-
-    return merged_data

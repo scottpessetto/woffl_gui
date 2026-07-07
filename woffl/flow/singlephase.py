@@ -175,6 +175,18 @@ def ffactor_darcy(reynolds: float, rel_ruff: float) -> float:
     Returns:
         ff (float): Darcy-Weisbach Friction Factor of Piping, unitless
     """
+    # [LIBRARY change -> upstream PR to kwellis/woffl] P1-9: zero (or
+    # degenerate/negative) Reynolds number previously fell into the laminar
+    # branch's bare "64 / reynolds" and raised an untyped ZeroDivisionError on
+    # any zero-flow input (e.g. a shut-in segment or a friction call made with
+    # vel=0). Every caller pairs ff with a velocity term (dp_fric ~ ff *
+    # vel**2), and reynolds == 0 implies vel == 0 too, so the physically
+    # correct frictional contribution in that limit is zero. Returning 0.0
+    # avoids the crash while keeping the friction term correct; reynolds > 0
+    # is bit-identical to before.
+    if reynolds <= 0:
+        return 0.0
+
     # laminar / transistional flow
     if reynolds < 4000:
         ff = 64 / reynolds

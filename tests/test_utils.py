@@ -5,6 +5,7 @@ requiring Streamlit or a database connection. Uses unittest.mock to
 patch st.* calls where needed.
 """
 
+import logging
 import math
 import sys
 from unittest.mock import MagicMock, patch
@@ -32,6 +33,8 @@ except ImportError:  # pragma: no cover - env without streamlit installed
     )
     sys.modules.setdefault("streamlit", _st_mock)
 
+import woffl.assembly.databricks_client as dbc
+import woffl.gui.utils as gui_utils
 from woffl.flow.inflow import InFlow
 from woffl.geometry.jetpump import JetPump
 from woffl.geometry.pipe import Pipe, PipeInPipe
@@ -48,6 +51,7 @@ from woffl.gui.utils import (
     get_well_data,
     is_valid_number,
     load_well_characteristics,
+    pressure_sweep_range,
     recommend_jetpump,
     run_batch_pump,
     run_jetpump_solver,
@@ -105,6 +109,48 @@ def e41_res_mix():
 @pytest.fixture
 def e41_jetpump():
     return JetPump(nozzle_no="13", area_ratio="A", ken=0.03, kth=0.3, kdi=0.4)
+
+
+# ---------------------------------------------------------------------------
+# P2-4 fix: well-data tests used to hard-pin values pulled from the LIVE
+# Databricks views (e.g. `res_pres == 1900.0` for MPB-28), so the suite went
+# red whenever field data changed. This fixture patches the fetch layer the
+# same way tests/test_well_chars_loading.py does (`dbc.fetch_well_props_enriched`)
+# so load_well_characteristics/get_available_wells/get_well_data are exercised
+# against a small, controlled frame -- the tests below assert the
+# transformation logic (row selection, dict conversion, sorting, dtype), not
+# live field values.
+# ---------------------------------------------------------------------------
+def _mock_well_chars_frame():
+    df = pd.DataFrame(
+        {
+            "Well": ["MPB-28", "MPB-30", "MPB-32"],
+            "is_sch": [True, False, True],
+            "out_dia": [4.5, 4.5, 4.5],
+            "thick": [0.5, 0.5, 0.5],
+            "res_pres": [1900.0, 1750.0, 1820.0],
+            "form_temp": [89.5, 170.0, 95.0],
+            "JP_TVD": [4700.0, 5200.0, 4600.0],
+            "JP_MD": [4750.0, 5300.0, 4650.0],
+        }
+    )
+    return df, []
+
+
+@pytest.fixture
+def mock_well_chars(monkeypatch):
+    """Patch the Databricks fetch layer with a fixed, non-live frame and
+    clear the process-wide st.cache_data cache around the test so no other
+    test's (real or fabricated) frame leaks in."""
+    monkeypatch.setattr(
+        dbc, "fetch_well_props_enriched", lambda: _mock_well_chars_frame()
+    )
+    clear = getattr(gui_utils._load_well_characteristics_cached, "clear", None)
+    if callable(clear):
+        clear()
+    yield
+    if callable(clear):
+        clear()
 
 
 # ===================================================================
@@ -719,14 +765,12 @@ class TestValidateWaterType:
 # Tests: load_well_characteristics
 # ===================================================================
 class TestLoadWellCharacteristics:
-    def test_returns_dataframe(self):
+    def test_returns_dataframe(self, mock_well_chars):
         df = load_well_characteristics()
         assert isinstance(df, pd.DataFrame)
 
-    def test_has_required_columns(self):
+    def test_has_required_columns(self, mock_well_chars):
         df = load_well_characteristics()
-        if df.empty:
-            pytest.skip("jp_chars.csv not found or empty")
         expected_cols = {
             "Well",
             "is_sch",
@@ -739,19 +783,15 @@ class TestLoadWellCharacteristics:
         }
         assert expected_cols.issubset(set(df.columns))
 
-    def test_has_known_wells(self):
+    def test_has_known_wells(self, mock_well_chars):
         df = load_well_characteristics()
-        if df.empty:
-            pytest.skip("jp_chars.csv not found or empty")
         wells = df["Well"].tolist()
         assert "MPB-28" in wells
         assert "MPB-30" in wells
         assert "MPB-32" in wells
 
-    def test_numeric_columns(self):
+    def test_numeric_columns(self, mock_well_chars):
         df = load_well_characteristics()
-        if df.empty:
-            pytest.skip("jp_chars.csv not found or empty")
         assert pd.api.types.is_numeric_dtype(df["out_dia"])
         assert pd.api.types.is_numeric_dtype(df["thick"])
         assert pd.api.types.is_numeric_dtype(df["res_pres"])
@@ -759,10 +799,8 @@ class TestLoadWellCharacteristics:
         assert pd.api.types.is_numeric_dtype(df["JP_TVD"])
         assert pd.api.types.is_numeric_dtype(df["JP_MD"])
 
-    def test_positive_values(self):
+    def test_positive_values(self, mock_well_chars):
         df = load_well_characteristics()
-        if df.empty:
-            pytest.skip("jp_chars.csv not found or empty")
         assert (df["out_dia"] > 0).all()
         assert (df["thick"] > 0).all()
         assert (df["res_pres"] > 0).all()
@@ -774,48 +812,40 @@ class TestLoadWellCharacteristics:
 # Tests: get_available_wells
 # ===================================================================
 class TestGetAvailableWells:
-    def test_returns_list(self):
+    def test_returns_list(self, mock_well_chars):
         wells = get_available_wells()
         assert isinstance(wells, list)
 
-    def test_custom_is_first(self):
+    def test_custom_is_first(self, mock_well_chars):
         wells = get_available_wells()
         assert wells[0] == "Custom"
 
-    def test_contains_known_wells(self):
+    def test_contains_known_wells(self, mock_well_chars):
         wells = get_available_wells()
-        if len(wells) <= 1:
-            pytest.skip("jp_chars.csv not loaded")
         assert "MPB-28" in wells
         assert "MPB-30" in wells
 
-    def test_wells_sorted_after_custom(self):
+    def test_wells_sorted_after_custom(self, mock_well_chars):
         wells = get_available_wells()
-        if len(wells) <= 2:
-            pytest.skip("Not enough wells to test sorting")
         # Wells after "Custom" should be sorted
         well_names = wells[1:]
         assert well_names == sorted(well_names)
 
-    def test_more_than_just_custom(self):
+    def test_more_than_just_custom(self, mock_well_chars):
         wells = get_available_wells()
-        assert len(wells) > 1, "Expected wells from jp_chars.csv"
+        assert len(wells) > 1, "Expected wells from the well-properties source"
 
 
 # ===================================================================
 # Tests: get_well_data
 # ===================================================================
 class TestGetWellData:
-    def test_known_well_returns_dict(self):
+    def test_known_well_returns_dict(self, mock_well_chars):
         data = get_well_data("MPB-28")
-        if data is None:
-            pytest.skip("jp_chars.csv not loaded")
         assert isinstance(data, dict)
 
-    def test_known_well_has_required_keys(self):
+    def test_known_well_has_required_keys(self, mock_well_chars):
         data = get_well_data("MPB-28")
-        if data is None:
-            pytest.skip("jp_chars.csv not loaded")
         required_keys = {
             "Well",
             "is_sch",
@@ -828,38 +858,57 @@ class TestGetWellData:
         }
         assert required_keys.issubset(data.keys())
 
-    def test_mpb28_values(self):
+    def test_mpb28_values(self, mock_well_chars):
+        """Values here come from the `mock_well_chars` fixture's fabricated
+        frame (see `_mock_well_chars_frame`), NOT the live Databricks view
+        (P2-4) -- this asserts get_well_data's row-selection/to_dict
+        transformation, not live field data that changes over time."""
         data = get_well_data("MPB-28")
-        if data is None:
-            pytest.skip("MPB-28 not available from data source")
         assert data["Well"] == "MPB-28"
         assert data["out_dia"] == pytest.approx(4.5)
         assert data["res_pres"] == pytest.approx(1900.0)
-        # form_temp comes from vw_prop_resvr.resvr_temp (89.5) when Databricks
-        # is reachable, or from jp_chars.csv (70.0) on CSV fallback.
-        assert data["form_temp"] in (pytest.approx(70.0), pytest.approx(89.5))
+        assert data["form_temp"] == pytest.approx(89.5)
 
-    def test_unknown_well_returns_none(self):
+    def test_unknown_well_returns_none(self, mock_well_chars):
         data = get_well_data("NONEXISTENT-999")
         assert data is None
 
-    def test_empty_string_returns_none(self):
+    def test_empty_string_returns_none(self, mock_well_chars):
         data = get_well_data("")
         assert data is None
 
-    def test_kuparuk_well_mpb30(self):
+    def test_kuparuk_well_mpb30(self, mock_well_chars):
         data = get_well_data("MPB-30")
-        if data is None:
-            pytest.skip("jp_chars.csv not loaded")
         assert data["Well"] == "MPB-30"
         assert data["is_sch"] == False  # noqa: E712  -- intentional bool check
         assert data["form_temp"] == pytest.approx(170)
 
-    def test_schrader_well_mpb28(self):
+    def test_schrader_well_mpb28(self, mock_well_chars):
+        data = get_well_data("MPB-28")
+        assert data["is_sch"] == True  # noqa: E712
+
+
+# ===================================================================
+# Opt-in live sanity checks (P2-4) -- these hit the REAL data source
+# (Databricks, or the jp_chars.csv fallback if unreachable). They use
+# range/shape asserts only, never a pinned live value, and are skipped by
+# default: run with `pytest --run-live` (see tests/conftest.py). Kept
+# because a live end-to-end smoke check is still genuinely useful when an
+# engineer wants to confirm the real fetch path works, without coupling the
+# default suite to field data that changes.
+# ===================================================================
+@pytest.mark.live
+class TestGetWellDataLiveSanity:
+    def test_mpb28_plausible_ranges(self):
         data = get_well_data("MPB-28")
         if data is None:
-            pytest.skip("jp_chars.csv not loaded")
-        assert data["is_sch"] == True  # noqa: E712
+            pytest.skip("MPB-28 not available from the live data source")
+        assert data["Well"] == "MPB-28"
+        assert data["out_dia"] > 0
+        assert 500.0 <= data["res_pres"] <= 5000.0
+        assert 0.0 <= data["form_temp"] <= 300.0
+        assert data["JP_TVD"] > 0
+        assert data["JP_MD"] > 0
 
 
 # ===================================================================
@@ -904,11 +953,13 @@ class TestDataFlowIntegration:
         assert result is not None
         assert len(result) == 6
 
-    def test_well_data_to_objects(self):
-        """Well data from CSV should drive object creation."""
+    def test_well_data_to_objects(self, mock_well_chars):
+        """Well data (from the well-properties source) should drive object
+        creation. Uses `mock_well_chars` (P2-4) so this doesn't depend on
+        live Databricks / CSV availability -- only the transformation is
+        under test here."""
         data = get_well_data("MPB-28")
-        if data is None:
-            pytest.skip("jp_chars.csv not loaded")
+        assert data is not None
 
         tube, case, ann = create_pipes(
             tubing_od=data["out_dia"],
@@ -927,3 +978,112 @@ class TestDataFlowIntegration:
         # They should be valid but different
         assert isinstance(rm_sch, ResMix)
         assert isinstance(rm_kup, ResMix)
+
+
+# ===================================================================
+# Tests: pressure_sweep_range (P1-16 — np.arange overshoot clamp)
+# ===================================================================
+class TestPressureSweepRange:
+    """docs/code_review_2026-07-01.md P1-16: ``np.arange(min, max + step,
+    step)`` overshoots ``max`` by up to a whole step when the range isn't
+    evenly divisible by the step. Every returned point must stay inside
+    [power_fluid_min, power_fluid_max]."""
+
+    def test_never_exceeds_max_when_not_evenly_divisible(self):
+        # 1000 -> 1700 by 300: naive arange(1000, 2000, 300) yields ...1900,
+        # 200 psi past the requested max.
+        rng = pressure_sweep_range(1000, 1700, 300)
+        assert rng.max() <= 1700
+        assert list(rng) == [1000, 1300, 1600]
+
+    def test_includes_exact_multiple_max(self):
+        # 1000 -> 2000 by 250: the max IS an exact multiple and must survive
+        # the clip (the "+step" in the underlying arange call exists
+        # precisely so this endpoint isn't dropped).
+        rng = pressure_sweep_range(1000, 2000, 250)
+        assert rng[-1] == pytest.approx(2000)
+        assert rng.max() <= 2000
+
+    def test_never_exceeds_max_various_steps(self):
+        # Sweep a grid of (min, max, step) combos, including non-divisible
+        # ones, and assert the invariant holds for all of them.
+        for lo, hi, step in [
+            (500, 5000, 137),
+            (1000, 1900, 400),
+            (2000, 2001, 50),
+            (1500, 3500, 333),
+        ]:
+            rng = pressure_sweep_range(lo, hi, step)
+            assert rng.size > 0
+            assert rng.max() <= hi, f"overshoot for ({lo}, {hi}, {step}): {rng}"
+            assert rng.min() >= lo
+
+    def test_single_step_covers_whole_range(self):
+        rng = pressure_sweep_range(1000, 1000, 500)
+        assert list(rng) == [1000]
+
+
+# ===================================================================
+# Tests: create_well_profile out-of-range TVD warning (P1-20)
+# ===================================================================
+class TestCreateWellProfileOutOfRangeWarning:
+    """docs/code_review_2026-07-01.md P1-20: the out-of-range jpump_tvd
+    fallback used to be a bare ``print()`` — invisible on Databricks Apps.
+    It must now surface via ``st.warning`` (CLAUDE.md: errors surface via
+    st.warning/error, never print()), with a logger fallback for callers
+    outside a running Streamlit script (create_well_profile is only ever
+    invoked from the Streamlit script thread in this app -- the optimizer's
+    ProcessPool workers build WellProfile directly, bypassing this GUI
+    wrapper -- but the guard keeps a bare/test-time caller safe too).
+
+    NOTE: ``WellProfile._depth_interp``'s own boundary guard
+    (``woffl/geometry/wellprofile.py``) has an unrelated pre-existing bug —
+    ``(min(in_ray) < in_dpth < max(in_ray)) is False`` compares a numpy
+    ``bool_`` against the Python singleton ``False`` via ``is``, which is
+    never true, so the ValueError this except-branch is built to catch
+    currently can't fire from a real out-of-range call (np.interp silently
+    clamps instead). That's a library-side finding outside P1-13/P1-16/P1-20
+    and this GUI-only fix's scope, so these tests force the ValueError via
+    a direct patch of ``md_interp`` rather than relying on the (currently
+    dead) real boundary check."""
+
+    def test_out_of_range_tvd_calls_st_warning_and_falls_back(self):
+        with (
+            patch.object(
+                WellProfile,
+                "md_interp",
+                side_effect=ValueError("999999.0 feet is not inside survey boundary"),
+            ),
+            patch.object(gui_utils.st, "warning") as mock_warning,
+        ):
+            wp = create_well_profile(field_model="schrader", jpump_tvd=999_999.0)
+
+        mock_warning.assert_called_once()
+        (msg,), _ = mock_warning.call_args
+        assert "999999" in msg
+
+        # Falls back to the default schrader profile rather than raising or
+        # silently producing a broken profile.
+        wp_default = create_well_profile(field_model="schrader")
+        assert wp.jetpump_md == pytest.approx(wp_default.jetpump_md, rel=1e-6)
+
+    def test_st_warning_unavailable_falls_back_to_logger(self, caplog):
+        # If st.warning itself errors (e.g. a genuinely non-Streamlit
+        # context that raises instead of no-op'ing), the warning must still
+        # reach the user via the logger instead of being silently lost --
+        # and importantly must not itself raise out of create_well_profile.
+        with (
+            patch.object(
+                WellProfile,
+                "md_interp",
+                side_effect=ValueError("-1.0 feet is not inside survey boundary"),
+            ),
+            patch.object(
+                gui_utils.st, "warning", side_effect=RuntimeError("no script ctx")
+            ),
+        ):
+            with caplog.at_level(logging.WARNING, logger="woffl.gui.utils"):
+                wp = create_well_profile(field_model="kuparuk", jpump_tvd=-1.0)
+
+        assert isinstance(wp, WellProfile)
+        assert any("outside the well profile" in rec.message for rec in caplog.records)

@@ -11,39 +11,16 @@ Databricks Apps single-process runtime — see CLAUDE.md "Caching scope".
 import pandas as pd
 import streamlit as st
 
-from woffl.assembly.databricks_client import query_bhp_for_well_tests
-from woffl.assembly.well_test_client import (
-    fetch_milne_well_tests,
-    get_mpu_well_names,
-)
+from woffl.assembly.well_test_client import fetch_milne_well_tests, get_mpu_well_names
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def _cached_bhp_query(
-    tag_dict_frozen: tuple,
-    wells_tuple: tuple,
-) -> dict:
-    """Cached wrapper around query_bhp_for_well_tests.
-
-    Args:
-        tag_dict_frozen: Tuple of (well, bhp_tag, headerP_tag, whp_tag) for
-            hashability.
-        wells_tuple: Tuple of well names (hashable).
-
-    Returns:
-        Dictionary mapping well name to BHP DataFrame.
-    """
-    tag_dict = {well: (bhp, hp, whp) for well, bhp, hp, whp in tag_dict_frozen}
-    return query_bhp_for_well_tests(tag_dict, list(wells_tuple))
-
-
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, max_entries=4, show_spinner=False)
 def _cached_mpu_well_names() -> list[str]:
     """Cached list of all MPU well names from Databricks."""
     return get_mpu_well_names()
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, max_entries=64, show_spinner=False)
 def _cached_well_test_query(
     start_date: str, end_date: str, well_names_tuple: tuple
 ) -> tuple[pd.DataFrame, list[str]]:

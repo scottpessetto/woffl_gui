@@ -505,7 +505,7 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None):
         use_container_width=True,
         help="Builds a one-page-per-well IPR comparison and downloads it.",
     ):
-        from woffl.gui.workflow_steps.step2_review_ipr import _trigger_browser_download
+        from woffl.gui.components.download import autodownload
 
         with st.spinner("Building IPR comparison PDF..."):
             pdf_bytes = create_ipr_comparison_pdf(
@@ -517,4 +517,4 @@ def _render_current_vs_optimized(results, optimizer, calibration_results=None):
                 current_jp_map,
                 calibration=calibration_results,
             )
-        _trigger_browser_download(pdf_bytes, "ipr_comparison.pdf", "application/pdf")
+        autodownload(pdf_bytes, "ipr_comparison.pdf", "application/pdf")

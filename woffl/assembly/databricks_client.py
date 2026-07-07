@@ -39,7 +39,16 @@ def _is_deployed() -> bool:
 
 
 def _oauth_token() -> str:
-    """Return a cached M2M OAuth token, refreshing ~60 s before expiry."""
+    """Return a cached M2M OAuth token, refreshing ~60 s before expiry.
+
+    # [LIBRARY change -> upstream PR to kwellis/woffl]
+    The ~30 s HTTP token fetch happens OUTSIDE `_TOKEN_LOCK` -- only the cache
+    read/write is guarded. Holding the lock across the network call used to
+    serialize every thread (e.g. the app's concurrent startup warm queries)
+    behind one HTTP request. Another thread may refresh the token while this
+    one is fetching; the second lock acquisition below keeps whichever token
+    is newer instead of clobbering it.
+    """
     import base64
     import json
     import urllib.parse
@@ -50,38 +59,47 @@ def _oauth_token() -> str:
         if _TOKEN_CACHE["token"] and now < _TOKEN_CACHE["expires_at"] - 60:
             return _TOKEN_CACHE["token"]
 
-        host = os.getenv("DATABRICKS_HOST")
-        client_id = os.getenv("DATABRICKS_CLIENT_ID")
-        client_secret = os.getenv("DATABRICKS_CLIENT_SECRET")
+    # Cache is absent/stale -- fetch a fresh token without holding the lock.
+    host = os.getenv("DATABRICKS_HOST")
+    client_id = os.getenv("DATABRICKS_CLIENT_ID")
+    client_secret = os.getenv("DATABRICKS_CLIENT_SECRET")
 
-        # Encode credentials as Basic auth
-        credentials = base64.b64encode(
-            f"{client_id}:{client_secret}".encode()
-        ).decode()
+    # Encode credentials as Basic auth
+    credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
 
-        token_url = f"https://{host}/oidc/v1/token"
-        data = urllib.parse.urlencode(
-            {
-                "grant_type": "client_credentials",
-                "scope": "sql",
-            }
-        ).encode()
+    token_url = f"https://{host}/oidc/v1/token"
+    data = urllib.parse.urlencode(
+        {
+            "grant_type": "client_credentials",
+            "scope": "sql",
+        }
+    ).encode()
 
-        req = urllib.request.Request(
-            token_url,
-            data=data,
-            method="POST",
-            headers={
-                "Authorization": f"Basic {credentials}",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-        )
-        # timeout: a stalled OIDC endpoint used to hang the whole process
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            payload = json.loads(resp.read())
+    req = urllib.request.Request(
+        token_url,
+        data=data,
+        method="POST",
+        headers={
+            "Authorization": f"Basic {credentials}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    fetch_started_at = time.time()
+    # timeout: a stalled OIDC endpoint used to hang the whole process
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read())
 
-        _TOKEN_CACHE["token"] = payload["access_token"]
-        _TOKEN_CACHE["expires_at"] = now + float(payload.get("expires_in", 3600))
+    new_token = payload["access_token"]
+    new_expires_at = fetch_started_at + float(payload.get("expires_in", 3600))
+
+    with _TOKEN_LOCK:
+        # Another thread may have refreshed the token while we were fetching
+        # (unlocked). Keep whichever token is newer/still valid rather than
+        # blindly overwriting it.
+        if _TOKEN_CACHE["token"] and _TOKEN_CACHE["expires_at"] >= new_expires_at:
+            return _TOKEN_CACHE["token"]
+        _TOKEN_CACHE["token"] = new_token
+        _TOKEN_CACHE["expires_at"] = new_expires_at
         return _TOKEN_CACHE["token"]
 
 
@@ -126,14 +144,20 @@ def _query_via_connector(query: str) -> pd.DataFrame:
     One retry with a fresh connection (and a forced token refresh) covers the
     stale-session cases: warehouse idle-stop, network blips, token expiry
     mid-session. A genuinely bad query fails twice and raises.
+
+    # [LIBRARY change -> upstream PR to kwellis/woffl]
+    `_new_connection()` is called INSIDE the try below (not before it) so a
+    failure on the very first connection attempt also takes the retry path
+    instead of raising immediately and skipping attempt 2.
     """
     last_err: Exception | None = None
     for attempt in range(2):
-        conn = getattr(_CONN_LOCAL, "conn", None)
-        if conn is None:
-            conn = _new_connection()
-            _CONN_LOCAL.conn = conn
+        conn = None
         try:
+            conn = getattr(_CONN_LOCAL, "conn", None)
+            if conn is None:
+                conn = _new_connection()
+                _CONN_LOCAL.conn = conn
             cursor = conn.cursor()
             try:
                 cursor.execute(query)
@@ -145,10 +169,11 @@ def _query_via_connector(query: str) -> pd.DataFrame:
         except Exception as e:
             last_err = e
             _CONN_LOCAL.conn = None
-            try:
-                conn.close()
-            except Exception:
-                pass
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             with _TOKEN_LOCK:
                 _TOKEN_CACHE["token"] = None  # force refresh on the retry
     raise last_err  # type: ignore[misc]
@@ -238,7 +263,9 @@ def fetch_well_props() -> pd.DataFrame:
     # vw_prop_mech). Without this, the astype(str) below turns a SQL NULL into the
     # literal string "None" -- a phantom well that has no survey CSV and so trips
     # the "missing deviation surveys" banner forever (and can never be pulled).
-    df = df[df["well_name"].notna() & (df["well_name"].astype(str).str.strip() != "")].copy()
+    df = df[
+        df["well_name"].notna() & (df["well_name"].astype(str).str.strip() != "")
+    ].copy()
 
     df["Well"] = df["well_name"].astype(str).str.strip().map(_normalize_well_name)
     df["out_dia"] = df["tubing_out_dia"]
@@ -255,7 +282,9 @@ def fetch_well_props() -> pd.DataFrame:
 
 
 def _local_overrides_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "jp_data" / "local_well_overrides.csv"
+    return (
+        Path(__file__).resolve().parent.parent / "jp_data" / "local_well_overrides.csv"
+    )
 
 
 def _merge_local_overrides(df: pd.DataFrame) -> pd.DataFrame:
@@ -280,7 +309,9 @@ def _merge_local_overrides(df: pd.DataFrame) -> pd.DataFrame:
     if "tubing_out_dia" in new_rows.columns:
         new_rows["out_dia"] = new_rows["tubing_out_dia"]
     if {"tubing_out_dia", "tubing_inn_dia"}.issubset(new_rows.columns):
-        new_rows["thick"] = (new_rows["tubing_out_dia"] - new_rows["tubing_inn_dia"]) / 2.0
+        new_rows["thick"] = (
+            new_rows["tubing_out_dia"] - new_rows["tubing_inn_dia"]
+        ) / 2.0
     if "jpump_md" in new_rows.columns:
         new_rows["JP_MD"] = new_rows["jpump_md"]
     if "resvr_press" in new_rows.columns:
@@ -398,28 +429,6 @@ def fetch_well_props_enriched() -> Tuple[pd.DataFrame, List[str]]:
     return enrich_with_tvd(df)
 
 
-def load_tag_dict(custom_source=None) -> Dict[str, Tuple[str, str, str]]:
-    """Load SCADA tag mapping from bhp_dict.csv."""
-    if custom_source is not None:
-        if isinstance(custom_source, (str, Path)):
-            df = pd.read_csv(Path(custom_source))
-        else:
-            df = pd.read_csv(custom_source)
-    else:
-        current_dir = Path(__file__).parent
-        dict_path = current_dir / ".." / "jp_data" / "bhp_dict.csv"
-        df = pd.read_csv(dict_path)
-
-    tag_dict = {}
-    for _, row in df.iterrows():
-        tag_dict[row["wellname"]] = (
-            str(row["bhp_tag"]).strip(),
-            str(row["headerP_tag"]).strip(),
-            str(row["whp_tag"]).strip(),
-        )
-    return tag_dict
-
-
 def get_tags_for_wells(
     wells: List[str], tag_dict: Dict[str, Tuple[str, str, str]]
 ) -> Tuple[Dict[str, Tuple[str, str, str]], List[str]]:
@@ -431,70 +440,3 @@ def get_tags_for_wells(
         else:
             missing.append(well)
     return found, missing
-
-
-def query_bhp_for_well_tests(
-    tag_dict: Dict[str, Tuple[str, str, str]],
-    well_list: List[str],
-) -> Dict[str, pd.DataFrame]:
-    """Query Databricks for 6-hour time-weighted average BHP data aligned to test dates."""
-    well_tags, _ = get_tags_for_wells(well_list, tag_dict)
-
-    if not well_tags:
-        return {}
-
-    flat_tag_list = []
-    for bhp_tag, headerP_tag, whp_tag in well_tags.values():
-        for tag in [bhp_tag, headerP_tag, whp_tag]:
-            if tag and tag not in flat_tag_list:
-                flat_tag_list.append(tag)
-
-    tag_list_str = ", ".join(f"'{tag}'" for tag in flat_tag_list)
-
-    query = f"""
-    WITH SixHourAverages AS (
-        SELECT
-            CAST(FLOOR(CAST(LocalTime AS BIGINT) / 21600) * 21600 AS TIMESTAMP) AS time_interval_start,
-            tag,
-            AVG(value) AS average_value
-        FROM
-            reporting.historian.vw_mpu_measurements
-        WHERE
-            tag IN ({tag_list_str})
-        GROUP BY
-            time_interval_start,
-            tag
-    )
-    SELECT
-        CAST(time_interval_start AS DATE) AS date,
-        tag,
-        MAX(average_value) AS max_average_value
-    FROM
-        SixHourAverages
-    GROUP BY
-        CAST(time_interval_start AS DATE),
-        tag
-    ORDER BY
-        date, tag;
-    """
-
-    raw = execute_query(query)
-    raw["date"] = pd.to_datetime(raw["date"])
-
-    well_dfs = {}
-    for well, (bhp_tag, headerP_tag, whp_tag) in well_tags.items():
-        well_df = raw[raw["tag"].isin([bhp_tag, headerP_tag, whp_tag])]
-        if not well_df.empty:
-            well_df_pivoted = well_df.pivot(
-                index="date", columns="tag", values="max_average_value"
-            )
-            column_mapping = {bhp_tag: "BHP", headerP_tag: "HeaderP", whp_tag: "WHP"}
-            well_df_pivoted = well_df_pivoted.rename(columns=column_mapping)
-            for col in ["BHP", "HeaderP", "WHP"]:
-                if col in well_df_pivoted.columns:
-                    well_df_pivoted[col] = pd.to_numeric(
-                        well_df_pivoted[col], errors="coerce"
-                    )
-            well_dfs[well] = well_df_pivoted
-
-    return well_dfs

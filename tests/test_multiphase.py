@@ -148,6 +148,32 @@ def test_friction_factor() -> None:
     assert calc_ff == pytest.approx(book_ff, abs=0.03)
 
 
+def test_ffactor_darcy_zero_reynolds_does_not_raise() -> None:
+    """Tripwire for the P1-9 fix (upstream PR to kwellis/woffl).
+
+    Zero flow (reynolds == 0, e.g. a shut-in segment or a friction call made
+    with vel=0) used to fall into the laminar branch's bare "64 / reynolds"
+    and raise an untyped ZeroDivisionError. Every caller pairs ff with a
+    velocity term (dp_fric ~ ff * vel**2), and reynolds == 0 implies vel == 0
+    too, so the correct friction contribution in that limit is zero.
+    """
+    calc_rr = sp.relative_roughness(book_dhyd, 0.004)
+    assert sp.ffactor_darcy(0.0, calc_rr) == 0.0
+    # a downstream friction pressure calc using this ff must be finite, not NaN
+    dp_fric = sp.diff_press_friction(
+        sp.ffactor_darcy(0.0, calc_rr), book_rho_mix, 0.0, book_dhyd, pipe_len
+    )
+    assert dp_fric == 0.0
+
+
+def test_ffactor_darcy_in_range_unchanged() -> None:
+    """Precondition guard: the fix must not touch the normal reynolds > 0
+    path (already-converging solves stay bit-identical)."""
+    calc_rr = sp.relative_roughness(book_dhyd, 0.004)
+    calc_ff = sp.ffactor_darcy(book_NRe, calc_rr)
+    assert calc_ff == pytest.approx(book_ff, abs=0.03)
+
+
 def test_beggs_yf() -> None:
     calc_yf = tp.beggs_yf(book_nslh, book_ilh)
     assert calc_yf == pytest.approx(book_yf, rel=0.01)

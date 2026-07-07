@@ -45,7 +45,6 @@ def _clear_downstream(from_step):
             "uw_actual_oil_map",
             "uw_actual_pf_map",
             "uw_actual_bhp_map",
-            "uw_current_jp_map",
         ],
         4: [],
     }
@@ -110,12 +109,10 @@ def _render_sidebar():
         ):
             from woffl.gui.utils import fetch_all_well_tests, load_well_characteristics
             from woffl.gui.well_test_cache import (
-                _cached_bhp_query,
                 _cached_mpu_well_names,
                 _cached_well_test_query,
             )
 
-            _cached_bhp_query.clear()
             _cached_well_test_query.clear()
             _cached_mpu_well_names.clear()
             fetch_all_well_tests.clear()

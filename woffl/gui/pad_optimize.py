@@ -56,6 +56,19 @@ _SCENARIO_MARGINAL_WC = 1.0
 # non-binding PF budget.
 _EVAL_CAP_FALLBACK_BPD = 120000.0
 
+# [P1-13] PowerFluidConstraint.rho_pf default (fresh-water density, lbm/ft3).
+# Every pad-optimize call site used to spell this literal out independently
+# (~5 places) instead of relying on the dataclass default. NetworkOptimizer
+# never reads PowerFluidConstraint.rho_pf downstream (grepped: only the
+# __post_init__ range check touches it) so this is a display-only value,
+# same as the sidebar's "Power Fluid Density" widget (see
+# docs/code_review_2026-07-01.md P1-13) — it is NOT the I/M plant's real PF
+# SG (~1.03-1.04). Naming it here removes the duplication without changing
+# any numeric result; actually wiring plant-specific PF density into the
+# physics is a separate, behavior-changing task (see utils.py's
+# run_jetpump_solver/run_batch_pump/run_power_fluid_range_batch docstrings).
+_RHO_PF_DEFAULT = 62.4
+
 
 # ---------------------------------------------------------------------------
 # Header settling (the one place the flow -> pressure coupling is evaluated)
@@ -191,7 +204,9 @@ def _run_fixed_point(
         ppf_c = max(lo_p, min(hi_p, ppf))
         for wc in well_configs:
             wc.ppf_surf_well = ppf_c  # common header pressure for every well
-        pf = PowerFluidConstraint(total_rate=cap, pressure=ppf_c, rho_pf=62.4)
+        pf = PowerFluidConstraint(
+            total_rate=cap, pressure=ppf_c, rho_pf=_RHO_PF_DEFAULT
+        )
         optimizer = NetworkOptimizer(well_configs, pf, nozzles, throats, marginal_wc)
         optimizer.run_all_batch_simulations(max_workers=worker_ceiling())
         results = optimize(optimizer, method=method, water_key="lift_wat")
@@ -270,7 +285,7 @@ def _run_pressure_sweep(
             continue
         for wc in well_configs:
             wc.ppf_surf_well = P
-        pf = PowerFluidConstraint(total_rate=cap, pressure=P, rho_pf=62.4)
+        pf = PowerFluidConstraint(total_rate=cap, pressure=P, rho_pf=_RHO_PF_DEFAULT)
         opt = NetworkOptimizer(well_configs, pf, nozzles, throats, marginal_wc)
         opt.run_all_batch_simulations(max_workers=worker_ceiling())
         results = optimize(opt, method=method, water_key="lift_wat")
@@ -529,7 +544,9 @@ def evaluate_fixed_scenario(
         ppf_c = max(lo_p, min(hi_p, ppf))
         for wc in well_configs:
             wc.ppf_surf_well = ppf_c
-        pf = PowerFluidConstraint(total_rate=cap, pressure=ppf_c, rho_pf=62.4)
+        pf = PowerFluidConstraint(
+            total_rate=cap, pressure=ppf_c, rho_pf=_RHO_PF_DEFAULT
+        )
         opt = NetworkOptimizer(
             well_configs, pf, nozzles, throats, marginal_watercut=_SCENARIO_MARGINAL_WC
         )
@@ -698,7 +715,9 @@ def evaluate_existing_scenario(
         ppf_c = max(lo_p, min(hi_p, ppf))
         for wc in well_configs:
             wc.ppf_surf_well = ppf_c
-        pf = PowerFluidConstraint(total_rate=cap, pressure=ppf_c, rho_pf=62.4)
+        pf = PowerFluidConstraint(
+            total_rate=cap, pressure=ppf_c, rho_pf=_RHO_PF_DEFAULT
+        )
         opt = NetworkOptimizer(
             well_configs, pf, nozzles, throats, marginal_watercut=_SCENARIO_MARGINAL_WC
         )
@@ -798,7 +817,7 @@ def match_check(
     pf = PowerFluidConstraint(
         total_rate=plant.match_check_budget_bpd(total_pf, n_pumps),
         pressure=header,
-        rho_pf=62.4,
+        rho_pf=_RHO_PF_DEFAULT,
     )
     opt = NetworkOptimizer(
         well_configs, pf, nozzles, throats, marginal_watercut=_SCENARIO_MARGINAL_WC

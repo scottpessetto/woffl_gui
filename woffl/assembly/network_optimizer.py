@@ -248,37 +248,6 @@ class NetworkOptimizer:
             name: c.calibration_factor for name, c in calibration.items()
         }
 
-    def get_calibrated_results(self) -> Optional[list[OptimizationResult]]:
-        """Apply stored calibration factors to optimization results.
-
-        Returns:
-            New list of OptimizationResult with calibrated rates, or None
-        """
-        if not self.optimization_results:
-            return None
-        if not self.calibration_factors:
-            return self.optimization_results
-
-        calibrated = []
-        for r in self.optimization_results:
-            factor = self.calibration_factors.get(r.well_name, 1.0)
-            calibrated.append(
-                OptimizationResult(
-                    well_name=r.well_name,
-                    recommended_nozzle=r.recommended_nozzle,
-                    recommended_throat=r.recommended_throat,
-                    allocated_power_fluid=r.allocated_power_fluid,
-                    predicted_oil_rate=r.predicted_oil_rate * factor,
-                    predicted_formation_water=r.predicted_formation_water * factor,
-                    predicted_lift_water=r.predicted_lift_water,
-                    suction_pressure=r.suction_pressure,
-                    marginal_oil_rate=r.marginal_oil_rate,
-                    sonic_status=r.sonic_status,
-                    mach_te=r.mach_te,
-                )
-            )
-        return calibrated
-
     def get_well_by_name(self, well_name: str) -> Optional[WellConfig]:
         """Get well configuration by name"""
         for well in self.wells:
@@ -491,53 +460,6 @@ class NetworkOptimizer:
                 float(row.get("motwr", 0.0)) if pd.notna(row.get("motwr")) else 0.0
             ),
         }
-
-    def validate_allocation(
-        self, allocation: dict[str, tuple[str, str]]
-    ) -> tuple[bool, float, dict]:
-        """Validate if allocation is feasible given power fluid constraint
-
-        Args:
-            allocation: Dict mapping well_name to (nozzle, throat) tuple
-
-        Returns:
-            Tuple of (is_feasible, total_power_fluid_used, details_dict)
-
-            details_dict contains:
-                - 'total_pf': Total  power fluid used
-                - 'available_pf': Available power fluid
-                - 'utilization': Fraction of available power fluid used
-                - 'well_allocations': Dict of {well_name: power_fluid_rate}
-                - 'failed_wells': List of wells with invalid configurations
-        """
-        total_pf = 0.0
-        well_allocations = {}
-        failed_wells = []
-
-        for well_name, (nozzle, throat) in allocation.items():
-            pf_req = self.get_power_fluid_requirement(well_name, nozzle, throat)
-
-            if pf_req is None:
-                failed_wells.append(well_name)
-            else:
-                well_allocations[well_name] = pf_req
-                total_pf += pf_req
-
-        is_feasible = total_pf <= self.power_fluid.total_rate and len(failed_wells) == 0
-
-        details = {
-            "total_pf": total_pf,
-            "available_pf": self.power_fluid.total_rate,
-            "utilization": (
-                total_pf / self.power_fluid.total_rate
-                if self.power_fluid.total_rate > 0
-                else 0.0
-            ),
-            "well_allocations": well_allocations,
-            "failed_wells": failed_wells,
-        }
-
-        return is_feasible, total_pf, details
 
     def calculate_field_metrics(
         self, results: Optional[list[OptimizationResult]] = None
@@ -1087,44 +1009,6 @@ def load_wells_from_dataframe(
         raise ValueError("No valid well configurations found")
 
     return well_configs
-
-
-def load_wells_from_csv(
-    csv_path: str, jp_chars_path: Optional[str] = None
-) -> list[WellConfig]:
-    """Load well configurations from CSV with fallback to jp_chars database.
-
-    Args:
-        csv_path: Path to CSV file with well configurations
-        jp_chars_path: Path to jp_chars.csv database (auto-detected if None)
-
-    Returns:
-        List of WellConfig objects
-
-    Raises:
-        ValueError: If required fields are missing or invalid
-        FileNotFoundError: If CSV file not found
-    """
-    input_df = pd.read_csv(csv_path)
-    return load_wells_from_dataframe(input_df, jp_chars_path)
-
-
-def create_well_template_csv() -> str:
-    """Create CSV template string for well configurations
-
-    Returns:
-        CSV template as string
-    """
-    template = (
-        "Well,res_pres,form_temp,JP_TVD,JP_MD,out_dia,thick,"
-        "casing_od,casing_thick,form_wc,form_gor,field_model,surf_pres,qwf_blpd,pwf,comments\n"
-        "MPB-28,,,,,,,,,,,,,,,Auto-populated from jp_chars.csv\n"
-        "MPB-30,,,,,,,,,,,,,,,Auto-populated from jp_chars.csv\n"
-        "MPE-35,,,,,,,,,,,,,,,Auto-populated from jp_chars.csv\n"
-        "CustomWell-1,1500,75,4000,4500,4.5,0.271,6.875,0.5,0.45,250,Schrader,210,800,500,Example custom well\n"
-        "CustomWell-2,1600,80,4200,4700,4.5,0.271,6.875,0.5,0.50,300,Kuparuk,220,750,550,Example custom well"
-    )
-    return template
 
 
 def validate_well_config(config: WellConfig) -> tuple[bool, list[str]]:
