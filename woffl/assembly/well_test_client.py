@@ -23,6 +23,7 @@ WHERE field = 'MPU'
 WELL_TEST_QUERY = """\
 SELECT
     vwt.well_name,
+    vwt.wt_uid,
     vwt.wt_date,
     vwt.whp,
     vwt.form_oil AS oil_rate,
@@ -195,7 +196,11 @@ def fetch_milne_well_tests(
     if "WtDate" in df.columns:
         df["WtDate"] = pd.to_datetime(df["WtDate"], utc=True).dt.tz_localize(None)
 
-    # Ensure numeric columns
+    # Ensure numeric columns. wt_uid (mpu.wells.vw_well_test's well-test unique
+    # ID) is the IPR-anchor pin key (see woffl.assembly.prop_hist_client /
+    # ipr_wt_uid) -- kept as a nullable float here (not int) so a manual/
+    # provisional test row (which has no wt_uid) can carry NaN rather than
+    # forcing an int column to object dtype.
     for col in [
         "BHP",
         "WtOilVol",
@@ -206,6 +211,7 @@ def fetch_milne_well_tests(
         "whp",
         "pf_tubing_prs",
         "pf_inn_ann_prs",
+        "wt_uid",
     ]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")

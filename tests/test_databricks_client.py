@@ -1,5 +1,6 @@
 """Tests for Databricks client with mocked database calls."""
 
+import os
 import threading
 import time
 from unittest.mock import patch
@@ -11,8 +12,12 @@ import woffl.assembly.databricks_client as databricks_client
 from woffl.assembly.databricks_client import (
     _CONN_LOCAL,
     _TOKEN_CACHE,
+    UnsafeWriteStatementError,
+    WritesDisabledError,
     _oauth_token,
     _query_via_connector,
+    _validate_single_insert,
+    execute_write,
     fetch_jp_history,
     get_tags_for_wells,
 )
@@ -277,3 +282,137 @@ class TestFetchJPHistory:
         )
         result = fetch_jp_history()
         assert isinstance(result, pd.DataFrame)
+
+
+# ── execute_write (W1 prop_hist persistence) ────────────────────────────────
+# INSERT-only, env-gated write path. Zero live writes from this file -- the
+# connector is always faked or never reached.
+
+
+class _FakeWriteCursor:
+    def __init__(self, rowcount=1):
+        self.rowcount = rowcount
+        self.description = None
+        self.executed_sql = None
+        self.executed_parameters = None
+
+    def execute(self, sql, parameters=None):
+        self.executed_sql = sql
+        self.executed_parameters = parameters
+
+    def fetchall(self):
+        return []
+
+    def close(self):
+        pass
+
+
+class _FakeWriteConnection:
+    def __init__(self, rowcount=1):
+        self.cursor_obj = _FakeWriteCursor(rowcount)
+        self.closed = False
+
+    def cursor(self):
+        return self.cursor_obj
+
+    def close(self):
+        self.closed = True
+
+
+class TestExecuteWriteGate:
+    def setup_method(self):
+        _CONN_LOCAL.conn = None
+
+    def teardown_method(self):
+        _CONN_LOCAL.conn = None
+        os.environ.pop("ALLOW_DATABRICKS_WRITES", None)
+
+    @patch("woffl.assembly.databricks_client._new_connection")
+    def test_gate_off_raises_before_any_connection_attempt(self, mock_new_conn):
+        os.environ.pop("ALLOW_DATABRICKS_WRITES", None)  # explicit: gate closed
+
+        with pytest.raises(WritesDisabledError):
+            execute_write("INSERT INTO mpu.wells.prop_hist VALUES (1)", {})
+
+        mock_new_conn.assert_not_called()
+
+    @patch("woffl.assembly.databricks_client._new_connection")
+    def test_gate_off_with_falsy_value_still_raises(self, mock_new_conn):
+        os.environ["ALLOW_DATABRICKS_WRITES"] = "false"
+
+        with pytest.raises(WritesDisabledError):
+            execute_write("INSERT INTO mpu.wells.prop_hist VALUES (1)", {})
+
+        mock_new_conn.assert_not_called()
+
+    @patch("woffl.assembly.databricks_client._new_connection")
+    def test_gate_on_executes_and_returns_rowcount(self, mock_new_conn):
+        os.environ["ALLOW_DATABRICKS_WRITES"] = "true"
+        fake_conn = _FakeWriteConnection(rowcount=1)
+        mock_new_conn.return_value = fake_conn
+
+        params = {"enthid": 12345, "prop_id": "ipr_wt_uid", "prop_value": 42.0}
+        result = execute_write(
+            "INSERT INTO mpu.wells.prop_hist (enthid) VALUES (:enthid)", params
+        )
+
+        assert result == 1
+        assert fake_conn.cursor_obj.executed_parameters == params
+
+    @pytest.mark.parametrize("truthy", ["1", "true", "TRUE", "yes", "Yes"])
+    @patch("woffl.assembly.databricks_client._new_connection")
+    def test_gate_accepts_documented_truthy_values(self, mock_new_conn, truthy):
+        os.environ["ALLOW_DATABRICKS_WRITES"] = truthy
+        mock_new_conn.return_value = _FakeWriteConnection(rowcount=1)
+
+        result = execute_write("INSERT INTO t (a) VALUES (:a)", {"a": 1})
+
+        assert result == 1
+
+
+class TestValidateSingleInsert:
+    def test_accepts_plain_insert(self):
+        _validate_single_insert("INSERT INTO t (a) VALUES (:a)")  # no raise
+
+    def test_accepts_insert_with_one_trailing_semicolon(self):
+        _validate_single_insert("INSERT INTO t (a) VALUES (:a);")  # no raise
+
+    def test_accepts_case_insensitive_insert(self):
+        _validate_single_insert("insert into t (a) values (:a)")  # no raise
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "UPDATE t SET a = 1",
+            "DELETE FROM t WHERE a = 1",
+            "DROP TABLE t",
+            "SELECT * FROM t",
+        ],
+    )
+    def test_rejects_non_insert_statements(self, sql):
+        with pytest.raises(UnsafeWriteStatementError):
+            _validate_single_insert(sql)
+
+    def test_rejects_semicolon_chained_statement(self):
+        with pytest.raises(UnsafeWriteStatementError):
+            _validate_single_insert("INSERT INTO t (a) VALUES (1); DROP TABLE t;")
+
+    def test_rejects_chained_insert_insert(self):
+        with pytest.raises(UnsafeWriteStatementError):
+            _validate_single_insert(
+                "INSERT INTO t (a) VALUES (1); INSERT INTO t (a) VALUES (2)"
+            )
+
+    def test_rejects_empty_string(self):
+        with pytest.raises(UnsafeWriteStatementError):
+            _validate_single_insert("")
+
+    @patch("woffl.assembly.databricks_client._new_connection")
+    def test_gate_on_but_unsafe_sql_never_connects(self, mock_new_conn):
+        os.environ["ALLOW_DATABRICKS_WRITES"] = "true"
+        try:
+            with pytest.raises(UnsafeWriteStatementError):
+                execute_write("DELETE FROM mpu.wells.prop_hist", {})
+            mock_new_conn.assert_not_called()
+        finally:
+            os.environ.pop("ALLOW_DATABRICKS_WRITES", None)

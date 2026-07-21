@@ -293,6 +293,33 @@ def remove_file_from_gauge(well_name: str, source_filename: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Pending uploads — parsed but not yet applied
+# ---------------------------------------------------------------------------
+# The Solver's uploader parses dropped files immediately and stashes them
+# here (a NON-widget session key) until the user clicks Apply. A
+# file_uploader's widget state is garbage-collected whenever its view isn't
+# rendered (the Single-Well page's segmented control runs only the active
+# view), so files living only in the uploader were silently dropped by a
+# Solver → Batch Run → Solver detour. The stash survives the detour.
+
+_PENDING_KEY = "_memory_gauge_pending"
+
+
+def get_pending_files(well_name: str) -> list[MemoryGaugeFile]:
+    """Parsed-but-unapplied uploads for a well (empty list when none)."""
+    return st.session_state.get(_PENDING_KEY, {}).get(well_name, [])
+
+
+def set_pending_files(well_name: str, files: list[MemoryGaugeFile]) -> None:
+    """Replace the well's pending uploads. An empty list removes the entry."""
+    state = st.session_state.setdefault(_PENDING_KEY, {})
+    if files:
+        state[well_name] = files
+    else:
+        state.pop(well_name, None)
+
+
+# ---------------------------------------------------------------------------
 # "Disregard Databricks BHP" per-well flag
 # ---------------------------------------------------------------------------
 # Some wells (e.g. MPB-35) have a Databricks BHP feed that is known to be

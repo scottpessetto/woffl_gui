@@ -262,6 +262,55 @@ class TestFetchMilneWellTests:
         mock_query.assert_not_called()
 
 
+# ── wt_uid (IPR-anchor pin key, see prop_hist_client / ipr_wt_uid) ────────
+
+
+class TestWtUidPassthrough:
+    @patch("woffl.assembly.well_test_client.execute_query")
+    def test_wt_uid_survives_rename_and_normalization(self, mock_query):
+        mock_query.return_value = pd.DataFrame(
+            {
+                "well_name": ["B-028", "B-028"],
+                "wt_uid": [301, 302],
+                "wt_date": pd.to_datetime(["2024-01-15", "2024-02-20"]),
+                "bhp": [800.0, 850.0],
+                "oil_rate": [100.0, 120.0],
+                "fwat_rate": [200.0, 250.0],
+                "fgas_rate": [50.0, 60.0],
+                "whp": [150.0, 160.0],
+                "form_wc": [0.67, 0.68],
+                "fgor": [500, 500],
+                "lift_wat": [300.0, 350.0],
+            }
+        )
+        df, _ = fetch_milne_well_tests("2024-01-01", "2024-12-31", ["B-028"])
+        assert "wt_uid" in df.columns
+        assert sorted(df["wt_uid"].tolist()) == [301.0, 302.0]
+        # Column name is untouched by the well_name/wt_date/etc rename map.
+        assert "well_name" not in df.columns
+
+    @patch("woffl.assembly.well_test_client.execute_query")
+    def test_missing_wt_uid_column_does_not_crash(self, mock_query):
+        """Older mocks / a query without the column (pre-migration) must not
+        break fetch_milne_well_tests — wt_uid is read defensively."""
+        mock_query.return_value = pd.DataFrame(
+            {
+                "well_name": ["B-028"],
+                "wt_date": pd.to_datetime(["2024-01-15"]),
+                "bhp": [800.0],
+                "oil_rate": [100.0],
+                "fwat_rate": [200.0],
+                "fgas_rate": [50.0],
+                "whp": [150.0],
+                "form_wc": [0.67],
+                "fgor": [500],
+                "lift_wat": [300.0],
+            }
+        )
+        df, _ = fetch_milne_well_tests("2024-01-01", "2024-12-31", ["B-028"])
+        assert "wt_uid" not in df.columns
+
+
 # ── test-day PF pressure (vw_pressure_daily join) ─────────────────────────
 
 

@@ -212,6 +212,15 @@ def _append_manual_tests(well_df, well_name: str):
     if "WtDate" in manual_df.columns:
         manual_df["WtDate"] = pd.to_datetime(manual_df["WtDate"], errors="coerce")
 
+    # Manual/provisional tests have no `wt_uid` (mpu.wells.vw_well_test's
+    # well-test unique ID, the IPR-anchor pin key -- see
+    # woffl.assembly.prop_hist_client) -- they're never pinnable. `pd.concat`
+    # below already NaNs a column absent from one side, but force it
+    # explicitly (and overwrite rather than trust an absent column) so a
+    # future manual-test field named `wt_uid` could never accidentally
+    # collide with a real Databricks test's identity.
+    manual_df["wt_uid"] = float("nan")
+
     if well_df is None or well_df.empty:
         combined = manual_df
     else:

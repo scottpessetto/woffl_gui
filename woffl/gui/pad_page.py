@@ -177,6 +177,418 @@ def _render_review(spec: PadSpec) -> None:
         st.info("Review at least one well (or add a hypothetical) to continue.")
 
 
+def _next_placeholder_name(store: dict, src: str) -> str:
+    """First unused '<src>-PH<n>' name — pure so it's testable."""
+    n = 1
+    while f"{src}-PH{n}" in store:
+        n += 1
+    return f"{src}-PH{n}"
+
+
+def _render_placeholder_wells(spec: PadSpec, store: dict, active: dict) -> None:
+    """Configure-screen placeholder wells: clone an existing reviewed well.
+
+    A placeholder copies the source well's IPR, geometry, calibration, and
+    review pump wholesale (``wrs.clone_entry``) and lands in the SAME review
+    store flagged 🔵 hypothetical — so it feeds the optimizer, match check,
+    and PF what-if exactly like a real well, shows up on the Review stage,
+    and the store-signature staleness flagging covers adds/removes for free.
+    """
+    p = spec.prefix
+    with st.expander("➕ Placeholder wells (clone an existing well)", expanded=False):
+        st.caption(
+            "Add a what-if well that copies an existing reviewed well's IPR, "
+            "geometry, and calibration — e.g. a planned twin of a producer. "
+            "It feeds the optimizer like a real well and is flagged 🔵 "
+            "hypothetical everywhere."
+        )
+        sources = [w for w in active if not active[w].get("is_hypothetical")]
+        if sources:
+            c1, c2, c3 = st.columns([2, 2, 1])
+            with c1:
+                src = st.selectbox("Clone from", sources, key=f"{p}_ph_src")
+            with c2:
+                name = st.text_input(
+                    "New well name",
+                    value=_next_placeholder_name(store, src),
+                    key=f"{p}_ph_name",
+                )
+            with c3:
+                st.write("")  # aligns the button with the inputs
+                if st.button("Add", key=f"{p}_ph_add", use_container_width=True):
+                    name = (name or "").strip()
+                    if not name:
+                        st.warning("Enter a name for the placeholder.")
+                    elif name in store:
+                        st.warning(f"{name} already exists in the review store.")
+                    else:
+                        store[name] = wrs.clone_entry(
+                            store[src], name, source_well=src
+                        )
+                        # Drop the name widget's state so the next render
+                        # suggests a fresh default instead of the used name.
+                        st.session_state.pop(f"{p}_ph_name", None)
+                        st.toast(f"Added placeholder {name} (clone of {src})", icon="🔵")
+                        st.rerun()
+        else:
+            st.info("No reviewed real wells to clone yet.")
+
+        hypos = [w for w, e in store.items() if e.get("is_hypothetical")]
+        if hypos:
+            st.markdown("**Hypothetical / placeholder wells in this run:**")
+            st.caption(
+                "⚫ offline = out of the BASE case (and the optimization) — "
+                "mark future wells offline, then add them back in the "
+                "*Base vs Future* comparison below."
+            )
+            for w in sorted(hypos):
+                note = store[w].get("notes") or "hypothetical"
+                is_off = bool(store[w].get("offline"))
+                stat = " · ⚫ offline (future)" if is_off else " · 🟢 online"
+                row = st.columns([3, 1, 1])
+                row[0].markdown(f"🔵 `{w}` — {note}{stat}")
+                if row[1].button(
+                    ("→ online" if is_off else "→ offline"),
+                    key=f"{p}_ph_off_{w}",
+                    use_container_width=True,
+                    help=(
+                        "Toggle whether this well participates in the base "
+                        "case / optimization."
+                    ),
+                ):
+                    store[w]["offline"] = not is_off
+                    st.rerun()
+                if row[2].button(
+                    "Remove", key=f"{p}_ph_rm_{w}", use_container_width=True
+                ):
+                    store.pop(w, None)
+                    st.rerun()
+
+
+def _render_pf_what_if(spec: PadSpec, active: dict) -> None:
+    """PF-pressure what-if: model all active wells at their reviewed pumps at
+    two forced delivered PF pressures and show the oil impact.
+
+    Baseline defaults to TODAY's live pad PF median (annulus gauges, via
+    ``live_pad_pf_default``); both pressures are editable so the comparison
+    can also be scenario-vs-scenario. Compute is
+    ``pad_optimize.pf_pressure_what_if`` (bypasses the booster coupling —
+    supply assumption stated in the caption); results persist in session
+    state with a store signature so staleness is flagged.
+    """
+    import pandas as pd
+
+    from woffl.gui.utils import live_pad_pf_default
+
+    p = spec.prefix
+    st.markdown("##### PF-pressure what-if (current pumps)")
+    st.caption(
+        "Model every active well at its **reviewed pump** at two delivered PF "
+        "pressures and compare — the oil lever of moving pad PF, holding "
+        "pumps fixed. Bypasses the booster coupling: it assumes the plant "
+        "can deliver the chosen pressure at the resulting flow (sanity-check "
+        "against the capability plot above). Baseline defaults to **today's "
+        "live pad PF** (annulus-gauge median)."
+    )
+    try:
+        live_pf = int(live_pad_pf_default(spec.pad))
+    except Exception:
+        live_pf = 3000
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1:
+        pf_base = st.number_input(
+            "Baseline PF (psi)",
+            min_value=500,
+            max_value=5500,
+            value=live_pf,
+            step=25,
+            key=f"{p}_pfw_base",
+            help=(
+                "Today's live pad PF by default — edit to compare from a "
+                "different reference instead."
+            ),
+        )
+    with c2:
+        pf_scen = st.number_input(
+            "Scenario PF (psi)",
+            min_value=500,
+            max_value=5500,
+            value=min(live_pf + 200, 5500),
+            step=25,
+            key=f"{p}_pfw_scen",
+        )
+    with c3:
+        st.write("")
+        run_it = st.button(
+            "Run PF what-if", key=f"{p}_pfw_run", use_container_width=True
+        )
+
+    result_key = f"{p}_pfw_result"
+    if run_it:
+        current = {
+            w: (
+                (active[w].get("review_nozzle") or "", active[w].get("review_throat") or "")
+            )
+            for w in active
+        }
+        current = {w: (c if c[0] and c[1] else None) for w, c in current.items()}
+        tr = {w: _recent_test_rates(w) for w in active}
+        try:
+            with st.spinner(
+                f"Modeling {len(active)} well(s) at {pf_base:,.0f} and "
+                f"{pf_scen:,.0f} psi…"
+            ):
+                rows, totals = pad_optimize.pf_pressure_what_if(
+                    wrs.store_to_well_configs(active), current, tr, pf_base, pf_scen
+                )
+            st.session_state[result_key] = {
+                "rows": rows,
+                "totals": totals,
+                "pf_base": float(pf_base),
+                "pf_scen": float(pf_scen),
+                "store_sig": wrs.store_signature(active),
+            }
+        except Exception as e:
+            st.session_state.pop(result_key, None)
+            st.error(f"PF what-if failed: {e}")
+
+    res = st.session_state.get(result_key)
+    if not res:
+        return
+    if res.get("store_sig") != wrs.store_signature(active):
+        st.caption(
+            "⚠ Wells were added/edited since this what-if ran — re-run for "
+            "the current state."
+        )
+    t = res["totals"]
+    b_lbl = f"{res['pf_base']:,.0f}"
+    s_lbl = f"{res['pf_scen']:,.0f}"
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric(f"Oil @ {b_lbl} psi", f"{t['oil_base']:,.0f} BOPD")
+    m2.metric(
+        f"Oil @ {s_lbl} psi",
+        f"{t['oil_scen']:,.0f} BOPD",
+        delta=f"{t['d_oil']:+,.0f} BOPD",
+    )
+    m3.metric(
+        "Projected Δ oil (test-anchored)",
+        f"{t['projected_d_oil']:+,.0f} BOPD",
+        help=(
+            "Each well's measured test oil × the model's ratio between the "
+            "two pressures — model bias cancels in the ratio, so this is the "
+            "most trustworthy pad-level number. Wells with no test (e.g. "
+            "placeholders) count in the modeled totals only."
+        ),
+    )
+    m4.metric("Δ total PF", f"{t['pf_scen'] - t['pf_base']:+,.0f} BPD")
+
+    def _r(v):
+        return round(v) if v is not None else None
+
+    df = pd.DataFrame(
+        [
+            {
+                "Well": r["well"],
+                "Pump": r["pump"],
+                f"Oil @ {b_lbl}": _r(r["oil_base"]),
+                f"Oil @ {s_lbl}": _r(r["oil_scen"]),
+                "Δ oil": _r(r["d_oil"]),
+                "Projected oil": _r(r["projected_oil"]),
+                f"PF @ {b_lbl}": _r(r["pf_base"]),
+                f"PF @ {s_lbl}": _r(r["pf_scen"]),
+                "Δ PF": _r(r["d_pf"]),
+            }
+            for r in sorted(
+                res["rows"],
+                key=lambda r: abs(r["d_oil"]) if r["d_oil"] is not None else -1,
+                reverse=True,
+            )
+        ]
+    )
+    st.dataframe(df, use_container_width=True, hide_index=True)
+    if t["n_unsolved"]:
+        st.caption(
+            f"{t['n_unsolved']} well(s) didn't solve at one or both pressures "
+            "(no reviewed pump, or no solution at that header) — excluded "
+            "from the totals, shown blank above."
+        )
+
+
+def _render_base_vs_future(spec: PadSpec, store: dict, active: dict, n_pumps) -> None:
+    """Base vs Future comparison — today's active wells vs the same pad plus
+    selected offline ("future") wells, EXISTING pumps on both sides.
+
+    Both cases settle on the plant coupling, so the added wells' PF demand
+    droops the delivered header and today's producers feel it — the summary
+    splits the net Δ into "future wells' oil" and "existing wells' Δ" so the
+    real cost of adding the wells is visible, not just the gross add.
+    Offline is the base-exclusion flag: mark a placeholder ⚫ offline above
+    (or a real well on the Review stage), then pick it here as future.
+    """
+    import pandas as pd
+
+    p = spec.prefix
+    st.markdown("##### Base vs Future wells (existing pumps)")
+    offline_wells = {w: e for w, e in store.items() if e.get("offline")}
+    st.caption(
+        "BASE = today's active wells at their reviewed pumps. FUTURE = base "
+        "+ the wells picked below (typically placeholders marked ⚫ offline). "
+        "Existing pumps everywhere — this isolates the effect of ADDING the "
+        "wells, with the booster coupling settling both cases."
+    )
+    if not offline_wells:
+        st.caption(
+            "No offline wells to add — mark a placeholder offline above (or a "
+            "real well on the Review stage) to enable the comparison."
+        )
+        return
+
+    def _fmt(w: str) -> str:
+        return f"🔵 {w}" if store[w].get("is_hypothetical") else w
+
+    default_fut = [
+        w for w in sorted(offline_wells) if offline_wells[w].get("is_hypothetical")
+    ]
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        future_sel = st.multiselect(
+            "Future wells (added to the base in the future case)",
+            sorted(offline_wells),
+            default=default_fut,
+            format_func=_fmt,
+            key=f"{p}_bvf_sel",
+        )
+    with c2:
+        st.write("")
+        run_it = st.button(
+            "Run base vs future",
+            key=f"{p}_bvf_run",
+            use_container_width=True,
+            disabled=not future_sel,
+        )
+
+    result_key = f"{p}_bvf_result"
+    if run_it:
+
+        def _choice(e: dict):
+            n, t = e.get("review_nozzle"), e.get("review_throat")
+            return (str(n), str(t)) if n and t else None
+
+        base_entries = {w: e for w, e in active.items() if _choice(e)}
+        no_pump = [w for w in active if w not in base_entries]
+        fut_only = {
+            w: offline_wells[w] for w in future_sel if _choice(offline_wells[w])
+        }
+        no_pump += [w for w in future_sel if w not in fut_only]
+        if no_pump:
+            st.caption("Excluded (no reviewed pump): " + ", ".join(sorted(no_pump)))
+        if not base_entries or not fut_only:
+            st.warning(
+                "Need at least one base well and one future well with a "
+                "reviewed pump."
+            )
+            return
+        tr = {w: _recent_test_rates(w) for w in base_entries}
+        base_choices = {w: _choice(e) for w, e in base_entries.items()}
+        fut_entries = {**base_entries, **fut_only}
+        fut_choices = {w: _choice(e) for w, e in fut_entries.items()}
+        try:
+            with st.spinner("Settling BASE case on the plant coupling…"):
+                per_base, meta_base = pad_optimize.evaluate_fixed_scenario(
+                    wrs.store_to_well_configs(base_entries),
+                    spec.plant,
+                    n_pumps,
+                    base_choices,
+                    test_rates=tr,
+                    current_choices=base_choices,
+                )
+            with st.spinner(f"Settling FUTURE case (+{len(fut_only)} well(s))…"):
+                per_fut, meta_fut = pad_optimize.evaluate_fixed_scenario(
+                    wrs.store_to_well_configs(fut_entries),
+                    spec.plant,
+                    n_pumps,
+                    fut_choices,
+                    test_rates=tr,
+                    current_choices=fut_choices,
+                )
+        except Exception as e:
+            st.session_state.pop(result_key, None)
+            st.error(f"Base-vs-future comparison failed: {e}")
+            return
+        rows = pad_optimize.base_vs_future_rows(per_base, per_fut, set(fut_only))
+        totals = pad_optimize.base_vs_future_totals(rows, meta_base, meta_fut)
+        st.session_state[result_key] = {
+            "rows": rows,
+            "totals": totals,
+            "n_pumps": n_pumps,
+            "future": sorted(fut_only),
+            "store_sig": wrs.store_signature({**active, **fut_only}),
+        }
+
+    res = st.session_state.get(result_key)
+    if not res:
+        return
+    sig_now = wrs.store_signature(
+        {**active, **{w: store[w] for w in res.get("future", []) if w in store}}
+    )
+    if res.get("store_sig") != sig_now or res.get("n_pumps") != n_pumps:
+        st.caption(
+            "⚠ Wells or pump count changed since this comparison ran — re-run "
+            "for the current state."
+        )
+    t = res["totals"]
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Pad oil — base", f"{t['oil_base']:,.0f} BOPD")
+    m2.metric(
+        "Pad oil — future",
+        f"{t['oil_future']:,.0f} BOPD",
+        delta=f"{t['d_oil']:+,.0f} BOPD",
+    )
+    m3.metric(
+        f"Future wells ({t['n_future']})",
+        f"{t['future_oil']:,.0f} BOPD",
+        help="Combined oil from the added wells in the future case.",
+    )
+    m4.metric(
+        "Existing wells Δ",
+        f"{t['existing_d_oil']:+,.0f} BOPD",
+        help=(
+            "What the added PF demand costs today's producers through the "
+            "header droop — the future wells' oil net of this is the real "
+            "pad gain."
+        ),
+    )
+    st.caption(
+        f"Header {t['header_base']:,.0f} → {t['header_future']:,.0f} psi · "
+        f"Total PF {t['pf_base']:,.0f} → {t['pf_future']:,.0f} BPD."
+    )
+
+    def _r(v):
+        return round(v) if v is not None else None
+
+    df = pd.DataFrame(
+        [
+            {
+                "Well": ("🔵 " + r["well"]) if r["future"] else r["well"],
+                "Pump": r["pump"],
+                "Oil base": _r(r["oil_base"]),
+                "Oil future": _r(r["oil_future"]),
+                "Δ oil": _r(r["d_oil"]),
+                "PF base": _r(r["pf_base"]),
+                "PF future": _r(r["pf_future"]),
+            }
+            for r in sorted(
+                res["rows"],
+                key=lambda r: (
+                    not r["future"],
+                    -(abs(r["d_oil"]) if r["d_oil"] is not None else 0),
+                ),
+            )
+        ]
+    )
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+
 def _render_configure(spec: PadSpec) -> None:
     from woffl.gui.params import NOZZLE_OPTIONS, THROAT_OPTIONS
 
@@ -194,6 +606,10 @@ def _render_configure(spec: PadSpec) -> None:
     if offline:
         st.caption("Offline (excluded): " + ", ".join(offline))
     st.caption(spec.configure_caption)
+
+    # Placeholder wells — clone an existing reviewed well into the store as a
+    # hypothetical, without leaving the Configure screen.
+    _render_placeholder_wells(spec, store, active)
 
     if spec.n_pump_options:
         c1, c2, c3 = st.columns(3)
@@ -382,6 +798,16 @@ def _render_configure(spec: PadSpec) -> None:
             ]
         )
         st.dataframe(df, use_container_width=True, hide_index=True)
+    st.divider()
+
+    # PF-pressure what-if — the oil lever of moving pad PF at fixed pumps,
+    # baseline = today's live pad PF.
+    _render_pf_what_if(spec, active)
+    st.divider()
+
+    # Base vs Future — today's pad vs pad + flagged future wells, existing
+    # pumps on both sides, coupled to the plant.
+    _render_base_vs_future(spec, store, active, n_pumps)
     st.divider()
 
     if not nozzles or not throats:

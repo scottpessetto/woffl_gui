@@ -76,6 +76,10 @@ class TestGetCurrentPump:
             "throat_ratio",
             "tubing_od",
             "date_set",
+            # Enrichment passthroughs (pump_identity) — None on plain frames.
+            "circ_direction",
+            "manufacturer",
+            "raw_pump",
         }
 
     def test_tubing_od_float(self):

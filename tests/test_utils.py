@@ -1087,3 +1087,57 @@ class TestCreateWellProfileOutOfRangeWarning:
 
         assert isinstance(wp, WellProfile)
         assert any("outside the well profile" in rec.message for rec in caplog.records)
+
+
+class TestAppendManualTestsWtUid:
+    """wt_uid (the IPR-anchor pin key, see woffl.assembly.prop_hist_client)
+    round-trips through Databricks-sourced rows and is always NaN for
+    session-only manual/provisional tests -- they're never pinnable."""
+
+    def test_manual_row_gets_nan_wt_uid_alongside_real_row(self, monkeypatch):
+        well_df = pd.DataFrame(
+            {
+                "WtDate": pd.to_datetime(["2026-01-01"]),
+                "wt_uid": [301.0],
+                "WtOilVol": [100.0],
+            }
+        )
+        manual = [{"WtDate": "2026-02-01", "WtOilVol": 50.0}]
+        monkeypatch.setattr(
+            gui_utils.st,
+            "session_state",
+            {"sw_manual_tests": {"MPB-28": manual}},
+        )
+
+        combined = gui_utils._append_manual_tests(well_df, "MPB-28")
+
+        assert "wt_uid" in combined.columns
+        manual_row = combined[combined["WtDate"] == pd.Timestamp("2026-02-01")].iloc[0]
+        assert pd.isna(manual_row["wt_uid"])
+        real_row = combined[combined["WtDate"] == pd.Timestamp("2026-01-01")].iloc[0]
+        assert real_row["wt_uid"] == 301.0
+
+    def test_manual_only_well_has_nan_wt_uid(self, monkeypatch):
+        """A well with no Databricks tests at all (well_df is None/empty) —
+        the manual-only frame still carries a wt_uid column, all NaN."""
+        manual = [{"WtDate": "2026-02-01", "WtOilVol": 50.0}]
+        monkeypatch.setattr(
+            gui_utils.st,
+            "session_state",
+            {"sw_manual_tests": {"MPB-28": manual}},
+        )
+
+        combined = gui_utils._append_manual_tests(None, "MPB-28")
+
+        assert "wt_uid" in combined.columns
+        assert pd.isna(combined["wt_uid"].iloc[0])
+
+    def test_no_manual_tests_passes_through_unchanged(self, monkeypatch):
+        well_df = pd.DataFrame(
+            {"WtDate": pd.to_datetime(["2026-01-01"]), "wt_uid": [301.0]}
+        )
+        monkeypatch.setattr(gui_utils.st, "session_state", {})
+
+        result = gui_utils._append_manual_tests(well_df, "MPB-28")
+
+        assert result is well_df

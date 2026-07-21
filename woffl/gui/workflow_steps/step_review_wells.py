@@ -105,6 +105,70 @@ def _infer_ipr_source(well: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Save-hook: pin the reviewed well's IPR anchor to Databricks (best-effort)
+# ---------------------------------------------------------------------------
+
+
+def _maybe_pin_saved_ipr(well: str) -> None:
+    """Best-effort push of ``well``'s CURRENTLY-resolved IPR-anchor test as
+    its saved default (``mpu.wells.prop_hist``'s ``ipr_wt_uid``), called from
+    ``_save_and_advance`` AFTER the store save has already succeeded (W3 of
+    the woffl-prop-hist-persistence plan).
+
+    Shares the actual push mechanics with the Solver's "Save IPR as well
+    default" button via ``woffl.gui.ipr_anchor.pin_ipr_anchor`` so the two
+    push paths can never diverge. Never raises and never undoes the store
+    save — a Databricks hiccup here must not lose the engineer's review:
+      * gate off (``ALLOW_DATABRICKS_WRITES`` not set) → no push attempted,
+        silent (this is the normal local-dev/CI state, not worth a caption
+        on every save).
+      * no resolvable test, or the anchor is a manual/provisional test
+        (no ``wt_uid``) → skip with a one-line caption.
+      * push raised (connection, enthid resolution) → ``st.warning`` with the
+        message; the store save already succeeded.
+      * success → clears the Solver's pin memo (so its next render re-queries
+        instead of replaying the pre-save lookup) and shows a toast.
+
+    ``well`` is always a REAL (non-hypothetical) well here: hypothetical
+    wells are added directly to the store (see ``_render_hypothetical_form``)
+    and never flow through ``_render_save_panel`` / ``_save_and_advance`` —
+    ``render_review_stage`` restricts the sidebar's well selector to
+    ``_pad_real_wells(pad)``.
+    """
+    from woffl.gui.ipr_anchor import PIN_SKIP_PREFIX, writes_enabled
+
+    if not writes_enabled():
+        return
+
+    try:
+        tests = get_well_tests_for_well(well)
+    except Exception:
+        tests = None
+
+    anchor_row = None
+    if tests is not None and not tests.empty:
+        from woffl.gui.tabs.jetpump_solver import _resolve_anchor_test_row
+
+        sorted_tests = tests.sort_values("WtDate", ascending=False).reset_index(
+            drop=True
+        )
+        anchor_row = _resolve_anchor_test_row(well, sorted_tests)
+
+    from woffl.gui.ipr_anchor import pin_ipr_anchor
+
+    pushed, message = pin_ipr_anchor(well, anchor_row)
+    if pushed:
+        from woffl.gui.tabs.jetpump_solver import _clear_pin_cache
+
+        _clear_pin_cache(well)
+        st.toast(message, icon="📌")
+    elif message.startswith(PIN_SKIP_PREFIX):
+        st.caption(message)
+    else:
+        st.warning(message)
+
+
+# ---------------------------------------------------------------------------
 # Sidebar hydration (store entry -> sidebar widgets)
 # ---------------------------------------------------------------------------
 
@@ -333,6 +397,12 @@ def _render_save_panel(params, real_wells: list[str], pad: str) -> None:
         # The offline checkbox re-seeds from the stored value next render;
         # drop its widget state so a dedicated-button save shows through.
         st.session_state.pop(f"sp_offline_{well}", None)
+
+        # Best-effort: pin this well's IPR anchor to Databricks so it becomes
+        # the auto-default for every future session (W3 of the
+        # woffl-prop-hist-persistence plan). AFTER the store write above —
+        # this must never block or undo the save.
+        _maybe_pin_saved_ipr(well)
 
         # Advance to the next UNREVIEWED well after this one (sequential), wrapping
         # to the first pending if we're at the end. Leave a one-shot target;
@@ -622,11 +692,108 @@ def _prefetch_pad_wells(pad: str, wells: list[str]) -> None:
     t.start()
 
 
-def _batch_automatch_inputs(well: str, jp_hist, ppf_surf: float, rho_pf: float = 62.4):
+# The Solver sidebar's default reservoir pressure — the anchor an unreviewed
+# gaugeless well is ALREADY modeled with on the Solver page. Pump-limited
+# wells barely feel ResP at the operating point, which is why that page
+# matches most of them on pure defaults; the batch labels the assumption
+# ("[IPR: assumed ResP 1700]") so it is never mistaken for a characterized
+# pressure, and Apply stores it as ipr_source="forced".
+_ASSUMED_RESP = 1700.0
+
+# Skip reason shared between the input builder and the force-fit path, which
+# converts these wells into OFFLINE store entries instead of leaving them
+# dangling un-reviewed.
+_NO_TESTS_REASON = "no well tests in cache"
+
+
+def _offline_stub_entry(well: str) -> dict:
+    """Minimal review-store entry for a well force-fit can't touch (no well
+    tests → no oil/PF targets): saved OFFLINE so the pad reads fully
+    processed and the optimizer excludes it. The placeholder physics only
+    matter if the engineer later flips the well online — at which point
+    they'd review it properly. Geometry/props from Databricks when available.
+    """
+    import pandas as pd
+
+    from woffl.gui.utils import get_well_data
+
+    wd = get_well_data(well) or {}
+
+    def _opt(key: str):
+        v = wd.get(key)
+        try:
+            if v is None or pd.isna(v):
+                return None
+        except (TypeError, ValueError):
+            pass
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    tvd = float(wd.get("JP_TVD") or 4065)
+    return {
+        "well_name": well,
+        "res_pres": 1700.0,
+        "form_temp": float(wd.get("form_temp") or 120.0),
+        "jpump_tvd": tvd,
+        "tubing_od": float(wd.get("out_dia") or 4.5),
+        "tubing_thickness": float(wd.get("thick") or 0.5),
+        "casing_od": 6.875,
+        "casing_thickness": 0.5,
+        "form_wc": 0.5,
+        "form_gor": 250.0,
+        "surf_pres": 250.0,
+        "qwf": 100.0,
+        "pwf": 600.0,
+        wrs.OIL_RATE_FIELD: 50.0,
+        "jpump_md": tvd,
+        "oil_api": _opt("oil_api"),
+        "gas_sg": _opt("gas_sg"),
+        "wat_sg": _opt("wat_sg"),
+        "bubble_point": _opt("bubble_point"),
+        "ppf_surf_well": None,
+        "knz_well": None,
+        "ken_well": None,
+        "kth_well": None,
+        "kdi_well": None,
+        "jpump_direction": "reverse",
+        "field_model": ("Schrader" if wd.get("is_sch", True) else "Kuparuk"),
+        "review_nozzle": "",
+        "review_throat": "",
+        "ipr_source": "forced",
+        "bhp_source": "assumed",
+        "gauge_note": "",
+        "is_hypothetical": False,
+        "offline": True,
+        "reviewed": True,
+        "notes": "force-fit (offline — no well tests)",
+    }
+
+
+def _batch_automatch_inputs(
+    well: str,
+    jp_hist,
+    ppf_surf: float,
+    rho_pf: float = 62.4,
+    store_entry: dict | None = None,
+    fallback_pump: tuple[str, str] | None = None,
+):
     """Assemble joint_match kwargs for one well from props + recent tests + the
     current pump — WITHOUT the sidebar (so the whole pad can be matched in one
     pass). Mirrors the sidebar's auto-populate field accesses. Returns
-    (kwargs, None) or (None, reason) when data is missing.
+    (kwargs, raw, None) or (None, None, reason) when data is missing.
+
+    ``store_entry`` (the well's saved review-store entry, if any) provides two
+    fallbacks that make GAUGELESS wells matchable instead of skipped:
+
+    * IPR anchor — ``estimate_reservoir_pressure`` drops wells with no valid
+      BHP, so the Vogel fit has no row for them; the engineer's reviewed
+      (res_pres, WC, GOR) stands in (they decided those in the Solver).
+    * Friction seeds — reviewed ``ken_well``/``kth_well``/``kdi_well`` beat
+      the Databricks ``jpfric_*`` defaults, which beat the generic library
+      seeds (the single-well auto-match already got the sidebar's per-well
+      coefs; the batch used to throw that calibration away).
     """
     import pandas as pd
 
@@ -642,22 +809,79 @@ def _batch_automatch_inputs(well: str, jp_hist, ppf_surf: float, rho_pf: float =
         get_well_tests_for_well,
     )
 
-    wd = get_well_data(well)
+    wd = get_well_data(well) or {}
+    entry = store_entry or {}
     tests = get_well_tests_for_well(well)
-    if not wd or tests is None or getattr(tests, "empty", True) or len(tests) < 2:
-        return None, None, "insufficient props/tests"
+    n_tests = 0 if tests is None or getattr(tests, "empty", True) else len(tests)
+    # Targets are MEASURED (oil + PF from tests) — nothing to match without at
+    # least one test. Everything else has a fallback tier.
+    if n_tests == 0:
+        return None, None, _NO_TESTS_REASON
+    if not wd and not entry:
+        # TVD/geometry can come from Databricks or a reviewed entry, but with
+        # NEITHER, a generic-depth match would be garbage presented as truth.
+        return None, None, "no well props (Databricks) and not reviewed"
     oil, pf = _recent_test_rates(well)
     if not oil or not pf:
         return None, None, "no recent oil/PF test"
     cp = get_current_pump(jp_hist, well) if jp_hist is not None else None
     if not (cp and cp.get("nozzle_no") and cp.get("throat_ratio")):
-        return None, None, "no current pump"
-    try:
-        coeffs = compute_vogel_coefficients(estimate_reservoir_pressure(tests))
-        row = coeffs[coeffs["Well"] == well].iloc[0]
-        pres, wc, gor = float(row["ResP"]), float(row["form_wc"]), float(row["fgor"])
-    except Exception:
-        return None, None, "IPR fit failed"
+        # Tracker has no current install (S-Pad live run: MPS-17/25/54) — the
+        # engineer's reviewed pump stands in; force-fit passes the sidebar
+        # pump as a last resort so no well is left behind for pump identity.
+        if entry.get("review_nozzle") and entry.get("review_throat"):
+            cp = {
+                "nozzle_no": entry["review_nozzle"],
+                "throat_ratio": entry["review_throat"],
+            }
+        elif fallback_pump:
+            cp = {"nozzle_no": fallback_pump[0], "throat_ratio": fallback_pump[1]}
+        else:
+            return None, None, "no current pump (tracker) and no reviewed pump"
+
+    # ── IPR anchor, three tiers ──────────────────────────────────────────
+    # 1. BHP-based Vogel fit (needs 2+ tests with BHP);
+    # 2. the engineer's reviewed entry (they decided ResP/WC/GOR in the Solver);
+    # 3. ASSUMED anchor — the same thing the Solver page itself does for an
+    #    unreviewed gaugeless well (sidebar default ResP + test-derived WC/GOR),
+    #    which models most of these pump-limited wells within ~10% (S-03 live:
+    #    oil +11%, PF +7% on nothing but defaults). qmax is the matching knob,
+    #    so the oil lands regardless; the label keeps the assumption visible
+    #    and Apply stores it as ipr_source="forced", never "vogel".
+    ipr_fallback = None
+    fit_ok = False
+    if n_tests >= 2:
+        try:
+            coeffs = compute_vogel_coefficients(estimate_reservoir_pressure(tests))
+            row = coeffs[coeffs["Well"] == well].iloc[0]
+            pres, wc, gor = (
+                float(row["ResP"]), float(row["form_wc"]), float(row["fgor"])
+            )
+            fit_ok = True
+        except Exception:
+            pass  # gaugeless: no coeff row — fall through to the tiers below
+    if not fit_ok:
+        if entry.get("res_pres"):
+            pres = float(entry["res_pres"])
+            # Explicit None checks — `or` would turn a deliberately-reviewed
+            # WC of 0.0 into 0.5 (0.0 is falsy), silently overriding the
+            # engineer's decision.
+            wc_v = entry.get("form_wc")
+            wc = float(wc_v) if wc_v is not None else 0.5
+            gor_v = entry.get("form_gor")
+            gor = float(gor_v) if gor_v is not None else 250.0
+            ipr_fallback = "reviewed entry"
+        else:
+            pres = _ASSUMED_RESP
+            recent0 = tests.sort_values("WtDate", ascending=False).iloc[0]
+            # WC/GOR derived from the recent test exactly the way
+            # compute_vogel_coefficients derives them (water/total; fgor col).
+            total = float(recent0.get("WtTotalFluid") or 0.0)
+            water = float(recent0.get("WtWaterVol") or 0.0)
+            wc = (water / total) if total > 0 else 0.5
+            g = recent0.get("fgor")
+            gor = float(g) if (g is not None and not pd.isna(g)) else 250.0
+            ipr_fallback = f"assumed ResP {int(_ASSUMED_RESP)}"
 
     recent = tests.sort_values("WtDate", ascending=False).iloc[0]
     bhp = recent.get("BHP")
@@ -667,30 +891,67 @@ def _batch_automatch_inputs(well: str, jp_hist, ppf_surf: float, rho_pf: float =
         else None
     )
     whp = recent.get("whp")
-    surf = (
-        float(whp)
-        if (whp is not None and not pd.isna(whp) and float(whp) > 0)
-        else 250.0
-    )
-    tvd = int(wd.get("JP_TVD") or 4065)
-    field = "schrader" if wd.get("is_sch", True) else "kuparuk"
+    if whp is not None and not pd.isna(whp) and float(whp) > 0:
+        surf = float(whp)
+    elif store_entry and store_entry.get("surf_pres"):
+        surf = float(store_entry["surf_pres"])
+    else:
+        surf = 250.0
+    # Geometry: Databricks props → reviewed entry → defaults (a reviewed well
+    # with no Databricks row must still be matchable).
+    tvd = int(wd.get("JP_TVD") or entry.get("jpump_tvd") or 4065)
+    if "is_sch" in wd:
+        field = "schrader" if wd.get("is_sch", True) else "kuparuk"
+    elif entry.get("field_model") in ("Schrader", "Kuparuk"):
+        field = entry["field_model"].lower()
+    else:
+        field = "schrader"
+    tub_od = float(wd.get("out_dia") or entry.get("tubing_od") or 4.5)
+    tub_th = float(wd.get("thick") or entry.get("tubing_thickness") or 0.5)
     try:
-        _, _, wellbore = create_pipes(
-            float(wd.get("out_dia") or 4.5), float(wd.get("thick") or 0.5), 6.875, 0.5
-        )
+        _, _, wellbore = create_pipes(tub_od, tub_th, 6.875, 0.5)
         wp = create_well_profile_from_survey(well, tvd, field)
     except Exception:
         return None, None, "geometry/survey build failed"
 
-    # Circulation direction from live daily pressures: PF on the tubing side
-    # (tubing_prs > inn_ann_prs) ⇒ forward circ, e.g. MPS-17. Mirrors the
-    # sidebar's direction seed so batch and single-well reviews agree.
+    # Circulation direction: tracker Circulating (current install, enriched
+    # at fetch) → live-pressure inference (PF on the tubing side ⇒ forward,
+    # e.g. MPS-17) → reverse. Mirrors the sidebar's direction seed so batch
+    # and single-well reviews agree.
+    from woffl.gui.pump_identity import tracker_direction
     from woffl.gui.utils import live_pf_for_seed
 
-    live_pf = live_pf_for_seed(well)
-    direction = (
-        "forward" if (live_pf and live_pf.get("pf_source") == "tubing") else "reverse"
-    )
+    trk = tracker_direction(jp_hist, well)
+    if trk:
+        direction = trk
+    else:
+        live_pf = live_pf_for_seed(well)
+        direction = (
+            "forward"
+            if (live_pf and live_pf.get("pf_source") == "tubing")
+            else "reverse"
+        )
+
+    # Friction seeds: reviewed entry → Databricks jpfric_* → library defaults.
+    # The single-well auto-match passes the sidebar's per-well coefs; the batch
+    # used to fall back to generics for every well, discarding calibration.
+    from woffl.gui.scotts_tools._common import friction_coefs_from_chars
+
+    fc = friction_coefs_from_chars(wd)
+    ken0 = kth0 = kdi0 = None
+    if store_entry:
+        ken0 = store_entry.get("ken_well")
+        kth0 = store_entry.get("kth_well")
+        kdi0 = store_entry.get("kdi_well")
+    ken0 = float(ken0) if ken0 is not None else float(fc.get("ken", 0.03))
+    kth0 = float(kth0) if kth0 is not None else float(fc.get("kth", 0.3))
+    kdi0 = float(kdi0) if kdi0 is not None else float(fc.get("kdi", 0.4))
+
+    form_temp = float(wd.get("form_temp") or entry.get("form_temp") or 120.0)
+
+    def _pvt(wk: str):
+        v = wd.get(wk)
+        return v if v is not None else entry.get(wk)
 
     kwargs = dict(
         oil_target=oil,
@@ -699,13 +960,16 @@ def _batch_automatch_inputs(well: str, jp_hist, ppf_surf: float, rho_pf: float =
         nozzle=str(cp["nozzle_no"]),
         throat=str(cp["throat_ratio"]),
         surf_pres=surf,
-        form_temp=float(wd.get("form_temp") or 120.0),
+        form_temp=form_temp,
         rho_pf=rho_pf,
         ppf_surf0=float(ppf_surf),
         wellbore=wellbore,
         well_profile=wp,
         form_wc=wc,
         form_gor=gor,
+        ken0=ken0,
+        kth0=kth0,
+        kdi0=kdi0,
         field_model=field,
         jpump_direction=direction,
         bhp_target=bhp,
@@ -718,23 +982,88 @@ def _batch_automatch_inputs(well: str, jp_hist, ppf_surf: float, rho_pf: float =
         "nozzle_no": str(cp["nozzle_no"]),
         "area_ratio": str(cp["throat_ratio"]),
         "jpump_direction": direction,
-        "tubing_od": float(wd.get("out_dia") or 4.5),
-        "tubing_thickness": float(wd.get("thick") or 0.5),
+        "tubing_od": tub_od,
+        "tubing_thickness": tub_th,
         "casing_od": 6.875,
         "casing_thickness": 0.5,
         "form_wc": float(wc),
         "form_gor": int(round(gor)),
-        "form_temp": int(round(float(wd.get("form_temp") or 120.0))),
-        "field_model": "Schrader" if wd.get("is_sch", True) else "Kuparuk",
-        "oil_api": wd.get("oil_api"),
-        "gas_sg": wd.get("gas_sg"),
-        "wat_sg": wd.get("wat_sg"),
-        "bubble_point": wd.get("bubble_point"),
+        "form_temp": int(round(form_temp)),
+        "field_model": field.title(),
+        "oil_api": _pvt("oil_api"),
+        "gas_sg": _pvt("gas_sg"),
+        "wat_sg": _pvt("wat_sg"),
+        "bubble_point": _pvt("bubble_point"),
         "surf_pres": int(round(surf)),
         "jpump_tvd": int(tvd),
         "has_bhp": bhp is not None,
+        "ipr_fallback": ipr_fallback,  # None, or "reviewed entry" (gaugeless)
     }
     return kwargs, raw, None
+
+
+def _apply_batch_row(pad: str, store: dict, r, raw, *, note: str = "") -> str | None:
+    """Write one batch-match row into the review store.
+
+    Shared by the matched-only Apply button and the force-fit path (which
+    passes a ``note`` marker like "force-fit (partial)" so hand-reviewed
+    entries stay distinguishable from bulk saves). Returns an error string
+    on failure, None on success — the caller aggregates.
+    """
+    from woffl.gui.params import SimulationParams
+
+    res = r.result
+    if not raw or res is None:
+        return f"{r.well}: no result to apply"
+    try:
+        p = SimulationParams(
+            selected_well=r.well,
+            nozzle_no=raw["nozzle_no"],
+            area_ratio=raw["area_ratio"],
+            jpump_direction=raw["jpump_direction"],
+            ken=float(res.ken),
+            kth=float(res.kth),
+            kdi=float(res.kdi),
+            tubing_od=raw["tubing_od"],
+            tubing_thickness=raw["tubing_thickness"],
+            casing_od=raw["casing_od"],
+            casing_thickness=raw["casing_thickness"],
+            form_wc=round(float(raw["form_wc"]), 2),
+            form_gor=int(raw["form_gor"]),
+            form_temp=int(raw["form_temp"]),
+            field_model=raw["field_model"],
+            oil_api=raw["oil_api"],
+            gas_sg=raw["gas_sg"],
+            wat_sg=raw["wat_sg"],
+            bubble_point=raw["bubble_point"],
+            surf_pres=int(raw["surf_pres"]),
+            jpump_tvd=int(raw["jpump_tvd"]),
+            rho_pf=62.4,
+            ppf_surf=int(round(res.ppf_surf)),
+            qwf=int(round(res.qwf_oil)),
+            pwf=int(round(res.pwf)),
+            pres=int(round(res.pres)),
+        )
+        off = store.get(r.well, {}).get("offline", _is_default_offline(pad, r.well))
+        store[r.well] = wrs.snapshot_from_params(
+            p,
+            # Fallback-anchored wells keep "forced" provenance — their ResP is
+            # an engineer's decision or an assumption, never a Vogel fit.
+            ipr_source=("forced" if raw.get("ipr_fallback") else "vogel"),
+            bhp_source="gauged" if raw.get("has_bhp") else "assumed",
+            offline=off,
+            pin_pf_pressure=True,
+            notes=note,
+        )
+        # Deliberately NOT calling _maybe_pin_saved_ipr here: batch auto-match
+        # anchors are machine-fit, not user-reviewed, so this must not pin an
+        # IPR default to Databricks (plan woffl-prop-hist-persistence W3(d) —
+        # flagged for Scott to revisit once he trusts the batch match).
+        return None
+    except Exception as e:
+        # Surface, don't swallow: a systematic failure (e.g. a bad field)
+        # otherwise looked like a partial success.
+        return f"{r.well}: {type(e).__name__}: {e}"
 
 
 def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
@@ -744,7 +1073,10 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
 
     with st.expander(
         "🎯 Auto-match all wells (beta) — match the whole pad, then review",
-        expanded=False,
+        # Default OPEN: the batch match / force-fit is the first thing Scott
+        # reaches for on a pad — collapsing it in-session still sticks for
+        # the rest of the visit.
+        expanded=True,
     ):
         import pandas as pd
 
@@ -824,7 +1156,7 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
             if bool(r["Auto-match"])
         ]
 
-        b1, b2 = st.columns([2, 1])
+        b1, b2, b3 = st.columns([2, 2, 1])
         run = b1.button(
             f"🎯 Auto-match {len(sel)} selected well(s)",
             type="primary",
@@ -832,12 +1164,154 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
             disabled=not sel,
             use_container_width=True,
         )
-        if b2.button(
-            "↻ Reset selection", key=f"batch_reset_{pad}", use_container_width=True
+        force = b2.button(
+            f"⚡ Force-fit + save {len(sel)} well(s)",
+            key=f"batch_force_{pad}",
+            disabled=not sel,
+            use_container_width=True,
+            help=(
+                "One click to a fully-populated pad: auto-match every selected "
+                "well and save EVERY result (matched, partial, or failed — "
+                "best-found params) straight into the review store. Wells with "
+                "no pump anywhere use the sidebar pump. Hand-reviewed wells "
+                "are protected unless the overwrite box is ticked. Then go run "
+                "the optimization and come back to fine-tune."
+            ),
+        )
+        if b3.button(
+            "↻ Reset", key=f"batch_reset_{pad}", use_container_width=True
         ):
             st.session_state.pop(fkey, None)
             st.session_state.pop(f"{fkey}_sig", None)
             st.session_state.pop(f"{fkey}_editor", None)
+            st.rerun()
+        force_overwrite = st.checkbox(
+            "Force-fit may overwrite hand-reviewed wells",
+            value=False,
+            key=f"batch_force_ow_{pad}",
+            help=(
+                "Off (default): force-fit only fills wells that aren't in the "
+                "review store yet (or were themselves force-fit before) — your "
+                "hand-tuned reviews are never touched. On: every selected well "
+                "is re-fit and overwritten."
+            ),
+        )
+
+        # One-shot force-fit summary from the previous run (the rerun that
+        # refreshed the review progress cleared anything rendered inline).
+        _fmsg = st.session_state.pop(f"batch_force_msg_{pad}", None)
+        if _fmsg:
+            st.success(_fmsg["ok"])
+            if _fmsg.get("detail"):
+                st.caption(_fmsg["detail"])
+
+        if force:
+            jp_hist = st.session_state.get("jp_history_df")
+            store = store_for(pad)
+            side_pump = (
+                str(st.session_state.get("nozzle_no", "12")),
+                str(st.session_state.get("area_ratio", "B")),
+            )
+            wells_kwargs, raw_by_well = [], {}
+            skipped: list[tuple[str, str]] = []
+            protected: list[str] = []
+            prog = st.progress(0.0, text="Building inputs…")
+            for i, (w, ppf) in enumerate(sel):
+                if (
+                    not force_overwrite
+                    and w in store
+                    and not str(store[w].get("notes", "")).startswith("force-fit")
+                ):
+                    protected.append(w)
+                else:
+                    try:
+                        kw, raw, why = _batch_automatch_inputs(
+                            w,
+                            jp_hist,
+                            ppf,
+                            store_entry=store.get(w),
+                            fallback_pump=side_pump,
+                        )
+                    except Exception as e:
+                        kw, raw, why = None, None, f"{type(e).__name__}"
+                    if kw is None:
+                        skipped.append((w, why))
+                    else:
+                        wells_kwargs.append((w, kw))
+                        raw_by_well[w] = raw
+                prog.progress(
+                    (i + 1) / max(len(sel), 1),
+                    text=f"Prepared {i + 1}/{len(sel)} wells…",
+                )
+            with st.spinner(f"Force-fitting {len(wells_kwargs)} wells…"):
+                rows = batch_match(wells_kwargs)
+            prog.empty()
+
+            applied, errors_ = 0, []
+            for r in rows:
+                if r.result is None:
+                    skipped.append((r.well, "match crashed"))
+                    continue
+                err = _apply_batch_row(
+                    pad,
+                    store,
+                    r,
+                    raw_by_well.get(r.well),
+                    note=f"force-fit ({r.status})",
+                )
+                if err:
+                    errors_.append(err)
+                else:
+                    applied += 1
+
+            # No-test wells can't be matched (no targets) — default them to
+            # OFFLINE store entries so the pad reads fully processed and the
+            # optimizer excludes them, instead of leaving them dangling.
+            defaulted_off: list[str] = []
+            for w, why in skipped:
+                if why != _NO_TESTS_REASON:
+                    continue
+                if w in store:
+                    store[w]["offline"] = True
+                else:
+                    store[w] = _offline_stub_entry(w)
+                defaulted_off.append(w)
+            skipped = [(w, why) for w, why in skipped if w not in defaulted_off]
+
+            st.session_state[f"batch_rows_{pad}"] = rows
+            st.session_state[f"batch_skipped_{pad}"] = skipped
+            st.session_state[f"batch_raw_{pad}"] = raw_by_well
+            detail_bits = []
+            if defaulted_off:
+                detail_bits.append(
+                    "defaulted OFFLINE (no well tests): " + ", ".join(defaulted_off)
+                )
+            if protected:
+                detail_bits.append(
+                    f"protected (hand-reviewed, untouched): {', '.join(protected)}"
+                )
+            if skipped:
+                detail_bits.append(
+                    "couldn't fit: "
+                    + ", ".join(f"{w} ({why})" for w, why in skipped)
+                )
+            if errors_:
+                detail_bits.append("errors: " + "; ".join(errors_))
+            st.session_state[f"batch_force_msg_{pad}"] = {
+                "ok": (
+                    f"⚡ Force-fit saved {applied} well(s) to the {pad}-Pad "
+                    "review store"
+                    + (
+                        f" (+{len(defaulted_off)} defaulted offline)"
+                        if defaulted_off
+                        else ""
+                    )
+                    + " — head to Configure & Run, then come back and "
+                    "fine-tune the rough ones (see the table below; "
+                    "force-fit entries are tagged in their notes)."
+                ),
+                "detail": "  ·  ".join(detail_bits),
+            }
             st.rerun()
 
         if run:
@@ -846,7 +1320,9 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
             prog = st.progress(0.0, text="Building inputs…")
             for i, (w, ppf) in enumerate(sel):
                 try:
-                    kw, raw, why = _batch_automatch_inputs(w, jp_hist, ppf)
+                    kw, raw, why = _batch_automatch_inputs(
+                        w, jp_hist, ppf, store_entry=store_for(pad).get(w)
+                    )
                 except Exception as e:  # never let one well break the build loop
                     kw, raw, why = None, None, f"{type(e).__name__}"
                 if kw is None:
@@ -882,6 +1358,15 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
             def _r(v):
                 return round(v, 0) if (v is not None and v == v) else None
 
+            _raw_map = st.session_state.get(f"batch_raw_{pad}", {})
+
+            def _note(r):
+                fb = (_raw_map.get(r.well) or {}).get("ipr_fallback")
+                prefix = f"[IPR: {fb}] " if fb else ""
+                # 200 chars keeps the model-ceiling tail (the actionable part
+                # of an oil-short diagnostic) visible in the table.
+                return (prefix + (r.diagnostic or ""))[:200]
+
             df = pd.DataFrame(
                 [
                     {
@@ -889,7 +1374,7 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
                         "Status": r.status,
                         "Oil err %": _r(r.oil_err_pct),
                         "PF resid %": _r(r.pf_err_pct),
-                        "Note": (r.diagnostic or "")[:90],
+                        "Note": _note(r),
                     }
                     for r in rows
                 ]
@@ -912,59 +1397,15 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
                 help="Saves each matched well's fitted IPR + friction (PF pressure held) "
                 "as a reviewed entry. Open any in the Solver below to adjust.",
             ):
-                from woffl.gui.params import SimulationParams
-
                 store = store_for(pad)
                 applied = 0
                 skipped: list[str] = []
                 for r in matched:
-                    raw, res = raw_by_well.get(r.well), r.result
-                    if not raw or res is None:
-                        continue
-                    try:
-                        p = SimulationParams(
-                            selected_well=r.well,
-                            nozzle_no=raw["nozzle_no"],
-                            area_ratio=raw["area_ratio"],
-                            jpump_direction=raw["jpump_direction"],
-                            ken=float(res.ken),
-                            kth=float(res.kth),
-                            kdi=float(res.kdi),
-                            tubing_od=raw["tubing_od"],
-                            tubing_thickness=raw["tubing_thickness"],
-                            casing_od=raw["casing_od"],
-                            casing_thickness=raw["casing_thickness"],
-                            form_wc=round(float(raw["form_wc"]), 2),
-                            form_gor=int(raw["form_gor"]),
-                            form_temp=int(raw["form_temp"]),
-                            field_model=raw["field_model"],
-                            oil_api=raw["oil_api"],
-                            gas_sg=raw["gas_sg"],
-                            wat_sg=raw["wat_sg"],
-                            bubble_point=raw["bubble_point"],
-                            surf_pres=int(raw["surf_pres"]),
-                            jpump_tvd=int(raw["jpump_tvd"]),
-                            rho_pf=62.4,
-                            ppf_surf=int(round(res.ppf_surf)),
-                            qwf=int(round(res.qwf_oil)),
-                            pwf=int(round(res.pwf)),
-                            pres=int(round(res.pres)),
-                        )
-                        off = store.get(r.well, {}).get(
-                            "offline", _is_default_offline(pad, r.well)
-                        )
-                        store[r.well] = wrs.snapshot_from_params(
-                            p,
-                            ipr_source="vogel",
-                            bhp_source="gauged" if raw.get("has_bhp") else "assumed",
-                            offline=off,
-                            pin_pf_pressure=True,
-                        )
+                    err = _apply_batch_row(pad, store, r, raw_by_well.get(r.well))
+                    if err:
+                        skipped.append(err)
+                    else:
                         applied += 1
-                    except Exception as e:
-                        # Surface, don't swallow: a systematic failure (e.g. a
-                        # bad field) otherwise looked like a partial success.
-                        skipped.append(f"{r.well}: {type(e).__name__}: {e}")
                 st.success(
                     f"Applied {applied} matched well(s) to the {pad}-Pad review store — "
                     "they're saved. Open any in the Solver below to fine-tune."

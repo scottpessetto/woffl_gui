@@ -309,16 +309,23 @@ def build_well_config(
         params["qwf"] = float(vogel_row["qwf"])
         params["pwf"] = float(vogel_row["pwf"])
 
-    # Circulation direction from live daily pressures (vw_pressure_daily):
-    # PF on the tubing side ⇒ forward circ (e.g. MPS-17). Soft-fails to
-    # "reverse", the standard configuration. Function-level import — utils
-    # imports pieces of _common, so a top-level import would be circular.
+    # Circulation direction: the JP tracker's Circulating column (current
+    # install, enriched at fetch) is authoritative; live daily pressures
+    # (PF on the tubing side ⇒ forward, e.g. MPS-17) remain the fallback.
+    # Soft-fails to "reverse", the standard configuration. Function-level
+    # imports — utils imports pieces of _common, so top-level would be
+    # circular.
     try:
+        from woffl.gui.pump_identity import tracker_direction
         from woffl.gui.utils import live_pf_for_seed
 
-        live_pf = live_pf_for_seed(well_name)
-        if live_pf and live_pf.get("pf_source") == "tubing":
-            params["jpump_direction"] = "forward"
+        trk = tracker_direction(st.session_state.get("jp_history_df"), well_name)
+        if trk:
+            params["jpump_direction"] = trk
+        else:
+            live_pf = live_pf_for_seed(well_name)
+            if live_pf and live_pf.get("pf_source") == "tubing":
+                params["jpump_direction"] = "forward"
     except Exception:
         pass
 

@@ -8,10 +8,11 @@ Centralized Databricks connectivity module that works in two environments:
 
 import math
 import os
+import re
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -138,12 +139,14 @@ def _new_connection():
     )
 
 
-def _query_via_connector(query: str) -> pd.DataFrame:
-    """Execute a query on the per-thread cached connection.
+def _execute_via_connector(runner: Callable[[Any], Any]) -> Any:
+    """Run `runner(cursor)` on the per-thread cached connection.
 
-    One retry with a fresh connection (and a forced token refresh) covers the
-    stale-session cases: warehouse idle-stop, network blips, token expiry
-    mid-session. A genuinely bad query fails twice and raises.
+    Shared retry machinery for both the read path (`_query_via_connector`)
+    and the write path (`_write_via_connector`): one retry with a fresh
+    connection (and a forced token refresh) covers the stale-session cases --
+    warehouse idle-stop, network blips, token expiry mid-session. A
+    genuinely bad statement fails twice and raises.
 
     # [LIBRARY change -> upstream PR to kwellis/woffl]
     `_new_connection()` is called INSIDE the try below (not before it) so a
@@ -160,12 +163,9 @@ def _query_via_connector(query: str) -> pd.DataFrame:
                 _CONN_LOCAL.conn = conn
             cursor = conn.cursor()
             try:
-                cursor.execute(query)
-                result = cursor.fetchall()
-                columns = [desc[0] for desc in (cursor.description or [])]
+                return runner(cursor)
             finally:
                 cursor.close()
-            return pd.DataFrame(result, columns=columns)
         except Exception as e:
             last_err = e
             _CONN_LOCAL.conn = None
@@ -179,8 +179,110 @@ def _query_via_connector(query: str) -> pd.DataFrame:
     raise last_err  # type: ignore[misc]
 
 
+def _query_via_connector(query: str) -> pd.DataFrame:
+    """Execute a read-only query on the per-thread cached connection."""
+
+    def _run(cursor):
+        cursor.execute(query)
+        result = cursor.fetchall()
+        columns = [desc[0] for desc in (cursor.description or [])]
+        return pd.DataFrame(result, columns=columns)
+
+    return _execute_via_connector(_run)
+
+
 def execute_query(query: str) -> pd.DataFrame:
     return _query_via_connector(query)
+
+
+# ── Write path (prop_hist persistence, W1) ──────────────────────────────────
+# INSERT-only, gated behind ALLOW_DATABRICKS_WRITES (same truthy convention
+# as the inert write-preview gate in scotts_tools/jp_calibration.py), and
+# parameterized via the connector's native bind params -- never
+# validate-then-interpolate for values. woffl.assembly.prop_hist_client is
+# the (currently) only caller.
+
+
+class DatabricksWriteError(RuntimeError):
+    """Base error for execute_write() rejections."""
+
+
+class WritesDisabledError(DatabricksWriteError):
+    """Raised when ALLOW_DATABRICKS_WRITES is not truthy in the environment."""
+
+
+class UnsafeWriteStatementError(DatabricksWriteError):
+    """Raised when the SQL text is not a single, unchained INSERT statement."""
+
+
+_INSERT_RE = re.compile(r"(?is)^\s*insert\b")
+_TRAILING_SEMICOLONS_RE = re.compile(r"[\s;]+$")
+
+
+def _write_gate_enabled() -> bool:
+    """Same truthy convention already in use for the write gate: '1'/'true'/'yes'
+    (case-insensitive), matching scotts_tools/jp_calibration.py."""
+    return os.environ.get("ALLOW_DATABRICKS_WRITES", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _validate_single_insert(sql: str) -> None:
+    """Raise UnsafeWriteStatementError unless `sql` is exactly one INSERT
+    statement -- no semicolon-chaining, no UPDATE/DELETE/DDL."""
+    if not isinstance(sql, str) or not sql.strip():
+        raise UnsafeWriteStatementError(
+            "execute_write requires a non-empty SQL string."
+        )
+    # One optional trailing semicolon (plus trailing whitespace) is fine --
+    # anything else containing ';' is statement chaining.
+    body = _TRAILING_SEMICOLONS_RE.sub("", sql)
+    if ";" in body:
+        raise UnsafeWriteStatementError(
+            "execute_write rejects statement chaining "
+            "(found ';' before the end of the SQL text)."
+        )
+    if not _INSERT_RE.match(body):
+        raise UnsafeWriteStatementError(
+            "execute_write only accepts a single INSERT statement."
+        )
+
+
+def _write_via_connector(sql: str, parameters: dict) -> int:
+    """Execute a parameterized write on the per-thread cached connection."""
+
+    def _run(cursor):
+        cursor.execute(sql, parameters)
+        return cursor.rowcount
+
+    return _execute_via_connector(_run)
+
+
+def execute_write(sql: str, parameters: Optional[dict] = None) -> int:
+    """Execute a single parameterized INSERT and return its rowcount.
+
+    Refuses to run unless BOTH hold:
+    - `ALLOW_DATABRICKS_WRITES` is truthy in the environment (checked first,
+      before any connection attempt or SQL parsing) -- else raises
+      `WritesDisabledError`.
+    - `sql` is a single, unchained INSERT statement (case-insensitive; a
+      lone trailing ';' is fine, anything containing ';' before the end, or
+      not starting with INSERT, is rejected) -- else raises
+      `UnsafeWriteStatementError`.
+
+    Values belong in `parameters` (passed straight through to the
+    connector's native `cursor.execute(sql, parameters)` bind params) --
+    never string-interpolated into `sql`.
+    """
+    if not _write_gate_enabled():
+        raise WritesDisabledError(
+            "Databricks writes are disabled. Set ALLOW_DATABRICKS_WRITES=true "
+            "in the environment to enable execute_write()."
+        )
+    _validate_single_insert(sql)
+    return _write_via_connector(sql, parameters or {})
 
 
 JP_HISTORY_QUERY = """\
@@ -190,7 +292,12 @@ SELECT
     jp.DatePulled AS `Date Pulled`,
     jp.NozzleNumber AS `Nozzle Number`,
     jp.ThroatRatio AS `Throat Ratio`,
-    jp.TubingDiameter AS `Tubing Diameter`
+    jp.TubingDiameter AS `Tubing Diameter`,
+    jp.Circulating AS `Circulating`,
+    jp.Manufacturer AS `Manufacturer`,
+    jp.ThroatNumber AS `Throat Number`,
+    jp.NozzleDiameter AS `Nozzle Diameter`,
+    jp.ThroatDiameter AS `Throat Diameter`
 FROM apps.mpu_tracker.tbl_jetpump_data jp
 JOIN apps.mpu_tracker.tbl_wells w ON jp.loc_id = w.loc_id
 ORDER BY w.wellname, jp.DateSet DESC

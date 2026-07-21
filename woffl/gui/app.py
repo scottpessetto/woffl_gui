@@ -29,10 +29,19 @@ _JP_HISTORY_PATH = (
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def _cached_jp_history():
-    """Fetch JP history from Databricks mpu_tracker. Cached 24h."""
-    from woffl.assembly.databricks_client import fetch_jp_history
+    """Fetch JP history from Databricks mpu_tracker. Cached 24h.
 
-    return fetch_jp_history()
+    Enriched at fetch (pump_identity): the tracker's Circulating column is
+    normalized into ``Circ Direction``, and Guiberson installs (letter
+    nozzle + ThroatNumber) are rewritten to their closest National
+    equivalent — so every downstream consumer sees a valid National code
+    instead of treating those wells as having no pump. Originals survive in
+    ``Raw Pump`` / ``Pump Converted``.
+    """
+    from woffl.assembly.databricks_client import fetch_jp_history
+    from woffl.gui.pump_identity import enrich_jp_history
+
+    return enrich_jp_history(fetch_jp_history())
 
 
 def _prefetch_well_sort_data() -> None:
@@ -178,8 +187,13 @@ def main():
                 else:
                     e = errors.get("jp_history")
                     if _JP_HISTORY_PATH.exists():
-                        st.session_state["jp_history_df"] = parse_jp_history(
-                            str(_JP_HISTORY_PATH)
+                        # Enrich the xlsx path too — it has no Circulating /
+                        # Manufacturer columns, but letter-nozzle Guiberson
+                        # rows are still detected by catalog membership.
+                        from woffl.gui.pump_identity import enrich_jp_history
+
+                        st.session_state["jp_history_df"] = enrich_jp_history(
+                            parse_jp_history(str(_JP_HISTORY_PATH))
                         )
                         st.session_state["jp_history_source"] = "Excel (fallback)"
                         st.warning(f"Databricks unavailable, using bundled Excel: {e}")

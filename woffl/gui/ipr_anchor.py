@@ -18,9 +18,12 @@ The returned dict is shaped like a row of
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pandas as pd
 
+from woffl.assembly.prop_hist_client import push_prop, resolve_entry_user
 from woffl.flow.inflow import InFlow
 
 
@@ -80,9 +83,9 @@ def fit_rp_through_anchor(
             continue
         qmax = np.array([anchor_fluid / denom_a])
         sse = float(
-            _normalized_curve_sse(
-                bhp_values, fluid_values, p, qmax, q_scale, p_scale
-            )[0]
+            _normalized_curve_sse(bhp_values, fluid_values, p, qmax, q_scale, p_scale)[
+                0
+            ]
         )
         if sse < best_sse:
             best_sse = sse
@@ -119,6 +122,182 @@ def _r_squared(
     if ss_tot == 0:
         return 0.0
     return 1.0 - (ss_res / ss_tot)
+
+
+def find_test_row_by_wt_uid(
+    test_df: pd.DataFrame | None, wt_uid: int
+) -> pd.Series | None:
+    """Row in ``test_df`` whose ``wt_uid`` column matches ``wt_uid``, or ``None``.
+
+    Used by the Solver's saved-IPR pin (``prop_hist``'s ``ipr_wt_uid``, see
+    ``woffl.assembly.prop_hist_client``) to check whether the pinned test is
+    still present in the well's CURRENT test frame — the pin persists in
+    Databricks indefinitely, but the frame is windowed (lookback months,
+    memory-gauge coverage, count cap), so a pinned test can "age out" and
+    this returns ``None`` for the caller to fall back to the normal default.
+
+    Returns ``None`` when ``test_df`` is empty/``None``, the ``wt_uid``
+    column is absent (older cached frames, synthetic test data in call sites
+    that don't run through :mod:`woffl.assembly.well_test_client`), or no row
+    matches. Manual/provisional test rows always carry ``NaN`` here (see
+    ``utils._append_manual_tests``) so they can never match.
+    """
+    if test_df is None or test_df.empty or "wt_uid" not in test_df.columns:
+        return None
+
+    uid_col = pd.to_numeric(test_df["wt_uid"], errors="coerce")
+    mask = uid_col == float(wt_uid)
+    if not mask.any():
+        return None
+
+    matches = test_df[mask]
+    if "WtDate" in matches.columns:
+        matches = matches.sort_values("WtDate", ascending=False)
+    return matches.iloc[0]
+
+
+# ── Save/clear the IPR-anchor pin (mpu.wells.prop_hist, ipr_wt_uid) ─────────
+# W3 of the woffl-prop-hist-persistence plan. This module is already a leaf
+# both `tabs/jetpump_solver.py` (the Solver's Save/Clear buttons) and
+# `workflow_steps/step_review_wells.py` (the pad-review save hook) import, so
+# the actual push mechanics live here ONCE rather than being duplicated at
+# both call sites. Only depends on `woffl.assembly.prop_hist_client` (no
+# Streamlit, no `woffl.gui` imports) so it stays import-cycle-safe.
+
+_IPR_PIN_PROP_ID = "ipr_wt_uid"
+# NOTE: `wt_uid` values in `vw_well_test` are signed and span roughly
+# -3.6M to +3.1M (almost all negative in practice) -- there is no numeric
+# sentinel that can't collide with a real uid. Un-pinning writes a SQL NULL
+# prop_value instead (see `clear_ipr_pin` / `prop_hist_client.push_prop`).
+
+# Message prefixes callers pattern-match on to pick st.caption (expected,
+# non-error skip) vs st.warning (an actual push/clear failure) without this
+# module needing a Streamlit dependency or a richer return type.
+PIN_SKIP_PREFIX = "IPR not saved to Databricks:"
+PIN_FAILURE_PREFIX = "Could not save IPR to Databricks:"
+UNPIN_FAILURE_PREFIX = "Could not clear saved IPR:"
+
+
+def writes_enabled() -> bool:
+    """Same ALLOW_DATABRICKS_WRITES truthy convention as
+    `databricks_client._write_gate_enabled` / `scotts_tools/jp_calibration.py`
+    -- re-checked here directly (rather than importing that private helper)
+    so callers can decide whether to even SHOW a save/clear control before
+    attempting a push (``push_prop`` enforces the same gate again on the
+    actual write, via `databricks_client.execute_write`)."""
+    return os.environ.get("ALLOW_DATABRICKS_WRITES", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _anchor_row_wt_uid(anchor_row) -> float | None:
+    """A usable (non-NaN) ``wt_uid`` from an anchor row, or ``None``.
+
+    Manual/provisional test rows (see ``utils._append_manual_tests``) always
+    carry ``wt_uid = NaN`` -- never pinnable. Also guards a row with no
+    `wt_uid` column at all (older cached frames, synthetic test data in
+    call sites that don't route through `well_test_client`).
+    """
+    if anchor_row is None:
+        return None
+    raw = anchor_row.get("wt_uid") if hasattr(anchor_row, "get") else None
+    if raw is None:
+        return None
+    try:
+        if pd.isna(raw):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _anchor_date_label(anchor_row) -> str:
+    """Best-effort YYYY-MM-DD for an anchor row's WtDate, else 'n/a'."""
+    if anchor_row is None:
+        return "n/a"
+    d = anchor_row.get("WtDate") if hasattr(anchor_row, "get") else None
+    if d is None or pd.isna(d):
+        return "n/a"
+    try:
+        return d.strftime("%Y-%m-%d")
+    except AttributeError:
+        return str(d)
+
+
+def pin_ipr_anchor(well_name: str, anchor_row) -> tuple[bool, str]:
+    """Push ``well_name``'s CURRENTLY-resolved IPR-anchor test as its saved
+    default (``mpu.wells.prop_hist``'s ``ipr_wt_uid``).
+
+    Shared by the pad-review save hook (``workflow_steps/step_review_wells.py
+    ::_save_and_advance``) and the Solver's "Save IPR as well default" button
+    (``tabs/jetpump_solver.py::_render_ipr_pin_controls``) so the two push
+    paths can never diverge. ``anchor_row`` should come from
+    ``jetpump_solver._resolve_anchor_test_row`` (or an equivalent resolver) --
+    the row the anchor CURRENTLY points to, any mode.
+
+    Callers are responsible for:
+      * checking `writes_enabled()` BEFORE calling this (a gate-off session
+        should show its own UI -- e.g. a hidden button -- rather than this
+        function's generic skip message: `push_prop` still enforces the
+        gate on the actual write, but a caller that skips the pre-check gets
+        a `PIN_FAILURE_PREFIX` message instead of a clean UI state);
+      * calling `jetpump_solver._clear_pin_cache(well_name)` immediately
+        after a successful push, so the next render re-queries instead of
+        replaying the pre-save memo;
+      * calling this AFTER any store write / sidebar update has already
+        succeeded -- pinning is best-effort and never rolls anything back.
+
+    Returns ``(pushed, message)``:
+      * ``(True, "📌 IPR saved to Databricks — test YYYY-MM-DD")`` on success.
+      * ``(False, "IPR not saved to Databricks: ...")`` -- an EXPECTED,
+        non-error skip (no resolvable test, or the anchor is a manual/
+        provisional test with no ``wt_uid``). Show as a caption, never a
+        warning -- check ``message.startswith(PIN_SKIP_PREFIX)``.
+      * ``(False, "Could not save IPR to Databricks: ...")`` -- ``push_prop``
+        itself raised (connection, enthid resolution, unknown prop_id, the
+        write gate). Show as ``st.warning``.
+    """
+    wt_uid = _anchor_row_wt_uid(anchor_row)
+    if wt_uid is None:
+        reason = (
+            "no resolvable test"
+            if anchor_row is None
+            else "this anchor is a manual/provisional test (no measured well-test ID)"
+        )
+        return False, f"{PIN_SKIP_PREFIX} {reason}."
+
+    date_label = _anchor_date_label(anchor_row)
+    try:
+        entry_user = resolve_entry_user()
+        push_prop(well_name, _IPR_PIN_PROP_ID, wt_uid, entry_user)
+    except Exception as e:  # connection, enthid resolution, unknown prop_id, gate...
+        return False, f"{PIN_FAILURE_PREFIX} {e}"
+
+    return True, f"📌 IPR saved to Databricks — test {date_label}"
+
+
+def clear_ipr_pin(well_name: str) -> tuple[bool, str]:
+    """Un-pin ``well_name``'s saved IPR default: push a NULL prop_value.
+
+    ``jetpump_solver._load_pinned_anchor`` treats a NULL/NaN ``prop_value``
+    as "no pin" -- there is no numeric sentinel that works, since real
+    ``wt_uid`` values are signed and span both positive and negative ranges.
+    Corrections/un-pins are new rows (prop_hist is append-only), never a
+    DELETE (see the plan's DART review). Same failure handling as
+    :func:`pin_ipr_anchor`; callers should also call
+    `jetpump_solver._clear_pin_cache(well_name)` after a successful clear.
+    """
+    try:
+        entry_user = resolve_entry_user()
+        push_prop(well_name, _IPR_PIN_PROP_ID, None, entry_user)
+    except Exception as e:
+        return False, f"{UNPIN_FAILURE_PREFIX} {e}"
+    return True, "Saved IPR cleared"
 
 
 def _resolve_anchor_row(
@@ -183,9 +362,7 @@ def compute_anchored_vogel(
         return None
     df["__date"] = pd.to_datetime(df.get("WtDate"), errors="coerce")
 
-    well = well_name or (
-        str(df["well"].iloc[0]) if "well" in df.columns else "Well"
-    )
+    well = well_name or (str(df["well"].iloc[0]) if "well" in df.columns else "Well")
 
     bhp_values = df["BHP"].values.astype(float)
     fluid_values = df["WtTotalFluid"].values.astype(float)

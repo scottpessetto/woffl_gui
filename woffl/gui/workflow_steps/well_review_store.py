@@ -390,6 +390,29 @@ def store_to_well_configs(store: dict[str, dict]) -> list[WellConfig]:
     return [to_well_config(entry) for entry in store.values()]
 
 
+def clone_entry(entry: dict, new_name: str, *, source_well: str) -> dict:
+    """A placeholder copy of an existing well's reviewed entry.
+
+    Backs the Configure-screen "add a placeholder well like X" flow: copies
+    every physical/calibration field (IPR, geometry, friction coefs, PF
+    direction, review pump), renames, and flags the copy hypothetical so
+    provenance stays honest — it feeds the optimizer like a real well but
+    can never be mistaken for one. The source entry is not touched.
+    """
+    import copy
+
+    out = copy.deepcopy(entry)
+    out["well_name"] = new_name
+    out["is_hypothetical"] = True
+    out["ipr_source"] = "hypothetical"
+    out["bhp_source"] = "assumed"
+    out["reviewed"] = True
+    out["offline"] = False
+    out["gauge_note"] = ""
+    out["notes"] = f"placeholder — cloned from {source_well}"
+    return out
+
+
 def active_entries(store: dict[str, dict]) -> dict[str, dict]:
     """Entries that should feed the optimizer — excludes offline/pulled wells."""
     return {k: v for k, v in store.items() if not v.get("offline")}

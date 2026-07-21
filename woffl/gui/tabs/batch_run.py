@@ -271,6 +271,19 @@ def _render_performance_graph(batch_pump, params: SimulationParams) -> None:
                         "This is the best available option."
                     )
 
+            # Why this pump — spell out the cutoff that drove the choice so the
+            # Marginal Watercut metric above has a reference point.
+            if recommendation["recommendation_type"] != "best_available":
+                st.caption(
+                    f"Chosen by the marginal water-cut cutoff of "
+                    f"**{float(params.marginal_watercut):.2f}** (Marginal Watercut "
+                    f"control above / sidebar): the pump closest to where the "
+                    f"curve's marginal WC reaches the cutoff while staying below "
+                    f"it. Each barrel of extra fluid from this pump is "
+                    f"{recommendation['marginal_ratio']:.3f} water; larger pumps "
+                    f"add water above the cutoff."
+                )
+
     except Exception as e:
         st.error(f"Error generating performance plot: {str(e)}")
         st.info(

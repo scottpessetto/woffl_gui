@@ -36,6 +36,7 @@ PAGE_MODULES = [
     "woffl.gui.m_pad_plant",
     "woffl.gui.s_pad_ipr_report",
     "woffl.gui.memory_gauge",
+    "woffl.gui.pump_identity",
     "woffl.gui.joint_match",
     "woffl.gui.ipr_anchor",
     "woffl.gui.ipr_backmatch",
@@ -113,7 +114,9 @@ class TestBatchAutomatchInputs:
         self._patch_data(monkeypatch)
         kwargs, raw, why = srw._batch_automatch_inputs("MPS-99", None, 3400.0)
         assert kwargs is None and raw is None
-        assert why == "no current pump"
+        # Reaching the pump check (vs a NameError earlier in the chain) is the
+        # point; the exact wording now mentions the reviewed-pump fallback.
+        assert why.startswith("no current pump")
 
     def test_helpers_are_the_shared_ones(self):
         # R-1 Phase C: the render path lives in pad_page; the S/I/M modules

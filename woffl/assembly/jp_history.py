@@ -60,11 +60,21 @@ def _pump_dict_from_row(latest: pd.Series) -> dict:
         except (TypeError, ValueError):
             tubing_val = None
 
+    # Optional enrichment columns (pump_identity.enrich_jp_history) — passed
+    # through additively when present so GUI consumers can show direction /
+    # brand provenance. Plain tracker or xlsx frames simply yield None here.
+    def _opt_str(key: str):
+        v = latest.get(key)
+        return v if isinstance(v, str) and v else None
+
     return {
         "nozzle_no": nozzle_str,
         "throat_ratio": str(throat).strip() if pd.notna(throat) else None,
         "tubing_od": tubing_val,
         "date_set": date_set,
+        "circ_direction": _opt_str("Circ Direction"),
+        "manufacturer": _opt_str("Manufacturer"),
+        "raw_pump": _opt_str("Raw Pump"),
     }
 
 

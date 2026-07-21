@@ -235,11 +235,74 @@ def joint_match(
         else:
             qbest = qmax_hi  # can't reach the oil target at this pressure (pump-limited)
         bm = model(qbest, ppf, ken0, kth0, kdi0)
+        bken, bkth, bkdi = ken0, kth0, kdi0
+
+        # ── Friction polish at the HELD pressure ──────────────────────────
+        # The 1-D root-find can only place the OIL; the PF (and BHP, when
+        # gauged) residuals were previously left wherever the seed friction
+        # coefs put them — the main reason wells kept reading "partial" with
+        # a big PF residual. Friction is the legitimately-uncertain knob
+        # (wear / calibration), so when the seeds can't close the remaining
+        # residuals, re-fit (qmax, ken, kth, kdi) within physical bounds —
+        # the measured pressure stays honest throughout.
+        def _cost(m):
+            return sum(r * r for r in residuals(m))
+
+        if tune_friction and (
+            bm is None or not _within(bm, oil_target, pf_target, bhp_target)
+        ):
+            def resid_pin(x):
+                m = model(x[0], ppf, x[1], x[2], x[3])
+                return [_PENALTY] * n_pen if m is None else residuals(m)
+
+            # Seeds span the friction range — kth/kdi have WEAK gradients on
+            # the PF rate, so a start in the wrong basin stalls at a bound
+            # (observed: truth kth/kdi 0.9 never reached from a 0.3 start).
+            # stop_cost breaks early once a seed lands, so well-behaved wells
+            # don't pay for the extra starts.
+            best_pin = _run_starts(
+                least_squares, resid_pin,
+                [(qbest, ken0, kth0, kdi0),
+                 (qbest, 0.10, 0.30, 0.30),
+                 (qbest, 0.30, 0.85, 0.85),
+                 (qbest, 0.05, 0.60, 0.60)],
+                bounds=([qmax_lo, _KEN_LO, _KTH_LO, _KDI_LO],
+                        [qmax_hi, _KEN_HI, _KTH_HI, _KDI_HI]),
+                max_nfev=max_nfev, stop_cost=0.004,
+            )
+            mp = model(best_pin["x"][0], ppf, *best_pin["x"][1:])
+            if mp is not None and (bm is None or _cost(mp) < _cost(bm)):
+                bm = mp
+                qbest = float(best_pin["x"][0])
+                bken, bkth, bkdi = (
+                    float(best_pin["x"][1]),
+                    float(best_pin["x"][2]),
+                    float(best_pin["x"][3]),
+                )
+
+        friction_tuned = (bken, bkth, bkdi) != (ken0, kth0, kdi0)
         matched = (bm is not None
                    and abs(bm["oil"] - oil_target) / max(oil_target, 1.0) <= _MATCH_TOL)
+
+        # Probe the physical ceilings when the match didn't land, same as the
+        # free-pressure path — the diagnostic can then say "the model tops out
+        # at X BOPD at this pressure" instead of leaving a bare oil residual
+        # (the S-Pad live run showed three wells oil-short with no explanation).
+        probes = {}
+        if bm is not None and not _within(bm, oil_target, pf_target, bhp_target):
+            m_ipr = model(qmax_hi, ppf, bken, bkth, bkdi)      # unlimited IPR, held PF
+            m_ipr_pf = model(qmax_hi, _PPF_HI, bken, bkth, bkdi)  # + max PF pressure
+            m_pf = model(qbest, _PPF_HI, bken, bkth, bkdi)     # max PF pressure
+            probes = {
+                "oil_at_max_ipr": (m_ipr or {}).get("oil"),
+                "oil_at_max_ipr_pf": (m_ipr_pf or {}).get("oil"),
+                "pf_at_max_ppf": (m_pf or {}).get("pf"),
+            }
+
         return _build_result(
-            bm, qbest, ppf, ken0, kth0, kdi0, pres, oil_target, pf_target,
-            bhp_target, matched, state["n"], qmax_hi, {}, pinned=True,
+            bm, qbest, ppf, bken, bkth, bkdi, pres, oil_target, pf_target,
+            bhp_target, matched, state["n"], qmax_hi, probes, pinned=True,
+            pinned_friction_tuned=friction_tuned,
         )
 
     # ── Stage 1: 2-knob match (qmax, ppf) ────────────────────────────────
@@ -307,8 +370,13 @@ def joint_match(
     )
 
 
-def _run_starts(least_squares, resid, starts, *, bounds, max_nfev):
-    """Run least_squares from several seeds; keep the lowest-cost result."""
+def _run_starts(least_squares, resid, starts, *, bounds, max_nfev, stop_cost=1e-4):
+    """Run least_squares from several seeds; keep the lowest-cost result.
+
+    ``stop_cost``: skip the remaining starts once a result is at least this
+    good — the pin-mode friction polish uses a looser threshold (a few % on
+    each residual) so it doesn't burn solver calls chasing the last decimal.
+    """
     best = None
     for x0 in starts:
         try:
@@ -318,7 +386,7 @@ def _run_starts(least_squares, resid, starts, *, bounds, max_nfev):
             continue
         if best is None or r.cost < best["cost"]:
             best = {"x": r.x, "cost": r.cost}
-        if best["cost"] < 1e-4:
+        if best["cost"] < stop_cost:
             break
     if best is None:  # everything threw — return the first seed unsolved
         best = {"x": np.array(starts[0]), "cost": float("inf")}
@@ -336,7 +404,8 @@ def _within(m, oil_t, pf_t, bhp_t) -> bool:
 
 
 def _build_result(m, qmax, ppf, ken, kth, kdi, pres, oil_t, pf_t, bhp_t,
-                  matched, iters, qmax_hi, probes=None, pinned=False) -> JointMatchResult:
+                  matched, iters, qmax_hi, probes=None, pinned=False,
+                  pinned_friction_tuned=False) -> JointMatchResult:
     if m is None:
         return JointMatchResult(
             ok=False, status="failed", qwf_oil=oil_t, pwf=0.5 * pres, pres=pres,
@@ -353,15 +422,41 @@ def _build_result(m, qmax, ppf, ken, kth, kdi, pres, oil_t, pf_t, bhp_t,
     bhp_err = ((m["bhp"] - bhp_t) / max(bhp_t, 1.0)) if bhp_t else None
     status = "matched" if matched else "partial"
     if pinned:
-        # PF pressure held at the measured value; oil matched via the IPR; the
-        # PF-rate gap is reported honestly (nozzle/area uncertainty), not hidden.
+        # PF pressure held at the measured value; oil matched via the IPR. Any
+        # remaining PF gap is reported honestly — closed by bounded friction
+        # tuning when possible, never by bending the measured pressure.
+        tail = (
+            "Friction coefs tuned (within physical bounds) at the held "
+            "pressure to close the PF/BHP residuals — wear/calibration, not "
+            "a pressure fudge."
+            if pinned_friction_tuned
+            else "PF gap left as-is (nozzle/area uncertainty), not corrected "
+            "by lowering pressure."
+        )
         diag = (
             f"PF pressure HELD at {ppf:,.0f} psi (measured). Oil matched to "
             f"{m['oil']:,.0f} BOPD ({oil_err * 100:+.0f}%). Modeled PF "
-            f"{m['pf']:,.0f} vs measured {pf_t:,.0f} BWPD ({pf_err * 100:+.0f}%) — "
-            "PF gap left as-is (nozzle/area uncertainty), not corrected by "
-            "lowering pressure."
+            f"{m['pf']:,.0f} vs measured {pf_t:,.0f} BWPD ({pf_err * 100:+.0f}%). "
+            + tail
         )
+        # When the oil target is physically unreachable at the held pressure,
+        # say so with the probed ceiling — that's the actionable part.
+        if oil_err < -_MATCH_TOL and probes:
+            cap_here = probes.get("oil_at_max_ipr")
+            cap_max = probes.get("oil_at_max_ipr_pf")
+            if cap_here is not None:
+                extra = (
+                    f" Model ceiling ≈ {cap_here:,.0f} BOPD at the held "
+                    "pressure (unlimited IPR)"
+                )
+                if cap_max is not None and cap_max > cap_here * 1.05:
+                    extra += f", ≈ {cap_max:,.0f} at {_PPF_HI:,.0f} psi"
+                extra += (
+                    " — if the well really makes more, suspect the pump "
+                    "identity, wear (bigger effective nozzle), or the "
+                    "delivered PF pressure."
+                )
+                diag += extra
     else:
         diag = diagnose(m, oil_err, pf_err, ppf, oil_t, pf_t, matched, probes or {})
     return JointMatchResult(

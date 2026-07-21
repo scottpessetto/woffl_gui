@@ -948,3 +948,174 @@ def match_check(
             }
         )
     return rows, header
+
+
+# ---------------------------------------------------------------------------
+# PF-pressure what-if (current pumps, two forced headers)
+# ---------------------------------------------------------------------------
+
+
+def _model_at_forced_header(well_configs, header_psi: float, current_choices: dict):
+    """Model every well at its CURRENT pump with the delivered header FORCED.
+
+    Same plumbing as ``match_check`` but the header is the caller's number,
+    not the plant's derivation — this exists so the PF what-if can ask "what
+    do these wells do at pressure X" directly. Returns
+    ``{well: (oil_bopd, pf_bpd) | None}`` (None = pump missing or unsolvable
+    at this header).
+    """
+    from woffl.assembly.network_optimizer import NetworkOptimizer, PowerFluidConstraint
+    from woffl.gui.scotts_tools._common import worker_ceiling
+
+    pumps = [c for c in current_choices.values() if c]
+    nozzles = sorted({c[0] for c in pumps}) or ["12"]
+    throats = sorted({c[1] for c in pumps}) or ["B"]
+    for wc in well_configs:
+        wc.ppf_surf_well = header_psi
+    pf = PowerFluidConstraint(
+        total_rate=_EVAL_CAP_FALLBACK_BPD, pressure=header_psi, rho_pf=_RHO_PF_DEFAULT
+    )
+    opt = NetworkOptimizer(
+        well_configs, pf, nozzles, throats, marginal_watercut=_SCENARIO_MARGINAL_WC
+    )
+    opt.run_all_batch_simulations(max_workers=worker_ceiling())
+
+    out = {}
+    for wc in well_configs:
+        w = wc.well_name
+        cc = current_choices.get(w)
+        perf = opt.get_pump_performance(w, cc[0], cc[1]) if cc else None
+        out[w] = (
+            (float(perf["oil_rate"]), float(perf["lift_water"])) if perf else None
+        )
+    return out
+
+
+def pf_what_if_rows(
+    names: list, current_choices: dict, base: dict, scen: dict, test_rates: dict
+) -> list[dict]:
+    """Per-well comparison rows for the PF what-if — pure, for testability.
+
+    ``base`` / ``scen`` are ``_model_at_forced_header`` outputs at the two
+    pressures. ``projected_oil`` anchors the scenario on the well's MEASURED
+    test oil × the model's ratio between the two pressures — model bias
+    cancels in the ratio, so it's the most trustworthy per-well number
+    (same trick as ``_score_existing_choices``). Model absolutes are still
+    reported for wells with no test.
+    """
+    rows = []
+    for w in names:
+        cc = current_choices.get(w)
+        b, s = base.get(w), scen.get(w)
+        to = float((test_rates.get(w) or (0, 0))[0] or 0.0)
+        projected = None
+        if b and s and b[0] > 0 and to > 0:
+            projected = to * (s[0] / b[0])
+        rows.append(
+            {
+                "well": w,
+                "pump": f"{cc[0]}{cc[1]}" if cc else "—",
+                "oil_base": b[0] if b else None,
+                "oil_scen": s[0] if s else None,
+                "d_oil": (s[0] - b[0]) if (b and s) else None,
+                "pf_base": b[1] if b else None,
+                "pf_scen": s[1] if s else None,
+                "d_pf": (s[1] - b[1]) if (b and s) else None,
+                "test_oil": to or None,
+                "projected_oil": projected,
+            }
+        )
+    return rows
+
+
+def pf_what_if_totals(rows: list[dict]) -> dict:
+    """Pad totals over the rows that solved at BOTH pressures (a well that
+    solves at only one would skew the delta with an apples-to-oranges sum).
+    ``projected_d_oil`` sums the test-anchored deltas of the wells that have
+    one."""
+    solved = [r for r in rows if r["d_oil"] is not None]
+    return {
+        "n_solved": len(solved),
+        "n_unsolved": len(rows) - len(solved),
+        "oil_base": sum(r["oil_base"] for r in solved),
+        "oil_scen": sum(r["oil_scen"] for r in solved),
+        "d_oil": sum(r["d_oil"] for r in solved),
+        "pf_base": sum(r["pf_base"] for r in solved),
+        "pf_scen": sum(r["pf_scen"] for r in solved),
+        "projected_d_oil": sum(
+            r["projected_oil"] - r["test_oil"]
+            for r in solved
+            if r["projected_oil"] is not None
+        ),
+    }
+
+
+def base_vs_future_rows(
+    per_base: list[dict], per_fut: list[dict], future_wells: set
+) -> list[dict]:
+    """Merge two ``evaluate_fixed_scenario`` per-well lists into comparison
+    rows — pure, for testability. Future wells have no base column; existing
+    wells carry the Δ the added PF demand cost them (header droop)."""
+    base_by = {r["well"]: r for r in per_base}
+    fut_by = {r["well"]: r for r in per_fut}
+    rows = []
+    for w in sorted(set(base_by) | set(fut_by)):
+        b, f = base_by.get(w), fut_by.get(w)
+        rows.append(
+            {
+                "well": w,
+                "future": w in future_wells,
+                "pump": (f or b).get("pump"),
+                "oil_base": b["oil"] if b else None,
+                "oil_future": f["oil"] if f else None,
+                "d_oil": (f["oil"] - b["oil"]) if (b and f) else None,
+                "pf_base": b["pf"] if b else None,
+                "pf_future": f["pf"] if f else None,
+            }
+        )
+    return rows
+
+
+def base_vs_future_totals(rows: list[dict], meta_base: dict, meta_fut: dict) -> dict:
+    """Pad-level summary of a base-vs-future comparison: the future wells'
+    combined oil, the existing wells' combined Δ (what the extra PF demand
+    cost them), and the coupled header at each state."""
+    existing = [r for r in rows if not r["future"] and r["d_oil"] is not None]
+    fut = [r for r in rows if r["future"] and r["oil_future"] is not None]
+    return {
+        "oil_base": meta_base["total_oil_bopd"],
+        "oil_future": meta_fut["total_oil_bopd"],
+        "d_oil": meta_fut["total_oil_bopd"] - meta_base["total_oil_bopd"],
+        "header_base": meta_base["header_psi"],
+        "header_future": meta_fut["header_psi"],
+        "pf_base": meta_base["total_pf_bpd"],
+        "pf_future": meta_fut["total_pf_bpd"],
+        "future_oil": sum(r["oil_future"] for r in fut),
+        "existing_d_oil": sum(r["d_oil"] for r in existing),
+        "n_future": len(fut),
+    }
+
+
+def pf_pressure_what_if(
+    well_configs,
+    current_choices: dict,
+    test_rates: dict,
+    pf_base_psi: float,
+    pf_scenario_psi: float,
+):
+    """Model all wells at their CURRENT (reviewed) pumps at two FORCED
+    delivered PF pressures and diff them.
+
+    Deliberately bypasses the booster coupling — the question is "what does
+    delivered PF pressure X buy across the pad", assuming the plant can
+    supply that pressure at the resulting flow (the capability plot on the
+    Configure page is the place to sanity-check that assumption). Two full
+    batch passes. Returns ``(rows, totals)``.
+    """
+    names = [wc.well_name for wc in well_configs]
+    base = _model_at_forced_header(well_configs, float(pf_base_psi), current_choices)
+    scen = _model_at_forced_header(
+        well_configs, float(pf_scenario_psi), current_choices
+    )
+    rows = pf_what_if_rows(names, current_choices, base, scen, test_rates)
+    return rows, pf_what_if_totals(rows)

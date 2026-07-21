@@ -169,11 +169,24 @@ def _seed_pf_from_live(selected_well: str) -> None:
     under the PF widget. Only called on well selection (is_new_well), so a
     manual PF edit afterwards persists — same contract as every other seed.
     """
+    from woffl.gui.pump_identity import tracker_direction
     from woffl.gui.utils import default_pad_pf, live_pf_for_seed, pad_from_mp_name
+
+    # The tracker's Circulating column (enriched at fetch) states how the
+    # CURRENT install is actually plumbed — it beats the live-pressure
+    # inference. The pressure heuristic stays as the fallback for wells with
+    # no (or junk) tracker direction.
+    trk = tracker_direction(st.session_state.get("jp_history_df"), selected_well)
+
+    def _seed_direction(direction: str) -> None:
+        st.session_state["jpump_direction"] = direction
+        st.session_state["jpump_direction_input"] = direction
 
     live = live_pf_for_seed(selected_well)
 
     if live is None:
+        if trk:
+            _seed_direction(trk.title())
         pad = pad_from_mp_name(selected_well)
         fallback = default_pad_pf(pad) if pad else 3168
         _set_param("ppf_surf", clamp_seed("ppf_surf", fallback))
@@ -186,10 +199,10 @@ def _seed_pf_from_live(selected_well: str) -> None:
 
     _set_param("ppf_surf", clamp_seed("ppf_surf", int(round(live["pf_press"]))))
     source = live.get("pf_source")
-    if source in ("annulus", "tubing"):
-        direction = "Reverse" if source == "annulus" else "Forward"
-        st.session_state["jpump_direction"] = direction
-        st.session_state["jpump_direction_input"] = direction
+    if trk:
+        _seed_direction(trk.title())
+    elif source in ("annulus", "tubing"):
+        _seed_direction("Reverse" if source == "annulus" else "Forward")
     st.session_state["_pf_live_info"] = {
         "well": selected_well,
         "kind": live.get("kind"),

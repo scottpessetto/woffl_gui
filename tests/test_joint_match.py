@@ -95,6 +95,44 @@ def test_marginal_pump_recovers():
     assert r.ok, f"marginal: {r.status} {r.diagnostic}"
 
 
+def test_pin_mode_friction_polish_closes_pf_gap():
+    """Truth well with heavy (non-default) friction, matched in pin-PF mode
+    from DEFAULT friction seeds: the qmax root-find alone leaves the PF
+    residual wherever the wrong seeds put it (+12.7% for this truth); the
+    bounded friction polish must close BOTH oil and PF at the held pressure,
+    and never do worse than the no-polish (legacy) result."""
+    t = _targets(1200, 3000, "12", "B", 0.5, ken=0.25, kth=0.9, kdi=0.9)
+    assert t is not None
+    kw = dict(
+        oil_target=t["oil"], pf_target=t["pf"], pres=2000, nozzle="12",
+        throat="B", surf_pres=SURF, form_temp=TEMP, rho_pf=RHO_PF,
+        ppf_surf0=3000.0, wellbore=WELLBORE, well_profile=WELLPROF,
+        form_wc=0.5, form_gor=800, field_model=FIELD, pin_ppf=True,
+    )
+    r_old = joint_match(**kw, tune_friction=False)
+    r_new = joint_match(**kw, tune_friction=True)
+    assert abs(r_new.oil_err_pct) <= 10
+    assert abs(r_new.pf_err_pct) <= 10
+    assert abs(r_new.pf_err_pct) <= abs(r_old.pf_err_pct) + 1e-6
+    assert "pressure fudge" in r_new.diagnostic or "tuned" in r_new.diagnostic
+
+
+def test_pin_mode_skips_polish_when_already_within_tol():
+    """A truth well already inside tolerance at the seed friction must NOT
+    have its coefs moved — the polish is for closing gaps, not churning
+    matched wells."""
+    t = _targets(1200, 3000, "12", "B", 0.5)  # truth at the default coefs
+    assert t is not None
+    r = joint_match(
+        oil_target=t["oil"], pf_target=t["pf"], pres=2000, nozzle="12",
+        throat="B", surf_pres=SURF, form_temp=TEMP, rho_pf=RHO_PF,
+        ppf_surf0=3000.0, wellbore=WELLBORE, well_profile=WELLPROF,
+        form_wc=0.5, form_gor=800, field_model=FIELD, pin_ppf=True,
+    )
+    assert r.ok
+    assert (r.ken, r.kth, r.kdi) == (0.03, 0.3, 0.4)
+
+
 def test_pf_too_high_is_flagged_not_silently_matched():
     """An unreachable PF target -> partial + a PF-limited diagnostic, not a fake
     'matched'. Guards the probe-based diagnostics."""

@@ -8,6 +8,8 @@ also shows a "Model vs Actual" comparison section with IPR chart
 and modeled vs actual metrics.
 """
 
+import logging
+
 import streamlit as st
 
 from woffl.gui.fric_calibration import calibrate_friction_coefs
@@ -23,6 +25,8 @@ from woffl.gui.utils import (
     render_pf_quickfix_widget,
     run_jetpump_solver,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _render_memory_gauge_section(well_name: str) -> None:
@@ -50,10 +54,12 @@ def _render_memory_gauge_section(well_name: str) -> None:
         fetch_databricks_bhp_daily,
         fetch_extended_tests,
         get_gauge,
+        get_pending_files,
         is_disregarding_databricks_bhp,
         parse_xlsx,
         remove_file_from_gauge,
         set_disregard_databricks_bhp,
+        set_pending_files,
         store_extended_tests,
     )
     from woffl.gui.utils import get_well_tests_for_well
@@ -67,6 +73,7 @@ def _render_memory_gauge_section(well_name: str) -> None:
 
     gauge = get_gauge(well_name)
     disregard = is_disregarding_databricks_bhp(well_name)
+    pending = get_pending_files(well_name)
 
     # Persistent status banner — visible without expanding the upload box.
     # Composes both states: gauge upload and "disregard Databricks BHP".
@@ -128,13 +135,35 @@ def _render_memory_gauge_section(well_name: str) -> None:
                     st.session_state["_force_ipr_refresh"] = True
                     st.rerun()
 
-    expander_label = (
-        f"Memory Gauge Data — {len(gauge.files)} file"
-        f"{'s' if len(gauge.files) != 1 else ''} loaded"
-        if gauge is not None
-        else "Memory Gauge Data — upload BHP for wells without a permanent gauge"
-    )
-    with st.expander(expander_label, expanded=False):
+    # Unmissable nudge when files were uploaded but never applied — the
+    # pending stash survives a view detour (that's its whole point), so make
+    # sure the user knows the files are waiting rather than in effect.
+    if pending:
+        n_pend = len(pending)
+        st.warning(
+            f"**{n_pend} gauge file{'s' if n_pend != 1 else ''} uploaded but "
+            f"not yet applied** for {well_name} — nothing uses gauge BHP "
+            "until you click **Apply** inside *Memory Gauge Data* below.",
+            icon="📥",
+        )
+
+    if gauge is not None:
+        expander_label = (
+            f"Memory Gauge Data — {len(gauge.files)} file"
+            f"{'s' if len(gauge.files) != 1 else ''} loaded"
+        )
+    else:
+        expander_label = (
+            "Memory Gauge Data — upload BHP for wells without a permanent gauge"
+        )
+    if pending:
+        expander_label += (
+            f" · {len(pending)} file{'s' if len(pending) != 1 else ''} pending Apply"
+        )
+    # Default open when uploads are pending, so a view detour (which resets
+    # the expander's widget state to this default) reopens on the waiting
+    # files instead of hiding them.
+    with st.expander(expander_label, expanded=bool(pending)):
         st.caption(
             "Upload one or more XLSX files from downhole memory gauges (each "
             "must have a 'Date Time' column and a 'Pressure' column). Multiple "
@@ -205,9 +234,11 @@ def _render_memory_gauge_section(well_name: str) -> None:
             st.divider()
 
         # The uploader uses a counter in its key so it can be "reset" by
-        # incrementing the counter after a successful Add (Streamlit has
-        # no API to programmatically clear a file_uploader).
-        upload_counter = st.session_state.get(f"_mg_upload_counter_{well_name}", 0)
+        # incrementing the counter after its files are absorbed into the
+        # pending stash (Streamlit has no API to programmatically clear a
+        # file_uploader).
+        counter_key = f"_mg_upload_counter_{well_name}"
+        upload_counter = st.session_state.get(counter_key, 0)
         upload_label = (
             "Upload more gauge files"
             if gauge is not None
@@ -223,53 +254,99 @@ def _render_memory_gauge_section(well_name: str) -> None:
                 "into a single daily-median BHP history for the well."
             ),
         )
-        if not uploaded:
+
+        # Absorb dropped files into the pending stash IMMEDIATELY, then reset
+        # the uploader (bump its key counter) and rerun. Files living only in
+        # the uploader's widget state were silently dropped by a view detour
+        # (Solver → Batch Run → Solver): the segmented control runs only the
+        # active view, and Streamlit garbage-collects the widget state of
+        # anything that didn't render (see CLAUDE.md). The stash is a plain
+        # session key, so pending files survive the detour — and each file is
+        # parsed exactly once instead of on every rerun. Skip files already in
+        # the gauge or the stash (by filename); collect per-file errors so one
+        # bad file doesn't block the good ones.
+        if uploaded:
+            gauge_names = (
+                {f.source_filename for f in gauge.files} if gauge is not None else set()
+            )
+            pending_names = {f.source_filename for f in pending}
+            new_files: list = []
+            notes: list[tuple[str, str]] = []
+            skipped: list[str] = []
+            for uf in uploaded:
+                if uf.name in gauge_names:
+                    skipped.append(f"`{uf.name}` (already loaded)")
+                    continue
+                if uf.name in pending_names:
+                    skipped.append(f"`{uf.name}` (already pending)")
+                    continue
+                try:
+                    new_files.append(parse_xlsx(uf.getvalue(), uf.name))
+                    pending_names.add(uf.name)
+                except Exception as e:
+                    notes.append(("error", f"Could not parse `{uf.name}`: {e}"))
+            if skipped:
+                notes.append(("info", "Skipped " + ", ".join(skipped)))
+            if new_files:
+                set_pending_files(well_name, pending + new_files)
+            if notes:
+                st.session_state["_mg_upload_notes"] = notes
+            st.session_state[counter_key] = upload_counter + 1
+            st.rerun()
+
+        # One-shot parse/skip messages from the absorption pass — the rerun
+        # that reset the uploader wiped anything rendered inline there.
+        for kind, msg in st.session_state.pop("_mg_upload_notes", []):
+            (st.error if kind == "error" else st.info)(msg)
+
+        if not pending:
             return
 
-        # Parse every dropped file. Each parse is cheap (~100 ms for ~9k rows)
-        # and returns a single MemoryGaugeFile. Skip files already loaded (by
-        # filename) or duplicated within this batch; collect per-file errors so
-        # one bad file doesn't block the good ones.
-        existing_names = (
-            {f.source_filename for f in gauge.files} if gauge is not None else set()
-        )
-        parsed: list = []
-        batch_names: set = set()
-        skipped: list[str] = []
-        errors: list[str] = []
-        for uf in uploaded:
-            if uf.name in existing_names:
-                skipped.append(f"`{uf.name}` (already loaded)")
-                continue
-            if uf.name in batch_names:
-                skipped.append(f"`{uf.name}` (duplicate in this batch)")
-                continue
-            try:
-                parsed.append(parse_xlsx(uf.getvalue(), uf.name))
-                batch_names.add(uf.name)
-            except Exception as e:
-                errors.append(f"`{uf.name}`: {e}")
+        # Pending files — parsed and held in session state, but NOT part of
+        # the gauge until Apply. Mirrors the loaded-files list above, with
+        # per-file Discard instead of Remove.
+        st.markdown("**Uploaded — not yet applied:**")
+        for f in sorted(pending, key=lambda x: x.start_date):
+            col_text, col_btn = st.columns([5, 1])
+            with col_text:
+                st.markdown(
+                    f"📄 `{f.source_filename}` — "
+                    f"{f.start_date.strftime('%Y-%m-%d')} → "
+                    f"{f.end_date.strftime('%Y-%m-%d')} · "
+                    f"{f.sample_count:,} samples"
+                )
+            with col_btn:
+                safe_name = "".join(
+                    c if c.isalnum() else "_" for c in f.source_filename
+                )
+                if st.button(
+                    "Discard",
+                    key=f"mg_discard_{well_name}_{safe_name}",
+                    use_container_width=True,
+                ):
+                    set_pending_files(
+                        well_name,
+                        [
+                            p
+                            for p in pending
+                            if p.source_filename != f.source_filename
+                        ],
+                    )
+                    st.rerun()
 
-        for msg in errors:
-            st.error(f"Could not parse {msg}")
-        if skipped:
-            st.info("Skipped " + ", ".join(skipped))
-        if not parsed:
-            return
-
-        # Combined preview across the newly-parsed files in this batch.
-        total_samples = sum(f.sample_count for f in parsed)
-        new_start = min(f.start_date for f in parsed)
-        new_end = max(f.end_date for f in parsed)
+        # Combined preview across the pending files.
+        total_samples = sum(f.sample_count for f in pending)
+        new_start = min(f.start_date for f in pending)
+        new_end = max(f.end_date for f in pending)
         c1, c2, c3 = st.columns(3)
-        c1.metric("New files", f"{len(parsed)}")
+        c1.metric("New files", f"{len(pending)}")
         c2.metric("Samples", f"{total_samples:,}")
         c3.metric(
             "Coverage",
             f"{new_start.strftime('%Y-%m-%d')} → {new_end.strftime('%Y-%m-%d')}",
         )
 
-        n = len(parsed)
+        n = len(pending)
         button_label = (
             f"Add {n} file{'s' if n != 1 else ''} to {well_name} gauge"
             if gauge is not None
@@ -281,13 +358,15 @@ def _render_memory_gauge_section(well_name: str) -> None:
             key=f"mg_apply_btn_{well_name}",
             use_container_width=True,
         ):
-            # Combine every new file into the well's gauge (creates one if none
-            # exists). The resulting MemoryGaugeData carries the union daily-
-            # median series across ALL files; new_gauge after the loop is the
-            # final combined gauge.
+            # Combine every pending file into the well's gauge (creates one if
+            # none exists). The resulting MemoryGaugeData carries the union
+            # daily-median series across ALL files; new_gauge after the loop
+            # is the final combined gauge. Clear the stash right after the
+            # store so an interrupt mid-fetch below can't re-apply the files.
             new_gauge = None
-            for pf in parsed:
+            for pf in pending:
                 new_gauge = add_file_to_gauge(well_name, pf)
+            set_pending_files(well_name, [])
 
             # Network fetches keyed off the COMBINED window — done ONCE after
             # all files are added, so extended tests + the divergence check
@@ -333,11 +412,207 @@ def _render_memory_gauge_section(well_name: str) -> None:
                     f"Uncheck *Disregard Databricks BHP* below to override."
                 )
 
-            # Reset the uploader by bumping its key counter — the next render
-            # renders a fresh empty file_uploader, ready for more files.
-            st.session_state[f"_mg_upload_counter_{well_name}"] = upload_counter + 1
+            # No uploader reset needed here — the absorb step already bumped
+            # the key counter when the files moved into the stash.
             st.session_state["_force_ipr_refresh"] = True
             st.rerun()
+
+
+def _render_wc_washout_section(
+    params: SimulationParams,
+    *,
+    actuals: dict,
+    modeled_psu: float,
+    modeled_oil: float,
+    selected_test_row,
+    effective_jetpump,
+    wellbore,
+    well_profile,
+    inflow,
+) -> None:
+    """Near-zero-WC washout warning + WC suggestion sweep (the MPE-19 lesson).
+
+    On a low-rate well the PF return swamps the test separator, so the rate
+    allocation nets formation water to ~0 and the test's 0% WC is fiction —
+    modeling with it leaves BHP and oil unmatchable. When that setup is
+    detected (near-zero sidebar WC + PF-dominated stream + poor match), warn
+    the engineer to consider raising WC, and offer a sweep that re-runs the
+    solver across WC values to suggest a starting point (exactly what turning
+    the sidebar Water Cut knob does — diagnostic; nothing applies without the
+    explicit Apply click). Detection + sweep logic is pure in
+    ``woffl/gui/wc_washout.py``.
+    """
+    from woffl.gui.sidebar import clamp_seed
+    from woffl.gui.utils import create_reservoir_mix
+    from woffl.gui.wc_washout import (
+        BHP_MISMATCH_PSI,
+        OIL_MISMATCH_FRAC,
+        detect_wc_washout,
+        suggest_water_cut,
+    )
+
+    if params.selected_well == "Custom":
+        return
+
+    # Produced fluid = the test's reported total fluid (oil + net water);
+    # falls back to oil (on a washed-out test they're the same number).
+    produced = None
+    if selected_test_row is not None:
+        tot = selected_test_row.get("WtTotalFluid")
+        if is_valid_number(tot):
+            produced = float(tot)
+    if produced is None:
+        produced = actuals.get("oil")
+
+    flag = detect_wc_washout(
+        form_wc=float(params.form_wc),
+        pf_rate=actuals.get("pf"),
+        produced_fluid=produced,
+        modeled_psu=modeled_psu,
+        actual_bhp=actuals.get("bhp"),
+        modeled_oil=modeled_oil,
+        actual_oil=actuals.get("oil"),
+    )
+    result_key = f"_wc_suggest_{params.selected_well}"
+    if flag is None:
+        # Setup no longer fits (e.g. the engineer already raised WC) — drop
+        # any stale suggestion so it can't be applied out of context.
+        st.session_state.pop(result_key, None)
+        return
+
+    mismatch_bits = []
+    if flag.bhp_delta is not None and abs(flag.bhp_delta) >= BHP_MISMATCH_PSI:
+        mismatch_bits.append(f"BHP is off by {flag.bhp_delta:+,.0f} psi")
+    if (
+        flag.oil_delta_frac is not None
+        and abs(flag.oil_delta_frac) >= OIL_MISMATCH_FRAC
+    ):
+        mismatch_bits.append(f"oil is off by {flag.oil_delta_frac:+.0%}")
+    st.warning(
+        f"**Water cut reads {flag.form_wc:.0%} — don't trust it on this "
+        f"well.** Produced fluid is only **{flag.fluid_to_pf_ratio:.0%}** of "
+        f"the {flag.pf_rate:,.0f} BWPD power-fluid return, so the test "
+        "allocation can wash formation water out to zero (low-rate wells: "
+        "formation water gets lost in the PF stream). The model mismatch "
+        f"({' and '.join(mismatch_bits)}) is consistent with a much higher "
+        "real WC — consider raising the sidebar **Water Cut**, or run the "
+        "sweep below for a suggested starting point.",
+        icon="💧",
+    )
+
+    if st.button(
+        "🔍 Suggest a water cut",
+        key=f"wc_suggest_btn_{params.selected_well}",
+        help=(
+            "Re-runs the solver across WC values (5–90%) holding everything "
+            "else at current sidebar settings, and picks the WC that best "
+            "matches the comparison test's BHP and oil rate. Diagnostic — "
+            "nothing changes unless you click Apply on the result."
+        ),
+    ):
+        def _solve_at_wc(wc: float):
+            rm = create_reservoir_mix(
+                wc,
+                params.form_gor,
+                params.form_temp,
+                params.field_model,
+                oil_api=params.oil_api,
+                gas_sg=params.gas_sg,
+                wat_sg=params.wat_sg,
+                bubble_point=params.bubble_point,
+            )
+            try:
+                return run_jetpump_solver(
+                    params.surf_pres,
+                    params.form_temp,
+                    params.rho_pf,
+                    params.ppf_surf,
+                    effective_jetpump,
+                    wellbore,
+                    well_profile,
+                    inflow,
+                    rm,
+                    field_model=params.field_model,
+                    jpump_direction=params.jpump_direction,
+                    quiet=True,
+                )
+            except Exception:
+                # Sweep points that fail (ThroatEntryNoSolution etc.) are
+                # skipped, never fatal — the GOR auto-recovery must not fire
+                # from a probe loop.
+                return None
+
+        with st.spinner("Sweeping water cut 5–90% through the solver…"):
+            suggestion = suggest_water_cut(
+                _solve_at_wc,
+                target_oil=actuals.get("oil"),
+                target_bhp=actuals.get("bhp"),
+                base_wc=float(params.form_wc),
+            )
+        if suggestion is None:
+            st.session_state.pop(result_key, None)
+            st.warning(
+                "The sweep couldn't converge enough WC points to make a "
+                "suggestion — verify PF pressure and pump identity first."
+            )
+        else:
+            st.session_state[result_key] = suggestion
+
+    suggestion = st.session_state.get(result_key)
+    if suggestion is None:
+        return
+
+    s1, s2, s3 = st.columns(3)
+    s1.metric("Suggested Water Cut", f"{suggestion.suggested_wc:.0%}")
+    s2.metric(
+        "BHP at suggestion",
+        f"{suggestion.modeled_psu:,.0f} psig",
+        delta=(
+            f"{suggestion.modeled_psu - suggestion.target_bhp:+,.0f} vs actual"
+            if suggestion.target_bhp is not None
+            else None
+        ),
+    )
+    s3.metric(
+        "Oil at suggestion",
+        f"{suggestion.modeled_oil:,.0f} BOPD",
+        delta=f"{suggestion.modeled_oil - suggestion.target_oil:+,.0f} vs actual",
+    )
+    caveats = [
+        f"Matched on **{suggestion.matched_on}** across {suggestion.n_solved} "
+        f"solved WC points ({suggestion.n_failed} failed)."
+    ]
+    if suggestion.matched_on == "oil only":
+        caveats.append(
+            "No measured BHP on the comparison test — an oil-only match is "
+            "weak evidence; treat the suggestion as a rough starting point."
+        )
+    if suggestion.bounded:
+        caveats.append(
+            "The best match sits at the sweep boundary — the true WC may be "
+            "outside 5–90%, or something else (PF pressure, pump identity) "
+            "is off."
+        )
+    caveats.append(
+        "A starting point, not an answer — sanity-check against offset wells "
+        "and the pad's water cut."
+    )
+    st.caption(" ".join(caveats))
+
+    if st.button(
+        f"Apply WC {suggestion.suggested_wc:.2f} to sidebar",
+        type="primary",
+        key=f"wc_apply_btn_{params.selected_well}",
+    ):
+        # Logical-key + pop-widget-key pattern (see CLAUDE.md): the sidebar
+        # widget already rendered this run, so write the logical key and let
+        # _number_input re-seed the widget on the next run.
+        st.session_state["form_wc"] = clamp_seed(
+            "form_wc", round(float(suggestion.suggested_wc), 2)
+        )
+        st.session_state.pop("form_wc_input", None)
+        st.session_state.pop(result_key, None)
+        st.rerun()
 
 
 def _render_pump_identity_banner(
@@ -997,6 +1272,21 @@ def render_tab(
                 selected_test_row=selected_test_row,
                 pf_blocked=pf_blocked,
                 bhp_missing=(actuals["bhp"] is None),
+            )
+
+            # Near-zero-WC washout check (MPE-19 lesson): on a low-rate well
+            # the PF return swamps the separator and the allocation nets
+            # formation water to ~0 — warn + offer a WC-sweep suggestion.
+            _render_wc_washout_section(
+                params,
+                actuals=actuals,
+                modeled_psu=psu,
+                modeled_oil=qoil_std,
+                selected_test_row=selected_test_row,
+                effective_jetpump=effective_jetpump,
+                wellbore=wellbore,
+                well_profile=well_profile,
+                inflow=inflow,
             )
 
         # Secondary diagnostics
@@ -2039,6 +2329,261 @@ def _render_test_picker(well_name: str, test_df, *, synced: bool = False):
     return row
 
 
+# ── Saved IPR-anchor pin (mpu.wells.prop_hist, ipr_wt_uid) ──────────────────
+# On a genuinely fresh well load (no sw_ipr_applied_sig_<well> yet this
+# session), the anchor selector below defaults to a previously-saved pin
+# instead of "Most recent" — see the woffl-prop-hist-persistence plan, W2.
+# W3 (save/un-pin) calls _clear_pin_cache after a push so the next render
+# re-queries instead of replaying a stale cached lookup.
+
+_PIN_LOOKUP_PROP_ID = "ipr_wt_uid"
+_PIN_CACHE_KEY = "_pin_cache"
+
+
+def _clear_pin_cache(well_name: str) -> None:
+    """Drop the memoized IPR-anchor pin lookup for one well.
+
+    SEAM for W3: call this right after a successful save/un-pin push for
+    ``well_name`` so the next render of :func:`_render_ipr_anchor_control`
+    re-queries ``prop_hist`` instead of replaying the pre-save memo.
+    """
+    st.session_state.get(_PIN_CACHE_KEY, {}).pop(well_name, None)
+
+
+def _load_pinned_anchor(well_name: str, test_df) -> dict | None:
+    """Saved IPR-anchor pin for ``well_name``, memoized once per well per session.
+
+    Reads ``mpu.wells.prop_hist`` (``ipr_wt_uid``) via
+    ``prop_hist_client.fetch_latest_prop`` at most ONCE per well per Streamlit
+    session — the memo lives in ``st.session_state[_PIN_CACHE_KEY]`` (a plain
+    ``{well_name: result}`` dict) because :func:`_render_ipr_anchor_control`
+    runs on every rerun and this must not re-hit Databricks each time.
+
+    ANY failure (offline, missing grant, malformed row) degrades to "no pin"
+    and is logged via ``logger.warning`` — NEVER raised, NEVER surfaced as
+    ``st.error``: a saved-IPR lookup failing must never block the Solver. The
+    failure itself is memoized too, so a dead connection doesn't retry every
+    rerun.
+
+    Returns:
+      * ``None`` — no saved pin, an un-pinned NULL ``prop_value`` (see W3;
+        there is no numeric sentinel — real ``wt_uid`` values are signed and
+        span both positive and negative ranges), or the lookup failed.
+      * ``{"status": "applied", "mode": "specific", "date_token":
+        "YYYY-MM-DD", "wt_uid": int, "entry_user": str, "entry_datetime":
+        ...}`` — a pin whose test is present in the CURRENT test frame.
+      * ``{"status": "stale", "wt_uid": int, "entry_user": str,
+        "entry_datetime": ...}`` — a pin whose test has aged out of the frame
+        (tighter lookback, memory-gauge filtering, count cap).
+    """
+    cache = st.session_state.setdefault(_PIN_CACHE_KEY, {})
+    if well_name in cache:
+        return cache[well_name]
+
+    import pandas as pd
+
+    result = None
+    try:
+        from woffl.assembly.prop_hist_client import fetch_latest_prop
+        from woffl.gui.ipr_anchor import find_test_row_by_wt_uid
+
+        fetched = fetch_latest_prop(well_name, _PIN_LOOKUP_PROP_ID)
+        if fetched is not None:
+            value, entry_datetime, entry_user = fetched
+            # A pin EXISTS iff prop_value is a real finite number (not
+            # None/NaN) -- NO sign-based rule. Real wt_uid values are signed
+            # and span both positive and negative ranges (observed roughly
+            # -3.6M to +3.1M), so a negative uid is a perfectly valid pin.
+            if value is not None and pd.notna(value):
+                wt_uid = int(value)
+                row = find_test_row_by_wt_uid(test_df, wt_uid)
+                if row is not None and pd.notna(row.get("WtDate")):
+                    result = {
+                        "status": "applied",
+                        "mode": "specific",
+                        "date_token": row["WtDate"].strftime("%Y-%m-%d"),
+                        "wt_uid": wt_uid,
+                        "entry_user": entry_user,
+                        "entry_datetime": entry_datetime,
+                    }
+                else:
+                    result = {
+                        "status": "stale",
+                        "wt_uid": wt_uid,
+                        "entry_user": entry_user,
+                        "entry_datetime": entry_datetime,
+                    }
+    except Exception:
+        logger.warning(
+            "IPR-anchor pin lookup failed for %s; falling back to the "
+            "default anchor.",
+            well_name,
+            exc_info=True,
+        )
+        result = None
+
+    cache[well_name] = result
+    return result
+
+
+def _format_pin_date(value) -> str:
+    """Best-effort YYYY-MM-DD formatting for a prop_hist ``entry_datetime``
+    value (a python ``datetime``/``date``, a pandas ``Timestamp``, or a raw
+    string depending on the connector) — never raises. ``entry_datetime`` is
+    a full timestamp (the column was migrated off the old date-only
+    ``entry_date`` -- see ``prop_hist_client``), but this still renders as a
+    plain date, same as before the migration."""
+    import pandas as pd
+
+    try:
+        if pd.isna(value):
+            return str(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return value.strftime("%Y-%m-%d")
+    except (AttributeError, ValueError):
+        return str(value)
+
+
+def _render_pin_provenance_caption(
+    pin_info: dict | None, mode: str, anchor_date
+) -> None:
+    """Provenance caption just under the anchor selector.
+
+    Two cases, both informational and non-blocking:
+      * ``pin_info["status"] == "applied"`` AND the anchor CURRENTLY resolves
+        to that pin's test (mode + date match) — "Saved IPR: test ...". Shown
+        regardless of whether this is the first fresh-load render or a later
+        rerun after the seed-to-sidebar applied it, as long as the selection
+        still matches the pin (the user hasn't picked something else).
+      * ``pin_info["status"] == "stale"`` — the saved test aged out of the
+        current frame. Only shown while the anchor is actually resolving to
+        "most recent" (``mode == "recent"``) — the literal fallback this
+        caption describes. If the user has since picked a DIFFERENT anchor
+        (median / another specific test) on purpose, this stops narrating a
+        fallback that no longer describes what's on screen.
+    """
+    if pin_info is None:
+        return
+
+    import pandas as pd
+
+    if pin_info.get("status") == "applied":
+        date_token = pin_info.get("date_token")
+        current_token = (
+            anchor_date.strftime("%Y-%m-%d")
+            if anchor_date is not None and pd.notna(anchor_date)
+            else None
+        )
+        if mode == "specific" and current_token == date_token:
+            st.caption(
+                f"📌 Saved IPR: test {date_token} "
+                f"({pin_info.get('entry_user')}, "
+                f"{_format_pin_date(pin_info.get('entry_datetime'))})"
+            )
+        return
+
+    if pin_info.get("status") == "stale" and mode == "recent":
+        st.caption(
+            f"Saved IPR (test uid {pin_info.get('wt_uid')}) not in the "
+            "current test window — using most recent."
+        )
+
+
+def _render_ipr_pin_controls(
+    well_name: str, sorted_tests, pin_info: dict | None
+) -> None:
+    """ "📌 Save IPR as well default" / "🗑 Clear saved IPR" — the Solver's push
+    UI for ``mpu.wells.prop_hist``'s ``ipr_wt_uid`` (W3 of the
+    woffl-prop-hist-persistence plan). Renders right under the provenance
+    caption, inside the same IPR-anchor group.
+
+    Shares the actual push/clear mechanics with the pad-review save hook
+    (``workflow_steps/step_review_wells.py::_save_and_advance``) via
+    ``woffl.gui.ipr_anchor.pin_ipr_anchor`` / ``clear_ipr_pin`` — see that
+    module for the full contract — so the two push paths can never diverge.
+
+    The Save button is HIDDEN (not just disabled) with a one-line caption
+    explaining why when: the ``ALLOW_DATABRICKS_WRITES`` gate is off, the
+    anchor has no resolvable test, or the anchor is a manual/provisional test
+    (no ``wt_uid`` — never pinnable). The Clear button only renders when a
+    pin already exists for this well, per :func:`_load_pinned_anchor`.
+    """
+    import pandas as pd
+
+    from woffl.gui.ipr_anchor import (
+        PIN_SKIP_PREFIX,
+        clear_ipr_pin,
+        pin_ipr_anchor,
+        writes_enabled,
+    )
+
+    if not writes_enabled():
+        st.caption(
+            "Saving an IPR default requires `ALLOW_DATABRICKS_WRITES=true` "
+            "in the environment."
+        )
+        return
+
+    anchor_row = _resolve_anchor_test_row(well_name, sorted_tests)
+    raw_uid = anchor_row.get("wt_uid") if anchor_row is not None else None
+    has_uid = raw_uid is not None and not pd.isna(raw_uid)
+
+    date_label = "n/a"
+    if anchor_row is not None:
+        d = anchor_row.get("WtDate")
+        if pd.notna(d):
+            date_label = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
+
+    col_save, col_clear = st.columns([2, 1])
+    with col_save:
+        if not has_uid:
+            reason = (
+                "no resolvable test"
+                if anchor_row is None
+                else "this anchor is a manual/provisional test (no measured well-test ID)"
+            )
+            st.caption(f"📌 Save IPR as well default — unavailable: {reason}.")
+        else:
+            if st.button(
+                "📌 Save IPR as well default",
+                key=f"sw_save_ipr_pin_{well_name}",
+                help=(
+                    f"Saves test {date_label} as this well's default IPR "
+                    "anchor (mpu.wells.prop_hist) so it auto-loads for every "
+                    "future session."
+                ),
+            ):
+                pushed, message = pin_ipr_anchor(well_name, anchor_row)
+                if pushed:
+                    _clear_pin_cache(well_name)
+                    st.toast(message, icon="📌")
+                    st.rerun()
+                elif message.startswith(PIN_SKIP_PREFIX):
+                    st.caption(message)
+                else:
+                    st.warning(message)
+
+    with col_clear:
+        if pin_info is not None and pin_info.get("status") in ("applied", "stale"):
+            if st.button(
+                "🗑 Clear saved IPR",
+                key=f"sw_clear_ipr_pin_{well_name}",
+                help=(
+                    "Removes the saved default so this well falls back to "
+                    "the most-recent test."
+                ),
+            ):
+                cleared, message = clear_ipr_pin(well_name)
+                if cleared:
+                    _clear_pin_cache(well_name)
+                    st.toast(message, icon="🗑")
+                    st.rerun()
+                else:
+                    st.warning(message)
+
+
 def _render_ipr_anchor_control(well_name: str, test_df):
     """Selector for which test anchors the Vogel IPR (separate from the
     comparison picker).
@@ -2074,6 +2619,22 @@ def _render_ipr_anchor_control(well_name: str, test_df):
     # chosen IPR. When the widget state survived, Streamlit ignores `index` and
     # keeps the live value.
     applied_sig = st.session_state.get(f"sw_ipr_applied_sig_{well_name}")
+
+    # Saved IPR-anchor pin (prop_hist's ipr_wt_uid, see the
+    # woffl-prop-hist-persistence plan's W2). Looked up on EVERY render
+    # (memoized — see _load_pinned_anchor) so the provenance caption below
+    # can track it even after the sig gets set on the seed-triggered rerun.
+    # Only substitutes into `applied_sig` for the DEFAULT-INDEX computation
+    # when no sig exists yet — a genuinely fresh well load, never a session
+    # where the user (or a prior rerun) already chose something.
+    pin_info = _load_pinned_anchor(well_name, test_df)
+    if (
+        applied_sig is None
+        and pin_info is not None
+        and pin_info.get("status") == "applied"
+    ):
+        applied_sig = (pin_info["mode"], pin_info["date_token"])
+
     applied_mode = applied_sig[0] if applied_sig else "recent"
     default_mode_idx = (
         mode_order.index(applied_mode) if applied_mode in mode_order else 0
@@ -2097,11 +2658,19 @@ def _render_ipr_anchor_control(well_name: str, test_df):
         )
     mode = label_to_mode[sel]
 
+    # Computed once (date-desc, as _resolve_anchor_test_row requires) so both
+    # the specific-test picker below AND the save/clear pin controls (which
+    # need to resolve the anchor row regardless of mode) share it instead of
+    # each re-sorting.
+    sorted_tests_desc = (
+        test_df.sort_values("WtDate", ascending=False).reset_index(drop=True)
+        if test_df is not None and not test_df.empty
+        else test_df
+    )
+
     anchor_date = None
     if mode == "specific":
-        sorted_tests = test_df.sort_values("WtDate", ascending=False).reset_index(
-            drop=True
-        )
+        sorted_tests = sorted_tests_desc
         jp_hist = st.session_state.get("jp_history_df")
 
         def _opt(row) -> str:
@@ -2150,6 +2719,13 @@ def _render_ipr_anchor_control(well_name: str, test_df):
             )
         ad = sorted_tests.iloc[picked_idx].get("WtDate")
         anchor_date = ad if pd.notna(ad) else None
+
+    # Saved-IPR provenance, right under the selector(s) just rendered.
+    _render_pin_provenance_caption(pin_info, mode, anchor_date)
+
+    # Save/clear the pin (W3 of the woffl-prop-hist-persistence plan) — right
+    # next to the provenance caption above, inside the same anchor group.
+    _render_ipr_pin_controls(well_name, sorted_tests_desc, pin_info)
 
     # Decouple toggle. By default the "Test to compare against" picker just below
     # is slaved to this IPR anchor (so the model is compared against the same

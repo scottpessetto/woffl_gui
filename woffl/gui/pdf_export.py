@@ -132,19 +132,63 @@ def _resolve_pump_identity(params: SimulationParams) -> _PumpIdentity:
 # ---------------------------------------------------------------------------
 
 
-def _latest_test_row(well_name: str) -> Optional[pd.Series]:
-    """Most recent well-test row for the given well, or None.
+def _comparison_test_row(well_name: str) -> Optional[pd.Series]:
+    """The well-test row the Solver hero is comparing against, or None.
 
-    Print captures the most-recent-test view (matches the Solver test picker
-    default). Routes through ``get_well_tests_for_well`` so memory-gauge BHP
-    overrides flow into the PDF's hero-strip deltas and selected-test card.
+    Mirrors ``jetpump_solver._render_test_picker``'s resolution chain so the
+    PDF's actuals always match the on-screen hero strip:
+
+      1. gauge-coverage filter — with a memory gauge active, only tests on
+         gauge-covered dates are comparable (their BHP comes from the gauge);
+      2. synced (default): the IPR anchor's test via
+         ``_resolve_anchor_test_row``;
+      3. decoupled ("Use a different test for comparison" checked): the
+         picker's per-well shadow date key;
+      4. fallback: most recent remaining test.
+
+    Previously this grabbed the literal most-recent test, which can sit
+    outside the gauge window (NaN BHP — e.g. a test the day after coverage
+    ends) or postdate the anchor test, producing PF/oil deltas wildly
+    different from the hero the user just looked at.
+
+    Routes through ``get_well_tests_for_well`` so memory-gauge BHP overrides
+    flow into the PDF's hero-strip deltas and selected-test card.
     """
+    from woffl.gui.memory_gauge import get_gauge
     from woffl.gui.utils import get_well_tests_for_well
 
     well_tests = get_well_tests_for_well(well_name)
     if well_tests is None or well_tests.empty:
         return None
-    return well_tests.sort_values("WtDate", ascending=False).iloc[0]
+
+    gauge = get_gauge(well_name)
+    if gauge is not None and not gauge.daily_df.empty:
+        dates = pd.to_datetime(well_tests["WtDate"]).dt.normalize()
+        well_tests = well_tests[dates.isin(gauge.daily_df["tag_date"])]
+        if well_tests.empty:
+            return None
+
+    sorted_tests = well_tests.sort_values(
+        "WtDate", ascending=False
+    ).reset_index(drop=True)
+
+    decoupled = bool(
+        st.session_state.get(f"sw_ipr_decouple_{well_name}", False)
+    )
+    if not decoupled and len(sorted_tests) >= 2:
+        from woffl.gui.tabs.jetpump_solver import _resolve_anchor_test_row
+
+        row = _resolve_anchor_test_row(well_name, sorted_tests)
+        if row is not None:
+            return row
+
+    token = st.session_state.get(f"sw_test_picker_date_{well_name}")
+    if token:
+        for _, r in sorted_tests.iterrows():
+            d = r.get("WtDate")
+            if pd.notna(d) and d.strftime("%Y-%m-%d") == token:
+                return r
+    return sorted_tests.iloc[0]
 
 
 def _actuals_from_test(test_row: Optional[pd.Series]) -> dict[str, Optional[float]]:
@@ -780,7 +824,7 @@ def _selected_test_card(actuals: dict[str, Optional[float]]):
         return _cell(s, align="CENTER", **kw)
 
     rows = [
-        [_cell("Compared Against (Most Recent Test)", bold=True, size=10), "", "", "", ""],
+        [_cell("Compared Against (Solver Comparison Test)", bold=True, size=10), "", "", "", ""],
         [C("Date", bold=True), C("Oil", bold=True), C("BHP", bold=True),
          C("PF Rate", bold=True), C("WHP", bold=True)],
         [
@@ -886,8 +930,15 @@ def _batch_data_table(batch_pump: Any):
     return tbl
 
 
-def _recommended_pump_card(recommendation: Optional[dict], water_type: str):
-    """Single-row card highlighting the recommended pump from the batch sweep."""
+def _recommended_pump_card(
+    recommendation: Optional[dict], water_type: str, marginal_watercut: float
+):
+    """Card highlighting the recommended pump from the batch sweep.
+
+    Includes a why-this-pump note stating the marginal water-cut cutoff that
+    drove the selection — without it the "Marginal WC" figure floats with no
+    reference point for the reader.
+    """
     from reportlab.lib import colors
     from reportlab.lib.units import inch
     from reportlab.platypus import Table, TableStyle
@@ -900,6 +951,22 @@ def _recommended_pump_card(recommendation: Optional[dict], water_type: str):
     def C(s, **kw):
         return _cell(s, align="CENTER", **kw)
 
+    thr_txt = f"{float(marginal_watercut):.2f}"
+    mr_txt = f"{recommendation['marginal_ratio']:.3f}"
+    if recommendation.get("recommendation_type") == "best_available":
+        note = (
+            f"No pump stayed below the marginal water-cut cutoff of {thr_txt} "
+            f"— this is the best available option (lowest marginal WC, {mr_txt})."
+        )
+    else:
+        note = (
+            f"Why this pump: chosen by the marginal water-cut cutoff of {thr_txt} "
+            f"(sidebar Marginal Watercut) — the pump closest to where the curve's "
+            f"marginal WC reaches the cutoff while staying below it. Each barrel "
+            f"of extra fluid from this pump is {mr_txt} water; larger pumps add "
+            f"water above the cutoff."
+        )
+
     rows = [
         [_cell("Recommended Pump (Batch Sweep)", bold=True, size=11), "", "", ""],
         [C("Pump", bold=True, size=10), C("Oil Rate", bold=True, size=10),
@@ -910,11 +977,13 @@ def _recommended_pump_card(recommendation: Optional[dict], water_type: str):
             C(f"{recommendation['water_rate']:.0f} BWPD", size=11),
             C(f"{recommendation['marginal_ratio']:.3f}", size=11),
         ],
+        [_cell(note, size=8), "", "", ""],
     ]
     tbl = Table(rows, colWidths=[1.8 * inch] * 4)
     tbl.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#fff4cc")),
         ("SPAN", (0, 0), (-1, 0)),
+        ("SPAN", (0, 3), (-1, 3)),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#aaaaaa")),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
         ("TOPPADDING", (0, 0), (-1, -1), 7),
@@ -959,7 +1028,7 @@ def generate_report(
 
     styles = _styles()
     pump = _resolve_pump_identity(params)
-    test_row = _latest_test_row(params.selected_well)
+    test_row = _comparison_test_row(params.selected_well)
     actuals = _actuals_from_test(test_row)
 
     # Δ-vs-Actual is only meaningful when the modeled (sidebar) pump matches
@@ -1118,7 +1187,9 @@ def generate_report(
         story.append(Paragraph("Batch Run — Jet Pump Performance", styles["SectionHeader"]))
         story.append(Image(io.BytesIO(batch_png), width=7.0 * inch, height=5.0 * inch))
         story.append(Spacer(1, 10))
-        rec_card = _recommended_pump_card(recommendation, params.water_type or "total")
+        rec_card = _recommended_pump_card(
+            recommendation, params.water_type or "total", params.marginal_watercut
+        )
         if rec_card is not None:
             story.append(rec_card)
 
