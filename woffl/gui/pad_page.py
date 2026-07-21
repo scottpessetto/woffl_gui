@@ -177,61 +177,192 @@ def _render_review(spec: PadSpec) -> None:
         st.info("Review at least one well (or add a hypothetical) to continue.")
 
 
+def _next_free_name(store: dict, base: str) -> str:
+    """First unused '<base><n>' name — pure so it's testable."""
+    n = 1
+    while f"{base}{n}" in store:
+        n += 1
+    return f"{base}{n}"
+
+
 def _next_placeholder_name(store: dict, src: str) -> str:
     """First unused '<src>-PH<n>' name — pure so it's testable."""
-    n = 1
-    while f"{src}-PH{n}" in store:
-        n += 1
-    return f"{src}-PH{n}"
+    return _next_free_name(store, f"{src}-PH")
 
 
 def _render_placeholder_wells(spec: PadSpec, store: dict, active: dict) -> None:
-    """Configure-screen placeholder wells: clone an existing reviewed well.
+    """Configure-screen placeholder / future wells.
 
-    A placeholder copies the source well's IPR, geometry, calibration, and
-    review pump wholesale (``wrs.clone_entry``) and lands in the SAME review
-    store flagged 🔵 hypothetical — so it feeds the optimizer, match check,
-    and PF what-if exactly like a real well, shows up on the Review stage,
-    and the store-signature staleness flagging covers adds/removes for free.
+    Two creation paths, both landing in the SAME review store flagged 🔵
+    hypothetical (so they feed the optimizer, match check, PF what-if, and
+    Base vs Future exactly like real wells, and staleness flagging covers
+    adds/removes for free):
+
+    * **Clone an existing well** — copies IPR, geometry, calibration, and
+      review pump wholesale (``wrs.clone_entry``); for planned twins.
+    * **New from scratch** — when the pad has NO analog: the engineer
+      supplies IPR (ResP / oil / pwf / WC / GOR), geometry, and a pump
+      (required for the fixed-pump tools), via ``wrs.hypothetical_entry``.
+      Defaults to ⚫ offline — a FUTURE well ready for the Base vs Future
+      picker, out of the base case and the optimization until brought online.
     """
     p = spec.prefix
-    with st.expander("➕ Placeholder wells (clone an existing well)", expanded=False):
-        st.caption(
-            "Add a what-if well that copies an existing reviewed well's IPR, "
-            "geometry, and calibration — e.g. a planned twin of a producer. "
-            "It feeds the optimizer like a real well and is flagged 🔵 "
-            "hypothetical everywhere."
+    with st.expander("➕ Placeholder / future wells", expanded=False):
+        tab_clone, tab_new = st.tabs(
+            ["Clone an existing well", "New from scratch (no analog)"]
         )
-        sources = [w for w in active if not active[w].get("is_hypothetical")]
-        if sources:
-            c1, c2, c3 = st.columns([2, 2, 1])
+
+        with tab_clone:
+            st.caption(
+                "Copy an existing reviewed well's IPR, geometry, and "
+                "calibration — e.g. a planned twin of a producer."
+            )
+            sources = [w for w in active if not active[w].get("is_hypothetical")]
+            if sources:
+                c1, c2, c3 = st.columns([2, 2, 1])
+                with c1:
+                    src = st.selectbox("Clone from", sources, key=f"{p}_ph_src")
+                with c2:
+                    name = st.text_input(
+                        "New well name",
+                        value=_next_placeholder_name(store, src),
+                        key=f"{p}_ph_name",
+                    )
+                with c3:
+                    st.write("")  # aligns the button with the inputs
+                    if st.button("Add", key=f"{p}_ph_add", use_container_width=True):
+                        name = (name or "").strip()
+                        if not name:
+                            st.warning("Enter a name for the placeholder.")
+                        elif name in store:
+                            st.warning(f"{name} already exists in the review store.")
+                        else:
+                            store[name] = wrs.clone_entry(
+                                store[src], name, source_well=src
+                            )
+                            # Drop the name widget's state so the next render
+                            # suggests a fresh default instead of the used name.
+                            st.session_state.pop(f"{p}_ph_name", None)
+                            st.toast(
+                                f"Added placeholder {name} (clone of {src})",
+                                icon="🔵",
+                            )
+                            st.rerun()
+            else:
+                st.info("No reviewed real wells to clone yet.")
+
+        with tab_new:
+            from woffl.gui.params import NOZZLE_OPTIONS, THROAT_OPTIONS
+
+            st.caption(
+                "No analog on the pad? Specify the future well directly — "
+                "expected IPR, geometry, and the planned pump. It starts "
+                "⚫ offline (a FUTURE well): out of the base case and the "
+                "optimization, pre-selected in *Base vs Future* below."
+            )
+            c1, c2, c3 = st.columns(3)
             with c1:
-                src = st.selectbox("Clone from", sources, key=f"{p}_ph_src")
+                nw_name = st.text_input(
+                    "Well name",
+                    value=_next_free_name(store, f"MP{spec.pad}-FUT"),
+                    key=f"{p}_nw_name",
+                )
+                nw_fm = st.radio(
+                    "Field model",
+                    ["Schrader", "Kuparuk"],
+                    horizontal=True,
+                    key=f"{p}_nw_fm",
+                )
+                nw_resp = st.number_input(
+                    "Reservoir P (psi)", 400, 5000, 1800, 10, key=f"{p}_nw_resp"
+                )
             with c2:
-                name = st.text_input(
-                    "New well name",
-                    value=_next_placeholder_name(store, src),
-                    key=f"{p}_ph_name",
+                nw_oil = st.number_input(
+                    "Expected oil (BOPD)", 0, 6000, 400, 10, key=f"{p}_nw_oil"
+                )
+                nw_pwf = st.number_input(
+                    "Flowing BHP (psi)", 100, 2500, 900, 10, key=f"{p}_nw_pwf"
+                )
+                nw_wc = st.number_input(
+                    "Water cut",
+                    0.0,
+                    0.99,
+                    0.5,
+                    0.01,
+                    format="%.2f",
+                    key=f"{p}_nw_wc",
                 )
             with c3:
-                st.write("")  # aligns the button with the inputs
-                if st.button("Add", key=f"{p}_ph_add", use_container_width=True):
-                    name = (name or "").strip()
-                    if not name:
-                        st.warning("Enter a name for the placeholder.")
-                    elif name in store:
-                        st.warning(f"{name} already exists in the review store.")
-                    else:
-                        store[name] = wrs.clone_entry(
-                            store[src], name, source_well=src
+                nw_gor = st.number_input(
+                    "GOR (scf/bbl)", 20, 10000, 250, 25, key=f"{p}_nw_gor"
+                )
+                nw_temp = st.number_input(
+                    "Form temp (°F)", 32, 350, 160, 1, key=f"{p}_nw_temp"
+                )
+                nw_tvd = st.number_input(
+                    "Jetpump TVD (ft)", 2500, 8000, 4200, 10, key=f"{p}_nw_tvd"
+                )
+            pc1, pc2, pc3, pc4 = st.columns([1, 1, 2, 1])
+            with pc1:
+                nw_noz = st.selectbox(
+                    "Nozzle",
+                    NOZZLE_OPTIONS,
+                    index=NOZZLE_OPTIONS.index("12") if "12" in NOZZLE_OPTIONS else 0,
+                    key=f"{p}_nw_noz",
+                )
+            with pc2:
+                nw_thr = st.selectbox(
+                    "Throat",
+                    THROAT_OPTIONS,
+                    index=THROAT_OPTIONS.index("B") if "B" in THROAT_OPTIONS else 0,
+                    key=f"{p}_nw_thr",
+                )
+            with pc3:
+                nw_off = st.checkbox(
+                    "Start offline (future well)",
+                    value=True,
+                    key=f"{p}_nw_off",
+                    help=(
+                        "On (default): out of the base case / optimization, "
+                        "available in Base vs Future. Off: participates "
+                        "immediately like any active well."
+                    ),
+                )
+            with pc4:
+                st.write("")
+                if st.button("Add", key=f"{p}_nw_add", use_container_width=True):
+                    nw_name = (nw_name or "").strip()
+                    if not nw_name:
+                        st.warning("Enter a well name.")
+                    elif nw_name in store:
+                        st.warning(f"{nw_name} already exists in the review store.")
+                    elif float(nw_pwf) >= float(nw_resp):
+                        st.warning(
+                            "Flowing BHP must be below reservoir pressure — "
+                            "the IPR is undefined otherwise."
                         )
-                        # Drop the name widget's state so the next render
-                        # suggests a fresh default instead of the used name.
-                        st.session_state.pop(f"{p}_ph_name", None)
-                        st.toast(f"Added placeholder {name} (clone of {src})", icon="🔵")
+                    else:
+                        store[nw_name] = wrs.hypothetical_entry(
+                            nw_name,
+                            field_model=nw_fm,
+                            res_pres=nw_resp,
+                            oil_bopd=nw_oil,
+                            pwf=nw_pwf,
+                            form_wc=nw_wc,
+                            form_gor=nw_gor,
+                            form_temp=nw_temp,
+                            jpump_tvd=nw_tvd,
+                            nozzle=nw_noz,
+                            throat=nw_thr,
+                            offline=bool(nw_off),
+                            notes="hypothetical — future well (no analog)",
+                        )
+                        st.session_state.pop(f"{p}_nw_name", None)
+                        st.toast(
+                            f"Added future well {nw_name} ({nw_noz}{nw_thr})",
+                            icon="🔵",
+                        )
                         st.rerun()
-        else:
-            st.info("No reviewed real wells to clone yet.")
 
         hypos = [w for w, e in store.items() if e.get("is_hypothetical")]
         if hypos:

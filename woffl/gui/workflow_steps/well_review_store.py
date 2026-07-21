@@ -390,6 +390,79 @@ def store_to_well_configs(store: dict[str, dict]) -> list[WellConfig]:
     return [to_well_config(entry) for entry in store.values()]
 
 
+def hypothetical_entry(
+    name: str,
+    *,
+    field_model: str,
+    res_pres: float,
+    oil_bopd: float,
+    pwf: float,
+    form_wc: float,
+    form_gor: float,
+    form_temp: float,
+    jpump_tvd: float,
+    nozzle: str = "",
+    throat: str = "",
+    tubing_od: float = 4.5,
+    tubing_thickness: float = 0.5,
+    surf_pres: float = 210.0,
+    jpump_direction: str = "reverse",
+    offline: bool = False,
+    notes: str = "hypothetical",
+) -> dict:
+    """Build a fully-synthetic hypothetical well entry.
+
+    Single source of truth for BOTH hypothetical creation paths — the
+    Review-stage form and the Configure-screen "new well from scratch (no
+    analog)" form. ``nozzle``/``throat`` become the reviewed pump so the
+    well is usable in fixed-pump tools (Base vs Future needs a pump);
+    ``offline=True`` parks it as a FUTURE well (out of the base case and the
+    optimization until brought online or picked as future).
+
+    ``form_wc`` is capped at 0.99 — the store's oil↔total-liquid round trip
+    degenerates at 1.0 (see MAX_MODELABLE_WC).
+    """
+    wc = min(float(form_wc), MAX_MODELABLE_WC)
+    oil_frac = 1.0 - wc
+    return {
+        "well_name": name,
+        "res_pres": float(res_pres),
+        "form_temp": float(form_temp),
+        "jpump_tvd": float(jpump_tvd),
+        "tubing_od": float(tubing_od),
+        "tubing_thickness": float(tubing_thickness),
+        "casing_od": 6.875,
+        "casing_thickness": 0.5,
+        "form_wc": wc,
+        "form_gor": float(form_gor),
+        "surf_pres": float(surf_pres),
+        "qwf": float(oil_bopd) / oil_frac,
+        "pwf": float(pwf),
+        OIL_RATE_FIELD: float(oil_bopd),
+        "jpump_md": float(jpump_tvd),
+        "oil_api": None,
+        "gas_sg": None,
+        "wat_sg": None,
+        "bubble_point": None,
+        "ppf_surf_well": None,
+        "knz_well": None,
+        "ken_well": None,
+        "kth_well": None,
+        "kdi_well": None,
+        "jpump_direction": _direction(jpump_direction),
+        "field_model": field_model,
+        "review_nozzle": str(nozzle or ""),
+        "review_throat": str(throat or ""),
+        "ipr_source": "hypothetical",
+        "bhp_source": "assumed",
+        "gauge_note": "",
+        "is_hypothetical": True,
+        "offline": bool(offline),
+        "reviewed": True,
+        "notes": notes,
+    }
+
+
 def clone_entry(entry: dict, new_name: str, *, source_well: str) -> dict:
     """A placeholder copy of an existing well's reviewed entry.
 

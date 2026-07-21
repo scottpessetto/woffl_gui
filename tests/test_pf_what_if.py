@@ -206,11 +206,64 @@ def test_clone_entry_copies_physics_and_flags_hypothetical():
 
 
 def test_next_placeholder_name_skips_taken_names():
-    from woffl.gui.pad_page import _next_placeholder_name
+    from woffl.gui.pad_page import _next_free_name, _next_placeholder_name
 
     store = {"MPS-17": {}, "MPS-17-PH1": {}, "MPS-17-PH2": {}}
     assert _next_placeholder_name(store, "MPS-17") == "MPS-17-PH3"
     assert _next_placeholder_name({}, "MPS-04") == "MPS-04-PH1"
+    assert _next_free_name({"MPS-FUT1": {}}, "MPS-FUT") == "MPS-FUT2"
+
+
+def test_hypothetical_entry_from_scratch_future_well():
+    """No-analog future well: engineer-supplied IPR + pump, offline by
+    default, must build a valid WellConfig and carry the pump so Base vs
+    Future can use it."""
+    e = wrs.hypothetical_entry(
+        "MPS-FUT1",
+        field_model="Schrader",
+        res_pres=1800.0,
+        oil_bopd=400.0,
+        pwf=900.0,
+        form_wc=0.5,
+        form_gor=250.0,
+        form_temp=160.0,
+        jpump_tvd=4200.0,
+        nozzle="12",
+        throat="B",
+        offline=True,
+        notes="hypothetical — future well (no analog)",
+    )
+    assert e["is_hypothetical"] is True
+    assert e["offline"] is True
+    assert e["review_nozzle"] == "12"
+    assert e["review_throat"] == "B"
+    assert e["ipr_source"] == "hypothetical"
+    assert e["bhp_source"] == "assumed"
+    # Sidebar-style oil → store total-liquid conversion (the S-Pad gotcha).
+    assert e["qwf"] == pytest.approx(800.0)
+    assert e[wrs.OIL_RATE_FIELD] == pytest.approx(400.0)
+    wc = wrs.to_well_config(e)
+    assert wc.well_name == "MPS-FUT1"
+
+
+def test_hypothetical_entry_caps_wc_and_normalizes_direction():
+    e = wrs.hypothetical_entry(
+        "MPS-FUT9",
+        field_model="Kuparuk",
+        res_pres=1800.0,
+        oil_bopd=100.0,
+        pwf=900.0,
+        form_wc=1.0,  # would divide by zero un-capped
+        form_gor=250.0,
+        form_temp=160.0,
+        jpump_tvd=4200.0,
+        jpump_direction="Forward",
+    )
+    assert e["form_wc"] == pytest.approx(wrs.MAX_MODELABLE_WC)
+    assert e["qwf"] > 0
+    assert e["jpump_direction"] == "forward"
+    # No pump supplied → not usable in fixed-pump tools, but a valid entry.
+    assert e["review_nozzle"] == ""
 
 
 # ---------------------------------------------------------------------------

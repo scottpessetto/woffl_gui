@@ -501,45 +501,17 @@ def _render_hypothetical_form(pad: str) -> None:
             if not name:
                 st.warning("Enter a well name.")
                 return
-            # The WC widget above caps at 0.99, so the exact conversion is safe.
-            oil_frac = 1.0 - float(wc)
-            store_for(pad)[name] = {
-                "well_name": name,
-                "res_pres": float(res_pres),
-                "form_temp": float(temp),
-                "jpump_tvd": float(tvd),
-                "tubing_od": 4.5,
-                "tubing_thickness": 0.5,
-                "casing_od": 6.875,
-                "casing_thickness": 0.5,
-                "form_wc": float(wc),
-                "form_gor": float(gor),
-                "surf_pres": 210.0,
-                "qwf": float(oil) / oil_frac,
-                "pwf": float(pwf),
-                wrs.OIL_RATE_FIELD: float(oil),
-                "jpump_md": float(tvd),
-                "oil_api": None,
-                "gas_sg": None,
-                "wat_sg": None,
-                "bubble_point": None,
-                "ppf_surf_well": None,
-                "knz_well": None,
-                "ken_well": None,
-                "kth_well": None,
-                "kdi_well": None,
-                "jpump_direction": "reverse",
-                "field_model": field_model,
-                "review_nozzle": "",
-                "review_throat": "",
-                "ipr_source": "hypothetical",
-                "bhp_source": "assumed",
-                "gauge_note": "",
-                "is_hypothetical": True,
-                "offline": False,
-                "reviewed": True,
-                "notes": "hypothetical",
-            }
+            store_for(pad)[name] = wrs.hypothetical_entry(
+                name,
+                field_model=field_model,
+                res_pres=res_pres,
+                oil_bopd=oil,
+                pwf=pwf,
+                form_wc=wc,
+                form_gor=gor,
+                form_temp=temp,
+                jpump_tvd=tvd,
+            )
             st.toast(f"Added hypothetical {name}", icon="🔵")
             st.rerun()
 
