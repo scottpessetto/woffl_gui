@@ -8,7 +8,8 @@ Module Structure:
     app.py              - Main entry point and routing
     sidebar.py          - Sidebar input widget collection
     single_well_page.py - Single-well analysis tab orchestrator
-    workflow_page.py    - Multi-well optimization workflow (steps 1-4)
+    pad_hub.py          - "Optimization" mode: S/I/M pads + PW Pressure (CFP)
+    cfp_pad_page.py     - PW Pressure Optimization (CFP plant, J/G/C/B)
     params.py           - SimulationParams dataclass
     utils.py            - Simulation helper functions
     tabs/               - Individual tab renderers

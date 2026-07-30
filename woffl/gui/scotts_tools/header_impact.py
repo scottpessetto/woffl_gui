@@ -73,6 +73,7 @@ from .header_engine import (
     backtest_anchors,
     bias_by_pad,
     clamp_scenario_whp,
+    classify_lift,
     corr_display_plan,
     depletion_signature,
     describe_donor,
@@ -167,8 +168,13 @@ def fetch_well_overview(months_back: int) -> pd.DataFrame:
     """Per-producer latest-test snapshot for ALL producers (not just JP).
 
     Columns: well (normalized), well_pad, oil, esp_amps, lift_gas, lift_wat, whp,
-    resvr_press. The universe + lift-type inputs + generic-IPR inputs (oil rate,
-    reservoir pressure) for the all-lift-types flow.
+    resvr_press, wt_date. The universe + lift-type inputs + generic-IPR inputs
+    (oil rate, reservoir pressure) for the all-lift-types flow.
+
+    ``wt_date`` is the date of that latest test — ``_classify_lift`` needs it to
+    tell a JP→ESP conversion (amps postdate the install) from an ESP→JP one
+    (install postdates the amps). Consumers must tolerate its absence: a cache
+    entry written before it was projected won't have the column.
     """
     from woffl.assembly.databricks_client import execute_query
     from woffl.assembly.well_test_client import _normalize_well_name
@@ -177,13 +183,13 @@ def fetch_well_overview(months_back: int) -> pd.DataFrame:
     q = f"""
     WITH latest AS (
         SELECT vwt.enthid, vwt.well_name, vwt.form_oil AS oil, vwt.esp_amps,
-               vwt.lift_gas, vwt.lift_wat, vwt.whp,
+               vwt.lift_gas, vwt.lift_wat, vwt.whp, vwt.wt_date,
                ROW_NUMBER() OVER (PARTITION BY vwt.enthid ORDER BY vwt.wt_date DESC) AS rn
         FROM mpu.wells.vw_well_test vwt
         WHERE vwt.wt_date >= DATE_SUB(current_date(), {days}) AND vwt.allocated = True
     )
     SELECT l.well_name, l.oil, l.esp_amps, l.lift_gas, l.lift_wat, l.whp,
-           r.resvr_press, h.well_pad
+           l.wt_date, r.resvr_press, h.well_pad
     FROM latest l
     LEFT JOIN mpu.wells.vw_prop_resvr r ON l.enthid = r.enthid
     LEFT JOIN mpu.wells.vw_well_header h ON l.enthid = h.enthid
@@ -196,36 +202,36 @@ def fetch_well_overview(months_back: int) -> pd.DataFrame:
     for c in ("oil", "esp_amps", "lift_gas", "lift_wat", "whp", "resvr_press"):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
+    if "wt_date" in df.columns:
+        df["wt_date"] = pd.to_datetime(df["wt_date"], errors="coerce")
     return df
 
 
 def _classify_lift(well: str, jp_hist, ov_row) -> str:
     """ESP (esp_amps) / JP (current pump) / gas-lift (lift_gas) / flowing.
 
-    Recency terminator (P1-26): ``ov_row`` is the well's LATEST test within
-    the caller's recency window (``fetch_well_overview``'s ``months_back``),
-    so a positive ``esp_amps`` there is live, recent evidence the well is
-    currently running an ESP. Check it FIRST, ahead of the JP-history
-    lookup — a jet pump never draws ESP amps, so this can't misfire against
-    a genuinely-current JP well; it only catches a JP→ESP conversion the
-    tracker never logged (JPCOs are same-day pull+set, and the tracker's
-    ``Date Pulled`` is unreliable per CLAUDE.md — a stale, never-updated JP
-    install must not out-rank fresh ESP amps, or the well models as JP
-    forever).
+    Thin adapter: unpacks the jp_history install + the overview row and defers
+    to :func:`header_engine.classify_lift`, which owns the rule (P1-26 recency
+    terminator + the ESP→JP date guard). This module used to carry a second,
+    divergent copy of that logic while the engine's went unused.
+
+    ``ov_row`` is the well's LATEST test within the caller's recency window
+    (``fetch_well_overview``'s ``months_back``). ``wt_date`` may be absent on a
+    stale cache entry or a mocked frame — ``.get`` yields None and the engine
+    falls back to the P1-26 default, so this degrades safely.
     """
-    if (
-        ov_row is not None
-        and pd.notna(ov_row.get("esp_amps"))
-        and float(ov_row.get("esp_amps") or 0) > 0
-    ):
-        return "ESP"
     pump = get_current_pump(jp_hist, well)
-    if pump is not None and pump.get("nozzle_no") and pump.get("throat_ratio"):
-        return "JP"
-    if ov_row is not None:
-        if pd.notna(ov_row.get("lift_gas")) and float(ov_row.get("lift_gas") or 0) > 0:
-            return "gas-lift"
-    return "flowing"
+    # A row whose nozzle/throat didn't parse isn't really a jet-pump install
+    # (legacy ESP/wireline rows land in those columns), so it can't claim the
+    # well — pass no install date in that case.
+    is_jp = bool(pump and pump.get("nozzle_no") and pump.get("throat_ratio"))
+    get = ov_row.get if ov_row is not None else (lambda _k, _d=None: None)
+    return classify_lift(
+        pump.get("date_set") if is_jp else None,
+        get("esp_amps"),
+        get("lift_gas"),
+        test_date=get("wt_date"),
+    )
 
 
 # ── per-pad power-fluid pressure ─────────────────────────────────────────────

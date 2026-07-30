@@ -1,0 +1,113 @@
+{
+  "equipment": "CFP produced-water pumps, machines A / B / C",
+  "configuration": "3 machines in parallel at a common discharge pressure",
+  "n_machines": 3,
+  "units": {
+    "flow": "BWPD",
+    "pressure": "psi"
+  },
+  "specific_gravity": 1.02,
+  "suction_psi": 50.0,
+  "compute": "per machine DischP = a*q^2 + b*q + c, inverted on the DESCENDING limb: q = (-b - sqrt(b^2 - 4a(c - P))) / (2a). Total plant flow at a common discharge = sum of the three machine flows.",
+  "machine_coeffs": {
+    "_form": "[a, b, c] for DischP = a*q^2 + b*q + c",
+    "A": [
+      -6.60950602540299e-07,
+      -0.0154897118692163,
+      3971.4005378139
+    ],
+    "B": [
+      -1.00084923741945e-06,
+      0.0151043740922211,
+      3248.56932497937
+    ],
+    "C": [
+      -1.75394995854e-06,
+      0.0778673263080865,
+      2151.05205961576
+    ]
+  },
+  "pad_line_dp_psi": {
+    "_note": "PROVISIONAL and measured WRONG on 2026-07-29 \u2014 all three over-stated. Prefer the measured anchor (see README). Kept only as the fallback when a pad has no live PF reading.",
+    "B": 272.0,
+    "G": 293.0,
+    "J": 251.0,
+    "_measured_2026_07_29": {
+      "B": 169.0,
+      "G": 44.0,
+      "J": 110.0
+    }
+  },
+  "max_discharge_psi": 2900.0,
+  "max_discharge_note": "Piping rating. Above it the pumps shut down (Scott, 2026-07-29) \u2014 it is a hard trip, not a soft target.",
+  "pops_max_pf_psi": 3500.0,
+  "pressure_window": [
+    1800.0,
+    3000.0
+  ],
+  "pressure_window_note": "Bisection bound for inverting the curve, NOT an operational limit. Its ceiling deliberately exceeds max_discharge_psi; the 2,900 trip is enforced in woffl.gui.cfp_pad_plant.CFPPlant.",
+  "trusted_band": [
+    2200.0,
+    2700.0
+  ],
+  "trusted_band_note": "The span the source spreadsheet table actually covers. Outside it these are extrapolation \u2014 machine C's fitted parabola even RISES to a 3,015 psi vertex at 22,198 BWPD and its q=0 intercept (2,151 psi) sits below the whole operating window.",
+  "machine_curve_validated": false,
+  "machine_curve_validated_note": "The coefficients were fitted to TOTAL plant behavior; no machine was validated on its own. While false, CFPPlant REFUSES 1- and 2-machine cases rather than emitting extrapolated numbers.",
+  "spreadsheet_anchors": [
+    {
+      "discharge_psi": 2200.0,
+      "total_bwpd": 125901.0,
+      "machines": {
+        "A": 41361.0,
+        "B": 40782.0,
+        "C": 43758.0
+      }
+    },
+    {
+      "discharge_psi": 2700.0,
+      "total_bwpd": 101428.0
+    }
+  ],
+  "measured_operating_point_2026_07_29": {
+    "discharge_psi": 2792.0,
+    "produced_water_bwpd": 112327.0,
+    "discharge_tag": "MPU_PIC_5418",
+    "produced_water_tag": "MPU_MOD 54_ProdWaterAvgFlowRate_Calc",
+    "window": "120-day means from reporting.historian.vw_mpu_measurements, plant-down days (<2,000 psi) excluded",
+    "curve_says_at_that_flow_psi": 2496.0,
+    "shortfall_bwpd_at_measured_pressure": 17000.0
+  },
+  "acceptance_test": "The replacement coefficients MUST pass ~86,000 BPD at ~2,790 psi \u2014 the TOTAL OF THE THREE MACHINES, not metered produced water (~112,300 BWPD, only ~77% of which passes these pumps). Today's fit passes ~95,800 there, i.e. runs ~11% HIGH.",
+  "source": "woffl/jp_data/CFP Water Discharge Correlation.xlsx (Scott, 2026-06)",
+  "validated": false,
+  "validated_note": "PROVISIONAL. Shape validated against live SCADA 2026-07-30; magnitude ~12% high with a fairly UNIFORM scale error (per machine 0.84-0.96), so a single ~0.88 factor would largely correct it. Interface is frozen \u2014 replacing the numbers is a data swap.",
+  "machine_flow_tags": {
+    "A": "MPU_FIC_5419S",
+    "B": "MPU_FIC_5420S",
+    "C": "MPU_FIC_5421S"
+  },
+  "machine_flow_gpm_tags": {
+    "A": "MPU_FIC_5419",
+    "B": "MPU_FIC_5420",
+    "C": "MPU_FIC_5421"
+  },
+  "machine_flow_tags_note": "Confirmed against Scott's SCADA screen 2026-07-30 (A 30,582 / B 23,589 / C 27,994 BPD at ~2,828 psi) and by the GPM twins x 1440/42. NOT MPU_FIC_5488/5489 \u2014 those are a different stream and produced two wrong conclusions (a two-machine plant, a 0.99 curve match).",
+  "measured_operating_point_2026_07_30": {
+    "discharge_psi": 2787.0,
+    "machine_total_bpd": 86228.0,
+    "per_machine_bpd": {
+      "A": 29844.0,
+      "B": 26453.0,
+      "C": 29931.0
+    },
+    "machines_running": 3,
+    "observed_over_curve_ratio": {
+      "at_2877_psi": 0.9,
+      "at_2639_psi": 0.87
+    },
+    "measured_psi_per_kbpd": -13.69,
+    "measured_psi_per_kbpd_r2": 0.54,
+    "machine_share_of_produced_water": 0.77,
+    "window": "120-day daily means from reporting.historian, plant-down days (<2,000 psi) excluded"
+  }
+}

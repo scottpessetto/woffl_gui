@@ -13,7 +13,18 @@ from __future__ import annotations
 
 import streamlit as st
 
-_PADS = ["S-Pad", "I-Pad", "M-Pad"]
+# The CFP produced-water plant, covering pads J/G/C/B. Deliberately NOT a
+# PadSpec: four pads share one plant and each receives a different delivered PF,
+# so it has its own page composed from the pad-page pieces rather than being
+# forced through the single-pad ``run_pad_page``.
+_CFP_LABEL = "PW Pressure Optimization"
+
+# PadSpec-backed pads — every one of these must resolve through ``_spec_for``.
+_SPEC_PADS = ["S-Pad", "I-Pad", "M-Pad"]
+
+# Everything on the radio, spec-backed or not.
+_PADS = _SPEC_PADS + [_CFP_LABEL]
+
 _SHADOW_KEY = "pad_hub_pad_shadow"
 
 
@@ -41,6 +52,12 @@ def run_pad_hub() -> None:
     idx = _PADS.index(shadow) if shadow in _PADS else 0
     pad = st.radio("Pad", _PADS, index=idx, horizontal=True, key="pad_hub_pad")
     st.session_state[_SHADOW_KEY] = pad
+
+    if pad == _CFP_LABEL:
+        from woffl.gui.cfp_pad_page import run_cfp_page
+
+        run_cfp_page()
+        return
 
     # Per-pad state (stage, results, match check) is keyed on each spec's
     # unique prefix, so switching pads here parks one pad's run and resumes

@@ -188,10 +188,25 @@ LEFT JOIN near_window nw ON nw.enthid = r.enthid
 WHERE r.rank_recent = 1
 """
 
-# Tag mapping: production XV = MPU_XZ_<pad_number>2<well_number:02d>
-#              power-fluid XV = MPU_XZ_<pad_number>4<well_number:02d>
+# Tag mapping: production XV = MPU_XZ_<pad_number>2<well_number>
+#              power-fluid XV = MPU_XZ_<pad_number>4<well_number>
 # pad_number comes from mpu.wells.pad_xref / vw_bhp_tags.
 # Fetch current open/shut state for every tag matching either pattern.
+#
+# The well number is NEVER truncated. `well_number` in vw_bhp_tags is already
+# a zero-padded string ('01', '02', ... ) and R-pad / F-pad run to THREE
+# digits ('101'..'145', '107', '109'). Spark's LPAD(str, 2, '0') *truncates*
+# anything longer than 2, so the old `LPAD(well_number, 2, '0')` collapsed
+# every 3-digit well onto its first two characters: R-102/104/106/108/109 all
+# derived MPU_XZ_46210, F-107/109 both derived MPU_XZ_24210, and so on --
+# 13 producers pointed at 4 tags that don't exist in the historian, which is
+# why their ProdXV/PFXV always read blank. The real tags carry the full number
+# (verified live 2026-07-29: MPU_XZ_462106, MPU_XZ_462110, MPU_XZ_462111,
+# MPU_XZ_242107, MPU_XZ_242109 all return data; the truncated forms return
+# none). Fixing it takes XV coverage from 182 to 191 of 245 producers.
+#
+# The single-digit branch is kept as a guard in case an unpadded '1' ever
+# appears -- CONCAT('0', n), never LPAD, so it cannot truncate.
 XV_STATUS_QUERY = """\
 WITH producers AS (
     SELECT h.well_name, t.pad_number, t.well_number
@@ -199,13 +214,21 @@ WITH producers AS (
     JOIN mpu.wells.vw_bhp_tags t ON h.enthid = t.enthid
     WHERE h.field = 'MPU' AND h.well_type = 'prod'
 ),
+tag_parts AS (
+    SELECT well_name, pad_number, well_number,
+        LPAD(CAST(pad_number AS STRING), 2, '0') AS pad_str,
+        CASE
+            WHEN LENGTH(CAST(well_number AS STRING)) < 2
+                THEN CONCAT('0', CAST(well_number AS STRING))
+            ELSE CAST(well_number AS STRING)
+        END AS well_str
+    FROM producers
+),
 tag_map AS (
     SELECT well_name, pad_number, well_number,
-        CONCAT('MPU_XZ_', LPAD(CAST(pad_number AS STRING), 2, '0'),
-               '2', LPAD(CAST(well_number AS STRING), 2, '0')) AS prod_tag,
-        CONCAT('MPU_XZ_', LPAD(CAST(pad_number AS STRING), 2, '0'),
-               '4', LPAD(CAST(well_number AS STRING), 2, '0')) AS pf_tag
-    FROM producers
+        CONCAT('MPU_XZ_', pad_str, '2', well_str) AS prod_tag,
+        CONCAT('MPU_XZ_', pad_str, '4', well_str) AS pf_tag
+    FROM tag_parts
 ),
 latest AS (
     SELECT Tag, Value, MeasureTime,

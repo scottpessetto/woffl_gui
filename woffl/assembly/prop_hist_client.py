@@ -183,15 +183,39 @@ def _resolve_enthid(well_name: str) -> int:
     return matches[0]
 
 
+# Optional per-call identity provider, registered by the GUI at startup
+# (`set_entry_user_provider`). Exists for Databricks Apps, where every session
+# shares one container and `current_user()` resolves to the app's SERVICE
+# PRINCIPAL — without this, every hosted save is stamped with the same UUID
+# and the entry_user audit trail is lost. A provider (e.g. reading the
+# X-Forwarded-Email request header via st.context) recovers the real engineer
+# PER SESSION, which an env var cannot (it's process-global). This module
+# stays Streamlit-free: the provider is injected, never imported.
+_entry_user_provider = None
+
+
+def set_entry_user_provider(provider) -> None:
+    """Register a zero-arg callable returning the acting user (or None).
+
+    Called on EVERY resolve (never cached — identity is per-session on a
+    shared host). Exceptions and falsy returns fall through to the next
+    precedence tier, so a broken provider can never block a save.
+    """
+    global _entry_user_provider
+    _entry_user_provider = provider
+
+
 def resolve_entry_user(force_refresh: bool = False) -> str:
     """Resolve the identity to stamp on prop_hist writes.
 
     Precedence:
-    1. `WOFFL_ENTRY_USER` env override, if set (e.g. once the deployed app
-       threads through a real Streamlit-user identity) -- checked on every
-       call, never cached, so a test/session override always wins.
-    2. The local SQL session's `SELECT current_user()`, cached per process
-       (it doesn't change mid-session).
+    1. `WOFFL_ENTRY_USER` env override, if set -- checked on every call,
+       never cached, so a test/session override always wins.
+    2. The registered entry-user provider (the hosted app registers one that
+       reads the forwarded-user request header) -- per call, never cached.
+    3. The SQL session's `SELECT current_user()`, cached per process
+       (it doesn't change mid-session). On Databricks Apps this is the
+       service principal -- the fallback of last resort.
 
     Deliberately NEVER `os.getlogin()` -- wrong identity on Databricks Apps,
     where every user runs as the service principal / container user (see the
@@ -200,6 +224,14 @@ def resolve_entry_user(force_refresh: bool = False) -> str:
     env_user = os.environ.get("WOFFL_ENTRY_USER")
     if env_user:
         return env_user
+
+    if _entry_user_provider is not None:
+        try:
+            provided = _entry_user_provider()
+        except Exception:
+            provided = None
+        if provided:
+            return str(provided)
 
     if not force_refresh and _entry_user_cache["value"] is not None:
         return _entry_user_cache["value"]

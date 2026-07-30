@@ -114,10 +114,27 @@ def fetch_bhp_tag_map() -> dict[tuple[str, int], dict]:
         except (TypeError, ValueError):
             continue
         padnum = r["pad_number"]
-        # Use the int well number (wellnum is known int-convertible here — see the
-        # key above). A leading-zero string (e.g. "08") would otherwise build
-        # MPU_PI_<pad>208 instead of ...28 and the WHP tag would never resolve.
-        whp = f"MPU_PI_{int(padnum)}2{int(wellnum)}" if pd.notna(padnum) else None
+        # WHP tag = MPU_PI_<pad:02d>2<well>, with the well number KEPT AS THE
+        # STORED STRING — vw_bhp_tags already zero-pads it ('01', '08') and
+        # some wells run to three digits ('107', '204').
+        #
+        # This used to be `int(wellnum)`, whose comment claimed a leading-zero
+        # string would build a tag that "would never resolve". That was exactly
+        # backwards, verified live 2026-07-29: MPU_PI_24201 (F-001) exists with
+        # 24,440 readings; MPU_PI_2421 — what int() produced — does not exist at
+        # all. 50 producers carry a leading-zero well number and 36 of them have
+        # live WHP data the old rule silently could not see, which quietly
+        # degraded the empirical WHP→BHP slope for those wells.
+        #
+        # Note the KEY above still uses int(wellnum) — that is correct and
+        # deliberate, so ('I', 22) matches whether the caller says I-22 or I-022.
+        # Only the TAG must preserve the padding.
+        wellnum_tag = wellnum if len(wellnum) >= 2 else wellnum.zfill(2)
+        whp = (
+            f"MPU_PI_{str(int(padnum)).zfill(2)}2{wellnum_tag}"
+            if pd.notna(padnum)
+            else None
+        )
         out[key] = {
             "bhp_esp": _clean_tag(r["bhp_esp"]),
             "bhp_other": _clean_tag(r["bhp_other"]),

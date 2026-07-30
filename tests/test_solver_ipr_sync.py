@@ -737,6 +737,12 @@ class TestSaveIprPinButton:
             return True, "📌 IPR saved to Databricks — test 2026-05-10"
 
         monkeypatch.setattr("woffl.gui.ipr_anchor.pin_ipr_anchor", _fake_pin)
+        # Phase 2 (2026-07-30): the button ALSO saves the sidebar's current
+        # IPR values — mocked here; its own contract is test_ipr_saved_values.
+        monkeypatch.setattr(
+            "woffl.gui.ipr_anchor.save_ipr_values",
+            lambda well_name, **kw: (6, "💾 Saved IPR values for WELL"),
+        )
         cleared = []
         monkeypatch.setattr(
             jetpump_solver, "_clear_pin_cache", lambda w: cleared.append(w)
@@ -750,10 +756,37 @@ class TestSaveIprPinButton:
         assert pushed["well"] == "WELL"
         assert pushed["uid"] == 301.0  # most-recent test (no sig set yet)
         assert cleared == ["WELL"]
-        assert picker_st.toasts == ["📌 IPR saved to Databricks — test 2026-05-10"]
+        assert picker_st.toasts == [
+            "📌 IPR saved to Databricks — test 2026-05-10",
+            "💾 Saved IPR values for WELL",
+        ]
         assert picker_st.rerun_count == 1
 
-    def test_click_skip_shows_caption_not_warning_no_rerun(
+    def test_click_skip_with_values_saved_captions_and_reruns(
+        self, picker_st, monkeypatch
+    ):
+        """Unpinnable anchor (manual/provisional test) but the VALUES saved —
+        the forced-IPR case Phase 2 exists for. Pin message stays a caption
+        (expected skip, not an error); the values toast + rerun happen."""
+        _enable_writes(monkeypatch)
+        df = _make_test_df_with_uid()
+        monkeypatch.setattr(
+            "woffl.gui.ipr_anchor.pin_ipr_anchor",
+            lambda w, r: (False, "IPR not saved to Databricks: some reason."),
+        )
+        monkeypatch.setattr(
+            "woffl.gui.ipr_anchor.save_ipr_values",
+            lambda well_name, **kw: (5, "💾 Saved IPR values for WELL"),
+        )
+        picker_st.clicks.add("sw_save_ipr_pin_WELL")
+        with pytest.raises(_Rerun):
+            jetpump_solver._render_ipr_anchor_control("WELL", df)
+        assert picker_st.rerun_count == 1
+        assert picker_st.warnings == []
+        assert any("some reason" in c for c in picker_st.captions)
+        assert "💾 Saved IPR values for WELL" in picker_st.toasts
+
+    def test_click_skip_with_values_failed_warns_no_rerun(
         self, picker_st, monkeypatch
     ):
         _enable_writes(monkeypatch)
@@ -762,11 +795,15 @@ class TestSaveIprPinButton:
             "woffl.gui.ipr_anchor.pin_ipr_anchor",
             lambda w, r: (False, "IPR not saved to Databricks: some reason."),
         )
+        monkeypatch.setattr(
+            "woffl.gui.ipr_anchor.save_ipr_values",
+            lambda well_name, **kw: (0, "Could not save IPR values: gate closed"),
+        )
         picker_st.clicks.add("sw_save_ipr_pin_WELL")
         jetpump_solver._render_ipr_anchor_control("WELL", df)  # must not raise/rerun
         assert picker_st.rerun_count == 0
-        assert picker_st.warnings == []
         assert any("some reason" in c for c in picker_st.captions)
+        assert any("gate closed" in w for w in picker_st.warnings)
 
     def test_click_failure_shows_warning_no_rerun(self, picker_st, monkeypatch):
         _enable_writes(monkeypatch)
@@ -774,6 +811,10 @@ class TestSaveIprPinButton:
         monkeypatch.setattr(
             "woffl.gui.ipr_anchor.pin_ipr_anchor",
             lambda w, r: (False, "Could not save IPR to Databricks: connection reset"),
+        )
+        monkeypatch.setattr(
+            "woffl.gui.ipr_anchor.save_ipr_values",
+            lambda well_name, **kw: (6, "💾 Saved IPR values for WELL"),
         )
         picker_st.clicks.add("sw_save_ipr_pin_WELL")
         jetpump_solver._render_ipr_anchor_control("WELL", df)  # must not raise/rerun

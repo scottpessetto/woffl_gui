@@ -35,7 +35,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from woffl.assembly.network_optimizer import WellConfig
+from woffl.assembly.network_optimizer import WellConfig, derive_pad
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -79,6 +79,12 @@ _STRING_FIELDS = (
     "well_name",
     "field_model",
     "jpump_direction",
+    # Pad membership, needed by the CFP joint optimizer where four pads share
+    # one plant and each pad gets a DIFFERENT delivered PF pressure. Empty
+    # round-trips fine: WellConfig derives it from well_name (see
+    # network_optimizer.derive_pad), so legacy stores/CSVs without the column
+    # behave exactly as before.
+    "pad",
     "review_nozzle",
     "review_throat",
     "ipr_source",
@@ -102,6 +108,7 @@ CSV_COLUMNS = (
     + (
         "field_model",
         "jpump_direction",
+        "pad",
         "review_nozzle",
         "review_throat",
         "ipr_source",
@@ -309,6 +316,11 @@ def snapshot_from_params(
         # tubing (e.g. MPS-17). Carried into WellConfig so the optimizer's
         # BatchPump models the correct conduits.
         "jpump_direction": _direction(getattr(params, "jpump_direction", None)),
+        # Pad membership, derived from the well name (the one implementation, in
+        # network_optimizer) rather than re-parsed here. Explicit in the store so
+        # the CFP joint optimizer can assign each pad its own delivered PF
+        # without re-deriving pad identity at the use site.
+        "pad": derive_pad(params.selected_well),
         # Review metadata. The optimizer re-chooses nozzle/throat, so the
         # reviewed pump is informational (drives the "reviewed vs optimized"
         # comparison in Results), not a constraint.
@@ -382,6 +394,9 @@ def to_well_config(entry: dict) -> WellConfig:
         kth_well=entry.get("kth_well"),
         kdi_well=entry.get("kdi_well"),
         jpump_direction=_direction(entry.get("jpump_direction")),
+        # Empty/absent (legacy store or CSV without the column) → WellConfig
+        # derives it from well_name, so nothing breaks.
+        pad=str(entry.get("pad") or ""),
     )
 
 
@@ -450,6 +465,9 @@ def hypothetical_entry(
         "kth_well": None,
         "kdi_well": None,
         "jpump_direction": _direction(jpump_direction),
+        # Hypothetical wells are named for the pad they'd sit on (e.g. "B-NEW"),
+        # so the same derivation puts them on the right plant delivery.
+        "pad": derive_pad(name),
         "field_model": field_model,
         "review_nozzle": str(nozzle or ""),
         "review_throat": str(throat or ""),
@@ -558,11 +576,13 @@ def store_signature(store: dict[str, dict]) -> tuple:
     calibration fields participate; notes, provenance, and the reviewed pump
     label don't change the optimization.
     """
-    # jpump_direction changes the modeled conduits, so it participates.
+    # jpump_direction changes the modeled conduits, so it participates. So does
+    # pad: in a CFP joint run it decides which delivered PF pressure the well
+    # receives, so re-padding a well changes the optimization.
     fields = (
         _WELLCONFIG_FLOAT_FIELDS
         + _OPTIONAL_FLOAT_FIELDS
-        + ("field_model", "jpump_direction")
+        + ("field_model", "jpump_direction", "pad")
     )
 
     def _norm(v):
@@ -614,6 +634,10 @@ def dataframe_to_store(df: pd.DataFrame) -> dict[str, dict]:
         fm = (_str(row.get("field_model"), "Schrader") or "Schrader").strip().title()
         entry["field_model"] = fm if fm in ("Schrader", "Kuparuk") else "Schrader"
         entry["jpump_direction"] = _direction(row.get("jpump_direction"))
+        # Legacy CSVs have no `pad` column — fall back to deriving it from the
+        # well name so an older file loads with correct pad membership rather
+        # than an empty one.
+        entry["pad"] = derive_pad(_str(row.get("pad")).strip() or well_name)
         entry["review_nozzle"] = _nozzle_str(row.get("review_nozzle"))
         entry["review_throat"] = _str(row.get("review_throat")).strip()
         entry["ipr_source"] = _str(row.get("ipr_source"), "vogel") or "vogel"

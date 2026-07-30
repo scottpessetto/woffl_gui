@@ -275,3 +275,65 @@ class TestCirculationDirection:
         store_rev = {"MPS-99": _snapshot(_params(jpump_direction="reverse"))}
         store_fwd = {"MPS-99": _snapshot(_params(jpump_direction="forward"))}
         assert wrs.store_signature(store_rev) != wrs.store_signature(store_fwd)
+
+
+# ── pad membership (W2 of the CFP joint-optimization work) ──────────────────
+# CFP optimizes FOUR pads against one plant, and each pad receives a DIFFERENT
+# delivered PF pressure (B/G/J ride the plant discharge minus their own line
+# loss; C-Pad is boosted on-pad). So pad identity has to travel explicitly
+# snapshot -> store -> CSV -> WellConfig instead of being re-derived by regex at
+# each use site.
+
+
+class TestPadMembership:
+    def test_snapshot_derives_pad_from_well_name(self):
+        assert _snapshot(_params(selected_well="MPB-28"))["pad"] == "B"
+        assert _snapshot(_params(selected_well="MPJ-29"))["pad"] == "J"
+
+    def test_well_name_does_not_collapse_to_m_pad(self):
+        """Naive well_name[0] on "MPB-28" yields "M" — every well would land on
+        M-Pad and take the wrong plant delivery."""
+        assert _snapshot(_params(selected_well="MPB-28"))["pad"] != "M"
+
+    def test_pad_survives_the_csv_round_trip(self):
+        store = {"MPB-28": _snapshot(_params(selected_well="MPB-28"))}
+        df = wrs.store_to_dataframe(store)
+        assert "pad" in df.columns
+        assert wrs.dataframe_to_store(df)["MPB-28"]["pad"] == "B"
+
+    def test_legacy_csv_without_pad_column_derives_it(self):
+        """An older CSV predates the column — it must load with the right pad,
+        not an empty one."""
+        store = {"MPB-28": _snapshot(_params(selected_well="MPB-28"))}
+        df = wrs.store_to_dataframe(store).drop(columns=["pad"])
+        assert wrs.dataframe_to_store(df)["MPB-28"]["pad"] == "B"
+
+    def test_pad_reaches_wellconfig(self):
+        entry = _snapshot(_params(selected_well="MPG-18"))
+        assert wrs.to_well_config(entry).pad == "G"
+
+    def test_wellconfig_derives_pad_when_store_entry_lacks_it(self):
+        entry = dict(_snapshot(_params(selected_well="MPJ-29")))
+        entry["pad"] = ""
+        assert wrs.to_well_config(entry).pad == "J"
+
+    def test_pad_changes_store_signature(self):
+        """Re-padding a well changes which delivered PF it gets, so it must
+        invalidate a cached run."""
+        a = {"MPB-28": _snapshot(_params(selected_well="MPB-28"))}
+        b = {"MPB-28": dict(a["MPB-28"], pad="J")}
+        assert wrs.store_signature(a) != wrs.store_signature(b)
+
+    def test_hypothetical_well_gets_a_pad(self):
+        entry = wrs.hypothetical_entry(
+            name="B-NEW",
+            res_pres=1800,
+            form_temp=160,
+            form_wc=0.5,
+            form_gor=250,
+            oil_bopd=300,
+            pwf=900,
+            jpump_tvd=4200,
+            field_model="Schrader",
+        )
+        assert entry["pad"] == "B"

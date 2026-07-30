@@ -89,19 +89,34 @@ def pf_map_from_selected(selected_df: pd.DataFrame | None) -> dict[str, float]:
 def classify_lift(pump_date_set, esp_amps, lift_gas, test_date=None) -> str:
     """Classify a producer's lift type from the JP install + latest-test signals.
 
-    A current jet-pump install claims the well — but only while it is the most
-    recent signal. An ESP-flagged test (``esp_amps > 0``) dated AFTER the latest
-    install means the well was converted, and a lift conversion terminates JP
-    tenure, so the well classifies ESP even though an install row still exists
-    (the old rule modeled a years-ago JP→ESP conversion as JP forever).
+    THE one lift classifier — ``header_impact._classify_lift`` is a thin adapter
+    over this (it unpacks the jp_history row + overview row). There used to be
+    two divergent copies; the unused one defaulted to JP when no test date was
+    available, which contradicts P1-26 below.
+
+    A jet-pump install claims the well only while it is the most recent signal:
+
+    * ``esp_amps > 0`` on the well's LATEST test is live evidence of a running
+      ESP — a jet pump never draws ESP amps. It out-ranks a JP install record,
+      because JPCOs are same-day pull+set and the tracker's ``Date Pulled`` is
+      unreliable (CLAUDE.md), so a stale install that was never closed out would
+      otherwise model a long-converted well as JP forever (P1-26).
+    * The one exception is a *known* date ordering that proves the opposite
+      conversion: when ``test_date`` is known and does NOT postdate
+      ``pump_date_set``, the ESP amps predate the current jet pump (an ESP→JP
+      conversion), so the install wins and the well is JP.
+
+    Without ``test_date`` the amps are assumed current — that is the P1-26
+    default and the safer one, since ``ov_row`` is by construction the latest
+    test inside the caller's recency window.
 
     Args:
         pump_date_set: ``Date Set`` of the latest valid JP install, or None/NaT
             when the well has no (dated) current pump.
         esp_amps: latest-test ESP amps (the ESP signal).
         lift_gas: latest-test lift gas (the gas-lift signal).
-        test_date: date of that latest test. Without it an ESP-flagged test
-            can't prove it postdates the install, so JP tenure stands.
+        test_date: date of that latest test, when known. Only used to detect
+            the ESP→JP case above; None leaves the P1-26 default in force.
 
     Returns:
         ``"JP"`` / ``"ESP"`` / ``"gas-lift"`` / ``"flowing"``.
@@ -115,16 +130,18 @@ def classify_lift(pump_date_set, esp_amps, lift_gas, test_date=None) -> str:
 
     esp = _pos(esp_amps)
     has_pump = pump_date_set is not None and not pd.isna(pump_date_set)
-    if has_pump:
-        if esp and test_date is not None and not pd.isna(test_date):
+
+    if esp:
+        # Amps win unless a known date ordering proves they predate the pump.
+        if has_pump and test_date is not None and not pd.isna(test_date):
             try:
-                if pd.Timestamp(test_date) > pd.Timestamp(pump_date_set):
-                    return "ESP"  # conversion: ESP signal postdates the install
+                if pd.Timestamp(test_date) <= pd.Timestamp(pump_date_set):
+                    return "JP"  # ESP→JP conversion: the install is newer
             except (TypeError, ValueError):
                 pass
-        return "JP"
-    if esp:
         return "ESP"
+    if has_pump:
+        return "JP"
     if _pos(lift_gas):
         return "gas-lift"
     return "flowing"

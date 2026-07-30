@@ -56,7 +56,6 @@ from woffl.assembly.network_optimizer import OptimizationResult, WellConfig
 from woffl.flow.inflow import InFlow
 from woffl.gui.optimization_viz import create_ipr_comparison_pdf
 from woffl.gui.vogel import vogel_fraction, vogel_pwf_from_rate, vogel_qmax, vogel_rate
-from woffl.gui.workflow_steps.step2_review_ipr import _template_to_vogel_coeffs
 
 # ---------------------------------------------------------------------------
 # Shared grid of (qwf, pwf, pres) test points, including edge cases.
@@ -82,21 +81,6 @@ def _below_pres_grid():
 # independent oracle for the pin test. Do not "simplify" these; they exist
 # to prove the real (refactored) code hasn't drifted.
 # ---------------------------------------------------------------------------
-
-
-def _legacy_step2_qmax_recent(
-    pwf: pd.Series, res_p: pd.Series, qwf: pd.Series
-) -> pd.Series:
-    """Verbatim pre-refactor formula from
-    step2_review_ipr._template_to_vogel_coeffs (see git history):
-
-        x = coeffs["pwf"] / coeffs["ResP"]
-        vogel_frac = 1 - 0.2 * x - 0.8 * x * x
-        coeffs["QMax_recent"] = coeffs["qwf"] / vogel_frac.where(vogel_frac > 0, 1.0)
-    """
-    x = pwf / res_p
-    vogel_frac = 1 - 0.2 * x - 0.8 * x * x
-    return qwf / vogel_frac.where(vogel_frac > 0, 1.0)
 
 
 def _legacy_optviz_forward_fraction(pwf: float, pres: float) -> float:
@@ -202,62 +186,10 @@ class TestVogelHelpersVsInFlow:
 
 
 # ===========================================================================
-# 2. step2_review_ipr._template_to_vogel_coeffs (site 2, post-refactor) vs
-#    the verbatim pre-refactor formula.
+# 2. (retired 2026-07-30) step2_review_ipr._template_to_vogel_coeffs — the
+#    Optimization Workflow was removed, so site 2 no longer exists. Sites 1
+#    and 3 still pin the consolidated math.
 # ===========================================================================
-
-
-class TestStep2TemplateToVogelCoeffs:
-    def _build_template_df(self, rows):
-        return pd.DataFrame(
-            {
-                "Well": [r[0] for r in rows],
-                "res_pres": [r[1] for r in rows],
-                "qwf_blpd": [r[2] for r in rows],
-                "pwf": [r[3] for r in rows],
-            }
-        )
-
-    def test_matches_legacy_formula_on_grid_including_edges(self):
-        rows = []
-        i = 0
-        for qwf, pwf, pres in _below_pres_grid():
-            rows.append((f"W{i}", pres, qwf, pwf))
-            i += 1
-        # Edge cases the original `.where(vogel_frac > 0, 1.0)` guard exists
-        # for: pwf == ResP (fraction exactly 0) and pwf > ResP (negative
-        # fraction) -- both must fall back to QMax_recent == qwf, not crash.
-        rows.append(("EDGE-AT-RP", 1800.0, 500.0, 1800.0))
-        rows.append(("EDGE-ABOVE-RP", 1800.0, 500.0, 1900.0))
-
-        df = self._build_template_df(rows)
-        result = _template_to_vogel_coeffs(df)
-
-        legacy = _legacy_step2_qmax_recent(df["pwf"], df["res_pres"], df["qwf_blpd"])
-
-        # Row order/filter: _template_to_vogel_coeffs keeps rows with ResP>0
-        # (all of ours qualify) and resets the index.
-        pd.testing.assert_series_equal(
-            result["QMax_recent"].reset_index(drop=True),
-            legacy.reset_index(drop=True),
-            check_names=False,
-        )
-
-    def test_edge_pwf_at_or_above_resp_falls_back_to_qwf(self):
-        df = self._build_template_df(
-            [
-                ("AT-RP", 1800.0, 733.0, 1800.0),
-                ("ABOVE-RP", 1800.0, 733.0, 1950.0),
-            ]
-        )
-        result = _template_to_vogel_coeffs(df)
-        assert result.loc[result["Well"] == "AT-RP", "QMax_recent"].iloc[0] == 733.0
-        assert result.loc[result["Well"] == "ABOVE-RP", "QMax_recent"].iloc[0] == 733.0
-
-    def test_edge_pwf_zero(self):
-        df = self._build_template_df([("ZERO-PWF", 1800.0, 733.0, 0.0)])
-        result = _template_to_vogel_coeffs(df)
-        assert result["QMax_recent"].iloc[0] == 733.0
 
 
 # ===========================================================================
@@ -305,26 +237,22 @@ class TestOptimizationVizVogelMath:
 
 
 # ===========================================================================
-# 4. Cross-site agreement: the same test point through all three paths.
+# 4. Cross-site agreement: the same test point through the remaining paths.
+#    (Site 2 retired 2026-07-30 with the Optimization Workflow.)
 # ===========================================================================
 
 
 class TestCrossSiteAgreement:
-    def test_all_three_paths_agree_on_qmax(self):
+    def test_remaining_paths_agree_on_qmax(self):
         for qwf, pwf, pres in _below_pres_grid():
             if pwf == 0:
                 continue  # trivial fraction=1 case, not interesting here
             inflow_qmax = InFlow.vogel_qmax(qwf, pwf, pres)
 
-            df = pd.DataFrame(
-                {"Well": ["X"], "res_pres": [pres], "qwf_blpd": [qwf], "pwf": [pwf]}
-            )
-            step2_qmax = _template_to_vogel_coeffs(df)["QMax_recent"].iloc[0]
-
             frac = vogel_fraction(pwf, pres)
             optviz_qmax = qwf / frac if frac > 0 else qwf
 
-            assert inflow_qmax == step2_qmax == optviz_qmax
+            assert inflow_qmax == optviz_qmax
 
 
 # ===========================================================================

@@ -43,14 +43,33 @@ def render_tab(params: SimulationParams) -> None:
     )
 
     if test_df is not None and not test_df.empty:
-        bhp_zero = st.checkbox(
-            "BHP axis starts at 0", value=True, key="jp_hist_bhp_zero"
-        )
+        ctl1, ctl2 = st.columns(2)
+        with ctl1:
+            bhp_zero = st.checkbox(
+                "BHP axis starts at 0",
+                value=st.session_state.get("jp_hist_bhp_zero", True),
+                key="jp_hist_bhp_zero",
+            )
+        with ctl2:
+            # Checkbox `value=` MUST read session_state first (CLAUDE.md
+            # gotcha) — this view is a segmented control, so its widget state
+            # is GC'd on a tab detour and a hardcoded literal would silently
+            # snap the toggle back on return.
+            show_pf = st.checkbox(
+                "Show PF pressure",
+                value=st.session_state.get("jp_hist_show_pf", True),
+                key="jp_hist_show_pf",
+                help=(
+                    "Test-day power-fluid pressure (vw_pressure_daily) on the "
+                    "pressure axis. Turn off to read BHP without the PF line "
+                    "crowding the same axis."
+                ),
+            )
         # Same combined figure as the Solver's pump-history strip — chart on
         # top, pumps-in-hole timeline below, structurally aligned.
         fig, tl = build_history_with_strip_figure(
             well_name, well_jp, test_df, bhp_daily_df, bhp_overlay_df,
-            bhp_from_zero=bhp_zero, height=620,
+            bhp_from_zero=bhp_zero, show_pf=show_pf, height=620,
             title=f"{well_name} — Production & JP Change History",
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -292,8 +311,14 @@ def _create_history_chart(
     bhp_daily_df: pd.DataFrame | None = None,
     bhp_overlay_df: pd.DataFrame | None = None,
     bhp_from_zero: bool = False,
+    show_pf: bool = True,
 ) -> go.Figure:
-    """Create interactive Plotly chart with stacked production, BHP, and JP change lines."""
+    """Create interactive Plotly chart with stacked production, BHP, and JP change lines.
+
+    ``show_pf`` toggles the test-day power-fluid pressure trace. Defaults True
+    (the trace shipped always-on); the JP History tab exposes it as a checkbox
+    so the pressure axis can be read without the PF line in the way.
+    """
     from plotly.subplots import make_subplots
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
@@ -374,7 +399,7 @@ def _create_history_chart(
 
     # Test-day power-fluid pressure (from vw_pressure_daily) on the pressure
     # axis — PF context for the Pump Report Card below the chart.
-    if "pf_press" in test_df.columns:
+    if show_pf and "pf_press" in test_df.columns:
         pf_data = test_df.dropna(subset=["pf_press"])
         if not pf_data.empty:
             fig.add_trace(
@@ -474,6 +499,7 @@ def build_history_with_strip_figure(
     bhp_overlay_df: pd.DataFrame | None,
     *,
     bhp_from_zero: bool = True,
+    show_pf: bool = True,
     height: int = 470,
     title: str = "",
 ) -> tuple[go.Figure, pd.DataFrame | None]:
@@ -514,6 +540,7 @@ def build_history_with_strip_figure(
             bhp_daily_df=bhp_daily_df,
             bhp_overlay_df=bhp_overlay_df,
             bhp_from_zero=bhp_from_zero,
+            show_pf=show_pf,
         )
         if title:
             fig.update_layout(title=title)
@@ -568,6 +595,7 @@ def build_history_with_strip_figure(
             bhp_daily_df=bhp_daily_df,
             bhp_overlay_df=bhp_overlay_df,
             bhp_from_zero=bhp_from_zero,
+            show_pf=show_pf,
         )
         for tr in base.data:
             fig.add_trace(

@@ -2551,19 +2551,48 @@ def _render_ipr_pin_controls(
                 key=f"sw_save_ipr_pin_{well_name}",
                 help=(
                     f"Saves test {date_label} as this well's default IPR "
-                    "anchor (mpu.wells.prop_hist) so it auto-loads for every "
-                    "future session."
+                    "anchor AND the sidebar's current curve + rate values "
+                    "(mpu.wells.prop_hist) so the well opens exactly like "
+                    "this in every future session — including any manual "
+                    "sidebar edits on top of the anchor."
                 ),
             ):
                 pushed, message = pin_ipr_anchor(well_name, anchor_row)
+                # Also persist the sidebar's CURRENT values (Phase 2) — the
+                # curve + rate the engineer actually sees, which may include
+                # manual edits on top of the anchor. Same click, so the
+                # latest-timestamp precedence keeps them consistent.
+                from woffl.gui.ipr_anchor import save_ipr_values
+
+                n_vals, vals_message = save_ipr_values(
+                    well_name,
+                    qwf_oil=float(st.session_state.get("qwf", 0) or 0),
+                    pwf=float(st.session_state.get("pwf", 0) or 0),
+                    res_pres=float(st.session_state.get("res_pres", 0) or 0),
+                    form_wc=float(st.session_state.get("form_wc", 0.5) or 0.5),
+                    form_gor=float(st.session_state.get("form_gor", 250) or 250),
+                    surf_pres=st.session_state.get("surf_pres"),
+                )
                 if pushed:
                     _clear_pin_cache(well_name)
                     st.toast(message, icon="📌")
+                    if n_vals:
+                        st.toast(vals_message, icon="💾")
+                    else:
+                        st.warning(vals_message)
                     st.rerun()
                 elif message.startswith(PIN_SKIP_PREFIX):
+                    # No pinnable test (manual/provisional) — the VALUES may
+                    # still have saved, which is exactly the forced-IPR case.
                     st.caption(message)
+                    if n_vals:
+                        st.toast(vals_message, icon="💾")
+                        st.rerun()
+                    else:
+                        st.warning(vals_message)
                 else:
                     st.warning(message)
+                    (st.toast if n_vals else st.warning)(vals_message)
 
     with col_clear:
         if pin_info is not None and pin_info.get("status") in ("applied", "stale"):
@@ -2752,7 +2781,10 @@ def _render_ipr_anchor_control(well_name: str, test_df):
 # already seeds this exact operating point on well selection, so the default
 # state must never push back (and never stomp a manual sidebar edit). Only an
 # active change of the anchor TEST away from this writes anything.
-_IPR_SIDEBAR_DEFAULT_SIG = ("recent", None)
+# THE default sig lives in ipr_anchor (the sidebar's saved-IPR hydrate seeds
+# under it so restored values ride the manual-edit affordance) — aliased here
+# so the two modules can't drift.
+from woffl.gui.ipr_anchor import IPR_SIDEBAR_DEFAULT_SIG as _IPR_SIDEBAR_DEFAULT_SIG
 
 
 def _sync_chosen_ipr_to_sidebar(

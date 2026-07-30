@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from woffl.assembly.pf_pressure import (
+    pad_pf_cluster,
     PF_MIN_VALID,
     add_pf_columns,
     fetch_pf_latest,
@@ -201,3 +202,76 @@ class TestPadPFMedians:
     def test_empty(self):
         assert pad_pf_medians(pd.DataFrame()) == {}
         assert pad_pf_medians(None) == {}
+
+
+# ── pad_pf_cluster: the header is the high cluster, not the pad median ───────
+# Real CFP-pad readings from 2026-07-29. On mixed-lift pads only a minority of
+# wells sit on the JP PF header, so a median averages header wells against
+# unrelated ones and lands on a pressure no well is at.
+
+
+def _latest(rows):
+    return pd.DataFrame(
+        [{"well": w, "pf_press": p, "pf_source": s} for w, p, s in rows]
+    )
+
+
+B_PAD = [
+    ("MPB-37", 2629.961, "annulus"),
+    ("MPB-28", 2629.947, "annulus"),
+    ("MPB-30", 2622.855, "annulus"),
+    ("MPB-35", 2622.167, "annulus"),
+    ("MPB-39", 2619.000, "annulus"),
+    ("MPB-01", 1050.223, "tubing"),
+    ("MPB-40", 894.000, "tubing"),
+]
+G_PAD = [("MPG-18", 2747.763, "annulus"), ("MPG-04", 1420.000, "annulus")]
+C_PAD = [
+    ("MPC-14", 3404.000, "annulus"),
+    ("MPC-23", 1425.000, "annulus"),
+    ("MPC-43", 990.000, "annulus"),
+    ("MPC-46", 856.091, "annulus"),
+]
+
+
+class TestPadPfCluster:
+    def test_b_pad_recovers_the_five_well_header(self):
+        out = pad_pf_cluster(_latest(B_PAD))["B"]
+        assert out["n_cluster"] == 5
+        assert out["psi"] == pytest.approx(2622.855)
+        assert out["max"] - out["min"] < 12  # a genuinely tight header
+
+    def test_g_pad_takes_the_credible_well_not_the_midpoint(self):
+        """The 2-well median (2,084) is the midpoint of 2,748 and 1,420 — a
+        pressure neither well is at."""
+        out = pad_pf_cluster(_latest(G_PAD))["G"]
+        assert out["psi"] == pytest.approx(2747.763)
+        assert out["n_cluster"] == 1  # weak basis, and the caller can see it
+        assert out["n_pad"] == 2
+
+    def test_c_pad_finds_the_booster_not_the_median(self):
+        """C-Pad's median of 1,208 hid its real ~3,404 psi booster pressure."""
+        out = pad_pf_cluster(_latest(C_PAD))["C"]
+        assert out["psi"] == pytest.approx(3404.0)
+        assert out["n_cluster"] == 1
+
+    def test_cluster_beats_median_on_the_same_data(self):
+        frame = _latest(B_PAD + G_PAD + C_PAD)
+        cluster = pad_pf_cluster(frame)
+        median = pad_pf_medians(frame)
+        # G and C are where the median misleads.
+        assert cluster["G"]["psi"] > median["G"] + 500
+        assert cluster["C"]["psi"] > median["C"] + 2000
+        # B is JP-heavy enough that both agree closely.
+        assert abs(cluster["B"]["psi"] - median["B"]) < 60
+
+    def test_dead_gauges_and_tubing_sources_excluded(self):
+        out = pad_pf_cluster(_latest(B_PAD))["B"]
+        assert out["n_pad"] == 5, "tubing-source wells must not count"
+
+    def test_empty_and_none_tolerated(self):
+        assert pad_pf_cluster(pd.DataFrame()) == {}
+        assert pad_pf_cluster(None) == {}
+
+    def test_all_below_min_valid_gives_no_pad(self):
+        assert pad_pf_cluster(_latest([("MPX-01", 400.0, "annulus")])) == {}

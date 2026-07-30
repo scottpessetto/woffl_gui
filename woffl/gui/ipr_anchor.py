@@ -410,3 +410,176 @@ def compute_anchored_vogel(
         "anchor_label": anchor_label,
         "anchor_date": anchor_date_val if pd.notna(anchor_date_val) else None,
     }
+
+
+# ── Saved IPR VALUES (prop_hist Phase 2: the curve + rate the engineer chose) ─
+# Scott's goal, 2026-07-30: "when a user opens a well in single review or
+# optimization it has the latest edit so that it keeps the curve and rate the
+# engineer saw fit." The five prop_xref ids below were added the same day
+# (self-served under his catalog MODIFY — see docs/prop_hist_asks.md ask (c)).
+# The pump identity and workflow flags are deliberately NOT here: pump truth
+# stays with the JP tracker, per Scott.
+#
+# Precedence rule against the anchor pin (`ipr_wt_uid`): LATEST TIMESTAMP WINS.
+# Same click writes both, so a normal "Save IPR as well default" makes the
+# values and the pin agree; a later re-pin without values hands the well back
+# to the pinned test; later value edits (a forced/manual IPR) beat the pin.
+
+# The sidebar-seed signature the Solver treats as "already applied — leave the
+# sidebar alone". Saved values are seeded UNDER this sig so they ride the
+# manual-edit affordance: the anchor selector shows "Most recent" and the
+# Solver's sync doesn't reseed until the engineer actively changes the anchor
+# (which SHOULD override saved values). The Solver aliases this constant.
+IPR_SIDEBAR_DEFAULT_SIG = ("recent", None)
+
+# prop_id -> the load_saved_ipr values key. resvr_press rides along so the
+# whole curve (qwf, pwf, ResP) restores atomically; ipr_wt_uid is read only
+# for its timestamp (the precedence comparison).
+IPR_VALUE_PROPS = {
+    "ipr_qwf_liq": "qwf_liq",
+    "ipr_pwf": "pwf",
+    "form_wc": "form_wc",
+    "form_gor": "form_gor",
+    "surf_press": "surf_press",
+    "resvr_press": "res_pres",
+}
+
+VALUES_SAVE_FAILURE_PREFIX = "Could not save IPR values:"
+
+_saved_ipr_cache: dict = {}
+
+
+def clear_saved_ipr_cache(well_name: str | None = None) -> None:
+    if well_name is None:
+        _saved_ipr_cache.clear()
+    else:
+        _saved_ipr_cache.pop(well_name, None)
+
+
+def saved_wins(saved_at, pin_at) -> bool:
+    """Latest-timestamp-wins between saved VALUES and the anchor PIN.
+
+    No pin → values win. Same instant (one Save wrote both) → values win,
+    which is correct because they were seeded FROM that anchor anyway.
+    """
+    if saved_at is None:
+        return False
+    if pin_at is None:
+        return True
+    return saved_at >= pin_at
+
+
+def load_saved_ipr(well_name: str):
+    """Latest saved IPR values + the pin timestamp for one well, or None.
+
+    One latest-per-prop query over prop_hist (memoized per well per session —
+    cleared by :func:`save_ipr_values`). Read path: works without the write
+    gate, and hosted via the SP's inherited SELECT. A saved-IPR record only
+    COUNTS when both ``ipr_qwf_liq`` and ``ipr_pwf`` are present — canonical
+    ``resvr_press`` alone is well characterization, not a saved curve.
+
+    Returns ``{"values": {...}, "saved_at", "saved_by", "pin_at"}`` or None.
+    Fail-soft: any error → None (the sidebar just seeds normally).
+    """
+    if well_name in _saved_ipr_cache:
+        return _saved_ipr_cache[well_name]
+
+    result = None
+    try:
+        from woffl.assembly.databricks_client import execute_query
+        from woffl.assembly.prop_hist_client import _resolve_enthid
+
+        enthid = _resolve_enthid(well_name)
+        ids = ",".join(f"'{p}'" for p in list(IPR_VALUE_PROPS) + ["ipr_wt_uid"])
+        df = execute_query(
+            f"""
+            SELECT prop_id, prop_value, entry_datetime, entry_user FROM (
+                SELECT prop_id, prop_value, entry_datetime, entry_user,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY prop_id ORDER BY entry_datetime DESC
+                       ) AS rn
+                FROM mpu.wells.prop_hist
+                WHERE enthid = {int(enthid)} AND prop_id IN ({ids})
+            ) WHERE rn = 1
+            """
+        )
+        if df is not None and not df.empty:
+            latest = {str(r["prop_id"]): r for _, r in df.iterrows()}
+            values, saved_at, saved_by = {}, None, None
+            for pid, key in IPR_VALUE_PROPS.items():
+                row = latest.get(pid)
+                if row is None or pd.isna(row["prop_value"]):
+                    continue
+                values[key] = float(row["prop_value"])
+                if pid != "resvr_press":  # canon doesn't date the SAVED set
+                    ts = row["entry_datetime"]
+                    if saved_at is None or ts > saved_at:
+                        saved_at, saved_by = ts, row.get("entry_user")
+            pin_row = latest.get("ipr_wt_uid")
+            pin_at = (
+                pin_row["entry_datetime"]
+                if pin_row is not None and not pd.isna(pin_row["prop_value"])
+                else None
+            )
+            if "qwf_liq" in values and "pwf" in values:
+                result = {
+                    "values": values,
+                    "saved_at": saved_at,
+                    "saved_by": saved_by,
+                    "pin_at": pin_at,
+                }
+    except Exception:
+        result = None
+
+    _saved_ipr_cache[well_name] = result
+    return result
+
+
+def save_ipr_values(
+    well_name: str,
+    *,
+    qwf_oil: float,
+    pwf: float,
+    res_pres: float,
+    form_wc: float,
+    form_gor: float,
+    surf_pres: float | None = None,
+) -> tuple[int, str]:
+    """Push the sidebar's CURRENT IPR + fluid values as the well's saved curve.
+
+    ``qwf_oil`` is the sidebar's OIL rate; prop_hist stores TOTAL LIQUID
+    (``ipr_qwf_liq``), converted at the given water cut (capped at 0.99 — the
+    store's MAX_MODELABLE_WC precedent, since oil/(1-wc) degenerates at 1.0).
+    ``resvr_press`` is pushed too so the whole curve travels together — note
+    that updates the well's CANONICAL reservoir pressure via the pivots, which
+    is the point: the reviewed value IS the characterization.
+
+    Returns ``(n_pushed, message)``; failure message starts with
+    :data:`VALUES_SAVE_FAILURE_PREFIX`. Clears the load memo on success.
+    """
+    try:
+        wc = min(max(float(form_wc), 0.0), 0.99)
+        qwf_liq = float(qwf_oil) / (1.0 - wc)
+        payload = {
+            "ipr_qwf_liq": qwf_liq,
+            "ipr_pwf": float(pwf),
+            "form_wc": wc,
+            "form_gor": float(form_gor),
+            "surf_press": float(surf_pres) if surf_pres is not None else None,
+            "resvr_press": float(res_pres),
+        }
+        entry_user = resolve_entry_user()
+        n = 0
+        for pid, val in payload.items():
+            if val is None or (isinstance(val, float) and np.isnan(val)):
+                continue
+            push_prop(well_name, pid, val, entry_user)
+            n += 1
+        clear_saved_ipr_cache(well_name)
+        return n, (
+            f"💾 Saved IPR values for {well_name} "
+            f"(qwf {qwf_liq:,.0f} BLPD · pwf {pwf:,.0f} · ResP {res_pres:,.0f} "
+            f"· WC {wc:.2f} · GOR {form_gor:,.0f}) — restores on every open."
+        )
+    except Exception as e:
+        return 0, f"{VALUES_SAVE_FAILURE_PREFIX} {e}"

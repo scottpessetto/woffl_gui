@@ -19,6 +19,24 @@ from woffl.geometry.wellprofile import WellProfile
 from woffl.pvt.resmix import ResMix
 
 
+def derive_pad(spec: str) -> str:
+    """Pad letter from a pad label OR a well name ("MPB-28" -> "B").
+
+    THE single implementation of this rule — mirrors
+    ``pf_pressure.pad_pf_medians``' normalization (strip one leading "MP", cut
+    at the dash) so pad identity can't drift between the optimizer, the plant
+    models and the PF seeding. ``woffl.gui.cfp_pad_plant.pad_letter``
+    delegates here rather than keeping a second copy.
+
+    Naive ``spec[0]`` is the trap: "MPB-28" starts with "M", so every well name
+    would resolve to M-Pad. Returns "" for empty/None input.
+    """
+    s = str(spec or "").strip().upper()
+    if s.startswith("MP"):
+        s = s[2:]
+    return s.split("-")[0][:1]
+
+
 @dataclass
 class WellConfig:
     """Configuration for a single well in the optimization
@@ -59,6 +77,15 @@ class WellConfig:
             When set, override the library defaults baked into BatchPump.jetpump_list
             for this well only. All four default to None so existing CSV-loaded
             configs and the manual-config path keep working unchanged.
+        pad (str): Pad letter this well belongs to ("B", "G", "C", "J", ...).
+            Needed by the CFP joint optimizer, where wells from FOUR pads are
+            optimized together against one plant and each pad receives a
+            DIFFERENT delivered power-fluid pressure (B/G/J ride the plant
+            discharge minus their own line loss; C-Pad is boosted on-pad and
+            holds its own pressure). Empty string means "derive it from
+            well_name" — see ``__post_init__`` — so legacy stores and CSVs
+            without the column keep working. Membership travels as an explicit
+            field rather than being re-derived by regex at each use site.
     """
 
     well_name: str
@@ -88,11 +115,18 @@ class WellConfig:
     kth_well: Optional[float] = None
     kdi_well: Optional[float] = None
     jpump_direction: str = "reverse"
+    pad: str = ""
 
     def __post_init__(self):
         """Validate configuration on initialization"""
         if self.jpump_md is None:
             self.jpump_md = self.jpump_tvd
+
+        # Pad membership: explicit when supplied, else derived from the well
+        # name. Uses the same rule as pf_pressure.pad_pf_medians — strip one
+        # leading "MP", cut at the dash — because a naive first character turns
+        # every "MPB-28" into M-Pad.
+        self.pad = derive_pad(self.pad or self.well_name)
 
         # Validate field model
         if self.field_model not in ["Schrader", "Kuparuk"]:
@@ -965,6 +999,9 @@ def load_wells_from_dataframe(
                 "jpump_direction": str(
                     _first_valid(base_config.get("jpump_direction"), default="reverse")
                 ),
+                # Pad membership. Absent column → WellConfig derives it from the
+                # well name, so older templates keep loading unchanged.
+                "pad": str(_first_valid(base_config.get("pad"), default="")),
             }
 
             # Physical sanity the library doesn't check — fail at load time

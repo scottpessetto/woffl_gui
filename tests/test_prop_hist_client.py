@@ -506,3 +506,59 @@ class TestResolveEntryUser(_CacheResetMixin):
 
         monkeypatch.setenv("WOFFL_ENTRY_USER", "override_user")
         assert resolve_entry_user() == "override_user"
+
+
+# ── entry-user PROVIDER (the hosted-app attribution fix, 2026-07-30) ────────
+# On Databricks Apps every session shares one container and current_user() is
+# the SERVICE PRINCIPAL — app.py registers a provider that reads the
+# forwarded-user header so each save is stamped with the real engineer.
+
+
+class TestEntryUserProvider:
+    @pytest.fixture(autouse=True)
+    def _reset_provider(self, monkeypatch):
+        monkeypatch.delenv("WOFFL_ENTRY_USER", raising=False)
+        _reset_caches()  # a cached current_user from a prior test must not leak
+        yield
+        phc.set_entry_user_provider(None)
+
+    @patch("woffl.assembly.prop_hist_client.execute_query")
+    def test_provider_beats_current_user(self, mock_query):
+        mock_query.return_value = pd.DataFrame({"current_user": ["svc_principal"]})
+        phc.set_entry_user_provider(lambda: "scott@hilcorp.com")
+        assert resolve_entry_user() == "scott@hilcorp.com"
+        assert mock_query.call_count == 0
+
+    def test_env_override_still_beats_the_provider(self, monkeypatch):
+        monkeypatch.setenv("WOFFL_ENTRY_USER", "override_user")
+        phc.set_entry_user_provider(lambda: "scott@hilcorp.com")
+        assert resolve_entry_user() == "override_user"
+
+    @patch("woffl.assembly.prop_hist_client.execute_query")
+    def test_provider_called_per_resolve_never_cached(self, mock_query):
+        """Identity is per-session on a shared host — caching one user's name
+        would stamp it onto everyone else's saves."""
+        users = iter(["engineer_a", "engineer_b"])
+        phc.set_entry_user_provider(lambda: next(users))
+        assert resolve_entry_user() == "engineer_a"
+        assert resolve_entry_user() == "engineer_b"
+        assert mock_query.call_count == 0
+
+    @patch("woffl.assembly.prop_hist_client.execute_query")
+    def test_provider_none_falls_through_to_current_user(self, mock_query):
+        """Local run: no forwarded headers → provider returns None → the
+        normal current_user() path (cached) takes over."""
+        mock_query.return_value = pd.DataFrame({"current_user": ["scott_local"]})
+        phc.set_entry_user_provider(lambda: None)
+        assert resolve_entry_user() == "scott_local"
+        assert mock_query.call_count == 1
+
+    @patch("woffl.assembly.prop_hist_client.execute_query")
+    def test_provider_exception_never_blocks_a_save(self, mock_query):
+        mock_query.return_value = pd.DataFrame({"current_user": ["svc_principal"]})
+
+        def boom():
+            raise RuntimeError("st.context unavailable")
+
+        phc.set_entry_user_provider(boom)
+        assert resolve_entry_user() == "svc_principal"

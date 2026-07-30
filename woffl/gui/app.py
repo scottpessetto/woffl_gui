@@ -27,6 +27,34 @@ _JP_HISTORY_PATH = (
 )
 
 
+def _streamlit_forwarded_user():
+    """The real engineer behind this session, from the request headers.
+
+    Databricks Apps forward the signed-in user (X-Forwarded-Email); locally
+    the headers are absent and this returns None. Never raises — a broken
+    lookup must fall through to resolve_entry_user's next tier.
+    """
+    try:
+        headers = getattr(st.context, "headers", None)
+        if headers:
+            for key in ("X-Forwarded-Email", "X-Forwarded-User"):
+                val = headers.get(key)
+                if val:
+                    return str(val)
+    except Exception:
+        return None
+    return None
+
+
+# prop_hist writes stamp entry_user. On the hosted app, current_user() is the
+# SERVICE PRINCIPAL for every session — this provider recovers the actual
+# engineer per session instead. Registered at import (idempotent);
+# WOFFL_ENTRY_USER in the env still overrides everything.
+from woffl.assembly.prop_hist_client import set_entry_user_provider
+
+set_entry_user_provider(_streamlit_forwarded_user)
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def _cached_jp_history():
     """Fetch JP history from Databricks mpu_tracker. Cached 24h.
@@ -265,8 +293,7 @@ def main():
 
     modes = [
         "Single Well Analysis",
-        "Optimization Workflow",
-        "Pad Optimization",
+        "Optimization",
         "Well Database",
         "Well Sort",
     ]
@@ -286,7 +313,15 @@ def main():
         st.session_state["pad_hub_pad_shadow"] = _legacy_pads[
             st.session_state["app_mode_radio"]
         ]
-        st.session_state["app_mode_radio"] = "Pad Optimization"
+        st.session_state["app_mode_radio"] = "Optimization"
+
+    # 2026-07-30: "Pad Optimization" renamed to "Optimization", and the separate
+    # "Optimization Workflow" mode retired — the CFP/PW work lives on the hub's
+    # "PW Pressure Optimization" radio. A session_state value that isn't in
+    # `modes` resets the radio, so migrate both old names here, pre-render.
+    _retired_modes = ("Pad Optimization", "Optimization Workflow")
+    if st.session_state.get("app_mode_radio") in _retired_modes:
+        st.session_state["app_mode_radio"] = "Optimization"
 
     # Mode selection. The key matters: without one, the widget identity is
     # derived from its options, so unlocking Scott's Tools (options change)
@@ -298,20 +333,14 @@ def main():
         key="app_mode_radio",
         help=(
             "Single Well: Analyze one well in detail. "
-            "Optimization: Select wells → Review IPR → Optimize → Results. "
-            "Pad Optimization: Optimize one pad against its booster plant "
-            "(S / I / M). "
+            "Optimization: pick a pad against its booster plant (S / I / M), or "
+            "PW Pressure Optimization for the CFP plant and its J/G/C/B wells. "
             "Well Database: View live well properties from Databricks. "
             "Well Sort: Online/offline classification + marginal WC calculator."
         ),
     )
 
-    if app_mode == "Optimization Workflow":
-        from woffl.gui.workflow_page import run_workflow_page
-
-        run_workflow_page()
-
-    elif app_mode == "Pad Optimization":
+    if app_mode == "Optimization":
         from woffl.gui.pad_hub import run_pad_hub
 
         run_pad_hub()

@@ -267,6 +267,11 @@ def _update_well_parameters_from_data(
 
         _populate_pump_from_history(selected_well)
         _auto_populate_from_ipr(selected_well)
+        # Saved IPR values (prop_hist Phase 2) overlay the auto-populate when
+        # they're newer than the anchor pin — "the latest edit the engineer
+        # saw fit" wins on open. AFTER auto-populate (it seeds the baseline
+        # this overlays) and BEFORE the live-PF seed (which stays live).
+        _seed_saved_ipr(selected_well)
         # After IPR auto-populate so the test frame (with test-day PF columns)
         # is already sliced/cached for this well.
         _seed_pf_from_live(selected_well)
@@ -275,6 +280,77 @@ def _update_well_parameters_from_data(
         # Gauge override changed — refresh IPR-driven sidebar values
         # against the new BHPs without touching geometry/pump.
         _auto_populate_from_ipr(selected_well)
+        _seed_saved_ipr(selected_well)
+
+
+def _seed_saved_ipr(selected_well: str) -> None:
+    """Overlay the well's SAVED IPR values (prop_hist Phase 2) onto the
+    auto-populated sidebar — Scott's goal sentence made mechanical: *"when a
+    user opens a well ... it has the latest edit so that it keeps the curve
+    and rate the engineer saw fit."*
+
+    Precedence is latest-timestamp-wins against the anchor pin
+    (``ipr_anchor.saved_wins``): a pin newer than the values hands the well to
+    the pinned test (the Solver's existing pin path), values newer than the
+    pin — the forced/edited-IPR case — land here.
+
+    The seeds go in UNDER the Solver's default anchor signature
+    (``IPR_SIDEBAR_DEFAULT_SIG``), which is the documented manual-edit
+    affordance: the anchor selector shows "Most recent", and the Solver's
+    ``_sync_chosen_ipr_to_sidebar`` leaves the sidebar alone until the
+    engineer actively changes the anchor — which SHOULD override saved
+    values. All seeds clamp via ``clamp_seed`` and respect the per-well GOR
+    recovery floor. Fail-soft: any problem → the auto-populated values stand.
+    """
+    try:
+        from woffl.gui.ipr_anchor import (
+            IPR_SIDEBAR_DEFAULT_SIG,
+            load_saved_ipr,
+            saved_wins,
+        )
+
+        info = load_saved_ipr(selected_well)
+        if not info or not saved_wins(info["saved_at"], info["pin_at"]):
+            return
+
+        v = info["values"]
+        gor_floor = st.session_state.get("_well_min_gor", {}).get(selected_well, 0)
+        # Stored rate is TOTAL LIQUID; the sidebar's qwf is OIL.
+        wc = min(max(float(v.get("form_wc", 0.5)), 0.0), 0.99)
+        _set_param("form_wc", clamp_seed("form_wc", round(wc, 2)))
+        if v.get("form_gor") is not None:
+            _set_param(
+                "form_gor", clamp_seed("form_gor", max(int(v["form_gor"]), gor_floor))
+            )
+        if v.get("qwf_liq") is not None:
+            _set_param(
+                "qwf", clamp_seed("qwf", int(float(v["qwf_liq"]) * (1.0 - wc)))
+            )
+        if v.get("pwf") is not None:
+            _set_param("pwf", clamp_seed("pwf", int(v["pwf"])))
+        if v.get("res_pres") is not None:
+            _set_param("res_pres", clamp_seed("res_pres", int(v["res_pres"])))
+        if v.get("surf_press") is not None:
+            _set_param("surf_pres", clamp_seed("surf_pres", int(v["surf_press"])))
+
+        st.session_state[f"sw_ipr_applied_sig_{selected_well}"] = (
+            IPR_SIDEBAR_DEFAULT_SIG
+        )
+        ts = info.get("saved_at")
+        when = ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else str(ts)
+        who = str(info.get("saved_by") or "").split("@")[0]
+        st.session_state["sw_ipr_info"] = (
+            f"💾 Restored saved IPR values ({when}"
+            + (f" · {who}" if who else "")
+            + ") — the curve and rate as last saved. Edit freely; "
+            "📌 Save IPR to persist changes."
+        )
+    except Exception:
+        logger.warning(
+            "Saved-IPR seed failed for %s; auto-populated values stand.",
+            selected_well,
+            exc_info=True,
+        )
 
 
 def _auto_populate_from_ipr(selected_well: str) -> None:

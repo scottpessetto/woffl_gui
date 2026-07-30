@@ -8,6 +8,20 @@ env:
   - name: WOFFL_MAX_WORKERS
     value: "2"
 
+  # prop_hist writes (saved IPR anchors + values, pad-review property saves).
+  #
+  # ENABLED 2026-07-30: the app's own service principal (App ID
+  # 2013fc45-c30e-40ac-bef0-df0a758faa3c) holds MODIFY on
+  # mpu.wells.prop_hist — granted under Scott's identity and verified via
+  # SHOW GRANTS the same day (see docs/prop_hist_asks.md ask (b)). SELECT /
+  # USE CATALOG were already inherited at catalog level.
+  #
+  # Hosted attribution: entry_user resolves the REAL engineer via the
+  # X-Forwarded-Email header (see app.py's set_entry_user_provider
+  # registration); without a header it falls back to current_user() = the SP.
+  - name: ALLOW_DATABRICKS_WRITES
+    value: "true"
+
 resources:
   - name: sql-warehouse
     sql_warehouse:

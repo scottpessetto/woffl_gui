@@ -174,3 +174,56 @@ def pad_pf_medians(
     )
     medians = df.groupby(pads)["pf_press"].median()
     return {pad: int(round(val / 50.0) * 50) for pad, val in medians.items() if pad}
+
+
+def pad_pf_cluster(
+    pf_latest: pd.DataFrame,
+    tol_psi: float = 150.0,
+    sources: tuple = ("annulus",),
+) -> dict[str, dict]:
+    """Per-pad PF header pressure from the HIGH CLUSTER rather than the median.
+
+    :func:`pad_pf_medians` is right for JP-majority pads (S, I) — most wells sit
+    on the PF header, so the median IS the header. On **mixed-lift pads it is
+    wrong**, because only a minority do and the median averages header wells
+    against unrelated ones. Measured on the CFP pads 2026-07-29:
+
+    * G-Pad had two annulus readings, 2,748 and 1,420 psi. The "median" of 2,084
+      is just their midpoint — a pressure no well is at.
+    * C-Pad's median of 1,208 hid its real ~3,404 psi on-pad booster.
+
+    The header is the TIGHT CLUSTER at the top: take the highest valid reading
+    and keep everything within ``tol_psi`` of it. On B-Pad that recovers 5 wells
+    spanning 11 psi (2,619-2,630) and rejects two tubing readings near 900.
+
+    Returns ``{pad: {"psi", "n_cluster", "n_pad", "max", "min"}}`` — the counts
+    matter: a one-well cluster (G) is a far weaker basis than a five-well one
+    (B), and the caller should be able to say so rather than being handed a bare
+    number. Pads with no qualifying well are absent.
+    """
+    if pf_latest is None or pf_latest.empty:
+        return {}
+    df = pf_latest[pf_latest["pf_press"].notna()].copy()
+    if sources and "pf_source" in df.columns:
+        df = df[df["pf_source"].isin(sources)]
+    df = df[df["pf_press"] >= PF_MIN_VALID]
+    if df.empty:
+        return {}
+
+    df["_pad"] = (
+        df["well"].astype(str).str.replace("MP", "", n=1).str.split("-").str[0]
+    )
+    out: dict[str, dict] = {}
+    for pad, grp in df.groupby("_pad"):
+        if not pad:
+            continue
+        top = float(grp["pf_press"].max())
+        cluster = grp[grp["pf_press"] >= top - float(tol_psi)]["pf_press"]
+        out[pad] = {
+            "psi": float(cluster.median()),
+            "n_cluster": int(len(cluster)),
+            "n_pad": int(len(grp)),
+            "max": top,
+            "min": float(cluster.min()),
+        }
+    return out

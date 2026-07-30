@@ -528,6 +528,71 @@ def test_classify_lift_gas_lift_and_flowing_unaffected():
     assert hi._classify_lift("MPB-94", jp_hist, flow_row) == "flowing"
 
 
+# ── the ESP→JP date guard, and the single-implementation rule ────────────────
+#
+# There used to be TWO divergent lift classifiers: the live hi._classify_lift
+# (no date guard at all) and an UNUSED, UNTESTED header_engine.classify_lift
+# whose guard defaulted the no-date case to JP, contradicting P1-26 above.
+# _classify_lift is now a thin adapter over the engine's, which keeps the P1-26
+# default AND applies the date guard when a test date is actually known.
+
+
+def test_classify_lift_esp_amps_predating_the_install_is_jp():
+    # ESP→JP conversion: the well ran an ESP, then a jet pump was installed
+    # AFTER that test. Stale amps must not out-rank the newer install, or the
+    # well models empirically instead of with WOFFL physics.
+    jp_hist = _jp_hist_row("MPB-93", "2026-05-01")
+    ov_row = pd.Series(
+        {"esp_amps": 42.0, "lift_gas": 0.0, "wt_date": pd.Timestamp("2026-02-01")}
+    )
+    assert hi._classify_lift("MPB-93", jp_hist, ov_row) == "JP"
+
+
+def test_classify_lift_esp_amps_postdating_the_install_is_esp():
+    # JP→ESP conversion the tracker never closed out (P1-26) — amps win.
+    jp_hist = _jp_hist_row("MPB-92", "2019-03-01")
+    ov_row = pd.Series(
+        {"esp_amps": 42.0, "lift_gas": 0.0, "wt_date": pd.Timestamp("2026-06-01")}
+    )
+    assert hi._classify_lift("MPB-92", jp_hist, ov_row) == "ESP"
+
+
+def test_classify_lift_missing_wt_date_keeps_p1_26_default():
+    # A cache entry written before wt_date was projected has no such column;
+    # the guard must stay dormant rather than flipping the well to JP.
+    jp_hist = _jp_hist_row("MPB-91", "2019-03-01")
+    assert hi._classify_lift("MPB-91", jp_hist, pd.Series({"esp_amps": 42.0})) == "ESP"
+    ov_nat = pd.Series({"esp_amps": 42.0, "lift_gas": 0.0, "wt_date": pd.NaT})
+    assert hi._classify_lift("MPB-91", jp_hist, ov_nat) == "ESP"
+
+
+def test_classify_lift_unparseable_nozzle_is_not_a_jp_install():
+    # Legacy ESP/wireline rows land in the nozzle column; such a row can't
+    # claim the well, so it must not suppress the gas-lift/flowing branches.
+    jp_hist = _jp_hist_row("MPB-90", "2026-01-01", nozzle="G")
+    ov_row = pd.Series({"esp_amps": np.nan, "lift_gas": 15.0})
+    assert hi._classify_lift("MPB-90", jp_hist, ov_row) == "gas-lift"
+
+
+def test_classify_lift_has_one_implementation():
+    # hi._classify_lift must stay an adapter over the engine's rule, not a
+    # second copy that can drift away from it again.
+    from woffl.gui.scotts_tools.header_engine import classify_lift
+
+    jp_hist = _jp_hist_row("MPB-89", "2024-01-01")
+    for amps, gas, wt in [
+        (42.0, 0.0, pd.Timestamp("2026-01-01")),  # amps postdate  -> ESP
+        (42.0, 0.0, pd.Timestamp("2023-01-01")),  # amps predate   -> JP
+        (42.0, 0.0, None),  # unknown date   -> ESP
+        (0.0, 0.0, None),  # no amps        -> JP
+        (np.nan, 15.0, None),  # gas signal     -> JP (install wins)
+    ]:
+        ov_row = pd.Series({"esp_amps": amps, "lift_gas": gas, "wt_date": wt})
+        assert hi._classify_lift("MPB-89", jp_hist, ov_row) == classify_lift(
+            pd.Timestamp("2024-01-01"), amps, gas, test_date=wt
+        )
+
+
 # ── header_trend.classify_response ────────────────────────────────────────────
 
 
@@ -773,3 +838,70 @@ def test_build_per_well_pdf_empty_still_valid():
     from woffl.gui.scotts_tools import header_report as hr
 
     assert hr.build_per_well_pdf(pd.DataFrame())[:4] == b"%PDF"
+
+
+# ── fetch_bhp_tag_map: WHP tag must preserve the stored zero-padding ────────
+# The derivation used to be f"MPU_PI_{int(padnum)}2{int(wellnum)}", whose int()
+# stripped the leading zero vw_bhp_tags stores. Verified live 2026-07-29:
+# MPU_PI_24201 (F-001) exists with 24,440 readings; MPU_PI_2421 — what int()
+# produced — does not exist at all. 50 producers carry a leading-zero well
+# number and 36 of them have live WHP the old rule could not see (over the full
+# vw_bhp_tags, resolution went 323 -> 388 tags). The old in-code comment
+# asserted the opposite, so this test pins the direction with real tag names.
+
+
+def _tag_map_from(rows):
+    """Call fetch_bhp_tag_map with a stubbed query, bypassing st.cache_data."""
+    import woffl.assembly.databricks_client as dbc
+    from woffl.gui.scotts_tools import header_trend as ht
+
+    original = dbc.execute_query
+    dbc.execute_query = lambda _q: pd.DataFrame(rows)
+    try:
+        return ht.fetch_bhp_tag_map.__wrapped__()
+    finally:
+        dbc.execute_query = original
+
+
+def _row(pad, padnum, wellnum):
+    return {
+        "well_pad": pad,
+        "pad_number": padnum,
+        "well_number": wellnum,
+        "bhp_esp": None,
+        "bhp_other": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "pad,padnum,wellnum,expected_whp",
+    [
+        ("F", 24, "01", "MPU_PI_24201"),    # leading zero — the bug
+        ("B", 20, "03", "MPU_PI_20203"),
+        ("J", 33, "09", "MPU_PI_33209"),
+        ("I", 32, "22", "MPU_PI_32222"),    # plain 2-digit, unchanged
+        ("S", 80, "204", "MPU_PI_802204"),  # 3-digit, unchanged
+        ("F", 24, "107", "MPU_PI_242107"),
+    ],
+)
+def test_whp_tag_preserves_zero_padding(pad, padnum, wellnum, expected_whp):
+    out = _tag_map_from([_row(pad, padnum, wellnum)])
+    key = (pad, int(wellnum))
+    assert key in out, f"expected int-keyed entry {key}"
+    assert out[key]["whp"] == expected_whp
+
+
+def test_whp_tag_not_the_old_int_stripped_form():
+    """Explicit tripwire on the exact regression: int() collapsed '01' to '1'."""
+    out = _tag_map_from([_row("F", 24, "01")])
+    whp = out[("F", 1)]["whp"]
+    assert whp == "MPU_PI_24201"
+    assert whp != "MPU_PI_2421", "int(wellnum) stripped the stored zero padding"
+
+
+def test_tag_map_key_still_int_normalized():
+    """The KEY must stay int-based (so a caller saying I-2 or I-002 both find
+    the entry) even though the emitted TAG keeps the stored zero padding."""
+    out = _tag_map_from([_row("I", 32, "02")])
+    assert ("I", 2) in out
+    assert out[("I", 2)]["whp"] == "MPU_PI_32202"

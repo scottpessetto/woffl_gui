@@ -720,6 +720,30 @@ def _render_base_vs_future(spec: PadSpec, store: dict, active: dict, n_pumps) ->
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 
+def matchcheck_signature(n_pumps, current: dict, active: dict) -> tuple:
+    """Cache key for the pre-flight match check.
+
+    Must cover EVERY input the check models on: the pump count, each well's
+    current pump, and every physical/calibration field
+    ``wrs.store_to_well_configs`` feeds the model.
+
+    The store half MUST be ``wrs.store_signature``. This used to be a
+    hand-rolled tuple covering only ``(qwf, pwf, res_pres)``, so editing a
+    well's water cut, GOR, PF pressure, friction coefs, geometry or circ
+    direction in Review left the cache serving the verdict computed under the
+    OLD values — on the one check whose job is telling the engineer whether the
+    model can be trusted at all. The pumps ride alongside because
+    ``store_signature`` deliberately excludes the reviewed-pump label.
+
+    CLAUDE.md rule: **if you add an input that affects the check, ADD IT HERE.**
+    """
+    return (
+        n_pumps,
+        tuple(sorted((w, current[w][0], current[w][1]) for w in active)),
+        wrs.store_signature(active),
+    )
+
+
 def _render_configure(spec: PadSpec) -> None:
     from woffl.gui.params import NOZZLE_OPTIONS, THROAT_OPTIONS
 
@@ -851,25 +875,8 @@ def _render_configure(spec: PadSpec) -> None:
         w: (active[w].get("review_nozzle") or "", active[w].get("review_throat") or "")
         for w in active
     }
-    # Auto-run on landing; re-runs only when the config changes (pump count,
-    # well set, current pumps, or IPRs) — keyed on a lightweight signature so
-    # it doesn't re-compute on every interaction.
-    sig = (
-        n_pumps,
-        tuple(
-            sorted(
-                (
-                    w,
-                    current[w][0],
-                    current[w][1],
-                    int(active[w].get("qwf", 0)),
-                    int(active[w].get("pwf", 0)),
-                    int(active[w].get("res_pres", 0)),
-                )
-                for w in active
-            )
-        ),
-    )
+    # Auto-run on landing; re-runs only when the config changes.
+    sig = matchcheck_signature(n_pumps, current, active)
     mc = st.session_state.get(f"{p}_matchcheck")
     refresh = st.button("↻ Re-run check", key=f"{p}_matchcheck_run")
     if refresh or not mc or mc.get("sig") != sig:
@@ -1583,6 +1590,14 @@ def _render_scenario_comparator(spec: PadSpec, results, meta, active) -> None:
 def run_pad_page(spec: PadSpec) -> None:
     st.title(spec.title)
     st.caption(spec.subtitle)
+
+    # Autosave/restore this pad's review store to Databricks
+    # (mpu.wells.woffl_review_store), plus the configure knobs — BEFORE any
+    # widget renders (the seeding rule). Fail-soft by design.
+    from woffl.gui import review_persistence as rp
+
+    sync_result = {spec.pad: rp.sync_pad(spec.pad)}
+    rp.render_caption(sync_result)
 
     stage_key = f"{spec.prefix}_page_stage"
     stage = st.session_state.setdefault(stage_key, 0)

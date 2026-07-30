@@ -256,12 +256,32 @@ class TestPumpSizeChange:
 
 class TestPadHub:
     def test_spec_for_each_pad(self):
-        from woffl.gui.pad_hub import _PADS, _spec_for
+        from woffl.gui.pad_hub import _SPEC_PADS, _spec_for
 
-        pads = [_spec_for(label).pad for label in _PADS]
+        pads = [_spec_for(label).pad for label in _SPEC_PADS]
         assert pads == ["S", "I", "M"]
-        prefixes = [_spec_for(label).prefix for label in _PADS]
+        prefixes = [_spec_for(label).prefix for label in _SPEC_PADS]
         assert len(set(prefixes)) == len(prefixes)  # unique session-key spaces
+
+    def test_cfp_is_on_the_radio_but_has_no_spec(self):
+        """CFP is four pads sharing one plant, each with its own delivered PF —
+        it gets a dedicated page instead of being forced through the single-pad
+        run_pad_page, so it must NOT be spec-backed."""
+        from woffl.gui.pad_hub import _CFP_LABEL, _PADS, _SPEC_PADS, _spec_for
+
+        assert _CFP_LABEL in _PADS
+        assert _CFP_LABEL not in _SPEC_PADS
+        with pytest.raises(ValueError):
+            _spec_for(_CFP_LABEL)
+
+    def test_every_radio_entry_is_routable(self):
+        """Guards the gap between the radio list and the two routing paths."""
+        from woffl.gui.pad_hub import _CFP_LABEL, _PADS, _spec_for
+
+        for label in _PADS:
+            if label == _CFP_LABEL:
+                continue
+            assert _spec_for(label) is not None
 
     def test_spec_for_unknown_pad_raises(self):
         from woffl.gui.pad_hub import _spec_for
