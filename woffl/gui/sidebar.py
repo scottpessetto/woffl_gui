@@ -322,7 +322,9 @@ def _seed_saved_ipr(selected_well: str) -> None:
         # must survive a save + reload (Scott, 2026-07-30) even when a newer
         # pin hands the CURVE back to the pinned test.
         for key, val in (info.get("friction") or {}).items():
-            _set_param(key, clamp_seed(key, round(float(val), 3)))
+            # FULL precision — a BHP calibration's exact match depends on the
+            # unrounded coefficient (rounding to 3 dp broke reload exactness).
+            _set_param(key, clamp_seed(key, float(val)))
 
         # Field locks also sit OUTSIDE the precedence: a locked WC/GOR/ResP
         # overrides every test-derived seed — even when a newer pin wins the

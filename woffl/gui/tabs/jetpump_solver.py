@@ -2653,7 +2653,16 @@ def _render_ipr_pin_controls(
     )
     lock_cols = st.columns(len(LOCKABLE_FIELDS))
     for col, (skey, (_lid, _vid, label)) in zip(lock_cols, LOCKABLE_FIELDS.items()):
-        locked_now = bool(saved_locks.get(skey))
+        # Session flag first: right after a toggle the DB read can lag a rerun
+        # (memoized-None on a transient failure), and comparing the widget to
+        # the STALE db state re-pushed the lock every rerun (hayden's triple
+        # form_wc_lock rows, 2026-07-31). The flag is set on every toggle and
+        # on well-open seeding, so it is the fresher truth within a session.
+        locked_now = bool(
+            st.session_state.get(
+                f"_prop_locked_{skey}_{well_name}", saved_locks.get(skey)
+            )
+        )
         with col:
             want = st.checkbox(
                 f"🔒 {label}",
