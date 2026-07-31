@@ -700,7 +700,10 @@ def _enable_writes(monkeypatch):
 class TestSaveIprPinButton:
     def test_hidden_with_caption_when_gate_off(self, picker_st, monkeypatch):
         """Default env (no ALLOW_DATABRICKS_WRITES) — no button at all, just
-        a one-line explanatory caption."""
+        a one-line explanatory caption. Explicit delenv: another test hitting
+        the real databricks_client loads Scott's .env into the process, so
+        "default env" cannot be assumed."""
+        monkeypatch.delenv("ALLOW_DATABRICKS_WRITES", raising=False)
         df = _make_test_df_with_uid()
         jetpump_solver._render_ipr_anchor_control("WELL", df)
         assert "sw_save_ipr_pin_WELL" not in picker_st.button_calls
@@ -865,3 +868,44 @@ class TestClearIprPinButton:
         df = _make_test_df_with_uid()
         jetpump_solver._render_ipr_anchor_control("WELL", df)
         assert "sw_clear_ipr_pin_WELL" in picker_st.button_calls
+
+
+# ── 🔒 WC lock: anchor changes never reseed a locked well's WC ──────────────
+
+
+def test_locked_wc_survives_an_anchor_change(fake_st):
+    """form_wc_lock wells: the engineer's WC is a standing decision — an
+    anchor change seeds everything EXCEPT water cut (Scott, 2026-07-31)."""
+    _seed_recent(fake_st)
+    fake_st.session_state[f"_prop_locked_form_wc_{WELL}"] = True
+    reran = _call(fake_st, mode="specific", date=_SPEC_DATE, **_SPEC)
+    assert reran is True
+    # everything else seeded from the new anchor…
+    assert fake_st.session_state["qwf"] == 812
+    assert fake_st.session_state["pwf"] == 540
+    # …but the locked WC held at the engineer's value
+    assert fake_st.session_state["form_wc"] == 0.55
+    assert "WC held 🔒" in fake_st.session_state["_ipr_sync_msg"]
+
+
+def test_unlocked_wc_still_follows_the_anchor(fake_st):
+    _seed_recent(fake_st)
+    fake_st.session_state[f"_prop_locked_form_wc_{WELL}"] = False
+    _call(fake_st, mode="specific", date=_SPEC_DATE, **_SPEC)
+    assert fake_st.session_state["form_wc"] == 0.32
+
+
+def test_all_three_locks_hold_their_fields(fake_st):
+    """WC + GOR + ResP locked: an anchor change seeds only qwf/pwf (+PF)."""
+    _seed_recent(fake_st)
+    for k in ("form_wc", "form_gor", "res_pres"):
+        fake_st.session_state[f"_prop_locked_{k}_{WELL}"] = True
+    _call(fake_st, mode="specific", date=_SPEC_DATE, **_SPEC)
+    assert fake_st.session_state["qwf"] == 812
+    assert fake_st.session_state["pwf"] == 540
+    assert fake_st.session_state["form_wc"] == 0.55
+    assert fake_st.session_state["form_gor"] == 300
+    assert fake_st.session_state["res_pres"] == 1700
+    msg = fake_st.session_state["_ipr_sync_msg"]
+    for held in ("WC held 🔒", "GOR held 🔒", "ResP held 🔒"):
+        assert held in msg

@@ -446,6 +446,44 @@ IPR_VALUE_PROPS = {
 
 VALUES_SAVE_FAILURE_PREFIX = "Could not save IPR values:"
 
+# WC lock (Scott, 2026-07-31): some wells' WELL-TEST water cut is known-bad
+# (the washout/MPE-19 class — low rate, the PF return swamps the separator and
+# allocation nets formation water to ~0). For those the engineer DECIDES the
+# WC, and it must override every test-derived WC — on open, on anchor change,
+# everywhere — until explicitly unlocked. 1.0 = locked; NULL = unlocked (the
+# ipr_wt_uid un-pin precedent). Unlocked wells keep today's behavior: WC
+# follows the chosen anchor test.
+WC_LOCK_PROP = "form_wc_lock"
+
+# The lock registry (Scott picked the set 2026-07-31): sidebar key →
+# (lock prop_id, value prop_id, human label). Each lock means "the automated
+# seed for this field is systematically wrong on this well — my saved value
+# stands until I unlock". GOR shares WC's allocation-fiction problem (and
+# makes the solver's session-only crash-recovery floor durable); ResP
+# completes the weak-RP-fit flow ("DECIDE a pressure" — now the decision
+# survives re-anchoring). All sit OUTSIDE the pin-vs-values precedence.
+LOCKABLE_FIELDS = {
+    "form_wc": ("form_wc_lock", "form_wc", "WC"),
+    "form_gor": ("form_gor_lock", "form_gor", "GOR"),
+    "res_pres": ("resvr_press_lock", "resvr_press", "ResP"),
+}
+
+# BHP-calibration friction coefficients (the Solver's calibrate-to-BHP flow
+# writes these into the sidebar; Scott 2026-07-30: they must survive a save +
+# reload like everything else). Already-whitelisted canon ids — the pivots
+# serve them, so a saved calibration IS the well's characterization.
+FRICTION_PROPS = {
+    "jpfric_entry": "ken",
+    "jpfric_throat": "kth",
+    "jpfric_diffuser": "kdi",
+}
+
+# The sidebar's uncalibrated defaults (params.py / _render_loss_coefs). A save
+# where friction still sits at these AND nothing is stored pushes nothing —
+# otherwise every 📌 click would materialize explicit default rows well by
+# well, turning "never calibrated" (NULL → library default) into fake data.
+SIDEBAR_FRIC_DEFAULTS = {"ken": 0.03, "kth": 0.3, "kdi": 0.4}
+
 _saved_ipr_cache: dict = {}
 
 
@@ -490,7 +528,13 @@ def load_saved_ipr(well_name: str):
         from woffl.assembly.prop_hist_client import _resolve_enthid
 
         enthid = _resolve_enthid(well_name)
-        ids = ",".join(f"'{p}'" for p in list(IPR_VALUE_PROPS) + ["ipr_wt_uid"])
+        ids = ",".join(
+            f"'{p}'"
+            for p in list(IPR_VALUE_PROPS)
+            + list(FRICTION_PROPS)
+            + ["ipr_wt_uid"]
+            + [lock_id for lock_id, _, _ in LOCKABLE_FIELDS.values()]
+        )
         df = execute_query(
             f"""
             SELECT prop_id, prop_value, entry_datetime, entry_user FROM (
@@ -521,10 +565,37 @@ def load_saved_ipr(well_name: str):
                 if pin_row is not None and not pd.isna(pin_row["prop_value"])
                 else None
             )
-            if "qwf_liq" in values and "pwf" in values:
+            friction = {}
+            for pid, key in FRICTION_PROPS.items():
+                row = latest.get(pid)
+                if row is not None and not pd.isna(row["prop_value"]):
+                    friction[key] = float(row["prop_value"])
+            locks, lock_values = {}, {}
+            for skey, (lock_id, value_id, _label) in LOCKABLE_FIELDS.items():
+                lock_row = latest.get(lock_id)
+                locks[skey] = (
+                    lock_row is not None
+                    and not pd.isna(lock_row["prop_value"])
+                    and float(lock_row["prop_value"]) >= 0.5
+                )
+                value_row = latest.get(value_id)
+                if value_row is not None and not pd.isna(value_row["prop_value"]):
+                    lock_values[skey] = float(value_row["prop_value"])
+            # A saved IPR needs the operating pair; friction and the locks
+            # stand on their own (a calibration or a locked field may exist
+            # with no saved curve, and all sit OUTSIDE the pin-vs-values
+            # precedence).
+            has_curve = "qwf_liq" in values and "pwf" in values
+            if has_curve or friction or any(locks.values()):
                 result = {
-                    "values": values,
-                    "saved_at": saved_at,
+                    "values": values if has_curve else {},
+                    "friction": friction,
+                    "locks": locks,
+                    "lock_values": lock_values,
+                    # back-compat aliases (pre-registry callers/tests)
+                    "wc_locked": locks["form_wc"],
+                    "wc_value": lock_values.get("form_wc"),
+                    "saved_at": saved_at if has_curve else None,
                     "saved_by": saved_by,
                     "pin_at": pin_at,
                 }
@@ -544,6 +615,9 @@ def save_ipr_values(
     form_wc: float,
     form_gor: float,
     surf_pres: float | None = None,
+    ken: float | None = None,
+    kth: float | None = None,
+    kdi: float | None = None,
 ) -> tuple[int, str]:
     """Push the sidebar's CURRENT IPR + fluid values as the well's saved curve.
 
@@ -568,6 +642,25 @@ def save_ipr_values(
             "surf_press": float(surf_pres) if surf_pres is not None else None,
             "resvr_press": float(res_pres),
         }
+        # Friction rides along only when it carries information: skip when it
+        # matches the stored latest (no history noise from an unchanged save)
+        # or when nothing is stored AND the sidebar still sits at the
+        # uncalibrated defaults (never materialize defaults as canon rows —
+        # the BHP-calibration survival fix, Scott 2026-07-30).
+        stored = load_saved_ipr(well_name)
+        stored_fric = (stored or {}).get("friction", {})
+        for key, val in (("ken", ken), ("kth", kth), ("kdi", kdi)):
+            if val is None or (isinstance(val, float) and np.isnan(val)):
+                continue
+            val = float(val)
+            prev = stored_fric.get(key)
+            if prev is not None and abs(prev - val) < 1e-9:
+                continue
+            if prev is None and abs(val - SIDEBAR_FRIC_DEFAULTS[key]) < 1e-9:
+                continue
+            pid = next(p for p, k in FRICTION_PROPS.items() if k == key)
+            payload[pid] = val
+
         entry_user = resolve_entry_user()
         n = 0
         for pid, val in payload.items():
@@ -576,10 +669,61 @@ def save_ipr_values(
             push_prop(well_name, pid, val, entry_user)
             n += 1
         clear_saved_ipr_cache(well_name)
+        fric_note = (
+            " + BHP-calibrated friction"
+            if any(pid in payload for pid in FRICTION_PROPS)
+            else ""
+        )
         return n, (
             f"💾 Saved IPR values for {well_name} "
             f"(qwf {qwf_liq:,.0f} BLPD · pwf {pwf:,.0f} · ResP {res_pres:,.0f} "
-            f"· WC {wc:.2f} · GOR {form_gor:,.0f}) — restores on every open."
+            f"· WC {wc:.2f} · GOR {form_gor:,.0f}{fric_note}) — restores on "
+            "every open."
         )
     except Exception as e:
         return 0, f"{VALUES_SAVE_FAILURE_PREFIX} {e}"
+
+
+def set_prop_lock(
+    well_name: str, field: str, locked: bool, value: float | None = None
+) -> tuple[bool, str]:
+    """Set or clear a per-well field lock (see :data:`LOCKABLE_FIELDS`).
+
+    Locking also pushes the CURRENT sidebar value when given, so the locked
+    value is pinned in the same click. Unlocking writes NULL (the un-pin
+    precedent) — the field goes back to following the automated seed.
+    """
+    try:
+        lock_id, value_id, label = LOCKABLE_FIELDS[field]
+    except KeyError:
+        return False, f"Could not update the {field} lock: not a lockable field."
+    try:
+        entry_user = resolve_entry_user()
+        if locked:
+            if value is not None:
+                v = float(value)
+                if field == "form_wc":
+                    v = min(max(v, 0.0), 0.99)
+                push_prop(well_name, value_id, v, entry_user)
+            push_prop(well_name, lock_id, 1.0, entry_user)
+            message = (
+                f"🔒 {label} locked for {well_name} — the saved value now "
+                "overrides every test-derived seed until unlocked."
+            )
+        else:
+            push_prop(well_name, lock_id, None, entry_user)
+            message = (
+                f"🔓 {label} unlocked for {well_name} — it follows the "
+                "chosen anchor / fit again."
+            )
+        clear_saved_ipr_cache(well_name)
+        return True, message
+    except Exception as e:
+        return False, f"Could not update the {label} lock: {e}"
+
+
+def set_wc_lock(
+    well_name: str, locked: bool, form_wc: float | None = None
+) -> tuple[bool, str]:
+    """Back-compat wrapper — the WC lock through the generic registry."""
+    return set_prop_lock(well_name, "form_wc", locked, value=form_wc)

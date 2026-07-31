@@ -37,6 +37,7 @@ PAGE_MODULES = [
     "woffl.gui.cfp_tradeoff",
     "woffl.gui.cfp_moves",
     "woffl.gui.review_persistence",
+    "woffl.gui.prop_history",
     "woffl.gui.s_pad_plant",
     "woffl.gui.i_pad_plant",
     "woffl.gui.m_pad_plant",

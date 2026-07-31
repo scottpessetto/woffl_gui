@@ -160,3 +160,81 @@ def get_all_current_pumps(jp_hist: pd.DataFrame) -> pd.DataFrame:
     # Keep the row with the latest Date Set per well
     idx = df.groupby("Well Name")["Date Set"].idxmax()
     return df.loc[idx].reset_index(drop=True)
+
+
+def pump_ages(jp_hist: pd.DataFrame, today=None) -> pd.DataFrame:
+    """Current-pump age per well — who's overdue for a jet pump change.
+
+    Tenure follows the house rule (see CLAUDE.md / the JPCO gotcha): the
+    current pump has been in hole since its **Date Set**, and the tracker's
+    ``Date Pulled`` is never consulted. Age = ``today − latest Date Set``.
+
+    Returns one row per well, oldest pump first:
+    ``Well Name · Nozzle Number · Throat Ratio · Date Set · Days In Hole ·
+    Installs`` (installs = rows with a valid Date Set on record — frequent
+    changers vs never-touched wells). Empty frame in → empty frame out.
+    """
+    if jp_hist is None or jp_hist.empty:
+        return pd.DataFrame()
+    df = jp_hist.dropna(subset=["Date Set"]).copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    today = pd.Timestamp(today) if today is not None else pd.Timestamp.today()
+    today = today.normalize()
+
+    current = df.loc[df.groupby("Well Name")["Date Set"].idxmax()].copy()
+    counts = df.groupby("Well Name")["Date Set"].size()
+    current["Installs"] = current["Well Name"].map(counts).astype(int)
+    current["Days In Hole"] = (
+        (today - pd.to_datetime(current["Date Set"]).dt.normalize()).dt.days
+    ).astype(int)
+
+    keep = [
+        c
+        for c in (
+            "Well Name",
+            "Nozzle Number",
+            "Throat Ratio",
+            "Date Set",
+            "Days In Hole",
+            "Installs",
+        )
+        if c in current.columns
+    ]
+    return (
+        current[keep]
+        .sort_values("Days In Hole", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
+def filter_recently_online(
+    ages: pd.DataFrame, last_test: dict, days: int, today=None
+) -> pd.DataFrame:
+    """Keep aging-pump rows whose well has produced recently.
+
+    "Online" evidence = the well's latest ALLOCATED well test (``last_test``:
+    {well: timestamp}) falling within ``days`` of ``today`` — the same recency
+    proxy Well Sort's stale-days logic trusts. A ``Last Test`` column is added
+    to every surviving row. Wells with NO known test are dropped (no evidence
+    of production). Empty in → empty out; an empty ``last_test`` map returns
+    the frame unchanged (source unavailable → don't silently drop everything).
+    """
+    if ages is None or ages.empty:
+        return pd.DataFrame() if ages is None else ages
+    if not last_test:
+        return ages
+    today = (
+        pd.Timestamp(today) if today is not None else pd.Timestamp.today()
+    ).normalize()
+    out = ages.copy()
+    # vw_well_test dates arrive TZ-AWARE (Etc/UTC) while `today` is naive —
+    # comparing them raises TypeError. Coerce everything through UTC and strip
+    # the tz so aware, naive and missing values all compare cleanly.
+    out["Last Test"] = pd.to_datetime(
+        out["Well Name"].map(last_test), utc=True, errors="coerce"
+    ).dt.tz_localize(None)
+    cutoff = today - pd.Timedelta(days=int(days))
+    out = out[out["Last Test"].notna() & (out["Last Test"] >= cutoff)]
+    return out.reset_index(drop=True)

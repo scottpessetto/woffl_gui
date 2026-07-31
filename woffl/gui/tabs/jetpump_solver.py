@@ -499,6 +499,11 @@ def _render_wc_washout_section(
         "sweep below for a suggested starting point.",
         icon="💧",
     )
+    st.caption(
+        "Once you've decided the real WC: 📌 save, then **🔒 Always use saved "
+        "WC** (under the IPR anchor) — it overrides this well's test WC on "
+        "every open and re-anchor until unlocked."
+    )
 
     if st.button(
         "🔍 Suggest a water cut",
@@ -2572,6 +2577,11 @@ def _render_ipr_pin_controls(
                     form_wc=float(st.session_state.get("form_wc", 0.5) or 0.5),
                     form_gor=float(st.session_state.get("form_gor", 250) or 250),
                     surf_pres=st.session_state.get("surf_pres"),
+                    # BHP-calibrated friction survives the save too (pushed
+                    # only when it differs from stored / isn't the default).
+                    ken=st.session_state.get("ken"),
+                    kth=st.session_state.get("kth"),
+                    kdi=st.session_state.get("kdi"),
                 )
                 if pushed:
                     _clear_pin_cache(well_name)
@@ -2611,6 +2621,56 @@ def _render_ipr_pin_controls(
                     st.rerun()
                 else:
                     st.warning(message)
+
+    # ── 🔒 WC lock — "the well-test WC is wrong on this well, always use
+    # mine" (Scott 2026-07-31, the washout/MPE-19 class). Locked: the saved
+    # WC overrides every test-derived WC — on open, on anchor change,
+    # everywhere — until unlocked. Unlocked: WC follows the anchor as normal.
+    from woffl.gui.ipr_anchor import LOCKABLE_FIELDS, load_saved_ipr, set_prop_lock
+
+    saved_info = load_saved_ipr(well_name)  # memoized per well
+    saved_locks = (saved_info or {}).get("locks") or {}
+    _LOCK_HELP = {
+        "form_wc": (
+            "For wells whose WELL-TEST water cut is known-bad — typically "
+            "low-rate wells where the PF return swamps the separator and the "
+            "allocation nets formation water to ~0."
+        ),
+        "form_gor": (
+            "For wells whose test GOR is allocation fiction (same low-rate "
+            "class as WC) — also makes the solver GOR crash-recovery floor "
+            "permanent for this well."
+        ),
+        "res_pres": (
+            "For flat-test-cloud wells where the reservoir-pressure fit is "
+            "weak (the R² warning says to DECIDE a pressure) — the decision "
+            "survives every re-anchor."
+        ),
+    }
+    st.caption(
+        "🔒 Locks: the saved value overrides every test/fit-derived seed — on "
+        "open, on anchor change, everywhere — until unlocked."
+    )
+    lock_cols = st.columns(len(LOCKABLE_FIELDS))
+    for col, (skey, (_lid, _vid, label)) in zip(lock_cols, LOCKABLE_FIELDS.items()):
+        locked_now = bool(saved_locks.get(skey))
+        with col:
+            want = st.checkbox(
+                f"🔒 {label}",
+                value=locked_now,
+                key=f"sw_lock_{skey}_{well_name}",
+                help=_LOCK_HELP.get(skey, ""),
+            )
+        if want != locked_now:
+            ok, message = set_prop_lock(
+                well_name, skey, want, value=st.session_state.get(skey)
+            )
+            if ok:
+                st.session_state[f"_prop_locked_{skey}_{well_name}"] = want
+                st.toast(message, icon="🔒" if want else "🔓")
+                st.rerun()
+            else:
+                st.warning(message)
 
 
 def _render_ipr_anchor_control(well_name: str, test_df):
@@ -2855,6 +2915,17 @@ def _sync_chosen_ipr_to_sidebar(
         "form_wc": clamp_seed("form_wc", round(float(form_wc), 2)),
         "form_gor": clamp_seed("form_gor", max(int(fgor), gor_floor)),
     }
+    # 🔒 Field locks (Scott 2026-07-31): on wells where the automated seed is
+    # known-bad, the engineer's saved WC/GOR/ResP overrides — so an anchor
+    # change seeds everything EXCEPT the locked fields. Flags set by
+    # sidebar._seed_saved_ipr from prop_hist's *_lock rows.
+    locked_fields = {
+        k
+        for k in ("form_wc", "form_gor", "res_pres")
+        if st.session_state.get(f"_prop_locked_{k}_{well_name}")
+    }
+    for k in locked_fields:
+        new_vals.pop(k, None)
     # PF follows the anchor test's DAY (live vw_pressure_daily reading joined
     # onto the test row) so the whole sidebar models the same day. Tests
     # without a valid same-day reading leave PF untouched.
@@ -2900,8 +2971,22 @@ def _sync_chosen_ipr_to_sidebar(
     st.session_state["_ipr_sync_msg"] = (
         f"Seeded the {anchor_human} IPR + fluid into the sidebar "
         f"(qwf {new_vals['qwf']:,} BOPD · pwf {new_vals['pwf']:,} psi · "
-        f"ResP {new_vals['res_pres']:,} psi · WC {new_vals['form_wc']:.2f} · "
-        f"GOR {new_vals['form_gor']:,}{pf_note}). Batch Run, PF Range, and "
+        + (
+            f"ResP {new_vals['res_pres']:,} psi · "
+            if "res_pres" in new_vals
+            else "ResP held 🔒 · "
+        )
+        + (
+            f"WC {new_vals['form_wc']:.2f} · "
+            if "form_wc" in new_vals
+            else "WC held 🔒 · "
+        )
+        + (
+            f"GOR {new_vals['form_gor']:,}"
+            if "form_gor" in new_vals
+            else "GOR held 🔒"
+        )
+        + f"{pf_note}). Batch Run, PF Range, and "
         "the Solver now use this — edit any field in the sidebar to override."
     )
     st.rerun()

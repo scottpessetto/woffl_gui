@@ -309,8 +309,55 @@ def _seed_saved_ipr(selected_well: str) -> None:
             saved_wins,
         )
 
+        from woffl.gui.ipr_anchor import LOCKABLE_FIELDS
+
         info = load_saved_ipr(selected_well)
-        if not info or not saved_wins(info["saved_at"], info["pin_at"]):
+        if not info:
+            for skey in LOCKABLE_FIELDS:
+                st.session_state.pop(f"_prop_locked_{skey}_{selected_well}", None)
+            return
+
+        # BHP-calibrated friction seeds INDEPENDENTLY of the pin-vs-values
+        # precedence — a calibration is about the wellbore, not the IPR, and
+        # must survive a save + reload (Scott, 2026-07-30) even when a newer
+        # pin hands the CURVE back to the pinned test.
+        for key, val in (info.get("friction") or {}).items():
+            _set_param(key, clamp_seed(key, round(float(val), 3)))
+
+        # Field locks also sit OUTSIDE the precedence: a locked WC/GOR/ResP
+        # overrides every test-derived seed — even when a newer pin wins the
+        # curve. The session flags are what _sync_chosen_ipr_to_sidebar
+        # consults to keep anchor changes from reseeding locked fields.
+        gor_floor = st.session_state.get("_well_min_gor", {}).get(selected_well, 0)
+        locks = info.get("locks") or {}
+        lock_values = info.get("lock_values") or {}
+        locked_labels = []
+        for skey, (_lid, _vid, label) in LOCKABLE_FIELDS.items():
+            locked = bool(locks.get(skey))
+            st.session_state[f"_prop_locked_{skey}_{selected_well}"] = locked
+            if not locked or lock_values.get(skey) is None:
+                continue
+            locked_labels.append(label)
+            raw = float(lock_values[skey])
+            if skey == "form_wc":
+                seed = round(min(max(raw, 0.0), 0.99), 2)
+            elif skey == "form_gor":
+                seed = max(int(raw), gor_floor)
+            else:  # res_pres
+                seed = int(raw)
+            _set_param(skey, clamp_seed(skey, seed))
+
+        if not info["values"] or not saved_wins(info["saved_at"], info["pin_at"]):
+            notes = []
+            if info.get("friction"):
+                notes.append("BHP-calibrated friction (ken/kth/kdi)")
+            if locked_labels:
+                notes.append("the 🔒 locked " + "/".join(locked_labels))
+            if notes:
+                st.session_state["sw_ipr_info"] = (
+                    "💾 Restored " + " and ".join(notes)
+                    + " from the well's saved properties."
+                )
             return
 
         v = info["values"]
@@ -339,8 +386,14 @@ def _seed_saved_ipr(selected_well: str) -> None:
         ts = info.get("saved_at")
         when = ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else str(ts)
         who = str(info.get("saved_by") or "").split("@")[0]
+        extras = []
+        if info.get("friction"):
+            extras.append("BHP-calibrated friction")
+        if locked_labels:
+            extras.append("🔒 locked " + "/".join(locked_labels))
+        fric_note = f" (incl. {', '.join(extras)})" if extras else ""
         st.session_state["sw_ipr_info"] = (
-            f"💾 Restored saved IPR values ({when}"
+            f"💾 Restored saved IPR values{fric_note} ({when}"
             + (f" · {who}" if who else "")
             + ") — the curve and rate as last saved. Edit freely; "
             "📌 Save IPR to persist changes."
