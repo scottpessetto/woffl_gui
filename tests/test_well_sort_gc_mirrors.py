@@ -1,6 +1,6 @@
 """Tests for the widget-key GC-survival mirrors in well_sort.py (P1-31).
 
-Per this repo's CLAUDE.md ("Widget state is garbage-collected when its view
+Per this repo's AGENTS.md ("Widget state is garbage-collected when its view
 isn't rendered"), a Scott's Tools tab detour can drop a widget's
 session_state key entirely. Before this fix, well_sort.py's POPS-pads
 multiselect, the per-well PopsPad=True override multiselect, and each POPs
@@ -17,7 +17,7 @@ value rather than reverting.
 These tests exercise the small extracted, pure(ish) helpers directly against
 a fake ``st.session_state`` dict — they don't drive the full ``render_tab()``
 Streamlit UI (that needs the live click-through Scott already uses for this
-class of bug; see CLAUDE.md's note on tab-switch GC not being reproducible
+class of bug; see AGENTS.md's note on tab-switch GC not being reproducible
 via a mocked plain-dict session_state).
 """
 

@@ -23,7 +23,7 @@ def physical_sweep_signature(params: SimulationParams) -> tuple:
     (tab-specific extras...)`` (batch nozzle/throat option lists; PF
     min/max/step).
 
-    CLAUDE.md rule: **if you add an input that affects the sweep, ADD IT
+    AGENTS.md rule: **if you add an input that affects the sweep, ADD IT
     HERE.** A field missing from this tuple makes the cache silently serve
     results computed under the old value of that field (P1-4:
     ``model_as_water`` was missing from both tabs' local tuples, so at

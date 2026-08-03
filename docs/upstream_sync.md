@@ -244,7 +244,7 @@ Two additive robustness fixes in `_query_via_connector` / `_oauth_token`:
   whichever token is newer (another thread may have refreshed meanwhile)
   before writing. Previously every thread serialized behind one thread's
   network call (e.g. the app's concurrent startup warm queries in
-  `CLAUDE.md`'s "databricks_client design" note). A cache hit (common case)
+  `AGENTS.md`'s "databricks_client design" note). A cache hit (common case)
   is unaffected — it still returns under the lock without any fetch.
 
 **Guarded by:** `tests/test_databricks_client.py::TestQueryViaConnectorRetriesFirstAttempt`

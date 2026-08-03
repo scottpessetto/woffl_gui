@@ -246,7 +246,7 @@ def _render_pad_pf_editor(pads: list[str]) -> dict[str, int]:
     state. Jet-pump wells inherit their pad's value as the "PF held" default in
     the well table below, overridable per well.
     """
-    # STABLE editor base, rebuilt only when the pad set changes (CLAUDE.md
+    # STABLE editor base, rebuilt only when the pad set changes (AGENTS.md
     # data_editor gotcha — feeding the editor its own prior output via
     # hpi_pad_pf makes a feedback loop). Edits live in the widget state and
     # are read from the return value into hpi_pad_pf below.
@@ -1064,7 +1064,7 @@ def render_tab() -> None:
             )
             return
         st.session_state["hpi_input_df"] = input_df
-        # STABLE frame for the data_editor (see CLAUDE.md data_editor gotcha):
+        # STABLE frame for the data_editor (see AGENTS.md data_editor gotcha):
         # the editor's data= must not be its own prior output, so programmatic
         # replacements set this base and pop the editor's widget key.
         st.session_state["hpi_input_base"] = input_df.copy()
@@ -1113,7 +1113,7 @@ def render_tab() -> None:
 
     # Feed the editor the STABLE base frame, never its own prior output —
     # writing the edited frame back as next render's data= creates a feedback
-    # loop that drops/duplicates cells during mass edits (CLAUDE.md gotcha;
+    # loop that drops/duplicates cells during mass edits (AGENTS.md gotcha;
     # same pattern as _render_coverage_panel). The widget replays edits onto
     # the stable base each rerun; the merged result lives in hpi_input_df.
     base_df = st.session_state.get("hpi_input_base")

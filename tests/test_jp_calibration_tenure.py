@@ -8,7 +8,7 @@ Covers two review findings (docs/code_review_2026-07-01.md):
     date. Fixed via ``get_pump_at_date`` (mirrors ``jp_fric_trend.py`` /
     ``jp_washout.py``), plus a pump-changed guard that flags/soft-blocks the
     fit when the pump has since been changed out. Includes a JPCO
-    same-day-pull+set regression per the CLAUDE.md gotcha: tenure must be
+    same-day-pull+set regression per the AGENTS.md gotcha: tenure must be
     derived from ``Date Set`` -> next ``Date Set``, never from ``Date
     Pulled`` (which lags in the tracker).
 
@@ -31,7 +31,7 @@ from woffl.gui.scotts_tools import pf_scenario as pfs
 def _jp_hist_with_jpco(well: str = "MPB-30") -> pd.DataFrame:
     """Three installs on one well, including a JPCO same-day pull+set where
     the OLD pump's logged ``Date Pulled`` LAGS the new pump's ``Date Set`` by
-    19 days — exactly the tracker gotcha CLAUDE.md warns about. A tenure
+    19 days — exactly the tracker gotcha AGENTS.md warns about. A tenure
     rule that (wrongly) leaned on ``Date Pulled`` would keep attributing
     early/mid-January 2024 tests to the OLD pump; the correct
     Date-Set-to-next-Date-Set rule attributes them to the pump set on

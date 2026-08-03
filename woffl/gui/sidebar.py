@@ -568,6 +568,25 @@ def _well_selector_key() -> str:
     return f"well_selector_{st.session_state.get('_well_sel_nonce', 0)}"
 
 
+def select_well(well_name: str) -> None:
+    """Point the well dropdown at ``well_name`` from OUTSIDE the sidebar.
+
+    The sidebar renders before the main panel, so a main-panel well switcher
+    can't write the selectbox's widget key (Streamlit forbids writing a widget
+    key after that widget rendered). Setting the logical key plus bumping the
+    nonce gives the next run a freshly-keyed selectbox that re-reads ``index``.
+
+    Callers must ``st.rerun()`` afterwards. ``workflow_steps.step_review_wells``
+    has its own wrapper that additionally drops the pad-review hydrate marker.
+    """
+    st.session_state["selected_well"] = well_name
+    st.session_state["_well_sel_nonce"] = st.session_state.get("_well_sel_nonce", 0) + 1
+    if hasattr(st.session_state, "well_data"):
+        del st.session_state.well_data
+    if well_name != "Custom":
+        st.session_state.sw_sim_active = True
+
+
 def _on_well_change() -> None:
     """Callback function when well selection changes.
 

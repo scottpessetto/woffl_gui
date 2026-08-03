@@ -86,7 +86,7 @@ _SUCTION_PSI = 50.0
 # Pad-letter resolution is deliberately NOT reimplemented here — it delegates to
 # the single copy in network_optimizer so pad identity can't drift between the
 # optimizer, the plant models and the PF seeding (the duplicate-lift-classifier
-# lesson in CLAUDE.md). Re-exported so callers of this module have it to hand.
+# lesson in AGENTS.md). Re-exported so callers of this module have it to hand.
 pad_letter = derive_pad
 
 

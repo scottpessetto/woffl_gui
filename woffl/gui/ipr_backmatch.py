@@ -159,7 +159,7 @@ def match_oil_rate(
 
     # Geometry / fluid objects are reused across every solver call. ResMix is
     # conditioned in place by the solver, so build a fresh one per call to be
-    # safe against shared-state surprises (see CLAUDE.md ResMix note).
+    # safe against shared-state surprises (see AGENTS.md ResMix note).
     jetpump = create_jetpump(nozzle, throat, ken, kth, kdi)
 
     eval_count = 0

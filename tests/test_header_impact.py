@@ -486,7 +486,7 @@ def _jp_hist_row(well: str, date_set, nozzle="12", throat="B"):
 
 def test_classify_lift_recent_esp_amps_overrides_stale_jp_install_p1_26():
     # The JP tracker's last install is years old; if the tracker never
-    # recorded the pull (JPCOs are same-day pull+set per CLAUDE.md, and the
+    # recorded the pull (JPCOs are same-day pull+set per AGENTS.md, and the
     # tracker is unreliable), a well long since converted to ESP would keep
     # modeling as JP forever without this terminator.
     jp_hist = _jp_hist_row("MPB-99", "2019-03-01")

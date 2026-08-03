@@ -19,7 +19,7 @@ NOT used by (and must never be swapped into) ``ipr_analyzer``'s RP-search
 objective (``_normalized_curve_sse`` / ``_calculate_global_sse`` /
 ``estimate_reservoir_pressure``) or its R-squared helper
 (``_calculate_r_squared``). Those implement a deliberately axis-normalized
-anchor search (see that module's docstrings and the CLAUDE.md gotcha "The
+anchor search (see that module's docstrings and the AGENTS.md gotcha "The
 Vogel RP fit objective is axis-normalized -- do NOT simplify it back to
 rate-only SSE"); routing them through generic helpers is exactly the kind of
 "simplification" that gotcha warns against, so they intentionally keep their

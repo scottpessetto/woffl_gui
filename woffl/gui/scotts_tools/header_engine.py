@@ -99,7 +99,7 @@ def classify_lift(pump_date_set, esp_amps, lift_gas, test_date=None) -> str:
     * ``esp_amps > 0`` on the well's LATEST test is live evidence of a running
       ESP — a jet pump never draws ESP amps. It out-ranks a JP install record,
       because JPCOs are same-day pull+set and the tracker's ``Date Pulled`` is
-      unreliable (CLAUDE.md), so a stale install that was never closed out would
+      unreliable (AGENTS.md), so a stale install that was never closed out would
       otherwise model a long-converted well as JP forever (P1-26).
     * The one exception is a *known* date ordering that proves the opposite
       conversion: when ``test_date`` is known and does NOT postdate

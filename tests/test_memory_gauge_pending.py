@@ -12,7 +12,7 @@ The fix parses uploads immediately and stashes them per-well via
 (non-widget) session key that survives the detour. These tests pin the CRUD
 contract and the GC-survival invariant.
 
-NOTE (from CLAUDE.md): unit tests that mock ``session_state`` as a plain dict
+NOTE (from AGENTS.md): unit tests that mock ``session_state`` as a plain dict
 cannot reproduce Streamlit's real widget-state GC — the GC simulation below
 only asserts the stash lives outside the widget keys that GC deletes. Verify
 the full flow live: upload a file, DON'T click Apply, switch to Batch Run,

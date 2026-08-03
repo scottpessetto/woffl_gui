@@ -18,7 +18,7 @@ sites re-derived the Vogel IPR polynomial independently --
 forward/inverse pieces (2) and (3) delegate to; (1)'s RP-fit search
 (``_normalized_curve_sse`` / ``_calculate_global_sse`` /
 ``estimate_reservoir_pressure`` / ``_calculate_r_squared``) is deliberately
-NOT touched or routed through these helpers -- see the CLAUDE.md gotcha "The
+NOT touched or routed through these helpers -- see the AGENTS.md gotcha "The
 Vogel RP fit objective is axis-normalized" and ``vogel.py``'s module
 docstring. That fit's regression guard lives in
 ``test_ipr_analyzer.py::TestEstimateReservoirPressure::

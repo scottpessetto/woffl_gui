@@ -165,7 +165,7 @@ def get_all_current_pumps(jp_hist: pd.DataFrame) -> pd.DataFrame:
 def pump_ages(jp_hist: pd.DataFrame, today=None) -> pd.DataFrame:
     """Current-pump age per well — who's overdue for a jet pump change.
 
-    Tenure follows the house rule (see CLAUDE.md / the JPCO gotcha): the
+    Tenure follows the house rule (see AGENTS.md / the JPCO gotcha): the
     current pump has been in hole since its **Date Set**, and the tracker's
     ``Date Pulled`` is never consulted. Age = ``today − latest Date Set``.
 

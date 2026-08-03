@@ -137,8 +137,27 @@ def main():
         initial_sidebar_state="expanded",
     )
 
-    st.title("WOFFL Haus 🧇")
-    st.caption("*Built on Kaelin Ellis's WOFFL Jet Pump Model*")
+    # The Solver view is the densest screen in the app, so it reclaims the
+    # ~120px of app chrome for content. Both keys are widget state from the
+    # PREVIOUS run, which is exactly what we want: the decision has to be made
+    # before either widget renders this run. Every other mode/view keeps the
+    # header.
+    #
+    # Seed the view default here too. Without it the FIRST render after picking
+    # a well still has `sw_active_view` unset (single_well_page seeds it a few
+    # lines later), so the header paints once and then vanishes on the next
+    # rerun — a visible jump. single_well_page re-validates the value against
+    # its label list, so a stale default self-corrects rather than sticking.
+    st.session_state.setdefault("sw_active_view", "Solver")
+    _bare_solver = (
+        st.session_state.get("app_mode_radio", "Single Well Analysis")
+        == "Single Well Analysis"
+        and st.session_state.get("sw_active_view") == "Solver"
+        and st.session_state.get("sw_sim_active", False)
+    )
+    if not _bare_solver:
+        st.title("WOFFL Haus 🧇")
+        st.caption("*Built on Kaelin Ellis's WOFFL Jet Pump Model*")
 
     # Global startup prefetch — JP history, recent well tests, and well
     # properties are three INDEPENDENT Databricks pulls, so warm them

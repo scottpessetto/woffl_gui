@@ -47,7 +47,7 @@ def run_pad_hub() -> None:
     # garbage-collects the radio's widget state, and without the shadow a
     # detour (Pad Optimization → Single Well → back) would snap the selector
     # to S-Pad. Streamlit ignores ``index`` when widget state survived, so
-    # this is a no-op then (the CLAUDE.md widget-GC pattern).
+    # this is a no-op then (the AGENTS.md widget-GC pattern).
     shadow = st.session_state.get(_SHADOW_KEY, _PADS[0])
     idx = _PADS.index(shadow) if shadow in _PADS else 0
     pad = st.radio("Pad", _PADS, index=idx, horizontal=True, key="pad_hub_pad")

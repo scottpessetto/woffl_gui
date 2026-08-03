@@ -51,7 +51,7 @@ def render_tab(params: SimulationParams) -> None:
                 key="jp_hist_bhp_zero",
             )
         with ctl2:
-            # Checkbox `value=` MUST read session_state first (CLAUDE.md
+            # Checkbox `value=` MUST read session_state first (AGENTS.md
             # gotcha) — this view is a segmented control, so its widget state
             # is GC'd on a tab detour and a hardcoded literal would silently
             # snap the toggle back on return.

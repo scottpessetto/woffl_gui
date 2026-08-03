@@ -89,7 +89,7 @@ def _make_jp_hist() -> pd.DataFrame:
     """Two installs on MPB-28: 12B (2024-01-10) then a JPCO to 14C (2025-06-01).
 
     Date Pulled is deliberately all-NaT — pump tenure is set-to-set and the
-    helper must never consult Date Pulled (CLAUDE.md hard rule).
+    helper must never consult Date Pulled (AGENTS.md hard rule).
     """
     return pd.DataFrame(
         {

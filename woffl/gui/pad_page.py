@@ -735,7 +735,7 @@ def matchcheck_signature(n_pumps, current: dict, active: dict) -> tuple:
     model can be trusted at all. The pumps ride alongside because
     ``store_signature`` deliberately excludes the reviewed-pump label.
 
-    CLAUDE.md rule: **if you add an input that affects the check, ADD IT HERE.**
+    AGENTS.md rule: **if you add an input that affects the check, ADD IT HERE.**
     """
     return (
         n_pumps,
@@ -783,7 +783,7 @@ def _render_configure(spec: PadSpec) -> None:
     with method_col:
         method = st.selectbox("Optimizer", ["milp", "mckp"], key=f"{p}_method")
     with wc_col:
-        # Checkbox `value=` MUST read session_state first (CLAUDE.md gotcha) —
+        # Checkbox `value=` MUST read session_state first (AGENTS.md gotcha) —
         # a hardcoded literal would clobber a programmatically-set state on
         # every rerun. Default True: the plant-derived gate is the new default
         # behavior; the manual number_input below is the override path.

@@ -18,7 +18,7 @@ import os
 import sys
 
 # Run from the inner repo root so the LOCAL woffl (with woffl.gui) wins over any
-# stale pip-installed woffl — see CLAUDE.md "Library imports resolve locally".
+# stale pip-installed woffl — see AGENTS.md "Library imports resolve locally".
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.pop("bricks_http", None)  # MSYS guard so databricks_client reads .env cleanly
 

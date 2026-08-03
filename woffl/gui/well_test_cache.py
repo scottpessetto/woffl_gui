@@ -5,7 +5,7 @@ workflow pages can keep their @st.cache_data wrappers without dragging
 the legacy standalone "Well Test Analysis" page along with them.
 
 The 24-hour TTL means the cache survives most user sessions on the
-Databricks Apps single-process runtime — see CLAUDE.md "Caching scope".
+Databricks Apps single-process runtime — see AGENTS.md "Caching scope".
 """
 
 import pandas as pd

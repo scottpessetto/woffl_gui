@@ -260,7 +260,7 @@ def _render_memory_gauge_section(well_name: str) -> None:
         # the uploader's widget state were silently dropped by a view detour
         # (Solver → Batch Run → Solver): the segmented control runs only the
         # active view, and Streamlit garbage-collects the widget state of
-        # anything that didn't render (see CLAUDE.md). The stash is a plain
+        # anything that didn't render (see AGENTS.md). The stash is a plain
         # session key, so pending files survive the detour — and each file is
         # parsed exactly once instead of on every rerun. Skip files already in
         # the gauge or the stash (by filename); collect per-file errors so one
@@ -399,7 +399,7 @@ def _render_memory_gauge_section(well_name: str) -> None:
                 set_disregard_databricks_bhp(well_name, True)
                 # Pop the widget key (writing it directly raises a
                 # StreamlitAPIException since the checkbox already
-                # rendered this run) — see CLAUDE.md.
+                # rendered this run) — see AGENTS.md.
                 st.session_state.pop(f"mg_disregard_cb_{well_name}", None)
                 st.session_state["_mg_auto_disregard_msg"] = (
                     f"Auto-disabled Databricks BHP for {well_name} — "
@@ -609,7 +609,7 @@ def _render_wc_washout_section(
         type="primary",
         key=f"wc_apply_btn_{params.selected_well}",
     ):
-        # Logical-key + pop-widget-key pattern (see CLAUDE.md): the sidebar
+        # Logical-key + pop-widget-key pattern (see AGENTS.md): the sidebar
         # widget already rendered this run, so write the logical key and let
         # _number_input re-seed the widget on the next run.
         st.session_state["form_wc"] = clamp_seed(
@@ -781,6 +781,181 @@ def _render_jp_history_strip(well_name: str) -> None:
     render_current_pump_caption(tl)
 
 
+# ── Solver layout ───────────────────────────────────────────────────────────
+# The Single-Well Solver uses the standalone workbench layout (verdict →
+# trend → IPR | controls → tests). The pad-review page embeds this same
+# ``render_tab`` but injects its own containers, and keeps the original
+# stacked ordering — so throughout this module ``_standalone`` means "rendering
+# as the Single-Well page", not "a newer layout".
+
+_GRADE_COLOR = {"good": "green", "fair": "orange", "poor": "red", "unknown": "gray"}
+
+
+def _match_grade(modeled_oil, actual_oil) -> tuple[str, float | None]:
+    """Grade the oil match on the SAME thresholds as Model Calibration
+    (:attr:`CalibrationResult.quality_grade`): good <15%, fair <30%, else poor.
+
+    Returns ``(grade, error_pct)``; ``("unknown", None)`` with no usable actual.
+    Kept in sync with woffl/assembly/calibration.py by using its exact bounds —
+    if those move, move these.
+    """
+    if not is_valid_number(actual_oil) or not actual_oil:
+        return "unknown", None
+    err = abs(modeled_oil - actual_oil) / abs(actual_oil) * 100
+    if err < 15:
+        return "good", err
+    if err < 30:
+        return "fair", err
+    return "poor", err
+
+
+def _render_verdict_bar(
+    params,
+    *,
+    modeled_oil,
+    actuals,
+    pump_differs,
+    effective_pump,
+    test_pump,
+    cmp_date,
+) -> None:
+    """One-line answer to 'is this well matched?', pinned above everything.
+
+    Deliberately read-only: the actions that fix a mismatch live in the Adjust
+    block below, so no widget key is rendered twice.
+    """
+    nozzle, throat = effective_pump
+    grade, err = _match_grade(modeled_oil, actuals.get("oil"))
+
+    if pump_differs:
+        tn, tt = test_pump
+        verdict = (
+            f":gray[**WHAT-IF**] — modeling **{nozzle}{throat}**, "
+            f"but the test ran on **{tn}{tt}**. Deltas paused."
+        )
+    elif grade == "unknown":
+        verdict = ":gray[**NO ACTUAL**] — no comparable test rate for this well."
+    else:
+        verdict = (
+            f":{_GRADE_COLOR[grade]}[**MATCH {grade.upper()}**] — "
+            f"oil off by **{err:.0f}%**"
+        )
+
+    against = f" · vs the **{cmp_date}** test" if cmp_date else ""
+    st.markdown(f"### {params.selected_well} · {nozzle}{throat}")
+    st.markdown(f"{verdict}{against}")
+
+
+def _render_comparison_block(
+    *,
+    modeled_oil,
+    modeled_fwat,
+    modeled_pf,
+    modeled_psu,
+    actuals,
+    pump_differs,
+) -> None:
+    """The sidebar-conditions comparison, as one table instead of four metrics.
+
+    Scope matters: these are the SIDEBAR pump at SIDEBAR conditions. The
+    Model-vs-Actual section in zone D runs a *different* solve — the test's
+    pump at the test-day surface pressure — so the two legitimately disagree
+    (369 vs 370 on MPB-28). They are labelled distinctly rather than merged.
+    """
+    import pandas as pd
+
+    _MUTED = "color: #9aa0a6"
+    _RIGHT = "text-align: right"
+
+    def _grade_style(pct):
+        # Same bands as CalibrationResult.quality_grade, so "off by 28%" here
+        # and "MATCH FAIR" in the verdict line can never tell different stories.
+        if pct is None:
+            return _MUTED
+        if pct < 15:
+            return "color: #1a7f37; font-weight: 600"
+        if pct < 30:
+            return "color: #bf8700; font-weight: 600"
+        return "color: #c9252d; font-weight: 700"
+
+    rows, pcts = [], []
+    for label, unit, modeled, actual in (
+        ("Oil", "BOPD", modeled_oil, actuals.get("oil")),
+        ("Formation water", "BWPD", modeled_fwat, None),
+        ("Power fluid", "BWPD", modeled_pf, actuals.get("pf")),
+        ("Suction / BHP", "psi", modeled_psu, actuals.get("bhp")),
+    ):
+        comparable = is_valid_number(actual) and not pump_differs
+        pct = None
+        if comparable and actual:
+            pct = abs(modeled - actual) / abs(actual) * 100
+        pcts.append(pct)
+        rows.append(
+            {
+                "": f"{label} ({unit})",
+                "Modeled": f"{modeled:,.0f}",
+                "Actual": f"{actual:,.0f}" if is_valid_number(actual) else "—",
+                "Δ": f"{modeled - actual:+,.0f}" if comparable else "—",
+                "Off by": f"{pct:.1f}%" if pct is not None else "—",
+            }
+        )
+
+    # Values are pre-formatted STRINGS, not numbers: Streamlit's grid renders a
+    # float column's nulls as a literal "None" and ignores the Styler's
+    # ``na_rep`` (the Styler itself is fine — its HTML shows the em dash). So
+    # formatting happens here and the Styler only carries colour, driven off
+    # ``pcts`` rather than off the cell text.
+    df = pd.DataFrame(rows)
+    numeric_cols = ["Modeled", "Actual", "Δ", "Off by"]
+
+    def _styles(frame):
+        out = pd.DataFrame("", index=frame.index, columns=frame.columns)
+        for col in numeric_cols:
+            out[col] = _RIGHT
+        for i, pct in enumerate(pcts):
+            out.iloc[i, out.columns.get_loc("Off by")] = f"{_RIGHT}; {_grade_style(pct)}"
+            if pct is None:
+                for col in ("Actual", "Δ"):
+                    out.iloc[i, out.columns.get_loc(col)] = f"{_RIGHT}; {_MUTED}"
+        return out
+
+    st.dataframe(
+        df.style.apply(_styles, axis=None), use_container_width=True, hide_index=True
+    )
+
+    if pump_differs:
+        st.caption(
+            "Δ paused — the modeled pump isn't the pump the test ran on, so a "
+            "difference wouldn't mean anything."
+        )
+
+
+def _render_well_picker(params) -> None:
+    """Well switcher in the main panel, mirroring the sidebar dropdown.
+
+    The sidebar has already rendered by the time this runs, so switching goes
+    through ``sidebar.select_well`` (logical key + nonce bump) and a rerun
+    rather than writing the sidebar widget's key, which Streamlit forbids
+    post-render.
+    """
+    from woffl.gui.sidebar import select_well
+    from woffl.gui.utils import get_available_wells
+
+    wells = get_available_wells()
+    if params.selected_well not in wells:
+        return
+    choice = st.selectbox(
+        "Well",
+        wells,
+        index=wells.index(params.selected_well),
+        key="sw_main_well_picker",
+        help="Same selection as the sidebar — switch without scrolling up.",
+    )
+    if choice != params.selected_well:
+        select_well(choice)
+        st.rerun()
+
+
 def render_tab(
     params: SimulationParams,
     jetpump,
@@ -827,6 +1002,62 @@ def render_tab(
 
     render_input_summary(params)
 
+    # Workbench layout (Scott's spec):
+    #
+    #   A  well name + match verdict            full width
+    #   B  status banners                       full width
+    #   C  rate + pump-history trend            full width, right under the name
+    #   D  IPR curve  |  control panel          50 / 50
+    #                    (well picker, numbers, anchor, calibrate, save)
+    #   E  test-day comparison + calibration    full width
+    #
+    # app.py drops the "WOFFL Haus" header on this view to reclaim its ~120px.
+    #
+    # Rule: collapse ACTIONS you rarely take (gauge upload, provisional test
+    # entry, coefficient help); never collapse FACTS.
+    #
+    # On column widths — two earlier splits were measured and REJECTED, don't
+    # retry them:
+    #  * action panel at 2/5 (422px): descriptive text wrapped so hard the panel
+    #    grew to 1,942px and set the row height. The page got TALLER.
+    #  * 350px comparison table beside the whole ~1,100px IPR group: pure white
+    #    space, 4,951px vs 4,795px, and metrics clipped ("Liquid 1,665 B…").
+    # A row is as tall as its tallest cell, so pairing only pays when the cells
+    # are balanced. 50/50 at ~600px each is the balanced case: the IPR chart
+    # (~500px) sits opposite the controls, and 600px is wide enough that button
+    # labels and captions stop wrapping.
+    #
+    # The IPR CHART and the IPR CONTROLS are separable — the chart is injected
+    # late via ``_render_model_vs_actual(ipr_chart_container=...)`` while the
+    # selectors render into ``_anchor_box``. That's what lets the curve go left
+    # and its controls go right.
+    #
+    # Streamlit paints containers in declaration order, so the whole layout is
+    # declared here and the existing blocks are filled into the slots below —
+    # no code moves. Only active on the Single-Well page (the pad-review embed
+    # injects its own containers and keeps today's flow).
+    _standalone = hero_container is None
+    _zone_ipr_chart = None
+    if _standalone:
+        _zone_verdict = st.container()  # A — filled after the solve
+        _zone_banners = st.container()  # B
+        _zone_history = st.container()  # C — filled at the end of the render
+        _zone_d = st.columns(2, gap="large")
+        _zone_ipr_chart = _zone_d[0]  # D left — the curve
+        with _zone_d[1]:  # D right — the control panel
+            _zone_wellpick = st.container()
+            _zone_compare = st.container()
+            _zone_ipr_controls = st.container()  # anchor selector + test picker + save
+            _zone_adjust = st.container()  # calibrate / auto-match / nozzle wear
+        st.divider()
+        _zone_detail = st.container()  # E
+
+        with _zone_wellpick:
+            _render_well_picker(params)
+    else:
+        _zone_verdict = _zone_banners = _zone_compare = _zone_adjust = None
+        _zone_ipr_controls = _zone_history = _zone_detail = None
+
     # Glanceable pump-install history (toggle to hide). A PLACEHOLDER is
     # reserved here and filled at the END of the tab render — Streamlit
     # paints elements progressively, so this keeps the strip's Databricks
@@ -835,32 +1066,40 @@ def render_tab(
     # its own container (placed above the hero, under the title) so the history
     # plot sits right above the hero; otherwise it renders inline here.
     _jp_strip_box = (
-        jp_strip_container if jp_strip_container is not None else st.container()
+        jp_strip_container
+        if jp_strip_container is not None
+        else (_zone_history if _standalone else st.container())
     )
 
-    # Memory-gauge upload + status. Lives near the top so the status banner
-    # is unmissable when an override is active; the upload itself is in a
-    # collapsed expander so it stays out of the way when not needed.
-    _render_memory_gauge_section(params.selected_well)
+    # Memory-gauge upload + status, plus the one-shot replays from a prior
+    # seed-and-rerun. Standalone lands them in the banner slot under the
+    # verdict —
+    # they are all explanations of the state, not inputs to it.
+    _msg_box = _zone_banners if _standalone else st.container()
+    with _msg_box:
+        # Memory-gauge upload + status. Lives near the top so the status banner
+        # is unmissable when an override is active; the upload itself is in a
+        # collapsed expander so it stays out of the way when not needed.
+        _render_memory_gauge_section(params.selected_well)
 
-    # Surface any persisted message from a prior auto-recovery (e.g. GOR reset)
-    msg = st.session_state.pop("_solver_gor_reset_msg", None)
-    if msg:
-        st.warning(msg)
+        # Surface any persisted message from a prior auto-recovery (e.g. GOR reset)
+        msg = st.session_state.pop("_solver_gor_reset_msg", None)
+        if msg:
+            st.warning(msg)
 
-    # Surface the one-shot confirmation from a prior "Match test oil rate"
-    # back-solve (it seeds the sidebar then reruns, so the note has to be
-    # replayed on the following render).
-    _bm_msg = st.session_state.pop("_oil_backmatch_msg", None)
-    if _bm_msg:
-        st.success(_bm_msg, icon="🎯")
+        # Surface the one-shot confirmation from a prior "Match test oil rate"
+        # back-solve (it seeds the sidebar then reruns, so the note has to be
+        # replayed on the following render).
+        _bm_msg = st.session_state.pop("_oil_backmatch_msg", None)
+        if _bm_msg:
+            st.success(_bm_msg, icon="🎯")
 
-    # Same one-shot replay for the joint oil + PF auto-match (it seeds several
-    # sidebar fields then reruns). dict carries text + status so we can color it.
-    _jm = st.session_state.pop("_joint_automatch_msg", None)
-    if _jm:
-        _icon = "🎯" if _jm.get("ok") else "⚠️"
-        (st.success if _jm.get("ok") else st.warning)(_jm["text"], icon=_icon)
+        # Same one-shot replay for the joint oil + PF auto-match (it seeds several
+        # sidebar fields then reruns). dict carries text + status so we can color it.
+        _jm = st.session_state.pop("_joint_automatch_msg", None)
+        if _jm:
+            _icon = "🎯" if _jm.get("ok") else "⚠️"
+            (st.success if _jm.get("ok") else st.warning)(_jm["text"], icon=_icon)
 
     # The IPR group renders as one unit — provisional-test entry, IPR-anchor
     # selector, comparison-test picker, and the IPR chart — so the control that
@@ -886,7 +1125,11 @@ def render_tab(
         and not params.model_as_water
         and n_tests_now >= 2
     )
-    _anchor_box = anchor_container if anchor_container is not None else st.container()
+    _anchor_box = (
+        anchor_container
+        if anchor_container is not None
+        else (_zone_ipr_controls if _standalone else st.container())
+    )
     with _anchor_box:
         # Provisional-test entry sits at the top of the group — "just below" it
         # comes the anchor selector. Always available (a well with no Databricks
@@ -949,7 +1192,11 @@ def render_tab(
     # the TOP of the page — the pad review places it right under the "Save
     # review — WELL" title so the engineer sees the difference first. With no
     # container (the Single-Well Solver) it renders inline here, as before.
-    _hero = hero_container if hero_container is not None else st.container()
+    _hero = (
+        hero_container
+        if hero_container is not None
+        else (_zone_compare if _standalone else st.container())
+    )
 
     with _hero:
         _render_pump_identity_banner(
@@ -1155,160 +1402,219 @@ def render_tab(
         # delta in grey rather than red/green.
         _dcolor = "off" if pump_differs else "normal"
 
-        with _hero:
-            h1, h2, h3, h4 = st.columns(4)
-            with h1:
-                d = _delta(qoil_std, actuals["oil"], "vs actual")
-                st.metric(
-                    _label("Oil Rate", actuals["oil"]),
-                    f"{qoil_std:,.0f} BOPD",
-                    delta=d,
-                    delta_color="off" if d is None else _dcolor,
-                )
-            with h2:
-                # Formation Water has no actuals counterpart (we don't track it
-                # in actuals dict), so it's always modeled — label accordingly.
-                st.metric("Formation Water (modeled)", f"{fwat_bwpd:,.0f} BWPD")
-            with h3:
-                d = _delta(qnz_bwpd, actuals["pf"], "vs actual")
-                st.metric(
-                    _label("Power Fluid", actuals["pf"]),
-                    f"{qnz_bwpd:,.0f} BWPD",
-                    delta=d,
-                    delta_color="off" if d is None else _dcolor,
-                )
-            with h4:
-                d = _delta(psu, actuals["bhp"], "vs actual")
-                st.metric(
-                    _label("Suction Pressure", actuals["bhp"]),
-                    f"{psu:,.0f} psig",
-                    delta=d,
-                    delta_color="off" if d is None else _dcolor,
-                )
+        # The comparison test's date is needed by BOTH layouts (the embedded hero
+        # footers it; standalone puts it in the verdict line), so resolve first.
+        _cmp_date = None
+        if selected_test_row is not None:
+            _wt = selected_test_row.get("WtDate")
+            if pd.notna(_wt):
+                try:
+                    _cmp_date = pd.Timestamp(_wt).strftime("%Y-%m-%d")
+                except (TypeError, ValueError):
+                    _cmp_date = None
 
-            # Footer the hero with the exact test the deltas are measured against
-            # (date), so the difference is always attributable to a specific test
-            # — and restate the pump-match status crisply next to the numbers
-            # (the banner above carries the full explanation).
-            _cmp_date = None
-            if selected_test_row is not None:
-                _wt = selected_test_row.get("WtDate")
-                if pd.notna(_wt):
-                    try:
-                        _cmp_date = pd.Timestamp(_wt).strftime("%Y-%m-%d")
-                    except (TypeError, ValueError):
-                        _cmp_date = None
-            if has_any_actual:
-                _cmp = (
-                    f"the **{_cmp_date}** well test"
-                    if _cmp_date
-                    else "the most recent well test"
+        if _standalone:
+            # Verdict, then the sidebar-conditions comparison as one table.
+            # Four st.metric cards cost ~200px of height for four numbers; a
+            # table carries modeled / actual / delta / unit in less space and
+            # lines the quantities up so they can be scanned as a set.
+            with _zone_verdict:
+                _render_verdict_bar(
+                    params,
+                    modeled_oil=qoil_std,
+                    actuals=actuals,
+                    pump_differs=pump_differs,
+                    effective_pump=(effective_nozzle, effective_throat),
+                    test_pump=test_pump,
+                    cmp_date=_cmp_date,
                 )
-                if pump_differs:
-                    st.caption(
-                        f"Δ vs {_cmp} — **paused (not a pump match)**; see the note above."
-                    )
-                else:
-                    st.caption(f"Δ vs {_cmp}.")
-
-        # When the modeled (sidebar) pump differs from the test's pump, the
-        # vs-actual checks below (PF-rate match, BHP calibration) would compare
-        # different pumps — pause them and nudge the user back to a like-for-like
-        # setup. (The banner above already explains; this is the actionable hint
-        # under the metrics.)
-        if pump_differs:
-            tn, tt = test_pump
-            st.caption(
-                f"What-if mode — modeling **{effective_nozzle}{effective_throat}**, "
-                f"not the test's pump (**{tn}{tt}**). PF-match and BHP "
-                f"calibration are paused; set the sidebar pump to {tn}{tt} to "
-                "compare against and calibrate to this test."
-            )
+            with _hero:
+                _render_comparison_block(
+                    modeled_oil=qoil_std,
+                    modeled_fwat=fwat_bwpd,
+                    modeled_pf=qnz_bwpd,
+                    modeled_psu=psu,
+                    actuals=actuals,
+                    pump_differs=pump_differs,
+                )
+                st.caption(
+                    "Sidebar pump at sidebar conditions"
+                    + (f" · actuals from the {_cmp_date} test." if _cmp_date else ".")
+                )
         else:
-            # PF check. With a MEASURED test-day PF pressure (vw_pressure_daily
-            # join) a rate mismatch is a wear/identity diagnostic and never
-            # gates calibration; only tests with no daily reading keep the old
-            # "fix pressure first" gate. Anchor on the SELECTED comparison test
-            # (not most-recent) so the displayed date matches the lift rate the
-            # PF check / quickfix compares against.
-            cal_inputs = build_calibration_inputs(
-                params, wellbore, well_profile, selected_test_row=selected_test_row
-            )
-            test_date_str = cal_inputs["test_date_str"] if cal_inputs else None
-            pf_warning_shown, pf_blocked = render_pf_mismatch_warning(
-                qnz_bwpd,
-                actuals["pf"],
-                params.ppf_surf,
-                test_date_str=test_date_str,
-                well_name=params.selected_well,
-                measured_pf=cal_inputs.get("test_pf_press") if cal_inputs else None,
-            )
-            # Render the quickfix whenever any warning fires (red OR yellow info)
-            # so the user always has a one-click path to fine-tune. Calibration
-            # gating (cal button disabled) is governed by `pf_blocked` only.
-            if pf_warning_shown:
-                render_pf_quickfix_widget(
+            with _hero:
+                h1, h2, h3, h4 = st.columns(4)
+                with h1:
+                    d = _delta(qoil_std, actuals["oil"], "vs actual")
+                    st.metric(
+                        _label("Oil Rate", actuals["oil"]),
+                        f"{qoil_std:,.0f} BOPD",
+                        delta=d,
+                        delta_color="off" if d is None else _dcolor,
+                    )
+                with h2:
+                    # Formation Water has no actuals counterpart (we don't track
+                    # it in actuals dict), so it's always modeled — label so.
+                    st.metric("Formation Water (modeled)", f"{fwat_bwpd:,.0f} BWPD")
+                with h3:
+                    d = _delta(qnz_bwpd, actuals["pf"], "vs actual")
+                    st.metric(
+                        _label("Power Fluid", actuals["pf"]),
+                        f"{qnz_bwpd:,.0f} BWPD",
+                        delta=d,
+                        delta_color="off" if d is None else _dcolor,
+                    )
+                with h4:
+                    d = _delta(psu, actuals["bhp"], "vs actual")
+                    st.metric(
+                        _label("Suction Pressure", actuals["bhp"]),
+                        f"{psu:,.0f} psig",
+                        delta=d,
+                        delta_color="off" if d is None else _dcolor,
+                    )
+
+                # Footer the hero with the exact test the deltas are measured
+                # against (date), so the difference is always attributable to a
+                # specific test — and restate the pump-match status crisply next
+                # to the numbers (the banner above carries the full explanation).
+                if has_any_actual:
+                    _cmp = (
+                        f"the **{_cmp_date}** well test"
+                        if _cmp_date
+                        else "the most recent well test"
+                    )
+                    if pump_differs:
+                        st.caption(
+                            f"Δ vs {_cmp} — **paused (not a pump match)**; "
+                            "see the note above."
+                        )
+                    else:
+                        st.caption(f"Δ vs {_cmp}.")
+
+        # Everything that CHANGES this well's match lives in one block.
+        # Standalone lands it in the control panel directly under the
+        # comparison; embedded, the container renders inline right here.
+        _adjust_box = _zone_adjust if _standalone else st.container()
+        with _adjust_box:
+            # When the modeled (sidebar) pump differs from the test's pump, the
+            # vs-actual checks below (PF-rate match, BHP calibration) would
+            # compare different pumps — pause them and nudge the user back to a
+            # like-for-like setup. (The banner above already explains; this is
+            # the actionable hint under the metrics.)
+            if pump_differs:
+                tn, tt = test_pump
+                st.caption(
+                    f"What-if mode — modeling "
+                    f"**{effective_nozzle}{effective_throat}**, not the test's "
+                    f"pump (**{tn}{tt}**). PF-match and BHP calibration are "
+                    f"paused; set the sidebar pump to {tn}{tt} to compare "
+                    "against and calibrate to this test."
+                )
+            else:
+                # PF check. With a MEASURED test-day PF pressure
+                # (vw_pressure_daily join) a rate mismatch is a wear/identity
+                # diagnostic and never gates calibration; only tests with no
+                # daily reading keep the old "fix pressure first" gate. Anchor
+                # on the SELECTED comparison test (not most-recent) so the
+                # displayed date matches the lift rate the PF check / quickfix
+                # compares against.
+                cal_inputs = build_calibration_inputs(
+                    params, wellbore, well_profile, selected_test_row=selected_test_row
+                )
+                test_date_str = cal_inputs["test_date_str"] if cal_inputs else None
+                pf_warning_shown, pf_blocked = render_pf_mismatch_warning(
+                    qnz_bwpd,
+                    actuals["pf"],
+                    params.ppf_surf,
+                    test_date_str=test_date_str,
+                    well_name=params.selected_well,
+                    measured_pf=cal_inputs.get("test_pf_press") if cal_inputs else None,
+                )
+                # Render the quickfix whenever any warning fires (red OR yellow
+                # info) so the user always has a one-click path to fine-tune.
+                # Calibration gating (cal button disabled) is governed by
+                # `pf_blocked` only.
+                if pf_warning_shown:
+                    render_pf_quickfix_widget(
+                        params,
+                        wellbore,
+                        well_profile,
+                        target_lift_wat=actuals["pf"],
+                        selected_test_row=selected_test_row,
+                    )
+
+                # BHP red flag (only meaningful once PF is right — otherwise the
+                # BHP delta is mostly explained by the wrong PF, not friction).
+                if not pf_blocked:
+                    # The hero footer (top, by the metrics) already states the
+                    # comparison test + date; just surface the BHP-calibration
+                    # flag here when it applies.
+                    render_bhp_calibration_warning(
+                        psu, actuals["bhp"], on_solver_view=True
+                    )
+
+                # Compact calibration action bar — buttons live here so they're
+                # visible without scrolling. Run is disabled while PF mismatch is
+                # blocking; the Push button stays available so a prior result can
+                # still be applied. Also disabled when the SELECTED test (from
+                # the picker) has no measured BHP — there's nothing to target.
+                # Both ``selected_test_row`` and ``bhp_missing`` reflect the
+                # picker so the gating + calibration target stay in sync.
+                _render_fric_cal_action_bar(
                     params,
                     wellbore,
                     well_profile,
-                    target_lift_wat=actuals["pf"],
                     selected_test_row=selected_test_row,
+                    pf_blocked=pf_blocked,
+                    bhp_missing=(actuals["bhp"] is None),
                 )
 
-            # BHP red flag (only meaningful once PF is right — otherwise the BHP
-            # delta is mostly explained by the wrong PF, not friction).
-            if not pf_blocked:
-                # The hero footer (top, by the metrics) already states the
-                # comparison test + date; just surface the BHP-calibration flag
-                # here when it applies.
-                render_bhp_calibration_warning(psu, actuals["bhp"], on_solver_view=True)
+                # Near-zero-WC washout check (MPE-19 lesson): on a low-rate well
+                # the PF return swamps the separator and the allocation nets
+                # formation water to ~0 — warn + offer a WC-sweep suggestion.
+                _render_wc_washout_section(
+                    params,
+                    actuals=actuals,
+                    modeled_psu=psu,
+                    modeled_oil=qoil_std,
+                    selected_test_row=selected_test_row,
+                    effective_jetpump=effective_jetpump,
+                    wellbore=wellbore,
+                    well_profile=well_profile,
+                    inflow=inflow,
+                )
 
-            # Compact calibration action bar — buttons live here so they're
-            # visible without scrolling. Run is disabled while PF mismatch is
-            # blocking; the Push button stays available so a prior result can
-            # still be applied. Also disabled when the SELECTED test (from the
-            # picker) has no measured BHP — there's nothing to target. Both
-            # ``selected_test_row`` and ``bhp_missing`` reflect the picker so
-            # the gating + calibration target stay in sync.
-            _render_fric_cal_action_bar(
-                params,
-                wellbore,
-                well_profile,
-                selected_test_row=selected_test_row,
-                pf_blocked=pf_blocked,
-                bhp_missing=(actuals["bhp"] is None),
-            )
+        # Throat diagnostics. Two numbers, so in the workbench they ride as a
+        # caption in the control panel rather than occupying a section between
+        # Auto-match and the well tests; today's layout keeps its expander.
+        if _standalone:
+            with _zone_compare:
+                st.caption(
+                    f"Throat entry Mach **{mach_te:.3f}** — "
+                    + (
+                        "critical flow, sonic at throat entry."
+                        if sonic_status
+                        else "stable subsonic flow."
+                    )
+                )
+        else:
+            with st.expander("Throat diagnostics", expanded=False):
+                d1, d2 = st.columns(2)
+                with d1:
+                    st.metric("Throat Entry Mach", f"{mach_te:.3f}")
+                with d2:
+                    st.metric("Sonic Flow", "Yes" if sonic_status else "No")
+                if sonic_status:
+                    st.info(
+                        "Critical flow conditions — sonic velocity at throat entry."
+                    )
+                else:
+                    st.caption("Stable subsonic flow at the throat.")
 
-            # Near-zero-WC washout check (MPE-19 lesson): on a low-rate well
-            # the PF return swamps the separator and the allocation nets
-            # formation water to ~0 — warn + offer a WC-sweep suggestion.
-            _render_wc_washout_section(
-                params,
-                actuals=actuals,
-                modeled_psu=psu,
-                modeled_oil=qoil_std,
-                selected_test_row=selected_test_row,
-                effective_jetpump=effective_jetpump,
-                wellbore=wellbore,
-                well_profile=well_profile,
-                inflow=inflow,
-            )
-
-        # Secondary diagnostics
-        with st.expander("Throat diagnostics", expanded=False):
-            d1, d2 = st.columns(2)
-            with d1:
-                st.metric("Throat Entry Mach", f"{mach_te:.3f}")
-            with d2:
-                st.metric("Sonic Flow", "Yes" if sonic_status else "No")
-            if sonic_status:
-                st.info("Critical flow conditions — sonic velocity at throat entry.")
-            else:
-                st.caption("Stable subsonic flow at the throat.")
-
-        # Rate-scalar applied banner \u2014 full toggle + calibrated predictions
-        # live next to the Calibration Factor metric in Model vs Actual below.
-        _cal = st.session_state.get("sw_calibration_result")
+        # Rate-scalar applied banner. Standalone drops it: the toggle it refers
+        # to lived in the Model-vs-Actual block, which standalone no longer
+        # renders, so the pointer would dangle with nothing to act on.
+        _cal = None if _standalone else st.session_state.get("sw_calibration_result")
         if (
             _cal
             and params.selected_well != "Custom"
@@ -1330,33 +1636,52 @@ def render_tab(
     # it searches for the flowing BHP / IPR that makes the pump reproduce the
     # known test oil rate (a consistent, converging operating point). Self-gates
     # to gaugeless wells with a known test oil rate, so it's a no-op otherwise.
-    _render_oil_rate_backmatch(
-        params, wellbore, well_profile, selected_test_row=selected_test_row
-    )
+    #
+    # Both this and the joint auto-match are things you DO to fix the match, so
+    # standalone groups them with the other actions instead of stranding them
+    # between the metrics and the comparison table.
+    _fix_box = _zone_adjust if _standalone else st.container()
+    with _fix_box:
+        _render_oil_rate_backmatch(
+            params, wellbore, well_profile, selected_test_row=selected_test_row
+        )
 
-    # Joint oil + PF auto-match — the headline calibration: find IPR + JP params
-    # so the model reproduces BOTH the test oil AND power-fluid rate at once.
-    # Self-gates to wells whose selected test has both a known oil and PF rate.
-    _render_joint_automatch(
-        params, wellbore, well_profile, selected_test_row=selected_test_row
-    )
+        # Joint oil + PF auto-match — the headline calibration: find IPR + JP
+        # params so the model reproduces BOTH the test oil AND power-fluid rate
+        # at once. Self-gates to wells whose selected test has both rates known.
+        _render_joint_automatch(
+            params, wellbore, well_profile, selected_test_row=selected_test_row
+        )
 
     # Model vs Actual comparison (requires JP history + non-Custom well). The
     # IPR-anchor fit was already computed + seeded at the top of the tab; pass
     # it down so MvA reuses it for its chart instead of recomputing.
-    _render_model_vs_actual(
-        params,
-        wellbore,
-        well_profile,
-        selected_test_row=selected_test_row,
-        anchor_fit=anchor_fit,
-        # Draw the IPR chart into the same box as the provisional-test entry +
-        # anchor pickers, so the curve sits right next to the control that moves
-        # it. On Single-Well ``_anchor_box`` is the top-of-tab group; on pad
-        # review it's the box under the "Save review" title. The comparison
-        # TABLE + calibration below stay in the Model-vs-Actual section.
-        ipr_chart_container=_anchor_box,
-    )
+    #
+    # This is a DIFFERENT solve from the comparison table in zone B — the test's
+    # pump at the test-day surface pressure, versus the sidebar pump at sidebar
+    # conditions. Both are shown, both stay labelled; the workbench just gives
+    # this one its own full-width zone instead of burying it 3,800px down.
+    _mva_box = _zone_detail if _standalone else st.container()
+    with _mva_box:
+        _render_model_vs_actual(
+            params,
+            wellbore,
+            well_profile,
+            selected_test_row=selected_test_row,
+            anchor_fit=anchor_fit,
+            # Draw the IPR chart into the same box as the provisional-test entry
+            # + anchor pickers, so the curve sits right next to the control that
+            # moves it. On Single-Well ``_anchor_box`` is the top-of-tab group;
+            # on pad review it's the box under the "Save review" title. The
+            # comparison TABLE + calibration stay in the Model-vs-Actual section.
+            # Standalone splits the group: the CURVE goes in the left half of zone D,
+            # its selectors stay in the right-hand control panel. Everywhere
+            # else the chart still lands in ``_anchor_box`` beside the pickers.
+            ipr_chart_container=(_zone_ipr_chart if _standalone else _anchor_box),
+            # Standalone drops the test-day comparison + calibration blocks; the
+            # well-test table still renders.
+            show_comparison=not _standalone,
+        )
 
     # Deferred fill of the pump-history placeholder reserved at the top —
     # everything above has already painted by the time this fetch runs.
@@ -1562,8 +1887,7 @@ def _render_fric_cal_action_bar(
                 f"Last cal — match: :{color}[**{quality.upper()}**] · "
                 f"BHP error {result.bhp_error:+.0f} psi · "
                 f"applied: ken={result.best_ken:.3f}, "
-                f"kth={result.best_kth:.3f}, kdi={result.best_kdi:.3f} · "
-                f"see *Model vs Actual* below for details."
+                f"kth={result.best_kth:.3f}, kdi={result.best_kdi:.3f}."
             )
         else:
             st.caption(
@@ -1576,6 +1900,13 @@ def _render_fric_cal_action_bar(
     from woffl.gui.explainers import render_kcoef_explainer
 
     render_kcoef_explainer()
+
+    # What the last calibration actually did. Only appears once a run exists,
+    # so the panel stays quiet until there's something to inspect — this is the
+    # detail that used to live in the Model-vs-Actual block at the bottom.
+    if has_result:
+        with st.expander("What the calibration did", expanded=False):
+            _render_fric_cal_detail(params, result, bhp_missing=bhp_missing)
 
     if run_clicked:
         with st.spinner("Calibrating (Nelder-Mead)..."):
@@ -1785,6 +2116,35 @@ def _render_joint_automatch(
         "reported honestly (it reflects nozzle/area uncertainty), not hidden by "
         "dropping pressure."
     )
+
+    with st.expander("What is this, and when should I use it?", expanded=False):
+        st.markdown(
+            "**What it does.** Searches IPR productivity, PF surface pressure "
+            "and the friction coefficients (ken / kth / kdi) until the pump "
+            "that is actually in the hole reproduces the well test — its oil "
+            "rate, and its BHP when a gauge exists. The answer is written "
+            "straight into the sidebar (`qwf`, `pwf`, ResP, `ppf_surf`, "
+            "ken/kth/kdi), so Solver, Batch Run and PF Range all move together.\n\n"
+            "**Use it when** you open a well and the modeled oil is well off "
+            "the latest test — this is the one-click way to get a defensible "
+            "starting point, and it is the normal first step when reviewing a "
+            "pad. It is also the right tool for a well with no BHP gauge, "
+            "where there is no measured bottomhole pressure to calibrate "
+            "against.\n\n"
+            "**Use *Run BHP Calibration* instead when** the oil rate already "
+            "matches and only the pressure is off: that fits ken/kth/kdi "
+            "alone against a measured BHP and leaves the IPR untouched.\n\n"
+            "**Read the result honestly.** The matcher holds the *measured* PF "
+            "pressure and reports the leftover PF-rate gap rather than hiding "
+            "it by dropping pressure. A stubborn gap is a finding, not a "
+            "failure — it usually means nozzle wear, a partial plug, or a pump "
+            "that is not the size the tracker claims. Check *Estimate nozzle "
+            "wear* before trusting the numbers.\n\n"
+            "**If it can't match**, it says which physical limit it hit "
+            "(PF-limited, pump-capacity-limited, sonic-choked, …) instead of "
+            "seeding a bad point. Treat that message as the answer."
+        )
+
     float_pf = st.checkbox(
         "Let PF pressure float to also match the PF rate (advanced)",
         value=False,
@@ -1903,6 +2263,55 @@ def _render_joint_automatch(
         st.rerun()
 
 
+def _render_fric_cal_detail(params: SimulationParams, result, *, bhp_missing) -> None:
+    """What the last BHP calibration actually did — fitted coefs, the BHP it
+    reached, and the convergence flags.
+
+    Lives in an expander under the Calibrate button (it only appears once a run
+    exists). Replaces the read-only "Friction-Coef Calibration" block that used
+    to sit at the bottom of Model vs Actual, ~3,000px from the button.
+    """
+    if bhp_missing:
+        st.caption(
+            "The selected test has no measured BHP, so there was nothing to "
+            "target. Pick a test with a BHP, or upload memory-gauge data."
+        )
+        return
+
+    st.caption(
+        "Nelder-Mead swept ken, kth and kdi to drive modeled BHP toward the "
+        f"measured value. knz stays fixed at 0.01; ken started from the "
+        f"sidebar value ({params.ken:.3f}). The fitted coefficients were "
+        "applied to the sidebar automatically, so every view now uses them."
+    )
+
+    # Three metrics fit a half-width column; five clip ("Modeled BHP 121…").
+    # Coefficients get the cards, outcomes get a text line.
+    c1, c2, c3 = st.columns(3)
+    c1.metric("ken", f"{result.best_ken:.3f}")
+    c2.metric("kth", f"{result.best_kth:.3f}")
+    c3.metric("kdi", f"{result.best_kdi:.3f}")
+
+    st.markdown(
+        f"Modeled BHP **{result.best_modeled_bhp:,.0f}** psi "
+        f"({result.bhp_error:+,.0f} vs the **{result.target_bhp:,.0f}** psi "
+        f"target)  ·  modeled oil **{result.best_oil:,.0f}** BOPD"
+    )
+
+    bits = []
+    if result.iterations is not None:
+        bits.append(f"{result.iterations} iterations")
+    starts = getattr(result, "starts_tried", None)
+    if starts:
+        bits.append(f"{starts} seed" + ("s" if starts != 1 else ""))
+    if getattr(result, "bounded", False):
+        bits.append("**bounded** — the optimum sat at the search edge, try varying ken")
+    if getattr(result, "sonic", False):
+        bits.append("**sonic** — BHP is choke-pinned by throat geometry")
+    if bits:
+        st.caption(" · ".join(bits))
+
+
 def _render_fric_calibration_section(
     params: SimulationParams,
     wellbore,
@@ -2016,26 +2425,28 @@ def _render_ipr_rate_calculator(params: SimulationParams, res_pres: float) -> No
         return
 
     st.markdown("##### Rate at a given BHP")
-    c1, c2, c3, c4 = st.columns([1.3, 1, 1, 1])
-    with c1:
-        bhp_in = st.number_input(
-            "Flowing BHP (psi)",
-            min_value=0,
-            value=int(round(pwf_anchor)),
-            step=25,
-            key="sw_ipr_calc_bhp",
-            help=(
-                "Reads liquid/oil/water off the Vogel curve above "
-                "(sidebar-anchored IPR, sidebar WC)."
-            ),
-        )
+    # Four side-by-side st.metric cards need ~180px each to render a 5-digit
+    # value; in a half-width column they clip to "1,665 …". Input on its own
+    # row, rates as one caption line, so this block is width-independent.
+    bhp_in = st.number_input(
+        "Flowing BHP (psi)",
+        min_value=0,
+        value=int(round(pwf_anchor)),
+        step=25,
+        key="sw_ipr_calc_bhp",
+        help=(
+            "Reads liquid/oil/water off the Vogel curve above "
+            "(sidebar-anchored IPR, sidebar WC)."
+        ),
+    )
     qmax_oil = oil_anchor / anchor_frac
     oil = qmax_oil * _vogel_frac(float(bhp_in), pr)
     liquid = oil / (1.0 - wc)
     water = liquid - oil
-    c2.metric("Liquid", f"{liquid:,.0f} BLPD")
-    c3.metric("Oil", f"{oil:,.0f} BOPD")
-    c4.metric("Water", f"{water:,.0f} BWPD")
+    st.markdown(
+        f"**{liquid:,.0f}** BLPD liquid  ·  **{oil:,.0f}** BOPD oil  ·  "
+        f"**{water:,.0f}** BWPD water"
+    )
     if float(bhp_in) >= pr:
         st.caption(
             f"BHP ≥ reservoir pressure ({pr:.0f} psi) — no inflow at this drawdown."
@@ -3261,6 +3672,7 @@ def _render_model_vs_actual(
     selected_test_row=None,
     anchor_fit=(None, None, None),
     ipr_chart_container=None,
+    show_comparison: bool = True,
 ) -> None:
     """Render the Model vs Actual comparison section.
 
@@ -3285,6 +3697,12 @@ def _render_model_vs_actual(
     ``ipr_chart_container``: optional container the IPR-chart block draws
     into. The pad-review page passes the same box as the IPR-anchor pickers
     (picker + curve belong together); ``None`` renders inline here.
+
+    ``show_comparison=False`` keeps the IPR chart and the well-test table but
+    drops the test-day comparison grid, Model Calibration, and the read-only
+    Friction-Coef block. The standalone layout uses this: those blocks sat
+    ~3,000px below the buttons that produce them, and the friction detail now
+    lives in an expander under Run BHP Calibration instead.
     """
     jp_hist = st.session_state.get("jp_history_df")
     if jp_hist is None or params.selected_well == "Custom":
@@ -3531,6 +3949,15 @@ def _render_model_vs_actual(
     if n_tests == 0:
         return
 
+    if not show_comparison:
+        # Everything between the Auto-match button and the well-test table is
+        # dropped: the test-day comparison grid, Model Calibration, and the
+        # read-only friction block. Their content either duplicates the
+        # comparison at the top of the view or belongs next to the button that
+        # produces it (see the "What the calibration did" expander).
+        _render_well_test_table(test_df)
+        return
+
     # 7. Run the comparison model. The IPR + fluid come from the SIDEBAR (which
     # the anchor test seeded above and the engineer may have overridden), so the
     # Model-vs-Actual solver, Batch Run, PF Range, and the top Solver all use
@@ -3773,6 +4200,13 @@ def _render_model_vs_actual(
         st.warning("Model could not solve with the current JP and IPR-derived inflow.")
 
     # 7. Show well test data table
+    _render_well_test_table(test_df)
+
+
+def _render_well_test_table(test_df) -> None:
+    """The well's test history. Extracted so the layout that drops the
+    comparison + calibration blocks can still reach it (see
+    ``_render_model_vs_actual(show_comparison=False)``)."""
     import pandas as pd
 
     display_cols = {

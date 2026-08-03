@@ -729,7 +729,7 @@ def _render_configure() -> None:
 
 def _fleet_signature(pad_configs, online, current, nozzles, throats, p0) -> tuple:
     """Cache key for the response surfaces — any input that changes the WOFFL
-    physics must appear here (the CLAUDE.md sweep-signature rule)."""
+    physics must appear here (the AGENTS.md sweep-signature rule)."""
     store_sigs = tuple(
         wrs.store_signature(
             {wc.well_name: store_for(p).get(wc.well_name, {}) for wc in wells}

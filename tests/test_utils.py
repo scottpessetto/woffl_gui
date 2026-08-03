@@ -1029,7 +1029,7 @@ class TestPressureSweepRange:
 class TestCreateWellProfileOutOfRangeWarning:
     """docs/code_review_2026-07-01.md P1-20: the out-of-range jpump_tvd
     fallback used to be a bare ``print()`` — invisible on Databricks Apps.
-    It must now surface via ``st.warning`` (CLAUDE.md: errors surface via
+    It must now surface via ``st.warning`` (AGENTS.md: errors surface via
     st.warning/error, never print()), with a logger fallback for callers
     outside a running Streamlit script (create_well_profile is only ever
     invoked from the Streamlit script thread in this app -- the optimizer's

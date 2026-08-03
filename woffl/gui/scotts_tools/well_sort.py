@@ -16,7 +16,7 @@ import streamlit as st
 # multiselects are read back by three OTHER call sites (the Marginal WC tab,
 # the per-pad section, and Triage) via
 # ``st.session_state.get("well_sort_pops_pads", ...)``. Per this repo's
-# CLAUDE.md ("Widget state is garbage-collected when its view isn't
+# AGENTS.md ("Widget state is garbage-collected when its view isn't
 # rendered"), a Scott's Tools sub-tab detour can drop these widget keys
 # entirely, which used to silently reset every reader back to the hard-coded
 # default. These non-widget mirror keys hold the last known-good value; the

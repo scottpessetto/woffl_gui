@@ -746,7 +746,7 @@ def _on_pf_quickfix_change() -> None:
 
     Sets the logical sidebar key (``ppf_surf``) and POPs the sidebar widget
     key (``ppf_surf_input``). The sidebar's _number_input helper re-initializes
-    the widget key from the logical key on the next render — see CLAUDE.md
+    the widget key from the logical key on the next render — see AGENTS.md
     gotcha about writing to widget keys after a widget has already rendered
     in the same run.
 
@@ -1029,7 +1029,7 @@ def render_pf_quickfix_widget(
             # Sidebar + quickfix widgets already rendered this run, so writing
             # to their session_state keys would raise. Set the logical key and
             # POP the widget keys; both widgets re-initialize from the logical
-            # key on the next render (see CLAUDE.md gotcha).
+            # key on the next render (see AGENTS.md gotcha).
             st.session_state["ppf_surf"] = solved
             st.session_state.pop("ppf_surf_input", None)
             st.session_state.pop(_PF_QUICKFIX_KEY, None)
