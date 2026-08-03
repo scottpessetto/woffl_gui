@@ -67,7 +67,9 @@ class TestSaveIprValues:
     def pushes(self, monkeypatch):
         captured = []
         monkeypatch.setattr(
-            ia, "push_prop", lambda w, p, v, u: captured.append((w, p, v, u))
+            ia,
+            "push_prop",
+            lambda w, p, v, u, entry_datetime=None: captured.append((w, p, v, u)),
         )
         monkeypatch.setattr(ia, "resolve_entry_user", lambda: "scott")
         # save_ipr_values consults the stored latest for the friction push
@@ -107,7 +109,8 @@ class TestSaveIprValues:
         assert not any(p == "surf_press" for (_, p, _, _) in pushes)
 
     def test_failure_returns_the_prefixed_message(self, monkeypatch):
-        def boom(w, p, v, u):
+        def boom(w, p, v, u, entry_datetime=None):
+
             raise RuntimeError("gate closed")
 
         monkeypatch.setattr(ia, "push_prop", boom)
@@ -126,6 +129,104 @@ class TestSaveIprValues:
             form_wc=0.5, form_gor=250.0,
         )
         assert "MPB-28" not in ia._saved_ipr_cache
+
+
+# ── the save batch: one stamp for every prop, and the comment bound to it ───
+
+
+class TestSaveBatchStampAndComment:
+    """prop_hist has no batch id, so the ONLY thing tying one save's rows
+    together — and the only key an engineer comment can hang off — is a shared
+    ``entry_datetime``. These pin that, and the ordering that protects it."""
+
+    @pytest.fixture
+    def rig(self, monkeypatch):
+        pushes, comments = [], []
+
+        def _push(w, p, v, u, entry_datetime=None):
+            pushes.append({"prop": p, "stamp": entry_datetime})
+
+        def _comment(w, stamp, user, text, context="ipr_save"):
+            comments.append(
+                {"well": w, "stamp": stamp, "user": user, "text": text,
+                 "context": context}
+            )
+
+        monkeypatch.setattr(ia, "push_prop", _push)
+        monkeypatch.setattr(ia, "push_eng_comment", _comment)
+        monkeypatch.setattr(ia, "resolve_entry_user", lambda: "scott")
+        monkeypatch.setattr(ia, "load_saved_ipr", lambda w: None)
+        return pushes, comments
+
+    def _save(self, **kw):
+        return ia.save_ipr_values(
+            "MPB-28", qwf_oil=300.0, pwf=900.0, res_pres=1800.0,
+            form_wc=0.5, form_gor=250.0, surf_pres=210.0, **kw
+        )
+
+    def test_every_prop_in_one_save_shares_one_stamp(self, rig):
+        pushes, _ = rig
+        self._save()
+        stamps = {p["stamp"] for p in pushes}
+        assert len(pushes) == 6
+        # One distinct, non-None value — not six now() calls microseconds apart.
+        assert len(stamps) == 1 and None not in stamps
+
+    def test_comment_is_bound_to_that_same_stamp(self, rig):
+        pushes, comments = rig
+        self._save(comment="anchored on the 7/25 test, gauge looked clean")
+        assert len(comments) == 1
+        assert comments[0]["stamp"] == pushes[0]["stamp"]
+        assert comments[0]["user"] == "scott"
+        assert comments[0]["text"].startswith("anchored on the 7/25 test")
+
+    def test_two_saves_get_two_distinct_stamps(self, rig):
+        """Decision: the grain is the TIMESTAMP, not the date — so a well
+        edited twice in one day keeps both comments, each on its own rows."""
+        pushes, comments = rig
+        self._save(comment="first pass")
+        self._save(comment="revised after the build-up")
+        assert len({c["stamp"] for c in comments}) == 2
+        assert len({p["stamp"] for p in pushes}) == 2
+
+    def test_no_comment_means_no_comment_row(self, rig):
+        _, comments = rig
+        self._save()
+        self._save(comment="   ")
+        assert comments == []
+
+    def test_comment_skipped_when_nothing_was_pushed(self, monkeypatch):
+        """Decision A: a note explaining changes that never landed is worse
+        than no note, so an empty batch drops the comment and says so."""
+        comments = []
+        monkeypatch.setattr(ia, "push_prop", lambda *a, **k: None)
+        monkeypatch.setattr(
+            ia, "push_eng_comment", lambda *a, **k: comments.append(a)
+        )
+        monkeypatch.setattr(ia, "resolve_entry_user", lambda: "scott")
+        monkeypatch.setattr(ia, "load_saved_ipr", lambda w: None)
+        # Every value None/NaN => the payload loop pushes nothing.
+        n, msg = ia.save_ipr_values(
+            "MPB-28", qwf_oil=float("nan"), pwf=float("nan"),
+            res_pres=float("nan"), form_wc=float("nan"), form_gor=float("nan"),
+            comment="why did I click this",
+        )
+        assert n == 0 and comments == []
+        assert "comment skipped" in msg
+
+    def test_comment_failure_never_undoes_the_save(self, rig, monkeypatch):
+        """Properties commit first; the comment is best-effort. A comment
+        error must degrade to 'saved without a note', not lose the save."""
+        pushes, _ = rig
+        monkeypatch.setattr(
+            ia, "push_eng_comment",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("gate closed")),
+        )
+        n, msg = self._save(comment="this note will not land")
+        assert n == 6 and len(pushes) == 6
+        assert msg.startswith("💾")
+        assert "comment not saved" in msg
+
 
 
 # ── load: latest values + the pin timestamp, one query, memoized ────────────
@@ -257,7 +358,9 @@ class TestFrictionSave:
     def pushes(self, monkeypatch):
         captured = []
         monkeypatch.setattr(
-            ia, "push_prop", lambda w, p, v, u: captured.append((w, p, v, u))
+            ia,
+            "push_prop",
+            lambda w, p, v, u, entry_datetime=None: captured.append((w, p, v, u)),
         )
         monkeypatch.setattr(ia, "resolve_entry_user", lambda: "scott")
         return captured
@@ -440,7 +543,9 @@ class TestSetWcLock:
     def pushes(self, monkeypatch):
         captured = []
         monkeypatch.setattr(
-            ia, "push_prop", lambda w, p, v, u: captured.append((w, p, v, u))
+            ia,
+            "push_prop",
+            lambda w, p, v, u, entry_datetime=None: captured.append((w, p, v, u)),
         )
         monkeypatch.setattr(ia, "resolve_entry_user", lambda: "scott")
         return captured
@@ -465,8 +570,11 @@ class TestSetWcLock:
 
     def test_failure_reports_not_raises(self, monkeypatch):
         monkeypatch.setattr(
-            ia, "push_prop",
-            lambda w, p, v, u: (_ for _ in ()).throw(RuntimeError("gate")),
+            ia,
+            "push_prop",
+            lambda w, p, v, u, entry_datetime=None: (_ for _ in ()).throw(
+                RuntimeError("gate")
+            ),
         )
         monkeypatch.setattr(ia, "resolve_entry_user", lambda: "scott")
         ok, msg = ia.set_wc_lock("MPB-28", True, form_wc=0.45)
@@ -480,7 +588,9 @@ class TestPropLockRegistry:
     def pushes(self, monkeypatch):
         captured = []
         monkeypatch.setattr(
-            ia, "push_prop", lambda w, p, v, u: captured.append((w, p, v, u))
+            ia,
+            "push_prop",
+            lambda w, p, v, u, entry_datetime=None: captured.append((w, p, v, u)),
         )
         monkeypatch.setattr(ia, "resolve_entry_user", lambda: "scott")
         return captured

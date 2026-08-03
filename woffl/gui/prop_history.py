@@ -36,9 +36,20 @@ def fetch_prop_history(well_name: str) -> pd.DataFrame:
                coalesce(x.category, 'other') AS category,
                ph.prop_value,
                ph.entry_datetime,
-               ph.entry_user
+               ph.entry_user,
+               c.comment_text AS comment
         FROM mpu.wells.prop_hist ph
         LEFT JOIN mpu.wells.prop_xref x ON ph.prop_id = x.prop_id
+        -- The engineer's note for the SAVE this row belongs to. prop_hist has
+        -- no batch id, so the shared entry_datetime is the join key (every
+        -- prop of one save is written with one stamp — see
+        -- prop_hist_client.push_prop). Grouped so a retried comment write can
+        -- never fan a prop row out into duplicates.
+        LEFT JOIN (
+            SELECT enthid, entry_datetime, MAX(comment_text) AS comment_text
+            FROM mpu.wells.woffl_eng_comment
+            GROUP BY enthid, entry_datetime
+        ) c ON ph.enthid = c.enthid AND ph.entry_datetime = c.entry_datetime
         WHERE ph.enthid = {int(enthid)}
         ORDER BY ph.entry_datetime DESC, ph.prop_id
         """
@@ -61,6 +72,10 @@ def shape_history(df: Optional[pd.DataFrame]) -> Optional[dict]:
         return None
 
     d = df.copy()
+    # Optional: frames from before the comment join (and unit-test fixtures)
+    # won't carry it. Absent means "no note", not an error.
+    if "comment" not in d.columns:
+        d["comment"] = None
     d["entry_datetime"] = pd.to_datetime(d["entry_datetime"], utc=True)
     d = d.sort_values(
         ["entry_datetime", "prop_id"], ascending=[False, True]

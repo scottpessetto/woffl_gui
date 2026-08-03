@@ -19,11 +19,16 @@ The returned dict is shaped like a row of
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
 
-from woffl.assembly.prop_hist_client import push_prop, resolve_entry_user
+from woffl.assembly.prop_hist_client import (
+    push_eng_comment,
+    push_prop,
+    resolve_entry_user,
+)
 from woffl.flow.inflow import InFlow
 
 
@@ -618,6 +623,7 @@ def save_ipr_values(
     ken: float | None = None,
     kth: float | None = None,
     kdi: float | None = None,
+    comment: str | None = None,
 ) -> tuple[int, str]:
     """Push the sidebar's CURRENT IPR + fluid values as the well's saved curve.
 
@@ -627,6 +633,12 @@ def save_ipr_values(
     ``resvr_press`` is pushed too so the whole curve travels together — note
     that updates the well's CANONICAL reservoir pressure via the pivots, which
     is the point: the reviewed value IS the characterization.
+
+    Every property of one save shares a single ``entry_datetime``. That stamp
+    is the save's only batch identity, and ``comment`` — the engineer's note on
+    WHY these values were chosen — is attached to it in
+    ``mpu.wells.woffl_eng_comment``. Two saves on the same day stay separate,
+    because the grain is the timestamp rather than the date.
 
     Returns ``(n_pushed, message)``; failure message starts with
     :data:`VALUES_SAVE_FAILURE_PREFIX`. Clears the load memo on success.
@@ -662,13 +674,33 @@ def save_ipr_values(
             payload[pid] = val
 
         entry_user = resolve_entry_user()
+        # ONE stamp for the whole save. Without it each push_prop would call
+        # now() itself and the rows would land microseconds apart, leaving the
+        # save with no batch identity for a comment to attach to.
+        batch_stamp = datetime.now(timezone.utc)
         n = 0
         for pid, val in payload.items():
             if val is None or (isinstance(val, float) and np.isnan(val)):
                 continue
-            push_prop(well_name, pid, val, entry_user)
+            push_prop(well_name, pid, val, entry_user, entry_datetime=batch_stamp)
             n += 1
         clear_saved_ipr_cache(well_name)
+
+        # Comment LAST and best-effort: the properties are already committed,
+        # so a comment failure must degrade to "saved without a note", never
+        # undo the save. Skipped when nothing was written — a note explaining
+        # changes that didn't happen would be worse than none (decision A).
+        note = (comment or "").strip()
+        comment_note = ""
+        if note and n:
+            try:
+                push_eng_comment(well_name, batch_stamp, entry_user, note)
+                comment_note = " · comment saved"
+            except Exception as e:  # noqa: BLE001 — never break a good save
+                comment_note = f" · ⚠️ comment not saved ({e})"
+        elif note:
+            comment_note = " · comment skipped (nothing changed to attach it to)"
+
         fric_note = (
             " + BHP-calibrated friction"
             if any(pid in payload for pid in FRICTION_PROPS)
@@ -678,7 +710,7 @@ def save_ipr_values(
             f"💾 Saved IPR values for {well_name} "
             f"(qwf {qwf_liq:,.0f} BLPD · pwf {pwf:,.0f} · ResP {res_pres:,.0f} "
             f"· WC {wc:.2f} · GOR {form_gor:,.0f}{fric_note}) — restores on "
-            "every open."
+            f"every open.{comment_note}"
         )
     except Exception as e:
         return 0, f"{VALUES_SAVE_FAILURE_PREFIX} {e}"

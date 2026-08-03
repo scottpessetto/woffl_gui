@@ -339,18 +339,27 @@ def run_well_database_page():
     st.dataframe(
         shaped["latest"][
             ["category", "prop_name", "display_value", "units",
-             "entry_datetime", "entry_user"]
+             "entry_datetime", "entry_user", "comment"]
         ].rename(
             columns={
                 "category": "Category", "prop_name": "Property",
                 "display_value": "Value", "units": "Units",
                 "entry_datetime": "Saved", "entry_user": "By",
+                "comment": "Why",
             }
         ),
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Saved": st.column_config.DatetimeColumn(format="YYYY-MM-DD HH:mm")
+            "Saved": st.column_config.DatetimeColumn(format="YYYY-MM-DD HH:mm"),
+            # The engineer's note for the save this value came from — the
+            # whole point of woffl_eng_comment. Wide, because a truncated
+            # reason is no reason.
+            "Why": st.column_config.TextColumn(
+                "Why",
+                width="large",
+                help="Note the engineer left when they saved this value.",
+            ),
         },
     )
 
@@ -358,12 +367,13 @@ def run_well_database_page():
         st.dataframe(
             shaped["history"][
                 ["entry_datetime", "prop_name", "display_value", "units",
-                 "entry_user", "is_current"]
+                 "entry_user", "is_current", "comment"]
             ].rename(
                 columns={
                     "entry_datetime": "When", "prop_name": "Property",
                     "display_value": "Value", "units": "Units",
                     "entry_user": "By", "is_current": "Current",
+                    "comment": "Why",
                 }
             ),
             use_container_width=True,
@@ -373,6 +383,7 @@ def run_well_database_page():
                 "Current": st.column_config.CheckboxColumn(
                     "Current", help="The live row — superseded rows unchecked"
                 ),
+                "Why": st.column_config.TextColumn("Why", width="large"),
             },
         )
         st.caption(

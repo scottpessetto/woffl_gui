@@ -306,25 +306,19 @@ def _render_modeling_status(pad: str) -> None:
                 )
 
 
-def _render_save_panel(params, real_wells: list[str], pad: str) -> None:
+def _render_save_panel(params, real_wells: list[str], pad: str):
+    """Build the per-well save controls for the review loop.
+
+    Returns a zero-arg callable, handed to ``jetpump_solver.render_tab`` as its
+    ``panel_footer`` so the controls render at the BOTTOM of the solver's
+    control panel — the review loop ends where the engineer has just been
+    reading, instead of stranding Save mid-page. Nothing is drawn here; the
+    well name and match verdict come from the solver's own verdict line, so
+    this no longer needs a "Save review — WELL" heading of its own.
+    """
     well = params.selected_well
     store = store_for(pad)
     already = well in store
-
-    st.markdown(f"#### Save review — **{well}**")
-
-    # The Solver (rendered below) fills these (deferred) so the engineer sees the
-    # well's history AND the model-vs-actual difference right under the title,
-    # without scrolling into the Solver. Order matters: jp_box (the production /
-    # BHP / JPCO chart + pump-in-well timeline) sits ABOVE anchor_box (the IPR
-    # anchor + comparison-test pickers — the *driving test* choice, hoisted here
-    # because under the Solver heading nobody found it), which sits ABOVE
-    # hero_box (pump banner + vs-actual metrics for that choice). Returned to
-    # render_review_stage, which hands them to jetpump_solver.render_tab as
-    # jp_strip_container / anchor_container / hero_container.
-    jp_box = st.container()
-    anchor_box = st.container()
-    hero_box = st.container()
 
     inferred_ipr = _infer_ipr_source(well)
 
@@ -337,11 +331,48 @@ def _render_save_panel(params, real_wells: list[str], pad: str) -> None:
             f"Gauge-backed IPR — {gauge.start_date:%Y-%m-%d} to "
             f"{gauge.end_date:%Y-%m-%d}, {int(gauge.sample_count):,} samples"
         )
-        st.caption(f"📈 {gauge_note}")
     default_gauged = _well_has_gauge(well) or gauge is not None
 
-    c1, c2, c3 = st.columns([1.1, 1.1, 1.4])
-    with c1:
+    def _panel() -> None:
+        st.divider()
+        st.markdown(f"##### Save review — **{well}**")
+        if gauge_note:
+            st.caption(f"📈 {gauge_note}")
+        _render_save_controls(
+            params,
+            real_wells,
+            pad,
+            well=well,
+            store=store,
+            already=already,
+            inferred_ipr=inferred_ipr,
+            default_gauged=default_gauged,
+            gauge_note=gauge_note,
+        )
+
+    return _panel
+
+
+def _render_save_controls(
+    params,
+    real_wells: list[str],
+    pad: str,
+    *,
+    well: str,
+    store: dict,
+    already: bool,
+    inferred_ipr: str,
+    default_gauged: bool,
+    gauge_note: str,
+) -> None:
+    """The basis selects, offline flag and Save/Offline buttons.
+
+    Stacked, not in columns: this renders inside the solver's half-width
+    control panel, where three side-by-side selectboxes would clip.
+    """
+
+    b1, b2 = st.columns(2)
+    with b1:
         ipr_source = st.selectbox(
             "IPR basis",
             options=list(wrs.IPR_SOURCES),
@@ -349,7 +380,7 @@ def _render_save_panel(params, real_wells: list[str], pad: str) -> None:
             help="How the IPR anchor was established (auto-detected; override if needed).",
             key=f"sp_ipr_src_{well}",
         )
-    with c2:
+    with b2:
         bhp_source = st.selectbox(
             "Match basis",
             options=list(wrs.BHP_SOURCES),
@@ -357,12 +388,11 @@ def _render_save_panel(params, real_wells: list[str], pad: str) -> None:
             help="'gauged' = a measured BHP backed the match; 'assumed' = no gauge, pwf is an estimate.",
             key=f"sp_bhp_src_{well}",
         )
-    with c3:
-        notes = st.text_input(
-            "Note (optional)",
-            key=f"sp_note_{well}",
-            value=store.get(well, {}).get("notes", ""),
-        )
+    notes = st.text_input(
+        "Note (optional)",
+        key=f"sp_note_{well}",
+        value=store.get(well, {}).get("notes", ""),
+    )
 
     offline = st.checkbox(
         "🔌 Offline for this modeling (pulled / down — exclude from optimization)",
@@ -453,8 +483,6 @@ def _render_save_panel(params, real_wells: list[str], pad: str) -> None:
         store.pop(well, None)
         st.session_state.pop(_LAST_HYDRATED_KEY, None)
         st.rerun()
-
-    return jp_box, anchor_box, hero_box
 
 
 def _render_hypothetical_form(pad: str) -> None:
@@ -1440,15 +1468,19 @@ def render_review_stage(pad: str) -> None:
 
     _render_progress(pad, real_wells)
     st.divider()
-    jp_box, anchor_box, hero_box = _render_save_panel(params, real_wells, pad)
+    # Save controls no longer render here — they're handed to the solver as its
+    # control-panel footer, so the review loop ends inside the panel the
+    # engineer is already reading rather than above the whole Solver.
+    save_panel = _render_save_panel(params, real_wells, pad)
     _render_modeling_status(pad)
     _render_hypothetical_form(pad)
     _render_csv_io(pad)
     _render_ipr_pdf_button(pad)
     st.divider()
 
-    # The reused Solver — same objects/renderer the Single-Well page uses.
-    st.markdown("### Solver")
+    # The reused Solver — same objects/renderer the Single-Well page uses, and
+    # since the workbench layout leads with the well name + match verdict, the
+    # old "### Solver" heading would just be noise above it.
     from woffl.gui.single_well_page import _build_simulation_objects
     from woffl.gui.tabs import jetpump_solver
 
@@ -1476,9 +1508,7 @@ def render_review_stage(pad: str) -> None:
             wp,
             inflow,
             res_mix,
-            hero_container=hero_box,
-            jp_strip_container=jp_box,
-            anchor_container=anchor_box,
+            panel_footer=save_panel,
         )
     except Exception as e:  # noqa: BLE001 — intentional last-resort guard
         if type(e).__name__ in ("RerunException", "StopException"):

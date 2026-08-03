@@ -173,6 +173,53 @@ Schema sketch:
 
 ---
 
+### (g) Free-text engineer comment saved with an IPR — needs a STRING value column
+
+**Ask:** Two changes, both on `mpu.wells`:
+
+1. Add a nullable string column to `prop_hist`:
+   ```sql
+   ALTER TABLE mpu.wells.prop_hist ADD COLUMN prop_value_str STRING;
+   ```
+2. Add one `prop_xref` row:
+   | prop_id | prop_name | units | category | value_type |
+   |---|---|---|---|---|
+   | `eng_comment` | Engineer Comment on Saved IPR | unitless | reservoir | `string` |
+
+**Why:** Scott's request — when an engineer clicks *Save IPR as well default*, they should be
+able to leave a short note saying **why** they chose that anchor / those values, so the next
+person opening the well sees the reasoning rather than just the numbers. Same append-only,
+latest-wins semantics as every other prop; no new table, no new write path.
+
+**Why it's blocked today (verified live 2026-08-03):** `prop_hist` has exactly one value
+column and it is numeric —
+
+```
+enthid bigint | prop_id string | prop_value double | entry_datetime timestamp | entry_user string
+```
+
+There is nowhere to put text. `prop_value_str` does not exist (ask (c) retired it as
+unnecessary when every persisted field was numeric — this is the case that brings it back).
+`SHOW TABLES IN mpu.wells` confirms no other table can hold the comment either: `woffl_active`
+is `(enthid, well_bore, is_active, entry_date, entry_user)` and `down_xref` is a code lookup.
+
+**Why we can't self-serve it like ask (b):** the app SP
+(`2013fc45-c30e-40ac-bef0-df0a758faa3c`) holds `MODIFY` on `TABLE mpu.wells.prop_hist`, which
+is data-level (INSERT) only. `ALTER TABLE … ADD COLUMN` needs table ownership; `SHOW GRANTS`
+shows `Kaelin.Ellis@hilcorp.com` with `ALL PRIVILEGES` on catalog `mpu`.
+
+**Compatibility:** additive and non-breaking. Existing readers select named columns
+(`prop_value`), and `vw_prop_mech` / `vw_prop_resvr` are numeric pivots that would ignore a
+string column. Rows for numeric props keep `prop_value_str` NULL; the `eng_comment` row is the
+mirror image — `prop_value` NULL, text in `prop_value_str`.
+
+**GUI side, once the column lands:** `prop_hist_client.push_prop` gains a string branch (the
+INSERT already uses named binds, so it's one extra parameter), the Solver's *Save IPR as well
+default* control gains a note field, and the Well Database history view renders the comment
+beside the values it was saved with. Roughly an afternoon — the schema is the whole blocker.
+
+---
+
 ## DART Feedback (suggestions from the mppush.py reference)
 
 DART's `push_prop` patterns are solid: parameterized SQL, prop_xref whitelist validation, and enthid resolution guards are all sound and the GUI mirrors them. Three notes:
@@ -187,5 +234,5 @@ DART's `push_prop` patterns are solid: parameterized SQL, prop_xref whitelist va
 
 ## Closing Note
 
-**None of these asks block Phase 1.** The GUI is shipping now with Phase 1 (saved IPR anchor via `ipr_wt_uid`) against the current schema. Items (a–f) are prerequisites for Phases 2–3. Ask back if anything needs clarification or if you'd like to schedule an alignment call on the categorical encoding decision.
+**None of these asks block Phase 1.** The GUI is shipping now with Phase 1 (saved IPR anchor via `ipr_wt_uid`) against the current schema. Items (a–f) are prerequisites for Phases 2–3. Ask (g) is the only one that blocks a feature outright — the engineer-comment box can't be built at all until `prop_hist` has a string column. Ask back if anything needs clarification or if you'd like to schedule an alignment call on the categorical encoding decision.
 

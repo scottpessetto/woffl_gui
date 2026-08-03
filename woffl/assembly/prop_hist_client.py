@@ -56,6 +56,17 @@ PROP_HIST_INSERT_SQL = (
     "VALUES (:enthid, :prop_id, :prop_value, :entry_datetime, :entry_user)"
 )
 
+# Engineer comments live in their own table: prop_hist.prop_value is
+# DOUBLE NOT NULL, so free text physically cannot go on a prop row. A comment
+# is bound to the SAVE, not to any single property — one click of "Save IPR as
+# well default" writes up to nine prop rows — so the join key is the batch
+# stamp that every row of that save shares. See `push_prop(entry_datetime=...)`.
+ENG_COMMENT_INSERT_SQL = (
+    "INSERT INTO mpu.wells.woffl_eng_comment "
+    "(enthid, entry_datetime, entry_user, context, comment_text) "
+    "VALUES (:enthid, :entry_datetime, :entry_user, :context, :comment_text)"
+)
+
 CURRENT_USER_QUERY = "SELECT current_user() AS current_user"
 
 _CACHE_TTL_SECONDS = 3600.0
@@ -245,7 +256,11 @@ def resolve_entry_user(force_refresh: bool = False) -> str:
 
 
 def push_prop(
-    well_name: str, prop_id: str, value: Optional[float], entry_user: str
+    well_name: str,
+    prop_id: str,
+    value: Optional[float],
+    entry_user: str,
+    entry_datetime: Optional[datetime] = None,
 ) -> int:
     """Insert one row into mpu.wells.prop_hist.
 
@@ -268,9 +283,18 @@ def push_prop(
         entry_user: identity to stamp -- callers pass `resolve_entry_user()`
             (kept explicit here rather than defaulted, so a push's identity
             is always visible at the call site).
+        entry_datetime: UTC stamp to write. Defaults to ``now``, which is what
+            a lone push wants. A caller writing several props as ONE logical
+            save (e.g. ``ipr_anchor.save_ipr_values``, up to nine rows) should
+            generate one stamp and pass it to every push: that shared value is
+            the only batch identity prop_hist has, and it's what
+            ``mpu.wells.woffl_eng_comment`` joins on to attach the engineer's
+            comment to the save. Verified to round-trip to the microsecond.
 
     Returns:
-        Rowcount from execute_write (1 on a normal single-row insert).
+        Rowcount from execute_write. The Databricks connector reports ``-1``
+        for INSERT rather than an affected-row count, so treat any non-raising
+        return as success — do NOT assert ``== 1``.
     """
     valid_ids = fetch_prop_xref()
     if prop_id not in valid_ids:
@@ -294,10 +318,77 @@ def push_prop(
         "enthid": enthid,
         "prop_id": prop_id,
         "prop_value": prop_value,
-        "entry_datetime": datetime.now(timezone.utc),
+        "entry_datetime": entry_datetime or datetime.now(timezone.utc),
         "entry_user": entry_user,
     }
     return execute_write(PROP_HIST_INSERT_SQL, parameters)
+
+
+_MAX_COMMENT_CHARS = 500
+
+
+def push_eng_comment(
+    well_name: str,
+    entry_datetime: datetime,
+    entry_user: str,
+    comment_text: str,
+    context: str = "ipr_save",
+) -> int:
+    """Attach one engineer comment to a prop_hist save batch.
+
+    ``entry_datetime`` MUST be the same stamp handed to every ``push_prop`` of
+    that save — it is the join key, and prop_hist has no other batch identity.
+    Two saves for one well on the same day therefore keep separate comments:
+    the grain is the timestamp, not the date.
+
+    Call this AFTER the property pushes have succeeded. A comment describing
+    edits that never landed is worse than no comment, so the ordering is not
+    incidental.
+
+    Raises `PropHistError` on empty text, and whatever `_resolve_enthid` /
+    `execute_write` raise (unknown well, writes disabled). Callers treat it as
+    best-effort and must not let a comment failure undo a successful save.
+    """
+    text = (comment_text or "").strip()
+    if not text:
+        raise PropHistError("comment_text is empty — nothing to attach.")
+    if len(text) > _MAX_COMMENT_CHARS:
+        text = text[:_MAX_COMMENT_CHARS].rstrip()
+
+    return execute_write(
+        ENG_COMMENT_INSERT_SQL,
+        {
+            "enthid": _resolve_enthid(well_name),
+            "entry_datetime": entry_datetime,
+            "entry_user": entry_user,
+            "context": context,
+            "comment_text": text,
+        },
+    )
+
+
+def fetch_eng_comments(well_name: str) -> pd.DataFrame:
+    """Every engineer comment for a well, newest first.
+
+    Returns columns ``entry_datetime, entry_user, context, comment_text``;
+    an EMPTY frame with those columns when the well has none, so callers can
+    merge without a None check.
+
+    ``enthid`` is int-coerced into the SQL text because `execute_query` has no
+    bind support — same guard every other read in this module uses.
+    """
+    cols = ["entry_datetime", "entry_user", "context", "comment_text"]
+    enthid = _resolve_enthid(well_name)
+    df = execute_query(
+        "SELECT entry_datetime, entry_user, context, comment_text "
+        f"FROM mpu.wells.woffl_eng_comment WHERE enthid = {int(enthid)} "
+        "ORDER BY entry_datetime DESC"
+    )
+    if df is None or df.empty:
+        return pd.DataFrame(columns=cols)
+    # A retried write can land the identical row twice (execute_write makes two
+    # attempts); collapse exact duplicates rather than showing the note twice.
+    return df[cols].drop_duplicates()
 
 
 def fetch_latest_prop(
