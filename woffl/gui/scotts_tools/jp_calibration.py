@@ -23,6 +23,7 @@ from ._common import (
     fetch_well_tests_raw,
     friction_coefs_from_chars,
     get_vogel_for_wells,
+    has_databricks_casing,
     pad_from_mp_name,
 )
 
@@ -113,21 +114,6 @@ def _denormalize_for_db(well_name: str) -> str:
     return _denormalize_well_name(well_name)
 
 
-def _has_databricks_casing(chars: dict | None) -> bool:
-    """True iff casing_out_dia and casing_inn_dia are populated in chars."""
-    if not chars:
-        return False
-    out_dia = chars.get("casing_out_dia")
-    inn_dia = chars.get("casing_inn_dia")
-    if out_dia is None or inn_dia is None:
-        return False
-    try:
-        if pd.isna(out_dia) or pd.isna(inn_dia):
-            return False
-        return float(out_dia) > float(inn_dia) > 0
-    except (TypeError, ValueError):
-        return False
-
 
 def _build_calibration_input_table(
     months_back: int,
@@ -216,7 +202,7 @@ def _build_calibration_input_table(
         tube_id = tube_od - 2 * tube_thk
         case_od, case_thk = casing_dims_from_chars(chars)
         case_id = case_od - 2 * case_thk
-        case_src = "DB" if _has_databricks_casing(chars) else "fallback"
+        case_src = "DB" if has_databricks_casing(chars) else "fallback"
         # Annulus cross-section (in²) — what the PF friction calc actually uses
         ann_area_in2 = (math.pi / 4) * (case_id**2 - tube_od**2)
 

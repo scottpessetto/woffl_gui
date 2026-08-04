@@ -55,7 +55,10 @@ def _build_simulation_objects(params: SimulationParams):
         params.casing_od,
         params.casing_thickness,
     )
-    inflow = create_inflow(params.qwf, params.pwf, params.pres)
+    # params.qwf is TOTAL LIQUID; InFlow takes a SINGLE phase, so inflow_rate
+    # (oil, or the full liquid rate in dewatering mode) is the anchor. See the
+    # RATE CONVENTION note in woffl/gui/params.py.
+    inflow = create_inflow(params.inflow_rate, params.pwf, params.pres)
     res_mix = create_reservoir_mix(
         params.form_wc,
         params.form_gor,

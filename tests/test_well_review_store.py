@@ -1,8 +1,9 @@
 """Unit tests for the pad review store (woffl/gui/workflow_steps/well_review_store.py).
 
-The store is the bridge between the reviewed sidebar state (qwf = OIL) and the
-optimizer's WellConfig (qwf = TOTAL LIQUID). These tests pin the round-trip
-exactness and the ≥99%-WC guard that closed the S-03 false-"optimizer shut in"
+The store is the bridge between the reviewed sidebar state and the optimizer's
+WellConfig — BOTH now carry qwf as TOTAL LIQUID, so the reviewed rate must
+travel verbatim and the oil must fall out of the water cut. These tests pin
+that, and the ≥99%-WC guard that closed the S-03 false-"optimizer shut in"
 bug (P0-2 in docs/code_review_2026-07-01.md).
 """
 
@@ -35,28 +36,40 @@ def _snapshot(params, **kw):
     return wrs.snapshot_from_params(params, **kw)
 
 
-class TestOilLiquidRoundTrip:
-    """WellConfig.qwf (liquid) must invert back to the reviewed oil rate exactly
-    via the optimizer's oil = qwf * (1 - form_wc)."""
+class TestLiquidRateRoundTrip:
+    """The reviewed LIQUID rate must reach WellConfig.qwf untouched, and the
+    optimizer's oil = qwf * (1 - form_wc) must reproduce the derived oil."""
 
     @pytest.mark.parametrize(
-        "wc,oil", [(0.0, 750), (0.50, 400), (0.90, 120), (0.95, 60), (0.99, 25)]
+        "wc,liq", [(0.0, 750), (0.50, 800), (0.90, 1200), (0.95, 1200), (0.99, 2500)]
     )
-    def test_round_trip_exact(self, wc, oil):
-        entry = _snapshot(_params(form_wc=wc, qwf=oil))
+    def test_liquid_survives_verbatim(self, wc, liq):
+        entry = _snapshot(_params(form_wc=wc, qwf=liq))
         cfg = wrs.to_well_config(entry)
-        assert cfg.qwf * (1.0 - cfg.form_wc) == pytest.approx(oil, rel=1e-9)
+        assert cfg.qwf == pytest.approx(liq, rel=1e-9)
+        assert cfg.qwf * (1.0 - cfg.form_wc) == pytest.approx(liq * (1.0 - wc))
 
-    def test_oil_rate_field_preserved(self):
-        entry = _snapshot(_params(form_wc=0.90, qwf=120))
-        assert entry[wrs.OIL_RATE_FIELD] == pytest.approx(120.0)
-        assert entry["qwf"] == pytest.approx(1200.0)  # 120 / (1 - 0.9)
+    def test_oil_rate_field_is_derived_not_the_anchor(self):
+        entry = _snapshot(_params(form_wc=0.90, qwf=1200))
+        assert entry["qwf"] == pytest.approx(1200.0)  # stored verbatim
+        assert entry[wrs.OIL_RATE_FIELD] == pytest.approx(120.0)  # 1200 * 0.1
+
+    def test_water_cut_does_not_rescale_the_reviewed_rate(self):
+        """The B-28 regression (Scott, 2026-08-03): the snapshot used to store
+        qwf / (1 - wc), so the SAME measured liquid rate landed as a different
+        number for every water cut and a WC edit moved the engineer's anchor."""
+        rates = [
+            _snapshot(_params(form_wc=wc, qwf=2135))["qwf"]
+            for wc in (0.0, 0.5, 0.83, 0.99)
+        ]
+        assert rates == pytest.approx([2135.0] * 4)
 
     def test_wc_099_boundary_not_distorted(self):
         # Pre-fix, the snapshot clamp (max(1-wc, 0.01)) and the optimizer's
         # un-clamped inverse diverged ABOVE 0.99 — at exactly 0.99 both are 0.01.
-        entry = _snapshot(_params(form_wc=0.99, qwf=25))
+        entry = _snapshot(_params(form_wc=0.99, qwf=2500))
         assert entry["qwf"] == pytest.approx(2500.0)
+        assert entry[wrs.OIL_RATE_FIELD] == pytest.approx(25.0)
 
 
 class TestHighWaterCutGuard:
@@ -68,13 +81,14 @@ class TestHighWaterCutGuard:
             _snapshot(_params(form_wc=wc, qwf=300))
 
     def test_snapshot_allows_offline_dewatering(self):
-        # Water-pump-mode review: sidebar qwf is the WATER rate; carried as the
-        # liquid rate for the (never-optimized) offline entry.
+        # Water-pump-mode review: form_wc is forced to 1.0, so the liquid rate
+        # IS the water rate and the derived oil is identically zero.
         entry = _snapshot(
             _params(form_wc=1.0, qwf=2800, model_as_water=True), offline=True
         )
         assert entry["offline"] is True
         assert entry["qwf"] == pytest.approx(2800.0)
+        assert entry[wrs.OIL_RATE_FIELD] == pytest.approx(0.0)
 
     def test_to_well_config_raises_for_online_high_wc(self):
         # Legacy/CSV entry that predates the save guard must not silently zero.
@@ -132,8 +146,8 @@ class TestValidateStore:
         assert any("offline" in m for m in msgs)
 
     def test_wc_edited_without_rederiving_qwf_flagged(self):
-        e = _snapshot(_params(form_wc=0.5, qwf=400))  # liquid = 800
-        e["form_wc"] = 0.9  # hand-edited WC; qwf left at 800 (should be 4000)
+        e = _snapshot(_params(form_wc=0.5, qwf=800))  # oil = 400
+        e["form_wc"] = 0.9  # hand-edited WC; qwf left at 800 (implies oil 80)
         msgs = wrs.validate_store({"MPS-99": e})["MPS-99"]
         assert any("inconsistent" in m for m in msgs)
 
@@ -193,8 +207,8 @@ class TestCsvRoundTrip:
         assert set(loaded) == {"MPS-1", "MPS-2"}
         e1 = loaded["MPS-1"]
         assert e1["form_wc"] == pytest.approx(0.85)
-        assert e1[wrs.OIL_RATE_FIELD] == pytest.approx(200.0)
-        assert e1["qwf"] == pytest.approx(200.0 / 0.15)
+        assert e1[wrs.OIL_RATE_FIELD] == pytest.approx(200.0 * 0.15)
+        assert e1["qwf"] == pytest.approx(200.0)
         assert e1["review_nozzle"] == "10" and e1["review_throat"] == "B"
         assert e1["notes"] == "note, with comma"
         assert e1["offline"] is False
@@ -206,10 +220,11 @@ class TestCsvRoundTrip:
         for fld in ("oil_api", "gas_sg", "wat_sg", "bubble_point", "knz_well"):
             assert loaded["MPS-1"][fld] is None
 
-    def test_round_trip_still_converts(self):
+    def test_round_trip_preserves_the_liquid_anchor(self):
         loaded = self._round_trip(self._store())
         cfg = wrs.to_well_config(loaded["MPS-1"])
-        assert cfg.qwf * (1.0 - cfg.form_wc) == pytest.approx(200.0, rel=1e-6)
+        assert cfg.qwf == pytest.approx(200.0, rel=1e-6)
+        assert cfg.qwf * (1.0 - cfg.form_wc) == pytest.approx(30.0, rel=1e-6)
 
     @pytest.mark.parametrize(
         "raw,expected",

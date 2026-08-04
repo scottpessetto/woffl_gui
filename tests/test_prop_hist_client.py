@@ -6,7 +6,8 @@ None/newest behavior, and resolve_entry_user's env-override precedence.
 """
 
 import os
-from datetime import datetime, timezone
+import threading
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pandas as pd
@@ -15,10 +16,13 @@ import pytest
 import woffl.assembly.prop_hist_client as phc
 from woffl.assembly.databricks_client import WritesDisabledError
 from woffl.assembly.prop_hist_client import (
+    AS_BUILT_PROP_IDS,
+    AsBuiltPropError,
     EnthidResolutionError,
     UnknownPropIdError,
     fetch_latest_prop,
     fetch_prop_xref,
+    next_entry_datetime,
     push_prop,
     resolve_entry_user,
     well_enthid_map,
@@ -31,6 +35,9 @@ def _reset_caches():
     phc._enthid_cache["value"] = None
     phc._enthid_cache["expires_at"] = 0.0
     phc._entry_user_cache["value"] = None
+    # Monotonic stamp allocator: a stamp left over from a prior test would make
+    # the next one bump off it instead of reading the clock.
+    phc._last_stamp = None
 
 
 def _query_router(xref=None, enthid=None, current_user=None, prop_hist=None):
@@ -164,6 +171,212 @@ class TestPushPropWhitelist(_CacheResetMixin):
         assert "ipr_wt_uid" in message
         assert "jpfric_entry" in message
         mock_write.assert_not_called()
+
+
+# ── push_prop: as-built guard ────────────────────────────────────────────────
+
+
+class TestPushPropAsBuiltGuard(_CacheResetMixin):
+    """2026-08-03 incident: the pad review write-through pushed jpump_md and
+    casing_out_dia, replacing eight wells' MEASURED pump depth with the
+    interpolated JP_TVD (C-002: 7688 → 6270.223 ft) and their casing OD with
+    the 6.875 UI fallback. As-built dimensions are read-only from woffl; this
+    is the chokepoint that makes that class of bug impossible."""
+
+    @pytest.mark.parametrize("prop_id", sorted(AS_BUILT_PROP_IDS))
+    @patch("woffl.assembly.prop_hist_client.execute_write")
+    @patch("woffl.assembly.prop_hist_client.execute_query")
+    def test_every_as_built_id_is_rejected(self, mock_query, mock_write, prop_id):
+        mock_query.side_effect = _query_router(
+            xref=pd.DataFrame({"prop_id": sorted(AS_BUILT_PROP_IDS)}),
+            enthid=pd.DataFrame({"enthid": [111], "well_name": ["B-028"]}),
+        )
+
+        # Rejected even though the id IS a valid prop_xref key with a
+        # resolvable well — the guard is about authorship, not validity.
+        with pytest.raises(AsBuiltPropError, match=prop_id):
+            push_prop("MPB-28", prop_id, 6270.2230992, "scott")
+
+        mock_write.assert_not_called()
+
+    def test_jpump_md_and_casing_out_dia_are_covered(self):
+        """The two ids the incident actually corrupted."""
+        assert {"jpump_md", "casing_out_dia"} <= AS_BUILT_PROP_IDS
+
+
+# ── entry_datetime: strictly monotonic stamps ────────────────────────────────
+
+
+class TestEntryDatetimeAllocation(_CacheResetMixin):
+    """``entry_datetime`` decides BOTH which row a read resolves to
+    (``ROW_NUMBER() ... ORDER BY entry_datetime DESC``) and which rows belong to
+    one save (the ``woffl_eng_comment`` join key). The Windows system clock has
+    15.625 ms granularity — 2000 back-to-back ``datetime.now(timezone.utc)``
+    calls return ONE value — so two saves in one tick used to collide: merged
+    comments, and an arbitrary winner on read.
+    """
+
+    def test_back_to_back_stamps_strictly_increase(self):
+        stamps = [next_entry_datetime() for _ in range(2000)]
+        assert len(set(stamps)) == 2000, "collision inside one clock tick"
+        assert stamps == sorted(stamps)
+
+    def test_a_bare_now_would_have_collided(self):
+        """Pins the premise, so this suite still means something on a platform
+        with a finer clock (there the allocator is simply a pass-through)."""
+        now_stamps = {datetime.now(timezone.utc) for _ in range(2000)}
+        alloc_stamps = {next_entry_datetime() for _ in range(2000)}
+        assert len(alloc_stamps) == 2000
+        if len(now_stamps) < 2000:
+            # Coarse clock (Windows): the allocator is doing real work here.
+            assert len(alloc_stamps) > len(now_stamps)
+
+    def test_stamps_stay_utc_aware_and_track_the_clock(self):
+        before = datetime.now(timezone.utc)
+        stamp = next_entry_datetime()
+        after = datetime.now(timezone.utc)
+        assert stamp.tzinfo is timezone.utc
+        # Bumping may push a stamp past `after` by microseconds when the clock
+        # is coarse; it must never drift backwards or run away.
+        assert before - timedelta(seconds=1) <= stamp <= after + timedelta(seconds=1)
+
+    def test_concurrent_callers_never_share_a_stamp(self):
+        """Streamlit runs script runs on threads and app.py warms caches on
+        another, so the allocator has to hold under contention."""
+        out: list = []
+        lock = threading.Lock()
+
+        def _worker():
+            mine = [next_entry_datetime() for _ in range(200)]
+            with lock:
+                out.extend(mine)
+
+        threads = [threading.Thread(target=_worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(out) == 1600
+        assert len(set(out)) == 1600
+
+    @patch("woffl.assembly.prop_hist_client.execute_write")
+    @patch("woffl.assembly.prop_hist_client.execute_query")
+    def test_two_quick_pushes_land_on_distinct_stamps(self, mock_query, mock_write):
+        mock_query.side_effect = _query_router(
+            xref=pd.DataFrame({"prop_id": ["ipr_wt_uid"]}),
+            enthid=pd.DataFrame({"enthid": [111], "well_name": ["B-028"]}),
+        )
+
+        push_prop("MPB-28", "ipr_wt_uid", 1.0, "scott")
+        push_prop("MPB-28", "ipr_wt_uid", 2.0, "scott")
+
+        first, second = (c[0][1]["entry_datetime"] for c in mock_write.call_args_list)
+        # Without this the second value could lose the DESC tie-break and the
+        # well would reopen on the FIRST push's value.
+        assert second > first
+
+    @patch("woffl.assembly.prop_hist_client.execute_write")
+    @patch("woffl.assembly.prop_hist_client.execute_query")
+    def test_an_explicit_batch_stamp_is_used_verbatim(self, mock_query, mock_write):
+        """A save's rows MUST share their stamp — re-allocating per row would
+        destroy the batch identity the comment hangs off."""
+        mock_query.side_effect = _query_router(
+            xref=pd.DataFrame({"prop_id": ["ipr_wt_uid", "ipr_pwf"]}),
+            enthid=pd.DataFrame({"enthid": [111], "well_name": ["B-028"]}),
+        )
+        batch = next_entry_datetime()
+
+        push_prop("MPB-28", "ipr_wt_uid", 1.0, "scott", entry_datetime=batch)
+        push_prop("MPB-28", "ipr_pwf", 900.0, "scott", entry_datetime=batch)
+
+        stamps = [c[0][1]["entry_datetime"] for c in mock_write.call_args_list]
+        assert stamps == [batch, batch]
+
+    @patch("woffl.assembly.prop_hist_client.execute_write")
+    @patch("woffl.assembly.prop_hist_client.execute_query")
+    def test_a_later_lone_push_cannot_reuse_a_batch_stamp(self, mock_query, mock_write):
+        """The allocator records handed-out batch stamps, so a subsequent
+        default-stamped push can't land back inside that save."""
+        mock_query.side_effect = _query_router(
+            xref=pd.DataFrame({"prop_id": ["ipr_wt_uid"]}),
+            enthid=pd.DataFrame({"enthid": [111], "well_name": ["B-028"]}),
+        )
+        batch = next_entry_datetime()
+        push_prop("MPB-28", "ipr_wt_uid", 1.0, "scott", entry_datetime=batch)
+        push_prop("MPB-28", "ipr_wt_uid", 2.0, "scott")
+
+        stamps = [c[0][1]["entry_datetime"] for c in mock_write.call_args_list]
+        assert stamps[1] > stamps[0] == batch
+
+
+# ── rendering stamps in Alaska time ─────────────────────────────────────────
+
+
+class TestAlaskaRendering(_CacheResetMixin):
+    """Kaelin, 2026-08-03: "have a 19:22 timestamp, which I don't know what
+    that means." Stamps are STORED as UTC instants — the column is an ordering
+    key — and rendered in Alaska time wherever a person reads one."""
+
+    def test_the_timestamp_kaelin_could_not_read(self):
+        utc = datetime(2026, 8, 3, 19, 22, tzinfo=timezone.utc)
+        assert phc.format_alaska(utc) == "2026-08-03 11:22 AKDT"
+
+    def test_winter_stamps_render_akst(self):
+        utc = datetime(2026, 12, 3, 19, 22, tzinfo=timezone.utc)
+        assert phc.format_alaska(utc) == "2026-12-03 10:22 AKST"
+
+    def test_evening_ak_save_keeps_its_own_date(self):
+        """21:00 AKDT on the 3rd is 05:00 UTC on the 4th — a raw UTC date shows
+        the engineer the wrong day, which is why the captions convert."""
+        utc = datetime(2026, 8, 4, 5, 0, tzinfo=timezone.utc)
+        assert phc.format_alaska(utc, "%Y-%m-%d") == "2026-08-03"
+
+    def test_naive_conversion_drops_the_offset_for_widgets(self):
+        utc = datetime(2026, 8, 3, 19, 22, tzinfo=timezone.utc)
+        local = phc.to_alaska(utc)
+        assert local.tzinfo is None and (local.hour, local.minute) == (11, 22)
+
+    def test_migrated_date_only_rows_are_not_shifted(self):
+        """ka9612's 2026-04-16 DART bulk load was an ``entry_date DATE`` before
+        the 2026-07-08 migration. Converting midnight UTC would render it
+        '2026-04-15 16:00' — wrong day, and a time of day it never had."""
+        bulk = datetime(2026, 4, 16, 0, 0, tzinfo=timezone.utc)
+        assert phc.format_alaska(bulk, "%Y-%m-%d %H:%M") == "2026-04-16 00:00"
+        assert phc.to_alaska(bulk).day == 16
+
+    def test_a_real_write_at_almost_midnight_still_converts(self):
+        """The sentinel is EXACT midnight — one microsecond past is a genuine
+        app write and must render in AK like any other."""
+        real = datetime(2026, 4, 16, 0, 0, 0, 1, tzinfo=timezone.utc)
+        assert phc.to_alaska(real).day == 15
+
+    def test_storage_stays_utc(self):
+        """The allocator must never start handing out local time: two rows an
+        hour apart would collide in the November fold and the DESC tie-break
+        that resolves every read would pick arbitrarily."""
+        assert phc.next_entry_datetime().tzinfo is timezone.utc
+
+    def test_the_dst_fold_that_makes_local_storage_unsafe(self):
+        """Documents WHY storage is UTC: 2026-11-01 01:30 AK happens twice."""
+        from zoneinfo import ZoneInfo
+
+        ak = ZoneInfo(phc.ALASKA_TZ)
+        first = datetime(2026, 11, 1, 1, 30, tzinfo=ak, fold=0)
+        second = datetime(2026, 11, 1, 1, 30, tzinfo=ak, fold=1)
+        assert first.astimezone(timezone.utc) != second.astimezone(timezone.utc)
+        # …yet identical as wall clock, so a naive-local column loses the order.
+        assert first.replace(tzinfo=None) == second.replace(tzinfo=None)
+
+    def test_conversion_is_order_preserving(self):
+        stamps = [phc.next_entry_datetime() for _ in range(50)]
+        local = [phc.to_alaska(s) for s in stamps]
+        assert local == sorted(local)
+
+    def test_bad_input_is_returned_untouched_not_raised(self):
+        """A caption is never worth crashing a page over."""
+        assert phc.to_alaska(None) is None
+        assert phc.to_alaska("not a timestamp") == "not a timestamp"
+        assert phc.format_alaska("not a timestamp") == "not a timestamp"
 
 
 # ── push_prop: enthid resolution guards ──────────────────────────────────────

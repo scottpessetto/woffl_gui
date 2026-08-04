@@ -55,7 +55,13 @@ def render_input_summary(params) -> None:
             st.write(f"Water Cut: {params.form_wc:.2f}")
             st.write(f"GOR: {params.form_gor} scf/bbl")
             st.write(f"Temperature: {params.form_temp} °F")
-            st.write(f"qwf: {params.qwf} BOPD / pwf: {params.pwf} psi")
+            st.write(f"qwf: {params.qwf} BLPD liquid / pwf: {params.pwf} psi")
+            # qwf is TOTAL LIQUID now (RATE CONVENTION, params.py); show the
+            # oil it implies so the engineer sees both without doing the math.
+            st.write(
+                f"→ implies {params.qwf_oil:,.0f} BOPD oil "
+                f"at WC {params.form_wc:.2f}"
+            )
         if ipr_info:
             st.caption(f"*{ipr_info}*")
 
@@ -684,10 +690,12 @@ def build_calibration_inputs(
     # Operating point comes from the SIDEBAR (qwf / pwf / res_pres / form_wc /
     # form_gor). The Solver tab's IPR-anchor selector seeds those from the
     # chosen test and the engineer can override them, so the cal target stays
-    # aligned with the IPR chart, Batch Run, and the top Solver. qwf is the OIL
-    # rate, matching create_inflow's contract.
+    # aligned with the IPR chart, Batch Run, and the top Solver. Sidebar qwf is
+    # TOTAL LIQUID (RATE CONVENTION, params.py); create_inflow wants a SINGLE
+    # phase, so hand it params.inflow_rate — oil normally, the full liquid rate
+    # in dewatering mode (where WC is forced to 1.0 and oil would be zero).
     model_res_p = float(params.pres)
-    oil_qwf = float(params.qwf)
+    inflow_qwf = float(params.inflow_rate)
     pwf_for_inflow = float(params.pwf)
     wc_for_resmix = float(params.form_wc)
     model_gor = int(params.form_gor)
@@ -704,7 +712,7 @@ def build_calibration_inputs(
     # the plots below it). Protects the friction cal, PF auto-match, and the
     # oil-rate back-match alike.
     try:
-        ipr_inflow = create_inflow(oil_qwf, pwf_for_inflow, model_res_p)
+        ipr_inflow = create_inflow(inflow_qwf, pwf_for_inflow, model_res_p)
         ipr_res_mix = create_reservoir_mix(
             wc_for_resmix, model_gor, params.form_temp, params.field_model
         )
@@ -1292,7 +1300,14 @@ def create_pipes(
 
 
 def create_inflow(qwf, pwf, pres):
-    """Create an InFlow object with the given parameters."""
+    """Create an InFlow object from a SINGLE-PHASE rate at ``pwf``.
+
+    ``qwf`` keeps the ``InFlow`` library contract: ONE phase — the oil rate
+    normally, the water rate in dewatering mode — NOT the total liquid rate
+    that ``SimulationParams.qwf`` holds (RATE CONVENTION, params.py). GUI
+    callers with a ``SimulationParams`` MUST pass ``params.inflow_rate``,
+    which already picks the right phase for the mode.
+    """
     return InFlow(qwf=qwf, pwf=pwf, pres=pres)
 
 

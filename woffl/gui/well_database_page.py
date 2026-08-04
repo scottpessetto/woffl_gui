@@ -313,6 +313,7 @@ def run_well_database_page():
         return
     hist_well = st.selectbox("Well", wells, key="wdb_hist_well")
 
+    from woffl.assembly.prop_hist_client import format_alaska
     from woffl.gui.prop_history import fetch_prop_history, shape_history
 
     try:
@@ -332,26 +333,45 @@ def run_well_database_page():
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total saves", shaped["n_edits"])
     m2.metric("Properties touched", shaped["n_props"])
-    m3.metric("Last save", shaped["last_edit"].strftime("%Y-%m-%d %H:%M"))
+    m3.metric(
+        "Last save",
+        format_alaska(shaped["last_edit"], "%Y-%m-%d %H:%M"),
+        help="Alaska time (AKDT/AKST); stored as UTC.",
+    )
     m4.metric("Editors", len(shaped["editors"]), help=", ".join(shaped["editors"]))
 
     st.markdown("##### Current stored state (what the well opens with)")
     st.dataframe(
         shaped["latest"][
-            ["category", "prop_name", "display_value", "units",
-             "entry_datetime", "entry_user", "comment"]
+            ["category", "prop_name", "display_value", "units", "derivation",
+             "entry_datetime_ak", "entry_user", "comment"]
         ].rename(
             columns={
                 "category": "Category", "prop_name": "Property",
                 "display_value": "Value", "units": "Units",
-                "entry_datetime": "Saved", "entry_user": "By",
-                "comment": "Why",
+                "derivation": "How", "entry_datetime_ak": "Saved (AK)",
+                "entry_user": "By", "comment": "Why",
             }
         ),
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Saved": st.column_config.DatetimeColumn(format="YYYY-MM-DD HH:mm"),
+            "Saved (AK)": st.column_config.DatetimeColumn(
+                "Saved (AK)",
+                format="YYYY-MM-DD HH:mm",
+                help="Alaska time (AKDT/AKST). Stored as UTC — the column is an "
+                "ordering key, so it can't be written in a zone that repeats an "
+                "hour every fall.",
+            ),
+            # Saved IPR rate is DERIVED (oil ÷ (1 − WC)), so it matches no
+            # well test whenever the WC is locked — spell the arithmetic out
+            # rather than let it read as a bad number.
+            "How": st.column_config.TextColumn(
+                "How",
+                width="medium",
+                help="Shown when a stored value is computed rather than "
+                "measured.",
+            ),
             # The engineer's note for the save this value came from — the
             # whole point of woffl_eng_comment. Wide, because a truncated
             # reason is no reason.
@@ -366,23 +386,26 @@ def run_well_database_page():
     with st.expander(f"Full history — all {shaped['n_edits']} save(s)"):
         st.dataframe(
             shaped["history"][
-                ["entry_datetime", "prop_name", "display_value", "units",
-                 "entry_user", "is_current", "comment"]
+                ["entry_datetime_ak", "prop_name", "display_value", "units",
+                 "derivation", "entry_user", "is_current", "comment"]
             ].rename(
                 columns={
-                    "entry_datetime": "When", "prop_name": "Property",
+                    "entry_datetime_ak": "When (AK)", "prop_name": "Property",
                     "display_value": "Value", "units": "Units",
-                    "entry_user": "By", "is_current": "Current",
-                    "comment": "Why",
+                    "derivation": "How", "entry_user": "By",
+                    "is_current": "Current", "comment": "Why",
                 }
             ),
             use_container_width=True,
             hide_index=True,
             column_config={
-                "When": st.column_config.DatetimeColumn(format="YYYY-MM-DD HH:mm"),
+                "When (AK)": st.column_config.DatetimeColumn(
+                    "When (AK)", format="YYYY-MM-DD HH:mm"
+                ),
                 "Current": st.column_config.CheckboxColumn(
                     "Current", help="The live row — superseded rows unchecked"
                 ),
+                "How": st.column_config.TextColumn("How", width="medium"),
                 "Why": st.column_config.TextColumn("Why", width="large"),
             },
         )

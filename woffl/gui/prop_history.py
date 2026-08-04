@@ -17,8 +17,22 @@ from typing import Optional
 
 import pandas as pd
 
+from woffl.assembly.prop_hist_client import to_alaska
+
 # Rendered specially: the IPR anchor pin is a well-test ID, not a quantity.
 PIN_PROP_ID = "ipr_wt_uid"
+
+# The saved IPR rate is the well's MEASURED TOTAL LIQUID rate (BLPD, excluding
+# power fluid) — oil and water are what get derived from it, through the
+# assumed / 🔒 locked water cut (see the RATE CONVENTION in
+# ``woffl/gui/params.py``). Scott, 2026-08-03, on B-28's 2135.29 bbl/d: *"i dont
+# understand this ipr total liquid it doesnt match any test"* — at the time it
+# genuinely didn't, because the code stored `oil / (1 - WC)` and B-28's WC is
+# locked at 0.83. That inversion is fixed; the rate IS the test's total fluid
+# now. This column shows the phase split it implies, so nobody has to redo the
+# arithmetic to see the oil behind a liquid rate.
+LIQ_PROP_ID = "ipr_qwf_liq"
+WC_PROP_ID = "form_wc"
 
 
 def fetch_prop_history(well_name: str) -> pd.DataFrame:
@@ -56,6 +70,46 @@ def fetch_prop_history(well_name: str) -> pd.DataFrame:
     )
 
 
+def _derivations(d: pd.DataFrame) -> pd.Series:
+    """``derivation`` text per row — empty except where a stored value implies
+    others that aren't stored.
+
+    Today that is only the saved IPR liquid rate, which carries the oil and
+    water splits with it. The water cut is taken from the SAME save (prop_hist's
+    batch identity is the shared ``entry_datetime`` — see
+    ``prop_hist_client.push_prop``), falling back to the newest WC at or before
+    that stamp for rows written before WC rode along. No WC anywhere ⇒ no
+    claim: the cell stays empty rather than guessing 0.5.
+    """
+    notes = pd.Series("", index=d.index, dtype=object)
+    liq = d.index[(d["prop_id"] == LIQ_PROP_ID) & d["prop_value"].notna()]
+    if len(liq) == 0:
+        return notes
+
+    wc_rows = d[(d["prop_id"] == WC_PROP_ID) & d["prop_value"].notna()]
+    wc_by_stamp = dict(zip(wc_rows["entry_datetime"], wc_rows["prop_value"]))
+    wc_sorted = wc_rows.sort_values("entry_datetime")
+
+    for i in liq:
+        stamp = d.at[i, "entry_datetime"]
+        wc = wc_by_stamp.get(stamp)
+        if wc is None:
+            earlier = wc_sorted[wc_sorted["entry_datetime"] <= stamp]
+            wc = earlier["prop_value"].iloc[-1] if not earlier.empty else None
+        if wc is None:
+            continue
+        wc = float(wc)
+        if not 0.0 <= wc < 1.0:
+            continue
+        liquid = float(d.at[i, "prop_value"])
+        oil = liquid * (1.0 - wc)
+        water = liquid * wc
+        notes.at[i] = (
+            f"→ {oil:,.0f} BOPD oil + {water:,.0f} BWPD water at WC {wc:.2f}"
+        )
+    return notes
+
+
 def shape_history(df: Optional[pd.DataFrame]) -> Optional[dict]:
     """Pure: raw history rows → the view's pieces.
 
@@ -63,10 +117,17 @@ def shape_history(df: Optional[pd.DataFrame]) -> Optional[dict]:
     "editors"}`` or None for empty input.
 
     * ``history`` — all rows newest-first with ``is_current`` marking each
-      prop's live row (the one the well opens with) and ``display_value``
-      ("(cleared)" for the NULL tombstone/un-pin rows, ints for the pin id).
+      prop's live row (the one the well opens with), ``display_value``
+      ("(cleared)" for the NULL tombstone/un-pin rows, ints for the pin id)
+      and ``derivation`` (how a stored number was computed, where it wasn't
+      measured — see :data:`LIQ_PROP_ID`).
     * ``latest`` — one row per prop, the well's current stored state, ordered
       by category then name.
+
+    ``entry_datetime`` stays UTC — it is the ordering key and every comparison
+    downstream depends on it. ``entry_datetime_ak`` is the same instant as
+    Alaska wall time for DISPLAY only (Kaelin, 2026-08-03: a bare "19:22" told
+    nobody anything; that was 11:22 AKDT).
     """
     if df is None or df.empty:
         return None
@@ -91,6 +152,12 @@ def shape_history(df: Optional[pd.DataFrame]) -> Optional[dict]:
         return f"{float(v):g}"
 
     d["display_value"] = d.apply(_display, axis=1)
+    d["derivation"] = _derivations(d)
+    # Display-only, tz-naive so a widget renders the wall clock verbatim under
+    # a header that names the zone. Derived AFTER sorting — converting an
+    # instant can't reorder anything, but keeping the key untouched is the
+    # point.
+    d["entry_datetime_ak"] = d["entry_datetime"].map(to_alaska)
 
     latest = (
         d[d["is_current"]]

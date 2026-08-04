@@ -1,11 +1,11 @@
 """Saved IPR values — the single-well half of prop_hist Phase 2 (ipr_anchor).
 
 Scott's goal sentence: opening a well keeps "the curve and rate the engineer
-saw fit". These pin the Solver-side save (oil→liquid conversion, the 0.99 WC
-cap, None-skipping) and the open-side load (requires qwf AND pwf, memoized,
-fail-soft) plus the precedence rule against the anchor pin — latest timestamp
-wins, ties to the VALUES (one Save writes both, and the values were seeded
-from that anchor anyway).
+saw fit". These pin the Solver-side save (the MEASURED liquid rate stored
+verbatim, the 0.99 WC cap, None-skipping) and the open-side load (requires
+qwf AND pwf, memoized, fail-soft) plus the precedence rule against the anchor
+pin — latest timestamp wins, ties to the VALUES (one Save writes both, and
+the values were seeded from that anchor anyway).
 """
 
 from datetime import datetime, timezone
@@ -59,7 +59,7 @@ class TestDefaultSigShared:
         assert _IPR_SIDEBAR_DEFAULT_SIG is ia.IPR_SIDEBAR_DEFAULT_SIG
 
 
-# ── save: the sidebar's oil-based values → prop_hist ────────────────────────
+# ── save: the sidebar's measured liquid rate → prop_hist ────────────────────
 
 
 class TestSaveIprValues:
@@ -79,30 +79,47 @@ class TestSaveIprValues:
         monkeypatch.setattr(ia, "load_saved_ipr", lambda w: None)
         return captured
 
-    def test_oil_converts_to_total_liquid(self, pushes):
+    def test_liquid_rate_is_stored_verbatim(self, pushes):
         n, msg = ia.save_ipr_values(
-            "MPB-28", qwf_oil=300.0, pwf=900.0, res_pres=1800.0,
+            "MPB-28", qwf_liq=600.0, pwf=900.0, res_pres=1800.0,
             form_wc=0.5, form_gor=250.0, surf_pres=210.0,
         )
         vals = {p: v for (_, p, v, _) in pushes}
-        assert vals["ipr_qwf_liq"] == pytest.approx(600.0)  # 300 / (1 - 0.5)
+        assert vals["ipr_qwf_liq"] == pytest.approx(600.0)  # not 600 / (1 - 0.5)
         assert vals["ipr_pwf"] == 900.0
         assert vals["resvr_press"] == 1800.0  # the curve travels whole
         assert vals["surf_press"] == 210.0
         assert n == 6 and msg.startswith("💾")
 
-    def test_wc_caps_at_099_so_conversion_cannot_degenerate(self, pushes):
+    @pytest.mark.parametrize("wc", [0.0, 0.5, 0.83, 0.99, 1.0])
+    def test_water_cut_never_rescales_the_saved_rate(self, pushes, wc):
+        """The B-28 regression (Scott, 2026-08-03). The old code pushed
+        ``qwf / (1 - wc)``, so B-28's 363 BOPD at its LOCKED 0.83 WC landed as
+        2135.29 BLPD — a rate no well test could corroborate, and one that
+        moved every time the WC was touched. The measured liquid rate is the
+        engineer's anchor: it must reach prop_hist bit-for-bit at ANY WC."""
         ia.save_ipr_values(
-            "MPB-28", qwf_oil=10.0, pwf=900.0, res_pres=1800.0,
+            "MPB-28", qwf_liq=2135.29, pwf=900.0, res_pres=1800.0,
+            form_wc=wc, form_gor=250.0,
+        )
+        vals = {p: v for (_, p, v, _) in pushes}
+        assert vals["ipr_qwf_liq"] == pytest.approx(2135.29)
+
+    def test_wc_caps_at_099_for_its_own_row(self, pushes):
+        """The rate is untouched, but the stored WC still can't be 1.0 — the
+        downstream oil = liq * (1 - wc) would make the well identically dead
+        (the store's MAX_MODELABLE_WC precedent)."""
+        ia.save_ipr_values(
+            "MPB-28", qwf_liq=1000.0, pwf=900.0, res_pres=1800.0,
             form_wc=1.0, form_gor=250.0,
         )
         vals = {p: v for (_, p, v, _) in pushes}
         assert vals["form_wc"] == pytest.approx(0.99)
-        assert vals["ipr_qwf_liq"] == pytest.approx(10.0 / 0.01)
+        assert vals["ipr_qwf_liq"] == pytest.approx(1000.0)
 
     def test_missing_surface_pressure_is_skipped_not_nulled(self, pushes):
         n, _ = ia.save_ipr_values(
-            "MPB-28", qwf_oil=300.0, pwf=900.0, res_pres=1800.0,
+            "MPB-28", qwf_liq=600.0, pwf=900.0, res_pres=1800.0,
             form_wc=0.5, form_gor=250.0, surf_pres=None,
         )
         assert n == 5
@@ -117,7 +134,7 @@ class TestSaveIprValues:
         monkeypatch.setattr(ia, "resolve_entry_user", lambda: "scott")
         monkeypatch.setattr(ia, "load_saved_ipr", lambda w: None)
         n, msg = ia.save_ipr_values(
-            "MPB-28", qwf_oil=300.0, pwf=900.0, res_pres=1800.0,
+            "MPB-28", qwf_liq=600.0, pwf=900.0, res_pres=1800.0,
             form_wc=0.5, form_gor=250.0,
         )
         assert n == 0 and msg.startswith(ia.VALUES_SAVE_FAILURE_PREFIX)
@@ -125,7 +142,7 @@ class TestSaveIprValues:
     def test_save_clears_the_load_memo(self, pushes):
         ia._saved_ipr_cache["MPB-28"] = {"stale": True}
         ia.save_ipr_values(
-            "MPB-28", qwf_oil=300.0, pwf=900.0, res_pres=1800.0,
+            "MPB-28", qwf_liq=600.0, pwf=900.0, res_pres=1800.0,
             form_wc=0.5, form_gor=250.0,
         )
         assert "MPB-28" not in ia._saved_ipr_cache
@@ -160,7 +177,7 @@ class TestSaveBatchStampAndComment:
 
     def _save(self, **kw):
         return ia.save_ipr_values(
-            "MPB-28", qwf_oil=300.0, pwf=900.0, res_pres=1800.0,
+            "MPB-28", qwf_liq=600.0, pwf=900.0, res_pres=1800.0,
             form_wc=0.5, form_gor=250.0, surf_pres=210.0, **kw
         )
 
@@ -207,7 +224,7 @@ class TestSaveBatchStampAndComment:
         monkeypatch.setattr(ia, "load_saved_ipr", lambda w: None)
         # Every value None/NaN => the payload loop pushes nothing.
         n, msg = ia.save_ipr_values(
-            "MPB-28", qwf_oil=float("nan"), pwf=float("nan"),
+            "MPB-28", qwf_liq=float("nan"), pwf=float("nan"),
             res_pres=float("nan"), form_wc=float("nan"), form_gor=float("nan"),
             comment="why did I click this",
         )
@@ -367,7 +384,7 @@ class TestFrictionSave:
 
     def _save(self, **fric):
         return ia.save_ipr_values(
-            "MPB-28", qwf_oil=300.0, pwf=900.0, res_pres=1800.0,
+            "MPB-28", qwf_liq=600.0, pwf=900.0, res_pres=1800.0,
             form_wc=0.5, form_gor=250.0, surf_pres=210.0, **fric,
         )
 

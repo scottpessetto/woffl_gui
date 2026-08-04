@@ -19,12 +19,12 @@ The returned dict is shaped like a row of
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
 
 from woffl.assembly.prop_hist_client import (
+    next_entry_datetime,
     push_eng_comment,
     push_prop,
     resolve_entry_user,
@@ -614,7 +614,7 @@ def load_saved_ipr(well_name: str):
 def save_ipr_values(
     well_name: str,
     *,
-    qwf_oil: float,
+    qwf_liq: float,
     pwf: float,
     res_pres: float,
     form_wc: float,
@@ -627,9 +627,16 @@ def save_ipr_values(
 ) -> tuple[int, str]:
     """Push the sidebar's CURRENT IPR + fluid values as the well's saved curve.
 
-    ``qwf_oil`` is the sidebar's OIL rate; prop_hist stores TOTAL LIQUID
-    (``ipr_qwf_liq``), converted at the given water cut (capped at 0.99 — the
-    store's MAX_MODELABLE_WC precedent, since oil/(1-wc) degenerates at 1.0).
+    ``qwf_liq`` is the TOTAL LIQUID rate at ``pwf`` (BLPD — formation oil plus
+    formation water) and lands in ``ipr_qwf_liq`` VERBATIM. It used to be the
+    sidebar's OIL rate, converted here as ``oil / (1 - wc)``; that made the
+    stored number a DERIVED quantity matching no well test (Scott on B-28,
+    2026-08-03: the stored 2135.29 BLPD was really 363 BOPD ÷ (1 − 0.83), and
+    because that WC is locked, editing it silently rescaled the engineer's
+    anchor). Liquid is what a well test measures, so liquid is what we store;
+    oil is derived from it at read time. ``form_wc`` is still capped at 0.99
+    for its OWN payload row (the store's MAX_MODELABLE_WC precedent — the
+    downstream oil = liq * (1 - wc) degenerates at 1.0).
     ``resvr_press`` is pushed too so the whole curve travels together — note
     that updates the well's CANONICAL reservoir pressure via the pivots, which
     is the point: the reviewed value IS the characterization.
@@ -645,9 +652,8 @@ def save_ipr_values(
     """
     try:
         wc = min(max(float(form_wc), 0.0), 0.99)
-        qwf_liq = float(qwf_oil) / (1.0 - wc)
         payload = {
-            "ipr_qwf_liq": qwf_liq,
+            "ipr_qwf_liq": float(qwf_liq),
             "ipr_pwf": float(pwf),
             "form_wc": wc,
             "form_gor": float(form_gor),
@@ -674,10 +680,11 @@ def save_ipr_values(
             payload[pid] = val
 
         entry_user = resolve_entry_user()
-        # ONE stamp for the whole save. Without it each push_prop would call
-        # now() itself and the rows would land microseconds apart, leaving the
-        # save with no batch identity for a comment to attach to.
-        batch_stamp = datetime.now(timezone.utc)
+        # ONE stamp for the whole save — the rows' only batch identity, and what
+        # the engineer's comment joins on. Allocated (not `datetime.now()`) so a
+        # second save inside the same 15.6 ms clock tick gets a strictly LATER
+        # stamp instead of colliding with this one: see next_entry_datetime.
+        batch_stamp = next_entry_datetime()
         n = 0
         for pid, val in payload.items():
             if val is None or (isinstance(val, float) and np.isnan(val)):
@@ -708,7 +715,13 @@ def save_ipr_values(
         )
         return n, (
             f"💾 Saved IPR values for {well_name} "
-            f"(qwf {qwf_liq:,.0f} BLPD · pwf {pwf:,.0f} · ResP {res_pres:,.0f} "
+            # The stored rate is the engineer's MEASURED liquid; the oil it
+            # implies at this WC is spelled out so a locked or edited WC is
+            # visible in the confirmation instead of quietly moving the
+            # anchor (Scott on B-28, 2026-08-03).
+            f"(qwf {float(qwf_liq):,.0f} BLPD → "
+            f"{float(qwf_liq) * (1.0 - wc):,.0f} BOPD at this WC · "
+            f"pwf {pwf:,.0f} · ResP {res_pres:,.0f} "
             f"· WC {wc:.2f} · GOR {form_gor:,.0f}{fric_note}) — restores on "
             f"every open.{comment_note}"
         )

@@ -33,13 +33,20 @@ from __future__ import annotations
 import math
 import os
 import re
+import threading
 import time
-from datetime import datetime, timezone
-from typing import Optional, Tuple
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Sequence, Tuple
 
 import pandas as pd
 
-from woffl.assembly.databricks_client import execute_query, execute_write
+from woffl.assembly.databricks_client import (
+    WritesDisabledError,
+    _execute_via_connector,
+    execute_query,
+    execute_write,
+)
 from woffl.assembly.well_test_client import _normalize_well_name
 
 PROP_XREF_QUERY = "SELECT prop_id FROM mpu.wells.prop_xref"
@@ -77,7 +84,146 @@ _xref_cache: dict = {"value": None, "expires_at": 0.0}
 _enthid_cache: dict = {"value": None, "expires_at": 0.0}  # {name: [enthid, ...]}
 _entry_user_cache: dict = {"value": None}
 
+# ── entry_datetime allocation ───────────────────────────────────────────────
+#
+# entry_datetime is load-bearing twice over: every read resolves a property by
+# "latest row per (enthid, prop_id) ORDER BY entry_datetime DESC", and it is the
+# ONLY thing tying one logical save's rows together (prop_hist has no batch id),
+# which is what `mpu.wells.woffl_eng_comment` joins on to attach the engineer's
+# note. Both properties need stamps that are strictly INCREASING per save.
+#
+# `datetime.now()` does not provide that. The Windows system clock has 15.625 ms
+# granularity — measured on this workstation, 2000 back-to-back
+# `datetime.now(timezone.utc)` calls returned ONE distinct value. Two saves
+# inside one tick therefore collided outright: the comments merged (the
+# comment join is `GROUP BY enthid, entry_datetime`, so one note won), and worse,
+# the tie made `ROW_NUMBER() ... ORDER BY entry_datetime DESC` arbitrary — the
+# well could reopen on the FIRST save's values, silently discarding the second.
+#
+# So stamps are allocated here instead: wall-clock when the clock has moved,
+# else the previous stamp plus one microsecond (the column round-trips to the
+# microsecond, verified 2026-07-08). Strictly monotonic per process, which is
+# the failure mode that actually occurs — a double-click or two quick saves in
+# one session. It does NOT coordinate across processes; on Databricks Apps that
+# is one Streamlit process per container, and two containers landing in the same
+# MICROsecond is a different order of unlikely from the 15.6 ms window this
+# closes. Bumping can run the stamp ahead of the true clock by 1 µs per row
+# issued inside a single tick; a save is at most nine rows, so the skew is
+# bounded far below the granularity it is compensating for.
+_STAMP_LOCK = threading.Lock()
+_STAMP_TICK = timedelta(microseconds=1)
+_last_stamp: Optional[datetime] = None
+
+
+def next_entry_datetime() -> datetime:
+    """A UTC stamp strictly greater than every stamp this process has issued.
+
+    Use for ANY new prop_hist write. A caller writing several props as ONE
+    logical save takes a single stamp from here and passes it to every
+    ``push_prop`` (see :func:`push_prop`'s ``entry_datetime``) — that shared
+    value is the save's batch identity, so it must not be re-allocated per row.
+    """
+    global _last_stamp
+    with _STAMP_LOCK:
+        stamp = datetime.now(timezone.utc)
+        if _last_stamp is not None and stamp <= _last_stamp:
+            stamp = _last_stamp + _STAMP_TICK
+        _last_stamp = stamp
+        return stamp
+
+
+# ── rendering stamps for humans ─────────────────────────────────────────────
+#
+# Stamps are STORED as UTC instants and that is not negotiable: entry_datetime
+# is an ordering key before it is a readable field. Every read resolves a
+# property by "latest row per (enthid, prop_id) ORDER BY entry_datetime DESC",
+# so the column has to be monotonic and unambiguous.
+#
+# Storing Alaska wall time instead would break that twice a year. On
+# 2026-11-01 local 01:30 occurs TWICE — 09:30 and 10:30 UTC — so two rows an
+# hour apart would carry the identical stamp and the later one could lose the
+# tie-break. That is the same class of bug as the 15.6 ms clock collision
+# fixed in next_entry_datetime, except a naive-local column makes it
+# unfixable rather than merely subtle.
+#
+# The actual complaint (Kaelin, 2026-08-03: "have a 19:22 timestamp, which I
+# don't know what that means") is a DISPLAY problem — 19:22 UTC is 11:22 AKDT.
+# So convert at the edge, everywhere a person reads a stamp, and label the
+# zone. Storage stays UTC.
+ALASKA_TZ = "America/Anchorage"
+
+
+def to_alaska(ts, naive: bool = True):
+    """A UTC stamp rendered in Alaska local time (AKDT/AKST per the date).
+
+    ``naive=True`` (default) drops the offset once converted, which is what
+    display widgets want — a bare wall-clock reading under a column header
+    that names the zone. ``naive=False`` keeps it tz-aware for ``%Z``.
+
+    Rows at EXACTLY midnight UTC are left alone. Those are the pre-2026-07-08
+    ``entry_date DATE`` rows the migration widened into timestamps — the DART
+    bulk load of 2026-04-16 and friends. They never carried a time of day, so
+    shifting them by the UTC offset would both invent a precision they don't
+    have and move them to the previous DATE (2026-04-16 -> "2026-04-15 16:00"),
+    which reads as a real evening edit that never happened. A genuine app write
+    has microsecond precision, so exact midnight is a safe sentinel for "this
+    is a date, not an instant".
+
+    Fail-soft: an unparseable value, or a runtime with no tz database, returns
+    the input untouched. A caption is never worth crashing a page over.
+    """
+    if ts is None:
+        return ts
+    try:
+        from zoneinfo import ZoneInfo
+
+        import pandas as _pd
+
+        stamp = _pd.Timestamp(ts)
+        stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp
+        if (stamp.hour, stamp.minute, stamp.second, stamp.microsecond) == (0, 0, 0, 0):
+            return stamp.tz_localize(None) if naive else stamp
+        local = stamp.tz_convert(ZoneInfo(ALASKA_TZ))
+        return local.tz_localize(None) if naive else local
+    except Exception:
+        return ts
+
+
+def format_alaska(ts, fmt: str = "%Y-%m-%d %H:%M %Z") -> str:
+    """``to_alaska`` as a labelled string, e.g. '2026-08-03 11:22 AKDT'."""
+    local = to_alaska(ts, naive=False)
+    try:
+        return local.strftime(fmt)
+    except Exception:
+        return str(ts)
+
+
 _PROP_ID_SHAPE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+# As-built completion facts. These describe steel in the ground — they come
+# off the wellbore diagram / tubing tally and are owned by the data team, NOT
+# by anything this app fits, solves, or defaults. woffl only ever CONSUMES
+# them (vw_prop_mech -> JP_MD / casing dims), so any push at this id is a bug
+# by construction, and a silent one: the solver keeps running on a fabricated
+# depth while the well file now disagrees with the diagram.
+#
+# 2026-08-03 incident: the pad review write-through pushed jpump_md and
+# casing_out_dia. Eight wells (C-02, C-05, C-015, C-026, C-40, G-16, J-9,
+# J-26) had their measured depth replaced by the locally interpolated JP_TVD
+# (e.g. C-002: 7688 ft MD -> 6270.223 ft) and their casing OD by the 6.875
+# fallback. The two fabrication sites are fixed at the source
+# (step_review_wells) and the ids are off the write-through map
+# (review_persistence.FIELD_MAP); this is the chokepoint backstop so no
+# future caller can reintroduce it.
+AS_BUILT_PROP_IDS = frozenset(
+    {
+        "jpump_md",
+        "casing_out_dia",
+        "casing_inn_dia",
+        "tubing_out_dia",
+        "tubing_inn_dia",
+    }
+)
 
 
 class PropHistError(ValueError):
@@ -87,6 +233,11 @@ class PropHistError(ValueError):
 class UnknownPropIdError(PropHistError):
     """Raised when prop_id isn't a valid key in mpu.wells.prop_xref (or is
     shaped unsafely for SQL interpolation in the read path)."""
+
+
+class AsBuiltPropError(PropHistError):
+    """Raised when a write targets an as-built completion property
+    (``AS_BUILT_PROP_IDS``). Read-only from woffl: the data team owns them."""
 
 
 class EnthidResolutionError(PropHistError):
@@ -274,7 +425,8 @@ def push_prop(
     Args:
         well_name: any well-name spelling the app uses (GUI 'MPB-28' or DB
             'B-028') -- normalized internally.
-        prop_id: must be a valid key in mpu.wells.prop_xref.
+        prop_id: must be a valid key in mpu.wells.prop_xref, and must not be
+            an as-built completion fact (``AS_BUILT_PROP_IDS``).
         value: numeric prop_value, or ``None`` to write a SQL NULL. ``None``
             is the un-pin/"no value" marker (see `ipr_anchor.clear_ipr_pin`)
             -- NEVER a negative sentinel, since real values (e.g. `wt_uid`)
@@ -291,11 +443,23 @@ def push_prop(
             ``mpu.wells.woffl_eng_comment`` joins on to attach the engineer's
             comment to the save. Verified to round-trip to the microsecond.
 
+    Raises:
+        AsBuiltPropError: prop_id is an as-built completion fact. woffl reads
+            those; the data team writes them.
+
     Returns:
         Rowcount from execute_write. The Databricks connector reports ``-1``
         for INSERT rather than an affected-row count, so treat any non-raising
         return as success — do NOT assert ``== 1``.
     """
+    if prop_id in AS_BUILT_PROP_IDS:
+        raise AsBuiltPropError(
+            f"prop_id '{prop_id}' is an as-built completion property — woffl "
+            "reads it from vw_prop_mech and must never write it. Solver output "
+            "and UI defaults are not measurements; correct the well file "
+            "instead."
+        )
+
     valid_ids = fetch_prop_xref()
     if prop_id not in valid_ids:
         raise UnknownPropIdError(
@@ -318,10 +482,233 @@ def push_prop(
         "enthid": enthid,
         "prop_id": prop_id,
         "prop_value": prop_value,
-        "entry_datetime": entry_datetime or datetime.now(timezone.utc),
+        # An explicit stamp is a caller's BATCH identity — used verbatim, never
+        # re-allocated, or the save's rows would stop sharing a key.
+        "entry_datetime": entry_datetime or next_entry_datetime(),
         "entry_user": entry_user,
     }
     return execute_write(PROP_HIST_INSERT_SQL, parameters)
+
+
+# ── deleting rows: the sanctioned escape hatch, approval-gated ──────────────
+#
+# prop_hist is append-only BY DEFAULT and that is the right default: the trail
+# is how the 2026-08-03 as-built incident was found at all. But append cannot
+# undo everything — when the app wrote rows that should never have existed,
+# Scott's call (2026-08-04) was to remove them outright rather than bury them
+# under a correction, and he has MODIFY on the table.
+#
+# So deletion lives here, next to push_prop, instead of being rediscovered and
+# rewritten as a throwaway script every time. It is deliberately awkward:
+#
+#   1. ALLOW_PROP_HIST_DELETE must be set — SEPARATE from
+#      ALLOW_DATABRICKS_WRITES, so turning normal saves on never turns deletes
+#      on. Set it for one invocation; never in .env, app.yaml, or a Databricks
+#      App config.
+#   2. ALLOW_DATABRICKS_WRITES must ALSO be set (the existing write gate).
+#   3. `apply=True` must be passed; the default is a dry run.
+#   4. `expect` must equal the manifest length — a caller states the row count
+#      up front and a mismatch aborts, so a broadened manifest can't quietly
+#      take more than intended.
+#   5. Every row is named EXPLICITLY (well, prop_id, prop_value,
+#      entry_datetime) and must match exactly one live row. There is no
+#      predicate/bulk form: no "delete everything since <date>".
+#   6. `reason` is required and echoed into the report.
+#
+# NO GUI PATH MAY CALL THIS — enforced by tests/test_prop_hist_delete.py, which
+# greps woffl/gui for the symbol. Deleting well data is a deliberate act at a
+# console with a human reading the dry run, not a button.
+#
+# Unlike push_prop, as-built prop_ids are ALLOWED here: removing bad as-built
+# rows is precisely what this exists for. push_prop still refuses to author
+# them, which is the asymmetry we want — woffl can retract its own bad writes,
+# never originate one.
+
+DELETE_GATE_ENV = "ALLOW_PROP_HIST_DELETE"
+
+PROP_HIST_DELETE_SQL = (
+    "DELETE FROM mpu.wells.prop_hist WHERE enthid = :enthid "
+    "AND prop_id = :prop_id AND prop_value = :prop_value "
+    "AND entry_datetime = :entry_datetime"
+)
+
+
+class DeleteNotApprovedError(PropHistError):
+    """Raised when a delete is attempted without the explicit approval gate,
+    the row-count assertion, or a reason."""
+
+
+@dataclass(frozen=True)
+class DeleteTarget:
+    """Exactly one prop_hist row, named in full.
+
+    ``entry_datetime`` is the microsecond-precision stamp from the row itself
+    (read it back from prop_hist — do NOT reconstruct it). Note that Kaelin's
+    DART ``delete_prop`` matches on an ``entry_date`` DATE column; that column
+    was migrated to ``entry_datetime TIMESTAMP`` on 2026-07-08 and no longer
+    exists, so that predicate raises column-not-found against this table.
+    """
+
+    well_name: str
+    prop_id: str
+    prop_value: float
+    entry_datetime: datetime
+
+
+def delete_gate_enabled() -> bool:
+    """Whether the delete-specific approval gate is set for this process."""
+    return os.environ.get(DELETE_GATE_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _resolve_targets(targets: Sequence[DeleteTarget]) -> list[dict]:
+    """Manifest -> bind-parameter dicts, with every row validated.
+
+    Raises before touching anything if a prop_id isn't a prop_xref key, a well
+    doesn't resolve to exactly one enthid, or a row doesn't match exactly one
+    live prop_hist row (0 = already gone or a wrong stamp; >1 = the manifest is
+    not specific enough and a blind delete would take a row nobody reviewed).
+    """
+    valid = fetch_prop_xref()
+    resolved = []
+    for t in targets:
+        if t.prop_id not in valid:
+            raise UnknownPropIdError(
+                f"prop_id '{t.prop_id}' is not in mpu.wells.prop_xref."
+            )
+        params = {
+            "enthid": _resolve_enthid(t.well_name),
+            "prop_id": t.prop_id,
+            "prop_value": float(t.prop_value),
+            "entry_datetime": t.entry_datetime,
+        }
+        n = int(
+            execute_query(
+                "SELECT count(*) AS n FROM mpu.wells.prop_hist "
+                f"WHERE enthid = {params['enthid']} "
+                f"AND prop_id = '{t.prop_id}' "
+                f"AND prop_value = {params['prop_value']!r} "
+                f"AND entry_datetime = '{t.entry_datetime.isoformat()}'"
+            )["n"].iloc[0]
+        )
+        if n != 1:
+            raise DeleteNotApprovedError(
+                f"{t.well_name}/{t.prop_id} at {t.entry_datetime.isoformat()} "
+                f"matches {n} rows, expected exactly 1 — refusing the batch."
+            )
+        resolved.append(params)
+    return resolved
+
+
+def delete_props(
+    targets: Sequence[DeleteTarget],
+    *,
+    reason: str,
+    expect: int,
+    apply: bool = False,
+) -> dict:
+    """Delete explicitly-named prop_hist rows. Dry run unless ``apply=True``.
+
+    THIS IS NOT PART OF ANY APP FLOW. See the block comment above for the
+    approval model. Recipe (the 2026-08-03 as-built cleanup, verbatim):
+
+        from woffl.assembly.audit_as_built_writes import (
+            fetch_history, find_overwrites)
+        hits = find_overwrites(fetch_history(), since)   # what went wrong
+        targets = [DeleteTarget(r.well_name, r.prop_id,
+                                r.current_value, r.current_at)
+                   for _, r in hits.iterrows()]
+        delete_props(targets, reason="...", expect=len(targets))          # dry
+        delete_props(targets, reason="...", expect=len(targets), apply=True)
+
+    Run the dry pass first and READ IT. Then, for the real pass only:
+        ALLOW_DATABRICKS_WRITES=true ALLOW_PROP_HIST_DELETE=true python ...
+
+    Args:
+        targets: the rows to remove, each named in full.
+        reason: why — required, non-empty, echoed into the report.
+        expect: must equal ``len(targets)``; the caller's own count assertion.
+        apply: False (default) validates and reports, touching nothing.
+
+    Returns:
+        ``{"planned", "deleted", "applied", "reason", "version_before",
+        "version_after", "undo"}``. ``undo`` is a ready ``RESTORE TABLE``
+        statement — Delta time travel is the only way back, so it is surfaced
+        rather than left to be looked up under pressure.
+
+    Raises:
+        DeleteNotApprovedError: a gate, the count assertion, or the reason is
+            missing, or a target doesn't match exactly one row.
+        WritesDisabledError: ALLOW_DATABRICKS_WRITES is unset.
+    """
+    if not (reason or "").strip():
+        raise DeleteNotApprovedError("A non-empty `reason` is required.")
+    if expect != len(targets):
+        raise DeleteNotApprovedError(
+            f"expect={expect} but the manifest has {len(targets)} row(s) — "
+            "refusing. State the count you intend to delete."
+        )
+
+    resolved = _resolve_targets(targets)
+    version_before = _table_version()
+    report = {
+        "planned": len(resolved),
+        "deleted": 0,
+        "applied": False,
+        "reason": reason.strip(),
+        "version_before": version_before,
+        "version_after": version_before,
+        "undo": None,
+    }
+    if not apply:
+        return report
+
+    if not delete_gate_enabled():
+        raise DeleteNotApprovedError(
+            f"{DELETE_GATE_ENV} is not set. Deleting prop_hist rows needs "
+            "explicit approval, separate from the normal write gate."
+        )
+    from woffl.assembly.databricks_client import _write_gate_enabled
+
+    if not _write_gate_enabled():
+        raise WritesDisabledError(
+            "Databricks writes are disabled. Set ALLOW_DATABRICKS_WRITES=true."
+        )
+
+    deleted = 0
+    for params in resolved:
+        def _run(cursor, _p=params):
+            # execute_write is INSERT-only by design (_validate_single_insert),
+            # so a delete goes to the connector directly. Still parameterized.
+            cursor.execute(PROP_HIST_DELETE_SQL, _p)
+            return cursor.rowcount
+
+        _execute_via_connector(_run)  # connector reports -1 for DML; verify below
+        deleted += 1
+
+    version_after = _table_version()
+    report.update(
+        applied=True,
+        deleted=deleted,
+        version_after=version_after,
+        undo=(
+            "RESTORE TABLE mpu.wells.prop_hist TO VERSION AS OF "
+            f"{version_before};"
+        ),
+    )
+    return report
+
+
+def _table_version() -> int:
+    """Current Delta version of prop_hist — the handle for a time-travel undo."""
+    return int(
+        execute_query(
+            "SELECT max(version) AS v FROM (DESCRIBE HISTORY mpu.wells.prop_hist)"
+        )["v"].iloc[0]
+    )
 
 
 _MAX_COMMENT_CHARS = 500

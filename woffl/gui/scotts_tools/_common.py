@@ -229,6 +229,28 @@ def casing_dims_from_chars(chars: dict | None) -> tuple[float, float]:
     return 6.875, 0.5
 
 
+def has_databricks_casing(chars: dict | None) -> bool:
+    """True iff ``casing_out_dia`` and ``casing_inn_dia`` are both populated.
+
+    The companion to :func:`casing_dims_from_chars`, which silently substitutes
+    6.875/0.5 when they are not — callers that must distinguish a MEASURED
+    casing from that substitute (the sidebar's read-only lock, JP Calibration's
+    DB/fallback provenance badge) ask here first.
+    """
+    if not chars:
+        return False
+    out_dia = chars.get("casing_out_dia")
+    inn_dia = chars.get("casing_inn_dia")
+    if out_dia is None or inn_dia is None:
+        return False
+    try:
+        if pd.isna(out_dia) or pd.isna(inn_dia):
+            return False
+        return float(out_dia) > float(inn_dia) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 # ── well config + objects ──────────────────────────────────────────────────
 
 

@@ -29,6 +29,13 @@ with the JP tracker), ``well_reviewed``/``well_offline`` (workflow state, not
 well characteristics), direction / field model / PF pin (live-detected or
 derivable on open).
 
+Also NOT persisted, as of 2026-08-03: the as-built completion dimensions
+(``jpump_md``, ``casing_out_dia``, ``tubing_out_dia`` — see
+``prop_hist_client.AS_BUILT_PROP_IDS``). Reviews carry model values; the pump
+depth and pipe sizes are measurements woffl reads and never authors. They were
+in this map for four days and overwrote eight wells' measured depths with
+interpolated TVD and their casing OD with the 6.875 fallback.
+
 WRITE DISCIPLINE
 ----------------
 * Per-(well, prop) baseline BULK-READ from prop_hist at first sync — only
@@ -89,9 +96,6 @@ FIELD_MAP: list = [
     Field("oil_api", "form_oil_api", True),
     Field("gas_sg", "form_gas_sg", True),
     Field("wat_sg", "form_wat_sg", True),
-    Field("jpump_md", "jpump_md", True),
-    Field("tubing_od", "tubing_out_dia", True),
-    Field("casing_od", "casing_out_dia", True),
     Field("ken_well", "jpfric_entry", True),
     Field("kth_well", "jpfric_throat", True),
     Field("kdi_well", "jpfric_diffuser", True),
@@ -103,6 +107,18 @@ FIELD_MAP: list = [
     Field("form_gor", "form_gor", False),
     Field("surf_pres", "surf_press", False),
 ]
+
+# NOT persisted, deliberately: jpump_md / casing_out_dia / tubing_out_dia and
+# friends (``prop_hist_client.AS_BUILT_PROP_IDS``). Everything above is a
+# reviewed MODEL value — a pressure, a PVT property, a friction coefficient,
+# an IPR anchor — that the engineer decided and the pivots should follow. The
+# as-built dimensions are the opposite: measurements off the wellbore diagram
+# that woffl only reads. A store entry always carries SOME number for them
+# (a Databricks value when present, a UI/force-fit default otherwise), so
+# write-through could not tell "the engineer changed the pump depth" from
+# "no row existed and 6.875 got substituted" — and it pushed the substitute.
+# See the 2026-08-03 incident note on AS_BUILT_PROP_IDS. push_prop rejects
+# these ids outright now; keeping them out of FIELD_MAP is the first gate.
 
 _BASELINE_KEY = "_rp_baseline_{pad}"
 _SYNCED_FLAG = "_rp_synced_{pad}"

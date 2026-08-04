@@ -189,11 +189,11 @@ def _set_sidebar(logical_key: str, value, *, as_int: bool) -> None:
 def _hydrate_sidebar_from_entry(entry: dict) -> None:
     """Push a saved store entry back onto the sidebar so re-opening a well shows
     the *reviewed* values rather than a fresh IPR auto-populate."""
-    # Sidebar qwf is OIL (BOPD); the store keeps the as-reviewed oil rate
-    # alongside the total-liquid qwf — use the oil rate.
-    oil = entry.get(wrs.OIL_RATE_FIELD)
-    if oil is not None:
-        _set_sidebar("qwf", oil, as_int=True)
+    # Sidebar qwf is TOTAL LIQUID (BLPD) and so is the store's `qwf`, so the
+    # engineer's reviewed rate goes back verbatim. `OIL_RATE_FIELD` is the
+    # DERIVED oil kept for audit — seeding from it would rescale the anchor
+    # by 1/(1 - wc) on every reopen (B-28, 2026-08-03).
+    _set_sidebar("qwf", entry["qwf"], as_int=True)
     _set_sidebar("pwf", entry["pwf"], as_int=True)
     _set_sidebar("res_pres", entry["res_pres"], as_int=True)
     _set_sidebar("form_wc", round(float(entry["form_wc"]), 2), as_int=False)
@@ -715,6 +715,7 @@ def _offline_stub_entry(well: str) -> dict:
     """
     import pandas as pd
 
+    from woffl.gui.scotts_tools._common import casing_dims_from_chars
     from woffl.gui.utils import get_well_data
 
     wd = get_well_data(well) or {}
@@ -731,7 +732,12 @@ def _offline_stub_entry(well: str) -> dict:
         except (TypeError, ValueError):
             return None
 
+    # As-built geometry: whatever Databricks has, never a substitute. JP_MD in
+    # particular is a MEASURED depth — None here means "unknown", and
+    # WellConfig falls back to TVD for the (offline, placeholder) physics
+    # without any code claiming TVD *is* the measured depth.
     tvd = float(wd.get("JP_TVD") or 4065)
+    casing_od, casing_thk = casing_dims_from_chars(wd)
     return {
         "well_name": well,
         "res_pres": 1700.0,
@@ -739,15 +745,17 @@ def _offline_stub_entry(well: str) -> dict:
         "jpump_tvd": tvd,
         "tubing_od": float(wd.get("out_dia") or 4.5),
         "tubing_thickness": float(wd.get("thick") or 0.5),
-        "casing_od": 6.875,
-        "casing_thickness": 0.5,
+        "casing_od": casing_od,
+        "casing_thickness": casing_thk,
         "form_wc": 0.5,
         "form_gor": 250.0,
         "surf_pres": 250.0,
+        # Placeholder IPR: qwf is TOTAL LIQUID (BLPD) like everywhere else in
+        # the store, so the derived oil at WC 0.5 is the 50 BOPD below.
         "qwf": 100.0,
         "pwf": 600.0,
         wrs.OIL_RATE_FIELD: 50.0,
-        "jpump_md": tvd,
+        "jpump_md": _opt("JP_MD"),
         "oil_api": _opt("oil_api"),
         "gas_sg": _opt("gas_sg"),
         "wat_sg": _opt("wat_sg"),
@@ -898,8 +906,21 @@ def _batch_automatch_inputs(
     else:
         surf = 250.0
     # Geometry: Databricks props → reviewed entry → defaults (a reviewed well
-    # with no Databricks row must still be matchable).
+    # with no Databricks row must still be matchable). TVD drives the survey
+    # fit; JP_MD is the MEASURED pump depth and is carried through untouched
+    # (None when Databricks has none) — the two are not interchangeable, and
+    # on a deviated well (J-9: 10199 MD vs 6592 TVD) swapping them throws away
+    # ~3600 ft of tubing friction.
+    from woffl.gui.scotts_tools._common import casing_dims_from_chars
+
     tvd = int(wd.get("JP_TVD") or entry.get("jpump_tvd") or 4065)
+    jp_md = wd.get("JP_MD")
+    try:
+        jp_md = float(jp_md) if jp_md is not None and not pd.isna(jp_md) else None
+    except (TypeError, ValueError):
+        jp_md = None
+    if jp_md is None:
+        jp_md = entry.get("jpump_md")
     if "is_sch" in wd:
         field = "schrader" if wd.get("is_sch", True) else "kuparuk"
     elif entry.get("field_model") in ("Schrader", "Kuparuk"):
@@ -908,8 +929,12 @@ def _batch_automatch_inputs(
         field = "schrader"
     tub_od = float(wd.get("out_dia") or entry.get("tubing_od") or 4.5)
     tub_th = float(wd.get("thick") or entry.get("tubing_thickness") or 0.5)
+    # Real casing (vw_prop_mech) — in reverse circulation the annulus IS the
+    # PF conduit, so a substituted 6.875/0.5 mis-sizes the PF friction the
+    # match is fitting.
+    casing_od, casing_thk = casing_dims_from_chars(wd)
     try:
-        _, _, wellbore = create_pipes(tub_od, tub_th, 6.875, 0.5)
+        _, _, wellbore = create_pipes(tub_od, tub_th, casing_od, casing_thk)
         wp = create_well_profile_from_survey(well, tvd, field)
     except Exception:
         return None, None, "geometry/survey build failed"
@@ -954,6 +979,9 @@ def _batch_automatch_inputs(
         return v if v is not None else entry.get(wk)
 
     kwargs = dict(
+        # OIL, deliberately: joint_match solves against the MEASURED oil rate
+        # from recent well tests. _apply_batch_row converts its qwf_oil back
+        # to the store's liquid convention at the seam.
         oil_target=oil,
         pf_target=pf,
         pres=pres,
@@ -984,8 +1012,8 @@ def _batch_automatch_inputs(
         "jpump_direction": direction,
         "tubing_od": tub_od,
         "tubing_thickness": tub_th,
-        "casing_od": 6.875,
-        "casing_thickness": 0.5,
+        "casing_od": casing_od,
+        "casing_thickness": casing_thk,
         "form_wc": float(wc),
         "form_gor": int(round(gor)),
         "form_temp": int(round(form_temp)),
@@ -996,6 +1024,7 @@ def _batch_automatch_inputs(
         "bubble_point": _pvt("bubble_point"),
         "surf_pres": int(round(surf)),
         "jpump_tvd": int(tvd),
+        "jpump_md": jp_md,
         "has_bhp": bhp is not None,
         "ipr_fallback": ipr_fallback,  # None, or "reviewed entry" (gaugeless)
     }
@@ -1040,7 +1069,11 @@ def _apply_batch_row(pad: str, store: dict, r, raw, *, note: str = "") -> str | 
             jpump_tvd=int(raw["jpump_tvd"]),
             rho_pf=62.4,
             ppf_surf=int(round(res.ppf_surf)),
-            qwf=int(round(res.qwf_oil)),
+            # Oil-solver seam: JointMatchResult.qwf_oil is the matched OIL
+            # rate (joint_match solves against a measured oil target), while
+            # SimulationParams.qwf is TOTAL LIQUID — convert. WC clamped at
+            # 0.99 so the division can't degenerate (MAX_MODELABLE_WC).
+            qwf=int(round(res.qwf_oil / (1.0 - min(float(raw["form_wc"]), 0.99)))),
             pwf=int(round(res.pwf)),
             pres=int(round(res.pres)),
         )
@@ -1051,6 +1084,10 @@ def _apply_batch_row(pad: str, store: dict, r, raw, *, note: str = "") -> str | 
             # an engineer's decision or an assumption, never a Vogel fit.
             ipr_source=("forced" if raw.get("ipr_fallback") else "vogel"),
             bhp_source="gauged" if raw.get("has_bhp") else "assumed",
+            # The MEASURED depth from vw_prop_mech, so a batch-matched entry
+            # feeds the optimizer the same MD a hand review would (WellConfig
+            # falls back to TVD only when Databricks genuinely has no JP_MD).
+            jpump_md=raw.get("jpump_md"),
             offline=off,
             pin_pf_pressure=True,
             notes=note,

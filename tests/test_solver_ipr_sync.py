@@ -94,7 +94,7 @@ def _call(fs, *, mode, date, qwf, pwf, res_p, form_wc, fgor):
             WELL,
             anchor_mode=mode,
             anchor_date=date,
-            qwf_oil=qwf,
+            qwf_liq=qwf,
             pwf=pwf,
             res_p=res_p,
             form_wc=form_wc,
@@ -303,6 +303,21 @@ class _FakeStWidgets:
         if key is not None and key in self.session_state:
             return bool(self.session_state[key])
         val = bool(value)
+        if key is not None:
+            self.session_state[key] = val
+        return val
+
+    def text_input(self, label, value="", key=None, max_chars=None, **kw):
+        """Keyed text box, same two-tier contract as the widgets above.
+
+        The 📌 save flow renders one (the engineer's "why these values?" note
+        that ``woffl_eng_comment`` hangs off the save's batch stamp). Without it
+        the fake raised AttributeError and took EIGHT pin/clear assertions with
+        it — including the ones covering ``save_ipr_values``' own call.
+        """
+        if key is not None and key in self.session_state:
+            return str(self.session_state[key])
+        val = str(value or "")
         if key is not None:
             self.session_state[key] = val
         return val

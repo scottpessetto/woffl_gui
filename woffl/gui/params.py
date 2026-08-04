@@ -38,7 +38,9 @@ class SimulationParams:
         jpump_tvd: Jetpump true vertical depth, ft
         rho_pf: Power fluid density, lbm/ft³
         ppf_surf: Power fluid surface pressure, psi
-        qwf: Well flow rate for IPR, bbl/day
+        qwf: TOTAL LIQUID rate at ``pwf`` (BLPD) — the IPR anchor rate. See
+            the RATE CONVENTION note below; use ``qwf_oil`` / ``qwf_water``
+            rather than re-deriving them at a call site.
         pwf: Flowing bottom hole pressure for IPR, psi
         pres: Reservoir pressure, psi
         nozzle_batch_options: Nozzle sizes for batch analysis
@@ -50,6 +52,28 @@ class SimulationParams:
         power_fluid_step: Step size for power fluid pressure range, psi
         selected_well: Selected well name or "Custom"
         well_data: Well characteristics dict from jp_chars.csv, or None
+
+    RATE CONVENTION (Scott, 2026-08-03)
+    -----------------------------------
+    ``qwf`` is the well's TOTAL LIQUID rate at ``pwf`` in BLPD, EXCLUDING
+    returned power fluid — formation oil + formation water. It is the measured
+    quantity: ``vw_well_test.WtTotalFluid`` is what the Vogel fit is built on
+    (``ipr_analyzer.compute_vogel_coefficients`` returns it as ``qwf``), and
+    it is what ``prop_hist.ipr_qwf_liq`` stores. Oil and water are DERIVED
+    from it through the assumed / 🔒 locked water cut:
+
+        oil   = qwf * (1 - form_wc)      ``qwf_oil``
+        water = qwf * form_wc            ``qwf_water``
+
+    It used to run the other way — the sidebar held OIL and the liquid rate
+    was back-computed as ``oil / (1 - wc)``. That made the *derived* number
+    the persisted one, so B-28's stored 2135.29 BLPD matched no well test
+    (it was 363 BOPD / (1 - 0.83)) and every WC edit silently rescaled the
+    engineer's anchor. Derive downward from the measurement, never upward.
+
+    ``woffl.flow.inflow.InFlow`` keeps its library contract of a SINGLE-PHASE
+    rate, so every construction site feeds it :attr:`inflow_rate`, never
+    ``qwf`` raw.
     """
 
     # Jetpump parameters
@@ -111,3 +135,26 @@ class SimulationParams:
     # Well selection
     selected_well: str = "Custom"
     well_data: Optional[dict] = None
+
+    @property
+    def qwf_oil(self) -> float:
+        """Oil rate at ``pwf`` (BOPD) — derived: ``qwf * (1 - form_wc)``."""
+        return float(self.qwf) * (1.0 - float(self.form_wc))
+
+    @property
+    def qwf_water(self) -> float:
+        """Formation water rate at ``pwf`` (BWPD) — ``qwf * form_wc``. Excludes
+        returned power fluid (that is a PF-circuit rate, not inflow)."""
+        return float(self.qwf) * float(self.form_wc)
+
+    @property
+    def inflow_rate(self) -> float:
+        """The single-phase rate to hand ``InFlow`` (the IPR is anchored on it).
+
+        Normally the oil rate. In water-pump (dewatering) mode the sidebar
+        forces ``form_wc = 1.0``, which would make the oil rate identically
+        zero and collapse the curve — there the produced phase IS the liquid,
+        so the full ``qwf`` is the anchor.
+        """
+        return float(self.qwf) if self.model_as_water else self.qwf_oil
+

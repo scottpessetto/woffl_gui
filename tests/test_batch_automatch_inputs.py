@@ -268,6 +268,11 @@ def test_apply_batch_row_writes_store_with_note():
     assert entry["review_throat"] == "B"
     assert entry["jpump_direction"] == "forward"
     assert entry["res_pres"] == pytest.approx(1700.0)
+    # The oil-solver seam: joint_match returns OIL, the store keeps LIQUID.
+    # SimulationParams.qwf is an int, so 150 / 0.35 = 428.57 rounds to 429 and
+    # the derived oil comes back within a barrel of the matched 150 BOPD.
+    assert entry["qwf"] == pytest.approx(429.0)
+    assert entry[srw.wrs.OIL_RATE_FIELD] == pytest.approx(150.0, abs=0.5)
 
 
 def test_single_test_allowed_with_reviewed_entry(mocked_sources):
@@ -338,3 +343,92 @@ def test_no_props_with_entry_uses_entry_geometry(mocked_sources):
     assert raw["jpump_tvd"] == 5100
     assert raw["tubing_od"] == pytest.approx(3.5)
     assert raw["field_model"] == "Kuparuk"
+
+
+# ── as-built geometry (2026-08-03 incident) ─────────────────────────────────
+#
+# The batch path used to hardcode 6.875/0.5 casing and drop JP_MD entirely.
+# Both fed the review store, and the store fed prop_hist's write-through:
+# eight wells' measured pump depth was replaced by the interpolated JP_TVD and
+# their casing OD by the fallback. prop_hist is now read-only for these ids —
+# these tests pin the other half, that woffl MODELS the real numbers.
+
+_REAL_CASING = {"casing_out_dia": 9.625, "casing_inn_dia": 8.681}
+
+
+def test_measured_md_flows_into_the_batch_and_the_store(mocked_sources):
+    """JP_MD is a measured depth, not something to re-derive from TVD. On a
+    deviated well the two differ by thousands of feet of tubing friction."""
+    mocked_sources["well_data"] = {**mocked_sources["well_data"], "JP_MD": 10199.0}
+
+    _kw, raw, why = srw._batch_automatch_inputs("MPS-99", object(), 3300.0)
+
+    assert why is None
+    assert raw["jpump_md"] == pytest.approx(10199.0)
+    assert raw["jpump_tvd"] == 4200  # TVD stays TVD
+
+
+def test_missing_md_stays_none_instead_of_becoming_tvd(mocked_sources):
+    """No JP_MD in Databricks ⇒ unknown. WellConfig may fall back to TVD for
+    the physics, but nothing may claim TVD *is* the measured depth."""
+    _kw, raw, why = srw._batch_automatch_inputs("MPS-99", object(), 3300.0)
+
+    assert why is None
+    assert raw["jpump_md"] is None
+
+
+def test_batch_models_the_real_casing(mocked_sources, monkeypatch):
+    """Reverse circulation puts the power fluid in the annulus — a substituted
+    6.875/0.5 casing mis-sizes the very friction the match is fitting."""
+    import woffl.gui.utils as utils_mod
+
+    mocked_sources["well_data"] = {**mocked_sources["well_data"], **_REAL_CASING}
+    seen = {}
+
+    def _record(t_od, t_th, c_od, c_th):
+        seen.update(casing_od=c_od, casing_thickness=c_th)
+        return None, None, "WELLBORE"
+
+    monkeypatch.setattr(utils_mod, "create_pipes", _record)
+
+    _kw, raw, why = srw._batch_automatch_inputs("MPS-99", object(), 3300.0)
+
+    assert why is None
+    assert seen["casing_od"] == pytest.approx(9.625)
+    assert seen["casing_thickness"] == pytest.approx(0.472)
+    assert raw["casing_od"] == pytest.approx(9.625)
+    assert raw["casing_thickness"] == pytest.approx(0.472)
+
+
+def test_apply_batch_row_carries_the_measured_md(mocked_sources):
+    """The store entry the optimizer consumes must hold the measured MD."""
+    from types import SimpleNamespace
+
+    mocked_sources["well_data"] = {**mocked_sources["well_data"], "JP_MD": 10199.0}
+    _kw, raw, _why = srw._batch_automatch_inputs("MPS-99", object(), 3300.0)
+    res = SimpleNamespace(
+        ken=0.03, kth=0.3, kdi=0.4, ppf_surf=3300.0,
+        qwf_oil=150.0, pwf=600.0, pres=1700.0,
+    )
+    r = SimpleNamespace(well="MPS-99", status="ok", result=res)
+    store: dict = {}
+
+    assert srw._apply_batch_row("S", store, r, raw) is None
+    assert store["MPS-99"]["jpump_md"] == pytest.approx(10199.0)
+    assert srw.wrs.to_well_config(store["MPS-99"]).jpump_md == pytest.approx(10199.0)
+
+
+def test_offline_stub_never_substitutes_tvd_for_measured_depth(mocked_sources):
+    """The exact fabrication that corrupted C-002 (7688 ft MD → 6270.223 ft):
+    the force-fit stub wrote JP_TVD into the entry's jpump_md."""
+    entry = srw._offline_stub_entry("MPS-99")
+    assert entry["jpump_md"] is None
+    assert entry["jpump_tvd"] == pytest.approx(4200.0)
+
+    mocked_sources["well_data"] = {
+        **mocked_sources["well_data"], "JP_MD": 4753.0, **_REAL_CASING,
+    }
+    entry = srw._offline_stub_entry("MPS-99")
+    assert entry["jpump_md"] == pytest.approx(4753.0)
+    assert entry["casing_od"] == pytest.approx(9.625)
+    assert entry["casing_thickness"] == pytest.approx(0.472)

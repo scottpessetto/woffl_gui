@@ -29,7 +29,9 @@ _st_mock.cache_data = lambda *args, **kwargs: (
 )
 sys.modules.setdefault("streamlit", _st_mock)
 
+from woffl.flow.inflow import InFlow  # noqa: E402
 from woffl.gui import pdf_export  # noqa: E402
+from woffl.gui.params import SimulationParams  # noqa: E402
 from woffl.gui.tabs import jetpump_solver  # noqa: E402
 
 
@@ -141,3 +143,32 @@ def test_no_gauge_covered_tests_returns_none(fake_st, well_tests, monkeypatch):
     )
 
     assert pdf_export._comparison_test_row("MPE-19") is None
+
+
+def test_ipr_anchor_uses_sidebar_qwf_as_total_fluid(monkeypatch):
+    """B-28 regression (RATE CONVENTION, params.py): the sidebar-fallback IPR
+    anchor is ``params.qwf`` UNGROSSED. qwf is the TOTAL LIQUID rate now and
+    this chart's x-axis is total fluid, so the old ``qwf / (1 - wc)`` grossing-up
+    would inflate the printed Qmax by 1/(1 - 0.83) ≈ 5.9x on B-28.
+    """
+    one_test = pd.DataFrame(
+        {
+            "WtDate": pd.to_datetime(["2026-07-18"]),
+            "well": ["MPB-28"],
+            "BHP": [float("nan")],  # no test BHP -> sidebar-fallback anchor
+            "WtTotalFluid": [2100.0],
+        }
+    )
+    monkeypatch.setattr(
+        "woffl.gui.utils.get_well_tests_for_well", lambda w: one_test.copy()
+    )
+    params = SimulationParams(
+        selected_well="MPB-28", qwf=2135, pwf=500, pres=1700, form_wc=0.83
+    )
+
+    fig = pdf_export._build_ipr_figure(params)
+    assert fig is not None
+    expected = InFlow.vogel_qmax(float(params.qwf), float(params.pwf), float(params.pres))
+    annotations = [t.get_text() for t in fig.axes[0].texts]
+    assert any(f"Qmax: {expected:.0f} BPD" in a for a in annotations)
+    pdf_export.plt.close(fig)

@@ -284,11 +284,12 @@ def _build_ipr_figure(
             anchor_qwf = float(total)
             anchor_pwf = float(bhp)
         else:
-            wc = float(params.form_wc)
-            if 0.0 <= wc < 1.0:
-                anchor_qwf = float(params.qwf) / max(1e-6, 1.0 - wc)
-            else:
-                anchor_qwf = float(params.qwf)
+            # Sidebar fallback. Both branches anchor on TOTAL FLUID (the if-side
+            # uses WtTotalFluid), and params.qwf now IS that total liquid rate
+            # (RATE CONVENTION, params.py). It used to hold OIL, hence the old
+            # qwf / (1 - wc) grossing-up — doing that now would double-count the
+            # water and inflate the printed IPR.
+            anchor_qwf = float(params.qwf)
             anchor_pwf = float(params.pwf)
 
         if not (anchor_qwf > 0 and 0 <= anchor_pwf < model_res_p and model_res_p > 0):
@@ -617,7 +618,12 @@ def _inputs_table(params: SimulationParams):
          L("Temperature"), V(f"{params.form_temp} °F")],
         [L("kdi"), V(f"{params.kdi:.3f}"),
          L("Direction"), V(params.jpump_direction.capitalize()),
-         L("qwf / pwf"), V(f"{params.qwf} / {params.pwf}")],
+         L("qwf / pwf"), V(f"{params.qwf:,.0f} BLPD / {params.pwf:,.0f} psi")],
+        # qwf is TOTAL LIQUID (RATE CONVENTION, params.py) — spell out the unit
+        # and the oil it implies at the current WC so a printed copy can never
+        # be misread as an oil rate.
+        ["", "", "", "",
+         L("→ oil at WC"), V(f"{params.qwf_oil:,.0f} BOPD")],
     ]
     tbl = Table(rows, colWidths=[1.35 * inch, 1.05 * inch] * 3)
     tbl.setStyle(TableStyle([

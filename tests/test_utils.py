@@ -429,6 +429,64 @@ class TestCreateInflow:
 
 
 # ===================================================================
+# Tests: build_calibration_inputs — the IPR anchor it hands the solver
+# ===================================================================
+class TestBuildCalibrationInputsInflowRate:
+    """RATE CONVENTION (params.py): the sidebar qwf is TOTAL LIQUID, so the
+    calibration inflow must be anchored on ``params.inflow_rate`` — the OIL
+    rate normally, the full liquid rate in dewatering mode where WC is 1.0
+    and an oil anchor would collapse the curve to zero.
+    """
+
+    @pytest.fixture
+    def stubbed(self, monkeypatch):
+        """Minimal environment: one well test, one installed pump, fake st."""
+        fake_st = MagicMock()
+        fake_st.session_state = {"jp_history_df": pd.DataFrame({"Well": ["MPB-28"]})}
+        monkeypatch.setattr(gui_utils, "st", fake_st)
+        monkeypatch.setattr(
+            gui_utils,
+            "get_well_tests_for_well",
+            lambda w: pd.DataFrame(
+                {
+                    "WtDate": pd.to_datetime(["2026-07-09"]),
+                    "BHP": [548.0],
+                    "whp": [225.0],
+                    "lift_wat": [2774.0],
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            "woffl.assembly.jp_history.get_current_pump",
+            lambda df, well: {"nozzle_no": "12", "throat_ratio": "B"},
+        )
+
+    def _params(self, **over):
+        from woffl.gui.params import SimulationParams
+
+        base = dict(
+            selected_well="MPB-28", qwf=2135, pwf=500, pres=1700, form_wc=0.83
+        )
+        base.update(over)
+        return SimulationParams(**base)
+
+    def test_inflow_anchored_on_oil_not_liquid(self, stubbed):
+        params = self._params()
+        out = gui_utils.build_calibration_inputs(params, None, None)
+        assert out is not None
+        # 2135 BLPD at WC 0.83 -> 363 BOPD, the measured oil rate. Passing the
+        # raw liquid rate here would overstate modeled oil ~5.9x.
+        assert out["ipr_inflow"].qwf == pytest.approx(2135 * (1 - 0.83))
+
+    def test_dewatering_mode_anchors_on_full_liquid(self, stubbed):
+        """model_as_water forces WC = 1.0; the oil rate is identically zero, so
+        the water rate IS the anchor (InFlow rejects a zero-rate curve)."""
+        params = self._params(form_wc=1.0, model_as_water=True)
+        out = gui_utils.build_calibration_inputs(params, None, None)
+        assert out is not None
+        assert out["ipr_inflow"].qwf == pytest.approx(2135.0)
+
+# ===================================================================
 # Tests: run_jetpump_solver (uses real E-41 data)
 # ===================================================================
 class TestRunJetpumpSolver:

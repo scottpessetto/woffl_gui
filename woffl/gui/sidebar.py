@@ -39,7 +39,10 @@ def _set_param(key: str, value) -> None:
 # silently reset to the widget MINIMUM by Streamlit on the next frontend
 # round-trip — so every programmatic seed must be clamped into these ranges.
 SEED_BOUNDS = {
-    "qwf": (10, 6000),
+    # qwf is TOTAL LIQUID (BLPD), not oil — a 95%-WC well's liquid rate is
+    # 20x its oil rate, and clamp_seed silently truncates, so this ceiling has
+    # to clear the whole fleet's total-fluid range. See params.SimulationParams.
+    "qwf": (10, 20000),
     "pwf": (100, 2500),
     "res_pres": (400, 5000),
     "form_wc": (0.0, 1.0),
@@ -303,6 +306,7 @@ def _seed_saved_ipr(selected_well: str) -> None:
     recovery floor. Fail-soft: any problem → the auto-populated values stand.
     """
     try:
+        from woffl.assembly.prop_hist_client import format_alaska
         from woffl.gui.ipr_anchor import (
             IPR_SIDEBAR_DEFAULT_SIG,
             load_saved_ipr,
@@ -364,7 +368,8 @@ def _seed_saved_ipr(selected_well: str) -> None:
 
         v = info["values"]
         gor_floor = st.session_state.get("_well_min_gor", {}).get(selected_well, 0)
-        # Stored rate is TOTAL LIQUID; the sidebar's qwf is OIL.
+        # Stored rate and the sidebar's qwf are BOTH total liquid — no
+        # conversion (the rate is the measurement; oil follows from WC).
         wc = min(max(float(v.get("form_wc", 0.5)), 0.0), 0.99)
         _set_param("form_wc", clamp_seed("form_wc", round(wc, 2)))
         if v.get("form_gor") is not None:
@@ -372,9 +377,7 @@ def _seed_saved_ipr(selected_well: str) -> None:
                 "form_gor", clamp_seed("form_gor", max(int(v["form_gor"]), gor_floor))
             )
         if v.get("qwf_liq") is not None:
-            _set_param(
-                "qwf", clamp_seed("qwf", int(float(v["qwf_liq"]) * (1.0 - wc)))
-            )
+            _set_param("qwf", clamp_seed("qwf", int(float(v["qwf_liq"]))))
         if v.get("pwf") is not None:
             _set_param("pwf", clamp_seed("pwf", int(v["pwf"])))
         if v.get("res_pres") is not None:
@@ -386,7 +389,9 @@ def _seed_saved_ipr(selected_well: str) -> None:
             IPR_SIDEBAR_DEFAULT_SIG
         )
         ts = info.get("saved_at")
-        when = ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else str(ts)
+        # AK, not UTC: a save made in the Alaska evening is stored on the NEXT
+        # UTC day, so a raw UTC date shows the engineer the wrong day.
+        when = format_alaska(ts, "%Y-%m-%d") if ts is not None else str(ts)
         who = str(info.get("saved_by") or "").split("@")[0]
         extras = []
         if info.get("friction"):
@@ -478,11 +483,13 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
                     "form_gor",
                     clamp_seed("form_gor", max(int(coeff_row["fgor"]), gor_floor)),
                 )
+                # coeff_row["qwf"] IS WtTotalFluid — the Vogel fit is built on
+                # total liquid, which is exactly what the sidebar holds. Scaling
+                # it by (1 - WC) here was the bug behind B-28's mismatched
+                # anchor: it turned the measurement into a derived oil rate and
+                # then persisted that as the "liquid" rate.
                 _set_param(
-                    "qwf",
-                    clamp_seed(
-                        "qwf", int(coeff_row["qwf"] * (1 - coeff_row["form_wc"]))
-                    ),
+                    "qwf", clamp_seed("qwf", int(float(coeff_row["qwf"])))
                 )
                 _set_param("pwf", clamp_seed("pwf", int(coeff_row["pwf"])))
                 _set_param("res_pres", clamp_seed("res_pres", int(coeff_row["ResP"])))
@@ -534,8 +541,17 @@ def _auto_populate_from_ipr(selected_well: str) -> None:
     if is_valid_number(water) and is_valid_number(total) and float(total) > 0:
         wc = max(0.0, min(1.0, float(water) / float(total)))
         _set_param("form_wc", round(wc, 2))
-    if is_valid_number(oil):
-        _set_param("qwf", clamp_seed("qwf", int(float(oil))))
+    # The sidebar's qwf is the test's TOTAL LIQUID (WtTotalFluid) — the same
+    # column the Vogel path seeds from and the same quantity prop_hist stores.
+    # WtOilVol is the allocated OIL split out of it; seeding it here would put
+    # an oil rate in a liquid field and every downstream WC would re-split it.
+    if is_valid_number(total):
+        _set_param("qwf", clamp_seed("qwf", int(float(total))))
+    elif is_valid_number(oil):
+        # No allocated total: reconstruct liquid from oil + water when we can,
+        # else fall back to oil alone (a 0%-WC well's liquid IS its oil).
+        liquid = float(oil) + (float(water) if is_valid_number(water) else 0.0)
+        _set_param("qwf", clamp_seed("qwf", int(liquid)))
     if is_valid_number(bhp):
         _set_param("pwf", clamp_seed("pwf", int(float(bhp))))
     if is_valid_number(fgor):
@@ -779,9 +795,68 @@ def _render_loss_coefs() -> tuple[float, float, float]:
     return ken, kth, kdi
 
 
+def as_built_from_props(well_data: dict | None, *keys: str) -> bool:
+    """True when EVERY ``keys`` entry carries a real number in ``well_data``.
+
+    ``well_data`` is the ``vw_prop_mech``/``vw_prop_resvr`` row — i.e. the
+    prop_hist pivot. As-built completion dimensions and the jet-pump depth are
+    measurements the data team owns (see
+    ``prop_hist_client.AS_BUILT_PROP_IDS``), so wherever prop_hist HAS the
+    value the sidebar renders it read-only: an engineer editing a pipe size
+    here would silently model steel that isn't in the hole. Where prop_hist has
+    nothing the widget stays live, because a Custom / hypothetical well has to
+    be modelable from a default.
+    """
+    if not well_data:
+        return False
+    return all(is_valid_number(well_data.get(k)) for k in keys)
+
+
+def as_built_lock_help(src: str) -> str:
+    """Help text for a locked as-built field, naming its ACTUAL source.
+
+    Normally prop_hist (through the ``vw_prop_mech`` pivot). When Databricks is
+    down ``load_well_characteristics`` serves the stale ``jp_chars.csv``
+    fallback and flags it in ``well_chars_source`` — the field still locks (a
+    typed-in pipe size is not a measurement either way) but the caption must not
+    claim a live prop_hist read it didn't do.
+    """
+    if st.session_state.get("well_chars_source") == "csv_fallback":
+        return (
+            f"As-built — from the OFFLINE jp_chars.csv fallback ({src}); "
+            "Databricks is unreachable, so this may be stale. Read-only here."
+        )
+    return (
+        f"As-built — from prop_hist via vw_prop_mech ({src}). Read-only here: "
+        "correct the well file / wellbore diagram, don't model around it."
+    )
+
+
 def _render_pipe_params(well_data: dict | None) -> tuple[float, float, float, float]:
-    """Render pipe parameter widgets."""
-    auto_help = "Auto-populated from well data" if well_data else None
+    """Render pipe parameter widgets.
+
+    Tubing and casing dimensions are as-built facts, disabled whenever
+    prop_hist supplies them (:func:`as_built_from_props`). ``thick`` is
+    derived by ``databricks_client`` as (tubing_out_dia - tubing_inn_dia)/2 and
+    the casing pair is read through ``casing_dims_from_chars``, so both halves
+    of each pipe must be present before the field locks.
+    """
+    from woffl.gui.scotts_tools._common import has_databricks_casing
+
+    tubing_locked = as_built_from_props(well_data, "out_dia", "thick")
+    casing_locked = has_databricks_casing(well_data)
+    tubing_help = (
+        as_built_lock_help("tubing_out_dia / tubing_inn_dia")
+        if tubing_locked
+        else "No tubing dimensions in prop_hist for this well — modeling a default."
+    )
+    casing_help = (
+        as_built_lock_help("casing_out_dia / casing_inn_dia")
+        if casing_locked
+        else "No casing dimensions in prop_hist for this well — modeling the "
+        "6.875 / 0.5 default. In reverse circulation this sets the PF annulus, "
+        "so have the data team populate it."
+    )
 
     tubing_od = _number_input(
         "Tubing Outer Diameter (inches)",
@@ -791,7 +866,8 @@ def _render_pipe_params(well_data: dict | None) -> tuple[float, float, float, fl
         max_value=9.0,
         step=0.1,
         format="%.3f",
-        help=auto_help,
+        help=tubing_help,
+        disabled=tubing_locked,
     )
     tubing_thickness = _number_input(
         "Tubing Wall Thickness (inches)",
@@ -801,7 +877,8 @@ def _render_pipe_params(well_data: dict | None) -> tuple[float, float, float, fl
         max_value=2.0,
         step=0.1,
         format="%.3f",
-        help=auto_help,
+        help=tubing_help,
+        disabled=tubing_locked,
     )
     casing_od = _number_input(
         "Casing Outer Diameter (inches)",
@@ -811,6 +888,8 @@ def _render_pipe_params(well_data: dict | None) -> tuple[float, float, float, fl
         max_value=17.0,
         step=0.125,
         format="%.3f",
+        help=casing_help,
+        disabled=casing_locked,
     )
     casing_thickness = _number_input(
         "Casing Wall Thickness (inches)",
@@ -820,6 +899,8 @@ def _render_pipe_params(well_data: dict | None) -> tuple[float, float, float, fl
         max_value=2.0,
         step=0.1,
         format="%.3f",
+        help=casing_help,
+        disabled=casing_locked,
     )
     return tubing_od, tubing_thickness, casing_od, casing_thickness
 
@@ -834,13 +915,19 @@ def _render_formation_inflow(
     )
 
     qwf = _number_input(
-        "Oil Rate at FBHP (qwf, BOPD)",
+        "Total Liquid Rate at FBHP (qwf, BLPD)",
         "qwf",
         750,
         min_value=10,
-        max_value=6000,
+        max_value=20000,
         step=10,
-        help=ipr_help,
+        help=(
+            "Formation oil + water at pwf, EXCLUDING returned power fluid — the "
+            "measured rate the Vogel fit is built on (vw_well_test.WtTotalFluid). "
+            "Oil and water follow from the water cut below: "
+            "oil = qwf × (1 − WC), water = qwf × WC."
+            + (f" {ipr_help}." if ipr_help else "")
+        ),
     )
     pwf = _number_input(
         "Flowing BHP @ qwf (pwf, psi)",
@@ -993,8 +1080,17 @@ def _render_pressures() -> tuple[int, int]:
 
 
 def _render_geometry(well_data: dict | None) -> tuple[int, float]:
-    """Render geometry widgets that mostly auto-populate (TVD + PF density)."""
-    auto_help = "Auto-populated from well data" if well_data else None
+    """Render geometry widgets that mostly auto-populate (TVD + PF density).
+
+    Jet-pump depth is as-built: prop_hist holds the MEASURED ``jpump_md`` and
+    ``enrich_with_tvd`` interpolates this TVD from it on the well's deviation
+    survey. Read-only wherever that chain produced a number — the pump is where
+    slickline set it, and a hand-edited depth silently re-runs the whole
+    hydraulic column at a depth the well doesn't have. Wells with no survey
+    (``tvd_estimated``) still lock: the fix is to pull the survey, not to guess
+    here. Live only for Custom / hypothetical wells with no prop_hist row.
+    """
+    tvd_locked = as_built_from_props(well_data, "JP_TVD")
     jpump_tvd = _number_input(
         "Jetpump TVD (feet)",
         "jpump_tvd",
@@ -1002,7 +1098,12 @@ def _render_geometry(well_data: dict | None) -> tuple[int, float]:
         min_value=2500,
         max_value=8000,
         step=10,
-        help=auto_help,
+        help=(
+            as_built_lock_help("jpump_md, interpolated on the survey")
+            if tvd_locked
+            else "No jet-pump depth in prop_hist for this well — modeling a default."
+        ),
+        disabled=tvd_locked,
     )
     rho_pf = _number_input(
         "Power Fluid Density (lbm/ft³)",

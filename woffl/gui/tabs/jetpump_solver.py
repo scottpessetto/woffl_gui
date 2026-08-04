@@ -1879,7 +1879,13 @@ def _render_oil_rate_backmatch(
         # already rendered this run), and clamp every seed into its widget's
         # bounds. Respect the per-well GOR floor if a marginal-well recovery
         # set one (we don't change GOR, but keep parity with the other seeders).
-        seed_qwf = clamp_seed("qwf", int(round(result.qwf_oil)))
+        # ``result.qwf_oil`` is an OIL rate — the back-match solves against a
+        # measured oil target — but the sidebar ``qwf`` is TOTAL LIQUID (see
+        # params.SimulationParams RATE CONVENTION). Convert up through the same
+        # WC the match ran with, clamped to 0.99 so a watered-out well can't
+        # blow the seed up. Liquid is what's stored; oil stays the derived side.
+        wc_seed = min(max(float(params.form_wc), 0.0), 0.99)
+        seed_qwf = clamp_seed("qwf", int(round(result.qwf_oil / (1.0 - wc_seed))))
         seed_pwf = clamp_seed("pwf", int(round(result.pwf)))
         seed_res = clamp_seed("res_pres", int(round(result.pres)))
         for k, v in (("qwf", seed_qwf), ("pwf", seed_pwf), ("res_pres", seed_res)):
@@ -1890,8 +1896,10 @@ def _render_oil_rate_backmatch(
             f"Inferred flowing BHP = {seed_pwf:,} psi so {nozzle}{throat} "
             f"matches {result.qwf_oil:,.0f} BOPD (modeled "
             f"{result.modeled_oil:,.0f} BOPD). Seeded the sidebar IPR "
-            f"(qwf {seed_qwf:,} BOPD · pwf {seed_pwf:,} psi · ResP "
-            f"{seed_res:,} psi). Edit any field in the sidebar to override."
+            f"(qwf {seed_qwf:,} BLPD total liquid — that's "
+            f"{result.qwf_oil:,.0f} BOPD at WC {wc_seed:.2f} · pwf "
+            f"{seed_pwf:,} psi · ResP {seed_res:,} psi). Edit any field in "
+            "the sidebar to override."
         )
         st.rerun()
 
@@ -1902,7 +1910,7 @@ _AUTOMATCH_CHANGES_KEY = "_joint_automatch_changes"
 
 # (session key, label, unit, decimal places) for every field auto-match seeds.
 _AUTOMATCH_FIELDS = (
-    ("qwf", "qwf — oil rate at FBHP", "BOPD", 0),
+    ("qwf", "qwf — total liquid rate at FBHP", "BLPD", 0),
     ("pwf", "pwf — flowing BHP", "psi", 0),
     ("res_pres", "Reservoir pressure", "psi", 0),
     ("ppf_surf", "PF surface pressure", "psi", 0),
@@ -2138,6 +2146,8 @@ def _render_joint_automatch(
         # can show before → after. ``params`` is this run's committed state; on
         # the rerun that follows it already holds the new values, so the old
         # ones have to be captured here or they're gone.
+        # ``before['qwf']`` and the seed below are BOTH total liquid (BLPD), so
+        # the before → after delta table stays in one unit.
         before = {
             "qwf": float(params.qwf),
             "pwf": float(params.pwf),
@@ -2151,8 +2161,12 @@ def _render_joint_automatch(
         # Seed the sidebar with the matched params — even on a PARTIAL match we
         # seed (it's the closest consistent point) but flag it. Logical key +
         # pop widget key + rerun, every value clamped to its widget bounds.
+        # ``r.qwf_oil`` is OIL (joint_match solves an oil target); the sidebar
+        # holds TOTAL LIQUID, so convert up through the WC the match ran with —
+        # clamped to 0.99 to keep a watered-out well from blowing the seed up.
+        wc_seed = min(max(float(params.form_wc), 0.0), 0.99)
         seeds = {
-            "qwf": clamp_seed("qwf", int(round(r.qwf_oil))),
+            "qwf": clamp_seed("qwf", int(round(r.qwf_oil / (1.0 - wc_seed)))),
             "pwf": clamp_seed("pwf", int(round(r.pwf))),
             "res_pres": clamp_seed("res_pres", int(round(r.pres))),
             "ppf_surf": clamp_seed("ppf_surf", int(round(r.ppf_surf))),
@@ -2177,7 +2191,9 @@ def _render_joint_automatch(
             )
         )
         seeded = (
-            f"Seeded qwf {seeds['qwf']:,} · pwf {seeds['pwf']:,} · ResP {seeds['res_pres']:,}"
+            f"Seeded qwf {seeds['qwf']:,} BLPD (= {r.qwf_oil:,.0f} BOPD at WC "
+            f"{wc_seed:.2f}) · pwf {seeds['pwf']:,} psi · ResP "
+            f"{seeds['res_pres']:,} psi"
             + ("" if pinned else f" · PF {seeds['ppf_surf']:,} psi")
             + f" · ken {seeds['ken']:.3f}/kth {seeds['kth']:.3f}/kdi {seeds['kdi']:.3f}."
         )
@@ -2299,9 +2315,10 @@ def _render_ipr_rate_calculator(params: SimulationParams, res_pres: float) -> No
     """Inline what-if under the IPR chart: type a flowing BHP, read the
     rates off the SAME Vogel curve the chart draws.
 
-    Anchored exactly like everything else on this tab: sidebar qwf (OIL,
-    BOPD) at sidebar pwf, sidebar/anchor reservoir pressure, sidebar WC for
-    the oil↔liquid split. No solver run — pure IPR arithmetic.
+    Anchored exactly like everything else on this tab: sidebar qwf (TOTAL
+    LIQUID, BLPD) at sidebar pwf, sidebar/anchor reservoir pressure, sidebar WC
+    for the liquid→oil split. Same direction as the chart above, which plots a
+    total-fluid Vogel curve. No solver run — pure IPR arithmetic.
     """
 
     def _vogel_frac(p: float, pr: float) -> float:
@@ -2309,11 +2326,14 @@ def _render_ipr_rate_calculator(params: SimulationParams, res_pres: float) -> No
         return 1.0 - 0.2 * r - 0.8 * r * r
 
     pr = float(res_pres)
-    oil_anchor = float(params.qwf)
+    liq_anchor = float(params.qwf)
     pwf_anchor = float(params.pwf)
-    wc = min(max(float(params.form_wc), 0.0), 0.99)
+    # Oil is DERIVED off the measured liquid rate (params RATE CONVENTION), so
+    # nothing here divides by (1 - wc) and wc = 1.0 (dewatering mode) is a legal
+    # zero-oil case instead of a blow-up.
+    wc = min(max(float(params.form_wc), 0.0), 1.0)
     anchor_frac = _vogel_frac(pwf_anchor, pr)
-    if pr <= 0 or oil_anchor <= 0 or anchor_frac <= 0:
+    if pr <= 0 or liq_anchor <= 0 or anchor_frac <= 0:
         return
 
     st.markdown("##### Rate at a given BHP")
@@ -2331,9 +2351,9 @@ def _render_ipr_rate_calculator(params: SimulationParams, res_pres: float) -> No
             "(sidebar-anchored IPR, sidebar WC)."
         ),
     )
-    qmax_oil = oil_anchor / anchor_frac
-    oil = qmax_oil * _vogel_frac(float(bhp_in), pr)
-    liquid = oil / (1.0 - wc)
+    qmax_liq = liq_anchor / anchor_frac
+    liquid = qmax_liq * _vogel_frac(float(bhp_in), pr)
+    oil = liquid * (1.0 - wc)
     water = liquid - oil
     st.markdown(
         f"**{liquid:,.0f}** BLPD liquid  ·  **{oil:,.0f}** BOPD oil  ·  "
@@ -2345,7 +2365,8 @@ def _render_ipr_rate_calculator(params: SimulationParams, res_pres: float) -> No
         )
     else:
         st.caption(
-            f"Vogel anchored at **{oil_anchor:,.0f} BOPD @ {pwf_anchor:,.0f} psi**, "
+            f"Vogel anchored at **{liq_anchor:,.0f} BLPD @ {pwf_anchor:,.0f} psi** "
+            f"({params.qwf_oil:,.0f} BOPD oil), "
             f"ResP **{pr:,.0f} psi** · WC **{wc:.2f}** "
             f"(oil = liquid × {1.0 - wc:.2f})."
         )
@@ -2892,7 +2913,9 @@ def _render_ipr_pin_controls(
 
                 n_vals, vals_message = save_ipr_values(
                     well_name,
-                    qwf_oil=float(st.session_state.get("qwf", 0) or 0),
+                    # Sidebar qwf is TOTAL LIQUID and prop_hist.ipr_qwf_liq
+                    # stores liquid, so it goes across verbatim.
+                    qwf_liq=float(st.session_state.get("qwf", 0) or 0),
                     pwf=float(st.session_state.get("pwf", 0) or 0),
                     res_pres=float(st.session_state.get("res_pres", 0) or 0),
                     form_wc=float(st.session_state.get("form_wc", 0.5) or 0.5),
@@ -3183,7 +3206,7 @@ def _sync_chosen_ipr_to_sidebar(
     *,
     anchor_mode: str,
     anchor_date,
-    qwf_oil: float,
+    qwf_liq: float,
     pwf: float,
     res_p: float,
     form_wc: float,
@@ -3193,6 +3216,11 @@ def _sync_chosen_ipr_to_sidebar(
     pf_date=None,
 ) -> None:
     """Seed the chosen test's IPR + fluid inputs into the sidebar.
+
+    ``qwf_liq`` is the anchor's TOTAL LIQUID rate (BLPD) — the same quantity
+    the sidebar ``qwf`` widget holds and that ``compute_vogel_coefficients``
+    returns as ``qwf``. Oil is derived downstream via ``form_wc``; this never
+    converts (params.SimulationParams RATE CONVENTION).
 
     The InFlow / ResMix shared by Batch Run, PF Range, and the top Solver are
     built in ``single_well_page._build_simulation_objects`` from the sidebar's
@@ -3240,7 +3268,7 @@ def _sync_chosen_ipr_to_sidebar(
 
     gor_floor = st.session_state.get("_well_min_gor", {}).get(well_name, 0)
     new_vals = {
-        "qwf": clamp_seed("qwf", int(qwf_oil)),
+        "qwf": clamp_seed("qwf", int(qwf_liq)),
         "pwf": clamp_seed("pwf", int(pwf)),
         "res_pres": clamp_seed("res_pres", int(res_p)),
         "form_wc": clamp_seed("form_wc", round(float(form_wc), 2)),
@@ -3301,7 +3329,7 @@ def _sync_chosen_ipr_to_sidebar(
     }.get(anchor_mode, anchor_mode)
     st.session_state["_ipr_sync_msg"] = (
         f"Seeded the {anchor_human} IPR + fluid into the sidebar "
-        f"(qwf {new_vals['qwf']:,} BOPD · pwf {new_vals['pwf']:,} psi · "
+        f"(qwf {new_vals['qwf']:,} BLPD · pwf {new_vals['pwf']:,} psi · "
         + (
             f"ResP {new_vals['res_pres']:,} psi · "
             if "res_pres" in new_vals
@@ -3478,7 +3506,10 @@ def _render_ipr_anchor_and_seed(params: SimulationParams, test_df):
             params.selected_well,
             anchor_mode=anchor_mode,
             anchor_date=anchor_date,
-            qwf_oil=float(coeff_row["qwf"]) * (1 - float(coeff_row["form_wc"])),
+            # ``coeff_row['qwf']`` is ALREADY total liquid — the Vogel fit in
+            # ipr_analyzer is built on WtTotalFluid. Multiplying by (1 - WC)
+            # here was the bug that made the seeded anchor a phantom oil rate.
+            qwf_liq=float(coeff_row["qwf"]),
             pwf=float(coeff_row["pwf"]),
             res_p=float(coeff_row["ResP"]),
             form_wc=float(coeff_row["form_wc"]),
@@ -3765,14 +3796,11 @@ def _render_model_vs_actual(
                     anchor_src = "well test"
 
             if anchor_src is None:
-                # 0-test fallback (or 1-test missing total/BHP). Sidebar qwf is the
-                # OIL rate; convert to total liquid for the chart's x-axis (BPD)
-                # using sidebar form_wc. Falls back to oil rate when WC ≈ 1.
-                wc = float(params.form_wc)
-                if 0.0 <= wc < 1.0:
-                    anchor_qwf = float(params.qwf) / max(1e-6, 1.0 - wc)
-                else:
-                    anchor_qwf = float(params.qwf)
+                # 0-test fallback (or 1-test missing total/BHP). Sidebar qwf is
+                # ALREADY the total liquid rate (params RATE CONVENTION) — the
+                # same quantity the well-test branch above takes from
+                # WtTotalFluid, and what the chart's x-axis plots. No WC math.
+                anchor_qwf = float(params.qwf)
                 anchor_pwf = float(params.pwf)
                 anchor_src = "sidebar"
 
@@ -3797,14 +3825,14 @@ def _render_model_vs_actual(
                 except Exception as e:
                     st.warning(
                         f"Could not build IPR curve from anchor "
-                        f"(qwf={anchor_qwf:.0f}, pwf={anchor_pwf:.0f}, "
+                        f"(qwf={anchor_qwf:.0f} BLPD, pwf={anchor_pwf:.0f}, "
                         f"ResP={model_res_p:.0f}): {e}"
                     )
             plot_points = test_df if test_df is not None else pd.DataFrame()
 
             st.caption(
                 f"Using Reservoir Pressure: **{model_res_p:.0f}** psi (sidebar) · "
-                f"IPR anchor: {anchor_src} (qwf={anchor_qwf:.0f} BPD, "
+                f"IPR anchor: {anchor_src} (qwf={anchor_qwf:.0f} BLPD, "
                 f"pwf={anchor_pwf:.0f} psi)"
             )
             if n_tests == 0:

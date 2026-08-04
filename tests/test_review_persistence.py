@@ -124,9 +124,25 @@ class TestFieldMap:
         ):
             assert gone not in ids
 
+    def test_as_built_dimensions_are_not_in_the_map(self):
+        """2026-08-03 incident: jpump_md / casing_out_dia / tubing_out_dia were
+        in FIELD_MAP for four days. A store entry ALWAYS carries a number for
+        them (Databricks value, or a UI/force-fit substitute), so write-through
+        could not distinguish a decision from a default — and it pushed the
+        default. Eight wells lost their measured pump depth to the interpolated
+        TVD. woffl reads as-built dimensions; the data team writes them."""
+        from woffl.assembly.prop_hist_client import AS_BUILT_PROP_IDS
+
+        assert AS_BUILT_PROP_IDS.isdisjoint({f.prop_id for f in rp.FIELD_MAP})
+        assert not {f.store_key for f in rp.FIELD_MAP} & {
+            "jpump_md", "casing_od", "casing_thickness", "tubing_od",
+            "tubing_thickness",
+        }
+
     def test_store_qwf_is_total_liquid_passed_through(self):
-        """The STORE's qwf is already total liquid — no oil conversion here
-        (the sidebar's oil-based path converts in ipr_anchor.save_ipr_values)."""
+        """The STORE's qwf is total liquid and so is prop_hist's ipr_qwf_liq —
+        no conversion on either path (ipr_anchor.save_ipr_values also pushes
+        the sidebar's liquid rate verbatim now)."""
         f = next(f for f in rp.FIELD_MAP if f.prop_id == "ipr_qwf_liq")
         assert f.store_key == "qwf"
         assert f.enc(600.0) == 600.0
@@ -140,6 +156,25 @@ class TestWriteThrough:
         rp.wrs_store("B")["MPB-90"] = e
         out = rp.sync_pad("B")
         assert out["saved"] == 0 and env.hist.pushes == []
+
+    def test_as_built_rows_survive_a_review_that_disagrees(self, env):
+        """The 2026-08-03 incident, reproduced. The entry carries a fabricated
+        MD (interpolated TVD) and the 6.875 casing fallback while prop_hist
+        holds the real tally values — sync must leave prop_hist alone."""
+        e = _entry("MPB-90", jpump_md=6270.2230992, casing_od=6.875, tubing_od=4.5)
+        env.hist.rows += _stored_rows_for(e, "B-90")
+        as_built = [
+            ("B-90", "jpump_md", 7688.0),
+            ("B-90", "casing_out_dia", 9.625),
+            ("B-90", "tubing_out_dia", 3.5),
+        ]
+        env.hist.rows += as_built
+        rp.sync_pad("B")  # baseline
+        rp.wrs_store("B")["MPB-90"] = e
+        out = rp.sync_pad("B")
+        assert out["saved"] == 0 and env.hist.pushes == []
+        # FakeHist.push_prop appends to rows, so an untouched tail proves it.
+        assert env.hist.rows[-3:] == as_built
 
     def test_changed_ipr_values_write_exactly_those_rows(self, env):
         e = _entry("MPB-90")

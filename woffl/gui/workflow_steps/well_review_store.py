@@ -16,17 +16,18 @@ No Streamlit here — session-state hydration lives in the step module so this
 stays unit-testable.
 
 UNIT GOTCHA (verified against the live code, do not "simplify" away):
-  - The sidebar/Solver ``qwf`` is **OIL** rate (BOPD). ``InFlow.qwf`` is oil
-    (``woffl/flow/inflow.py``: "The oil rate is used in conjunction with a
-    reservoir mixture's wc and gor to calculate other components"), and the
-    Solver feeds ``params.qwf`` straight in.
-  - ``WellConfig.qwf`` is **TOTAL LIQUID** (BLPD); ``NetworkOptimizer`` converts
-    it back to oil via ``oil = qwf * (1 - form_wc)``
+  - The sidebar/Solver ``qwf`` is **TOTAL LIQUID** (BLPD) — the rate a well
+    test actually measures (see the RATE CONVENTION in ``woffl/gui/params.py``).
+    ``InFlow.qwf`` is still single-phase OIL (``woffl/flow/inflow.py``), so the
+    Solver hands it ``params.inflow_rate``, not ``params.qwf``.
+  - ``WellConfig.qwf`` is **TOTAL LIQUID** (BLPD) too; ``NetworkOptimizer``
+    converts it to oil via ``oil = qwf * (1 - form_wc)``
     (``network_optimizer.py``: "convert total fluid IPR rate to oil rate").
-  So a snapshot must convert OIL -> TOTAL LIQUID (``qwf / (1 - wc)``); the
-  optimizer's reverse conversion then reproduces the exact IPR the engineer
-  reviewed. ``OIL_RATE_FIELD`` preserves the as-reviewed oil rate for display
-  and provenance so the round-trip is auditable.
+  So a snapshot stores the reviewed liquid rate VERBATIM — same unit both
+  sides, nothing to convert — and ``OIL_RATE_FIELD`` carries the DERIVED oil
+  for display and provenance. It used to scale oil up by ``1 / (1 - wc)`` on
+  the way in, which made the stored liquid a number no well test could
+  corroborate and let a WC edit move the engineer's anchor (B-28, 2026-08-03).
 """
 
 from __future__ import annotations
@@ -264,25 +265,27 @@ def snapshot_from_params(
         raise ValueError(f"bhp_source must be one of {BHP_SOURCES}, got {bhp_source!r}")
 
     wc = float(params.form_wc)
-    qwf_oil = float(params.qwf)
-    if wc > MAX_MODELABLE_WC:
-        if not offline:
-            raise ValueError(
-                f"{params.selected_well}: water cut {wc:.0%} is above the "
-                f"{MAX_MODELABLE_WC:.0%} the oil optimizer can model — its oil "
-                "rate degenerates to zero and the well would falsely show as "
-                "'optimizer shut in'. Save it as Offline (dewatering) to keep it "
-                "accounted for on the pad, or lower the water cut."
-            )
-        # Offline dewatering well: in water-pump-mode reviews the sidebar qwf IS
-        # the water/total rate, so carry it as the liquid rate (oil ~ 0). Never
-        # fed to the optimizer (active_entries filters offline).
-        qwf_liquid = qwf_oil
-    else:
-        # OIL (BOPD) -> TOTAL LIQUID (BLPD). Exact inverse of the optimizer's
-        # oil = qwf * (1 - wc), so the engineer's reviewed oil rate survives the
-        # round trip bit-for-bit.
-        qwf_liquid = qwf_oil / (1.0 - wc)
+    # params.qwf is the MEASURED TOTAL LIQUID rate (see the RATE CONVENTION in
+    # woffl/gui/params.py) — stored verbatim so the engineer's reviewed liquid
+    # rate survives the round trip bit-for-bit and oil FOLLOWS from the water
+    # cut. It used to be the sidebar's oil rate scaled up by 1/(1 - wc), which
+    # made the stored liquid a derived number that matched no well test and let
+    # a WC edit rescale the anchor (Scott on B-28, 2026-08-03).
+    qwf_liquid = float(params.qwf)
+    if wc > MAX_MODELABLE_WC and not offline:
+        raise ValueError(
+            f"{params.selected_well}: water cut {wc:.0%} is above the "
+            f"{MAX_MODELABLE_WC:.0%} the oil optimizer can model — its oil "
+            "rate degenerates to zero and the well would falsely show as "
+            "'optimizer shut in'. Save it as Offline (dewatering) to keep it "
+            "accounted for on the pad, or lower the water cut."
+        )
+    # Oil is DERIVED, never an input. Above MAX_MODELABLE_WC that leaves an
+    # offline dewatering review (form_wc forced to 1.0 by water-pump mode): the
+    # liquid rate IS the water rate and the oil is identically zero, which the
+    # guard above is what makes safe — such entries never reach the optimizer
+    # (active_entries filters offline).
+    qwf_oil = float(params.qwf_oil)
 
     return {
         "well_name": params.selected_well,
@@ -434,8 +437,11 @@ def hypothetical_entry(
     ``offline=True`` parks it as a FUTURE well (out of the base case and the
     optimization until brought online or picked as future).
 
-    ``form_wc`` is capped at 0.99 — the store's oil↔total-liquid round trip
-    degenerates at 1.0 (see MAX_MODELABLE_WC).
+    ``oil_bopd`` stays OIL: both forms ask the engineer for an EXPECTED oil
+    rate for a well that has no test to measure liquid on. That makes this a
+    documented oil→liquid seam — the entry's ``qwf`` is the implied liquid
+    ``oil / (1 - wc)``, and ``form_wc`` is capped at 0.99 because that
+    division degenerates at 1.0 (see MAX_MODELABLE_WC).
     """
     wc = min(float(form_wc), MAX_MODELABLE_WC)
     oil_frac = 1.0 - wc
@@ -451,6 +457,8 @@ def hypothetical_entry(
         "form_wc": wc,
         "form_gor": float(form_gor),
         "surf_pres": float(surf_pres),
+        # Oil-solver seam (see the docstring): the caller measures nothing, it
+        # ASSUMES an oil rate, so the store's liquid qwf is derived from it.
         "qwf": float(oil_bopd) / oil_frac,
         "pwf": float(pwf),
         OIL_RATE_FIELD: float(oil_bopd),
@@ -555,14 +563,17 @@ def validate_store(store: dict[str, dict]) -> dict[str, list[str]]:
                 f"{MAX_MODELABLE_WC:.0%} — mark the well offline (dewatering)",
             )
         oil = e.get(OIL_RATE_FIELD)
-        if oil is not None and qwf > 0 and 0 < wc <= MAX_MODELABLE_WC:
-            expected = float(oil) / (1.0 - wc)
-            if expected > 0 and abs(qwf - expected) / expected > 0.02:
+        if oil is not None and qwf > 0 and 0 <= wc <= MAX_MODELABLE_WC:
+            # Same relation, stated the way the model now runs: qwf is the
+            # measurement and oil FOLLOWS from it. An uploaded CSV whose WC was
+            # hand-edited without re-deriving the oil column trips this.
+            expected_oil = qwf * (1.0 - wc)
+            if abs(float(oil) - expected_oil) > max(1.0, 0.02 * expected_oil):
                 add(
                     wn,
-                    f"qwf={qwf:g} inconsistent with oil={float(oil):g} at "
-                    f"WC {wc:.2f} (expected ≈{expected:.0f}) — was the WC "
-                    "edited without re-deriving qwf?",
+                    f"oil={float(oil):g} inconsistent with qwf={qwf:g} at "
+                    f"WC {wc:.2f} (expected ≈{expected_oil:.0f} = qwf × "
+                    f"(1 − WC)) — was the WC edited without re-deriving oil?",
                 )
     return issues
 
