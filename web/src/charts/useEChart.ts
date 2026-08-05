@@ -2,28 +2,52 @@ import { useCallback, useEffect, useRef } from "react";
 
 import { echarts, type EChartsOption } from "./echarts";
 
+export interface EChartInstance {
+  /** Attach to the chart container div (callback ref). */
+  attachRef: (node: HTMLDivElement | null) => void;
+  /** Live chart instance for dispatchAction etc.; null before mount. */
+  getChart: () => echarts.ECharts | null;
+}
+
+/** Re-arm the toolbox box-select so plain dragging always draws a zoom rect. */
+function armBoxZoom(chart: echarts.ECharts): void {
+  chart.dispatchAction({
+    type: "takeGlobalCursor",
+    key: "dataZoomSelect",
+    dataZoomSelectActive: true,
+  });
+}
+
 /**
- * Mount an ECharts instance on a div and keep it in sync with `option`.
+ * Core ECharts mounting hook: creates the chart when the container node
+ * attaches (callback ref, so conditional JSX still initializes), disposes on
+ * detach, resizes via ResizeObserver, and re-applies `option` on change.
  *
- * Returns a CALLBACK ref so charts inside conditional JSX (rendered only
- * once data arrives) still initialize: the chart is created when the node
- * attaches and disposed when it detaches. A mount-once effect would miss
- * late-mounting containers entirely.
- *
- *   const ref = useEChart(option);
- *   return <div ref={ref} className="h-[500px]" />;
+ * `boxZoom` keeps the toolbox dataZoomSelect cursor active so dragging a
+ * rectangle zooms - the caller's option must carry a (hidden) toolbox
+ * dataZoom feature for the brush to exist (see ChartPanel).
  */
-export function useEChart(option: EChartsOption | null): (node: HTMLDivElement | null) => void {
+export function useEChartInstance(
+  option: EChartsOption | null,
+  boxZoom = false,
+  onReady?: (chart: echarts.ECharts) => void,
+): EChartInstance {
   const chartRef = useRef<echarts.ECharts | null>(null);
   const observerRef = useRef<ResizeObserver | null>(null);
   const optionRef = useRef<EChartsOption | null>(option);
+  const boxZoomRef = useRef(boxZoom);
+  const onReadyRef = useRef(onReady);
   optionRef.current = option;
+  boxZoomRef.current = boxZoom;
+  onReadyRef.current = onReady;
 
   useEffect(() => {
-    if (option && chartRef.current) {
-      chartRef.current.setOption(option, { notMerge: true });
+    const chart = chartRef.current;
+    if (option && chart) {
+      chart.setOption(option, { notMerge: true });
+      if (boxZoom) armBoxZoom(chart);
     }
-  }, [option]);
+  }, [option, boxZoom]);
 
   useEffect(
     () => () => {
@@ -35,7 +59,7 @@ export function useEChart(option: EChartsOption | null): (node: HTMLDivElement |
     [],
   );
 
-  return useCallback((node: HTMLDivElement | null) => {
+  const attachRef = useCallback((node: HTMLDivElement | null) => {
     if (node) {
       if (chartRef.current) return; // same node re-attach (StrictMode)
       const chart = echarts.init(node);
@@ -45,7 +69,9 @@ export function useEChart(option: EChartsOption | null): (node: HTMLDivElement |
       observerRef.current = observer;
       if (optionRef.current) {
         chart.setOption(optionRef.current, { notMerge: true });
+        if (boxZoomRef.current) armBoxZoom(chart);
       }
+      onReadyRef.current?.(chart);
     } else {
       observerRef.current?.disconnect();
       observerRef.current = null;
@@ -53,4 +79,20 @@ export function useEChart(option: EChartsOption | null): (node: HTMLDivElement |
       chartRef.current = null;
     }
   }, []);
+
+  const getChart = useCallback(() => chartRef.current, []);
+
+  return { attachRef, getChart };
 }
+
+/**
+ * Plain chart mount - the original hook, kept for simple charts.
+ *
+ *   const ref = useEChart(option);
+ *   return <div ref={ref} className="h-[500px]" />;
+ */
+export function useEChart(option: EChartsOption | null): (node: HTMLDivElement | null) => void {
+  return useEChartInstance(option).attachRef;
+}
+
+export { armBoxZoom };

@@ -13,6 +13,7 @@ import {
   MarkAreaComponent,
   MarkLineComponent,
   TitleComponent,
+  ToolboxComponent,
   TooltipComponent,
   VisualMapComponent,
 } from "echarts/components";
@@ -32,9 +33,20 @@ echarts.use([
   MarkAreaComponent,
   GraphicComponent,
   DataZoomComponent,
+  ToolboxComponent,
   TitleComponent,
   CanvasRenderer,
 ]);
 
 export { echarts };
+
+// E2E/diagnostic hook: lets browser automation reach chart instances via
+// window.__ECHARTS__.getInstanceByDom(canvas.parentElement). Harmless for
+// an internal tool; the bundle already ships the echarts core.
+declare global {
+  interface Window {
+    __ECHARTS__?: typeof echarts;
+  }
+}
+window.__ECHARTS__ = echarts;
 export type EChartsOption = echarts.EChartsCoreOption;

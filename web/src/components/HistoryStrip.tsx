@@ -17,7 +17,7 @@ import { useMemo } from "react";
 import type { JpHistoryResponse } from "../api/types";
 import type { EChartsOption } from "../charts/echarts";
 import { axis, baseTooltip, houseOption, SLATE } from "../charts/theme";
-import { useEChart } from "../charts/useEChart";
+import { ChartPanel } from "../charts/ChartPanel";
 import { fmtDate, fmtNum, pumpCode } from "../lib/format";
 
 // Colors lifted from the plotly original (jp_history_tab.py).
@@ -387,8 +387,15 @@ export function HistoryStrip({
     });
   }, [data, bhpFromZero, showPf]);
 
-  const ref = useEChart(option);
-
   if (option === null) return null;
-  return <div ref={ref} style={{ height }} />;
+  // Brush zooms the main grid (x0 + both rate/BHP axes); the strip's own x
+  // axis mirrors x0's window via linkX so the bands stay date-aligned.
+  return (
+    <ChartPanel
+      option={option}
+      height={height}
+      zoom={{ xAxisIndex: [0], yAxisIndex: [0, 1] }}
+      linkX={{ targetAxis: 1, leftPx: 64, rightPx: 64 }}
+    />
+  );
 }

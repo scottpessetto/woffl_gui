@@ -11,7 +11,7 @@ import { useMemo, useState } from "react";
 import type { IprFitResponse, JpInstallRow, SimParams, SolveResult, WellTestRow } from "../../api/types";
 import type { EChartsOption } from "../../charts/echarts";
 import { ACCENT, axis, baseGrid, baseTooltip, CRIMSON, houseOption, SLATE, TEXT, VIRIDIS } from "../../charts/theme";
-import { useEChart } from "../../charts/useEChart";
+import { ChartPanel } from "../../charts/ChartPanel";
 import { Card, WarnNote } from "../../components/ui";
 import { fmtDate, fmtNum, daysAgo } from "../../lib/format";
 import { iprCurveFromAnchor, vogelQmax } from "../../lib/vogel";
@@ -181,7 +181,6 @@ export function IprChart({
     });
   }, [tests, fit, params, solve, compareTest, installs, showJpLabels]);
 
-  const ref = useEChart(option);
 
   return (
     <Card>
@@ -196,7 +195,7 @@ export function IprChart({
           Show JP label inside each test point
         </label>
       </div>
-      <div ref={ref} className="h-[520px]" />
+      <ChartPanel option={option} height={520} zoom={{ xAxisIndex: [0], yAxisIndex: [0] }} />
       {fit?.weak && (
         <WarnNote className="mt-2">
           IPR fit is weak (R2 {fmtNum(fit.coeffs.r2, 2)}) - treat the curve as a sketch
