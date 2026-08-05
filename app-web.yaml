@@ -1,0 +1,27 @@
+# Databricks Apps config for the WOFFL web app (React SPA + FastAPI).
+#
+# This file is NOT picked up in place: Databricks Apps requires the config to
+# be named `app.yaml` at the root of the deployed source. The staging script
+# (scripts/stage_web_app.py) copies this file to app.yaml inside the staging
+# directory, leaving the production Streamlit app.yaml untouched so both apps
+# can be deployed side by side from this repo.
+#
+# uvicorn binds automatically: the Apps runtime sets UVICORN_HOST/UVICORN_PORT
+# to DATABRICKS_APP_PORT for Python frameworks.
+
+command: ["uvicorn", "server.main:app"]
+
+env:
+  # ProcessPool cap (matches Databricks Apps medium compute, 2 vCPU).
+  - name: WOFFL_MAX_WORKERS
+    value: "2"
+
+  # NOTE: ALLOW_DATABRICKS_WRITES is deliberately ABSENT. The web app is
+  # read-only in v1 - it has no write endpoints - and the gate stays off as
+  # defense in depth. Add the var only when write flows are ported.
+
+resources:
+  - name: sql-warehouse
+    sql_warehouse:
+      id: 698745db7da46ba3
+      permission: CAN_USE

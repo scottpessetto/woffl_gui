@@ -134,3 +134,10 @@ venv.bak/
 .mypy_cache/
 .dmypy.json
 dmypy.json
+
+# Web app (React SPA)
+node_modules/
+web/dist/
+!web/src/lib/
+build/webapp_stage/
+*.tsbuildinfo
