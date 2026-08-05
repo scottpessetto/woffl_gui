@@ -6,7 +6,7 @@
  * reservoir pressure, so dragging ResP redraws instantly.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import type { IprFitResponse, JpInstallRow, SimParams, SolveResult, WellTestRow } from "../../api/types";
 import type { EChartsOption } from "../../charts/echarts";
@@ -36,6 +36,9 @@ export function IprChart({
   compareTest: WellTestRow | null;
   installs: JpInstallRow[];
 }) {
+  // Old GUI: checkbox "Show JP label inside each test point"
+  // (mva_show_jp_labels_{well}); per-well because the workbench remounts.
+  const [showJpLabels, setShowJpLabels] = useState(false);
   const option = useMemo<EChartsOption>(() => {
     // Anchor precedence: server fit > selected comparison test > raw sidebar
     // inflow - always re-evaluated at the SIDEBAR reservoir pressure.
@@ -123,8 +126,24 @@ export function IprChart({
         {
           name: "Test Data",
           type: "scatter",
-          symbolSize: 11,
+          symbolSize: showJpLabels ? 26 : 11,
           itemStyle: { borderColor: "#0f172a", borderWidth: 1 },
+          label: showJpLabels
+            ? {
+                show: true,
+                position: "inside",
+                fontSize: 9,
+                fontWeight: 600,
+                color: "#ffffff",
+                textBorderColor: "rgba(15,23,42,0.85)",
+                textBorderWidth: 2,
+                formatter: (raw: unknown): string => {
+                  // ECharts label param: value is this series' TestPoint datum.
+                  const p = raw as { value: TestPoint };
+                  return p.value[5] ?? "";
+                },
+              }
+            : { show: false },
           data: points,
           tooltip: {
             formatter: (raw: unknown): string => {
@@ -160,12 +179,23 @@ export function IprChart({
         },
       ],
     });
-  }, [tests, fit, params, solve, compareTest, installs]);
+  }, [tests, fit, params, solve, compareTest, installs, showJpLabels]);
 
   const ref = useEChart(option);
 
   return (
     <Card>
+      <div className="mb-1 flex justify-end">
+        <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-600">
+          <input
+            type="checkbox"
+            checked={showJpLabels}
+            onChange={(e) => setShowJpLabels(e.target.checked)}
+            className="h-4 w-4 rounded border-slate-300 accent-blue-600"
+          />
+          Show JP label inside each test point
+        </label>
+      </div>
       <div ref={ref} className="h-[520px]" />
       {fit?.weak && (
         <WarnNote className="mt-2">

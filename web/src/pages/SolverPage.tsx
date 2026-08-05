@@ -11,7 +11,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../api/client";
 import { useIprFit, useIprPin, useJpHistory, useSolve, useWellTests } from "../api/hooks";
 import type { AnchorMode, WellTestRow } from "../api/types";
-import { Button, ErrorNote, WarnNote } from "../components/ui";
+import { HistoryStrip } from "../components/HistoryStrip";
+import { Button, Card, ErrorNote, WarnNote } from "../components/ui";
 import { Welcome } from "../layout/Welcome";
 import { useDebounced } from "../lib/useDebounced";
 import { vogelQmax } from "../lib/vogel";
@@ -55,6 +56,7 @@ function Workbench({ well }: { well: string }) {
   const [anchorDate, setAnchorDate] = useState<string | null>(null);
   const [decouple, setDecouple] = useState(false);
   const [compareKey, setCompareKey] = useState<string | null>(null);
+  const [showStrip, setShowStrip] = useState(true);
 
   // Seed the anchor from the saved pin ONCE per mount (= once per well):
   // an applied pin means "anchor on this specific test".
@@ -145,6 +147,38 @@ function Workbench({ well }: { well: string }) {
             </WarnNote>
           )}
         </div>
+      )}
+
+      {showStrip && installsQ.data && installsQ.data.installs.length > 0 && (
+        <Card>
+          <div className="mb-1 flex items-center justify-between">
+            <h3 className="text-sm font-semibold tracking-tight text-slate-700">
+              Pump history
+              {installsQ.data.current_pump && (
+                <span className="ml-2 font-normal text-slate-500">
+                  Current: {installsQ.data.current_pump}
+                </span>
+              )}
+            </h3>
+            <button
+              type="button"
+              className="text-xs text-slate-500 hover:text-slate-700"
+              onClick={() => setShowStrip(false)}
+            >
+              Hide
+            </button>
+          </div>
+          <HistoryStrip data={installsQ.data} height={430} />
+        </Card>
+      )}
+      {!showStrip && (
+        <button
+          type="button"
+          className="text-xs text-slate-500 hover:text-slate-700"
+          onClick={() => setShowStrip(true)}
+        >
+          Show pump history
+        </button>
       )}
 
       <div className="grid gap-4 xl:grid-cols-2">
