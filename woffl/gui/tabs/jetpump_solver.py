@@ -961,7 +961,13 @@ def render_tab(
     """
     import pandas as pd
 
-    render_input_summary(params)
+    # Reserve the Model Inputs slot HERE (top of the tab, where Scott wants it)
+    # but fill it AFTER the anchor selector below has resolved which test the
+    # IPR is on — the expander now reports that provenance, and the anchor
+    # renders ~100 lines further down. A container keeps the visual position
+    # while letting the content be emitted late; reading last run's value from
+    # session_state instead would show the anchor one render stale.
+    _inputs_slot = st.container()
 
     # Workbench layout (Scott's spec):
     #
@@ -1089,6 +1095,15 @@ def render_tab(
             anchor_fit = _render_ipr_anchor_and_seed(params, test_df)
         else:
             anchor_fit = (None, None, None)
+            # No anchor selector this run (Custom well / no tests): drop any
+            # summary so the Model Inputs panel can't describe an anchor that
+            # isn't on screen.
+            st.session_state.pop(_ANCHOR_SUMMARY_KEY, None)
+
+    # Now that the anchor has resolved (and stashed its summary), fill the slot
+    # reserved at the top of the tab.
+    with _inputs_slot:
+        render_input_summary(params)
 
     # The comparison-test picker is slaved to the IPR anchor by default; the
     # "Use a different test for comparison" checkbox (rendered by the anchor
@@ -2364,9 +2379,23 @@ def _render_ipr_rate_calculator(params: SimulationParams, res_pres: float) -> No
             f"BHP ≥ reservoir pressure ({pr:.0f} psi) — no inflow at this drawdown."
         )
     else:
+        # Name the test behind the anchor when there is one. The numbers alone
+        # don't say WHERE they came from, and this caption sits far below the
+        # anchor selector (Scott, 2026-08-04). Falls back silently to the bare
+        # numbers for a Custom well, a synthetic fit, or a sidebar-edited
+        # anchor with no test behind it.
+        summary = st.session_state.get(_ANCHOR_SUMMARY_KEY) or {}
+        src = ""
+        if (
+            summary.get("well") == params.selected_well
+            and summary.get("test_date") is not None
+        ):
+            src = f" — from the {summary['test_date'].strftime('%Y-%m-%d')} test"
+            if summary.get("pump"):
+                src += f" ({summary['pump']})"
         st.caption(
             f"Vogel anchored at **{liq_anchor:,.0f} BLPD @ {pwf_anchor:,.0f} psi** "
-            f"({params.qwf_oil:,.0f} BOPD oil), "
+            f"({params.qwf_oil:,.0f} BOPD oil){src}, "
             f"ResP **{pr:,.0f} psi** · WC **{wc:.2f}** "
             f"(oil = liquid × {1.0 - wc:.2f})."
         )
@@ -2682,11 +2711,14 @@ def _clear_pin_cache(well_name: str) -> None:
 def _load_pinned_anchor(well_name: str, test_df) -> dict | None:
     """Saved IPR-anchor pin for ``well_name``, memoized once per well per session.
 
-    Reads ``mpu.wells.prop_hist`` (``ipr_wt_uid``) via
-    ``prop_hist_client.fetch_latest_prop`` at most ONCE per well per Streamlit
-    session — the memo lives in ``st.session_state[_PIN_CACHE_KEY]`` (a plain
+    Reads ``mpu.wells.prop_hist`` (``ipr_wt_uid``) through
+    ``ipr_anchor.load_saved_ipr`` — which already fetches that row as part of
+    the saved-IPR statement, so this costs NO extra Databricks round trip. It
+    used to call ``prop_hist_client.fetch_latest_prop`` itself, duplicating a
+    150 ms query per well for data the other call already had in hand. The
+    result is still memoized in ``st.session_state[_PIN_CACHE_KEY]`` (a plain
     ``{well_name: result}`` dict) because :func:`_render_ipr_anchor_control`
-    runs on every rerun and this must not re-hit Databricks each time.
+    runs on every rerun and the test-frame match below must not repeat.
 
     ANY failure (offline, missing grant, malformed row) degrades to "no pin"
     and is logged via ``logger.warning`` — NEVER raised, NEVER surfaced as
@@ -2713,17 +2745,25 @@ def _load_pinned_anchor(well_name: str, test_df) -> dict | None:
 
     result = None
     try:
-        from woffl.assembly.prop_hist_client import fetch_latest_prop
-        from woffl.gui.ipr_anchor import find_test_row_by_wt_uid
+        from woffl.gui.ipr_anchor import find_test_row_by_wt_uid, load_saved_ipr
 
-        fetched = fetch_latest_prop(well_name, _PIN_LOOKUP_PROP_ID)
-        if fetched is not None:
-            value, entry_datetime, entry_user = fetched
-            # A pin EXISTS iff prop_value is a real finite number (not
-            # None/NaN) -- NO sign-based rule. Real wt_uid values are signed
-            # and span both positive and negative ranges (observed roughly
-            # -3.6M to +3.1M), so a negative uid is a perfectly valid pin.
-            if value is not None and pd.notna(value):
+        saved = load_saved_ipr(well_name)
+        if saved is not None:
+            value = saved.get("pin_value")
+            entry_datetime = saved.get("pin_at")
+            entry_user = saved.get("pin_user")
+            # A pin EXISTS iff prop_value is a real finite number that is not
+            # the cleared marker -- NO sign-based rule. Real wt_uid values are
+            # signed and span roughly -3.6M to +3.1M, so a negative uid is a
+            # perfectly valid pin; only 0 is reserved (ipr_anchor
+            # .PIN_CLEARED_VALUE -- 0 occurs in 0 of 164,452 tests).
+            from woffl.gui.ipr_anchor import PIN_CLEARED_VALUE
+
+            if (
+                value is not None
+                and pd.notna(value)
+                and float(value) != PIN_CLEARED_VALUE
+            ):
                 wt_uid = int(value)
                 row = find_test_row_by_wt_uid(test_df, wt_uid)
                 if row is not None and pd.notna(row.get("WtDate")):
@@ -2775,6 +2815,100 @@ def _format_pin_date(value) -> str:
         return str(value)
 
 
+# Key holding the current IPR-anchor summary for the Model Inputs expander.
+# Single key (not per-well) carrying its own well name, so switching wells
+# can't leave a stale sibling entry behind for `render_input_summary` to show.
+_ANCHOR_SUMMARY_KEY = "sw_ipr_anchor_summary"
+
+
+def _build_anchor_summary(well_name, test_df, mode, anchor_date, pin_info):
+    """Everything the UI should be able to say about the CURRENT IPR anchor.
+
+    Scott, 2026-08-04: *"I see I'm using an IPR-anchored IPR but nowhere is it
+    clear what date test that was"* — and the Model Inputs expander showed the
+    seeded numbers with no hint of where they came from. The anchor's identity
+    was only ever surfaced by the pin caption, which renders in ONE case
+    (mode == specific AND the pin matches). This resolves it in every mode.
+
+    Resolution goes through ``ipr_anchor._resolve_anchor_row`` — the same
+    resolver the fit itself uses, with the same fittable-row filter — so the
+    summary can never name a different test than the curve was built on.
+
+    Returns a dict (never raises; missing pieces come back as None) with the
+    anchor's mode/label, the resolved test's date + uid + rates, the pump
+    installed at that date, and the saved prop_hist record behind it.
+    """
+    import pandas as pd
+
+    from woffl.gui.ipr_anchor import _resolve_anchor_row, load_saved_ipr
+
+    out = {
+        "well": well_name,
+        "mode": mode,
+        "label": None,
+        "test_date": None,
+        "wt_uid": None,
+        "bhp": None,
+        "oil": None,
+        "water": None,
+        "liquid": None,
+        "pump": None,
+        "fittable": False,
+        "pin": pin_info,
+        "saved": None,
+    }
+    try:
+        out["saved"] = load_saved_ipr(well_name)
+    except Exception:
+        out["saved"] = None
+
+    try:
+        if test_df is None or test_df.empty:
+            return out
+        df = test_df.dropna(subset=["BHP", "WtTotalFluid"]).copy()
+        if df.empty:
+            # No fittable test: the anchor falls back to its synthetic path.
+            # Still name the most recent test so the user sees SOMETHING.
+            df = test_df.copy()
+        else:
+            out["fittable"] = True
+        df["__date"] = pd.to_datetime(df.get("WtDate"), errors="coerce")
+        row, label = _resolve_anchor_row(
+            df, mode, anchor_date if mode == "specific" else None
+        )
+        out["label"] = label
+
+        d = row.get("__date")
+        out["test_date"] = d if pd.notna(d) else None
+        for key, col in (
+            ("wt_uid", "wt_uid"),
+            ("bhp", "BHP"),
+            ("oil", "WtOilVol"),
+            ("water", "WtWaterVol"),
+            ("liquid", "WtTotalFluid"),
+        ):
+            v = row.get(col)
+            out[key] = float(v) if is_valid_number(v) else None
+        # WtTotalFluid is oil + formation water (well_test_client), but a
+        # manual/provisional row may carry only the components.
+        if out["liquid"] is None and out["oil"] is not None:
+            out["liquid"] = out["oil"] + (out["water"] or 0.0)
+
+        jp_hist = st.session_state.get("jp_history_df")
+        if out["test_date"] is not None and jp_hist is not None:
+            pump = _pump_at_test_date(jp_hist, well_name, out["test_date"])
+            if pump and pump.get("nozzle_no") and pump.get("throat_ratio"):
+                out["pump"] = f"{pump['nozzle_no']}{pump['throat_ratio']}"
+    except Exception:
+        logger.warning(
+            "IPR-anchor summary failed for %s; the Model Inputs panel will "
+            "show what it has.",
+            well_name,
+            exc_info=True,
+        )
+    return out
+
+
 def _render_pin_provenance_caption(
     pin_info: dict | None, mode: str, anchor_date
 ) -> None:
@@ -2818,6 +2952,38 @@ def _render_pin_provenance_caption(
             f"Saved IPR (test uid {pin_info.get('wt_uid')}) not in the "
             "current test window — using most recent."
         )
+
+
+def _render_anchor_identity_caption(summary: dict) -> None:
+    """Name the test the IPR is actually anchored on — in EVERY mode.
+
+    The pin caption above only fires for a pinned specific test, so on 'Most
+    recent' / 'Median test' (and on an unpinned specific pick) nothing on
+    screen said which test the curve was built through. Scott, 2026-08-04:
+    *"I see I'm using an IPR-anchored IPR but nowhere is it clear what date
+    test that was."*
+    """
+    if not summary or summary.get("test_date") is None:
+        return
+
+    bits = [f"**{summary['test_date'].strftime('%Y-%m-%d')}**"]
+    if summary.get("pump"):
+        bits.append(summary["pump"])
+    if summary.get("bhp") is not None:
+        bits.append(f"BHP {summary['bhp']:,.0f} psi")
+    if summary.get("liquid") is not None:
+        bits.append(f"Liquid {summary['liquid']:,.0f} BLPD")
+    if summary.get("oil") is not None:
+        bits.append(f"Oil {summary['oil']:,.0f} BOPD")
+    if summary.get("wt_uid") is not None:
+        bits.append(f"uid {int(summary['wt_uid'])}")
+
+    lead = "Anchored on"
+    if not summary.get("fittable"):
+        # No test has both BHP and a rate, so the fit fell back to its
+        # synthetic path — say so rather than implying this test drove it.
+        lead = "No fittable test (synthetic IPR); nearest test"
+    st.caption(f"📈 {lead} {'  ·  '.join(bits)}")
 
 
 def _render_ipr_pin_controls(
@@ -2998,33 +3164,52 @@ def _render_ipr_pin_controls(
     )
     lock_cols = st.columns(len(LOCKABLE_FIELDS))
     for col, (skey, (_lid, _vid, label)) in zip(lock_cols, LOCKABLE_FIELDS.items()):
-        # Session flag first: right after a toggle the DB read can lag a rerun
-        # (memoized-None on a transient failure), and comparing the widget to
-        # the STALE db state re-pushed the lock every rerun (hayden's triple
-        # form_wc_lock rows, 2026-07-31). The flag is set on every toggle and
-        # on well-open seeding, so it is the fresher truth within a session.
-        locked_now = bool(
-            st.session_state.get(
-                f"_prop_locked_{skey}_{well_name}", saved_locks.get(skey)
-            )
-        )
+        # What prop_hist says right now, and what we have already pushed this
+        # session. The checkbox is the engineer's INTENT; prop_hist is the
+        # truth; the pushed-marker exists only to stop a repeat.
+        #
+        # This used to compare the checkbox against a `_prop_locked_` session
+        # flag instead of against prop_hist. When that flag drifted False while
+        # the row still said locked — a memoized-None read after a transient
+        # failure, or a well re-opened after the flag was cleared — the box
+        # rendered CHECKED but `want == locked_now`, so unchecking it pushed
+        # NOTHING and silently did nothing. B-28 carried a form_wc_lock=1.0
+        # from 2026-07-31 with no unlock row despite Scott unchecking it
+        # (2026-08-04). Comparing to the stored state can't swallow a toggle.
+        db_locked = bool(saved_locks.get(skey))
+        flag_key = f"_prop_locked_{skey}_{well_name}"
+        pushed_key = f"_prop_lock_pushed_{skey}_{well_name}"
+        flag = st.session_state.get(flag_key)
+        shown = bool(db_locked if flag is None else flag)
+
         with col:
             want = st.checkbox(
                 f"🔒 {label}",
-                value=locked_now,
+                value=shown,
                 key=f"sw_lock_{skey}_{well_name}",
                 help=_LOCK_HELP.get(skey, ""),
             )
-        if want != locked_now:
+
+        # Push when the engineer's intent differs from what is STORED, unless
+        # we already pushed exactly that this session (the read lags a rerun,
+        # and re-pushing every rerun is what produced hayden's triple
+        # form_wc_lock rows on 2026-07-31).
+        if want != db_locked and st.session_state.get(pushed_key) != want:
             ok, message = set_prop_lock(
                 well_name, skey, want, value=st.session_state.get(skey)
             )
             if ok:
-                st.session_state[f"_prop_locked_{skey}_{well_name}"] = want
+                st.session_state[flag_key] = want
+                st.session_state[pushed_key] = want
                 st.toast(message, icon="🔒" if want else "🔓")
                 st.rerun()
             else:
                 st.warning(message)
+        elif want == db_locked:
+            # Stored state caught up — forget the marker so a LATER toggle
+            # back the other way is free to push again.
+            st.session_state.pop(pushed_key, None)
+            st.session_state[flag_key] = want
 
 
 def _render_ipr_anchor_control(well_name: str, test_df):
@@ -3128,7 +3313,18 @@ def _render_ipr_anchor_control(well_name: str, test_df):
             bhp = row.get("BHP")
             if is_valid_number(bhp):
                 parts.append(f"BHP {float(bhp):,.0f}")
+            # TOTAL LIQUID before oil: it is the measured quantity the Vogel
+            # fit is actually built on (WtTotalFluid = oil + formation water),
+            # and Scott asked to be able to pick a test on liquid rate rather
+            # than reading it off the oil split. See the RATE CONVENTION in
+            # gui/params.py.
+            liq = row.get("WtTotalFluid")
             oil = row.get("WtOilVol")
+            wat = row.get("WtWaterVol")
+            if not is_valid_number(liq) and is_valid_number(oil):
+                liq = float(oil) + (float(wat) if is_valid_number(wat) else 0.0)
+            if is_valid_number(liq):
+                parts.append(f"Liq {float(liq):,.0f}")
             if is_valid_number(oil):
                 parts.append(f"Oil {float(oil):,.0f}")
             return "  ·  ".join(parts)
@@ -3158,13 +3354,21 @@ def _render_ipr_anchor_control(well_name: str, test_df):
                 index=default_date_idx,
                 format_func=lambda i: date_opts[i],
                 key=anchor_key,
-                help="The test the Vogel curve is forced through.",
+                help="The test the Vogel curve is forced through. "
+                "Liq = total liquid (oil + formation water, BLPD), the rate "
+                "the fit is built on; Oil is its allocated oil split (BOPD).",
             )
         ad = sorted_tests.iloc[picked_idx].get("WtDate")
         anchor_date = ad if pd.notna(ad) else None
 
     # Saved-IPR provenance, right under the selector(s) just rendered.
     _render_pin_provenance_caption(pin_info, mode, anchor_date)
+
+    # Which test the curve is ACTUALLY anchored on, in every mode — and the
+    # same record the Model Inputs expander reads.
+    summary = _build_anchor_summary(well_name, test_df, mode, anchor_date, pin_info)
+    st.session_state[_ANCHOR_SUMMARY_KEY] = summary
+    _render_anchor_identity_caption(summary)
 
     # Save/clear the pin (W3 of the woffl-prop-hist-persistence plan) — right
     # next to the provenance caption above, inside the same anchor group.
@@ -3905,13 +4109,32 @@ def _render_well_test_table(test_df) -> None:
         "WtOilVol": "Oil (BOPD)",
         "WtWaterVol": "Water (BWPD)",
         "WtTotalFluid": "Total Fluid (BPD)",
+        # Right after Total Fluid (Scott, 2026-08-04). This is the ALLOCATED
+        # water cut straight off vw_well_test — the number the 🔒 WC lock
+        # exists to override when it's wrong — so it is shown raw, not
+        # clamped: the view genuinely carries out-of-range values (-94.4 to
+        # 144.6 field-wide) and hiding them would hide the reason to lock.
+        "form_wc": "Form WC (%)",
         "BHP": "BHP (psi)",
         "fgor": "GOR (scf/bbl)",
         "lift_wat": "PF Rate (BWPD)",
         "whp": "Surface Pres (psi)",
     }
-    available = [c for c in display_cols if c in test_df.columns]
-    table_df = test_df[available].copy()
+
+    src = test_df.copy()
+    # Manual/provisional rows (the Solver's entry form) carry oil + water but
+    # no allocated form_wc — derive theirs so the column isn't holey.
+    derived = pd.to_numeric(src.get("WtWaterVol"), errors="coerce") / pd.to_numeric(
+        src.get("WtTotalFluid"), errors="coerce"
+    ).replace(0, pd.NA)
+    if "form_wc" in src.columns:
+        src["form_wc"] = pd.to_numeric(src["form_wc"], errors="coerce").fillna(derived)
+    else:
+        src["form_wc"] = derived
+    src["form_wc"] = src["form_wc"] * 100.0  # stored as a fraction
+
+    available = [c for c in display_cols if c in src.columns]
+    table_df = src[available].copy()
     table_df = table_df.rename(columns=display_cols)
     if "Test Date" in table_df.columns:
         table_df["Test Date"] = pd.to_datetime(table_df["Test Date"]).dt.strftime(
@@ -3920,4 +4143,19 @@ def _render_well_test_table(test_df) -> None:
     table_df = table_df.sort_values("Test Date", ascending=False).reset_index(drop=True)
 
     st.markdown(f"#### Well Test Data ({len(table_df)} tests)")
-    st.dataframe(table_df, use_container_width=True, hide_index=True)
+    st.dataframe(
+        table_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Form WC (%)": st.column_config.NumberColumn(
+                "Form WC (%)",
+                format="%.1f",
+                help="Allocated formation water cut from vw_well_test "
+                "(water ÷ total fluid). Derived from the rates for manual "
+                "tests. Shown as reported — a value outside 0–100 means the "
+                "allocation is bad for that test, which is what the 🔒 WC "
+                "lock is for.",
+            ),
+        },
+    )

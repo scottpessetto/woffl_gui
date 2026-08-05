@@ -311,10 +311,23 @@ def run_well_database_page():
     if not wells:
         st.info("No wells available.")
         return
-    hist_well = st.selectbox("Well", wells, key="wdb_hist_well")
+    pick, refresh = st.columns([5, 1])
+    with pick:
+        hist_well = st.selectbox("Well", wells, key="wdb_hist_well")
 
     from woffl.assembly.prop_hist_client import format_alaska
     from woffl.gui.prop_history import fetch_prop_history, shape_history
+
+    with refresh:
+        st.write("")  # nudge the button down onto the selectbox's baseline
+        if st.button(
+            "↻ Refresh",
+            key="wdb_hist_refresh",
+            help="Re-read prop_hist now. The history is cached for 5 minutes "
+            "so that sorting or switching wells doesn't re-query.",
+        ):
+            fetch_prop_history.clear()
+            st.rerun()
 
     try:
         with st.spinner(f"Loading property history for {hist_well}…"):

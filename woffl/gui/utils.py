@@ -24,12 +24,129 @@ from woffl.pvt.resmix import ResMix
 logger = logging.getLogger(__name__)
 
 
+def _fmt_rate(v, unit: str) -> str:
+    return "—" if v is None else f"{v:,.0f} {unit}"
+
+
+def _render_ipr_anchor_provenance(params) -> None:
+    """Where the IPR on screen actually came from.
+
+    Scott, 2026-08-04: *"add all the IPR anchor save details — what test is
+    being used and date, and all the other properties. Make it clear what is
+    being pulled in currently."* The expander used to show the seeded numbers
+    with nothing about their origin, so a saved/pinned IPR was indistinguishable
+    from a fresh fit.
+
+    Reads the summary the Solver's anchor control stashes each render
+    (``jetpump_solver._ANCHOR_SUMMARY_KEY``). Silent when it is missing or
+    belongs to another well — Batch Run shares this expander and may render
+    before the Solver has ever run.
+    """
+    from woffl.assembly.prop_hist_client import format_alaska
+
+    s = st.session_state.get("sw_ipr_anchor_summary")
+    if not s or s.get("well") != params.selected_well:
+        return
+
+    st.divider()
+    st.markdown("**IPR anchor — what's driving the curve**")
+    a, b = st.columns(2)
+
+    with a:
+        mode_label = {
+            "recent": "Most recent test",
+            "median": "Median test",
+            "specific": "Specific test",
+        }.get(s.get("mode"), s.get("mode"))
+        st.write(f"Anchor mode: {mode_label}")
+        d = s.get("test_date")
+        st.write(f"Test date: {d.strftime('%Y-%m-%d') if d is not None else '—'}")
+        if s.get("pump"):
+            st.write(f"Pump at that test: {s['pump']}")
+        if s.get("wt_uid") is not None:
+            st.write(f"Test uid: {int(s['wt_uid'])}")
+        st.write(f"Measured BHP: {_fmt_rate(s.get('bhp'), 'psi')}")
+        # The measured split the fit is built on, in the same order the anchor
+        # picker lists it (liquid first — it is the measurement).
+        st.write(f"Measured liquid: {_fmt_rate(s.get('liquid'), 'BLPD')}")
+        st.write(f"Measured oil: {_fmt_rate(s.get('oil'), 'BOPD')}")
+        st.write(f"Measured water: {_fmt_rate(s.get('water'), 'BWPD')}")
+        if not s.get("fittable"):
+            st.caption(
+                "⚠️ No test in the window has BOTH a BHP and a rate, so the "
+                "curve is synthetic — this test is shown for reference only."
+            )
+
+    with b:
+        pin = s.get("pin") or {}
+        if pin.get("status") == "applied":
+            st.write(
+                f"📌 Pinned: test {pin.get('date_token')} "
+                f"(by {pin.get('entry_user')})"
+            )
+        elif pin.get("status") == "stale":
+            st.write(
+                f"📌 Pinned test uid {pin.get('wt_uid')} — aged out of the "
+                "current window, so the anchor fell back"
+            )
+        else:
+            st.write("📌 Pinned: no")
+
+        saved = s.get("saved") or {}
+        vals = saved.get("values") or {}
+        if vals:
+            when = format_alaska(saved.get("saved_at"), "%Y-%m-%d %H:%M")
+            who = str(saved.get("saved_by") or "").split("@")[0]
+            st.write(f"💾 Saved values from prop_hist ({when} AK · {who}):")
+            for key, lbl, unit in (
+                ("qwf_liq", "qwf", "BLPD"),
+                ("pwf", "pwf", "psi"),
+                ("res_pres", "ResP", "psi"),
+                ("form_wc", "WC", ""),
+                ("form_gor", "GOR", "scf/bbl"),
+                ("surf_press", "Surface", "psi"),
+            ):
+                if key in vals:
+                    v = vals[key]
+                    shown = f"{v:.2f}" if key == "form_wc" else f"{v:,.0f}"
+                    st.write(f"  · {lbl}: {shown} {unit}".rstrip())
+        else:
+            st.write("💾 Saved values: none — seeded from the test fit")
+
+        locked = [
+            lbl
+            for skey, lbl in (
+                ("form_wc", "WC"), ("form_gor", "GOR"), ("res_pres", "ResP")
+            )
+            if (saved.get("locks") or {}).get(skey)
+        ]
+        if locked:
+            lv = saved.get("lock_values") or {}
+            st.write(
+                "🔒 Locked (overrides every test-derived seed): "
+                + ", ".join(
+                    f"{n}={lv[k]:.2f}" if k == "form_wc" else f"{n}={lv[k]:,.0f}"
+                    for k, n in (
+                        ("form_wc", "WC"), ("form_gor", "GOR"), ("res_pres", "ResP")
+                    )
+                    if n in locked and k in lv
+                )
+            )
+        fric = saved.get("friction") or {}
+        if fric:
+            st.write(
+                "🔧 BHP-calibrated friction: "
+                + ", ".join(f"{k}={v:.3f}" for k, v in sorted(fric.items()))
+            )
+
+
 def render_input_summary(params) -> None:
     """Render the collapsible Model Inputs expander.
 
     Shared between the Solver tab and the Batch Run tab so the user can
     see exactly what pump / well / formation inputs the solver and the
-    nozzle-throat sweep are using, without scrolling back to the sidebar.
+    nozzle-throat sweep are using, without scrolling back to the sidebar —
+    and, since 2026-08-04, where the IPR behind them came from.
     """
     ipr_info = st.session_state.get("sw_ipr_info")
     label = f"Model Inputs (Nozzle {params.nozzle_no}, Throat {params.area_ratio})"
@@ -62,6 +179,7 @@ def render_input_summary(params) -> None:
                 f"→ implies {params.qwf_oil:,.0f} BOPD oil "
                 f"at WC {params.form_wc:.2f}"
             )
+        _render_ipr_anchor_provenance(params)
         if ipr_info:
             st.caption(f"*{ipr_info}*")
 
@@ -1217,7 +1335,13 @@ def create_reservoir_mix(
     )
 
 
-@st.cache_data(ttl=3600, show_spinner=False, max_entries=64)
+# max_entries: keyed on (field_model, jpump_tvd), NOT well name — the ~130-well
+# fleet spans 2 field models, so a single walk of the fleet can mint ~260 keys
+# before any sidebar TVD nudge adds more. 64 meant a fleet-wide pass evicted its
+# own early entries and re-paid the 12-412 ms Nelder-Mead fit on the way back.
+# 512 gives ~2 TVD variants per well; a WellProfile is two short float arrays,
+# so the memory cost of the headroom is negligible.
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=512)
 def create_well_profile(field_model=None, jpump_tvd=None):
     """Create a WellProfile object with the given field model and jetpump TVD.
 
@@ -1924,7 +2048,12 @@ def get_well_data(well_name):
     return well_data.iloc[0].to_dict()
 
 
-@st.cache_data(ttl=3600, show_spinner=False, max_entries=128)
+# max_entries: keyed on well_name alone, and the fleet is ~130 wells — 128 was
+# one short, so a single fleet-wide pass evicted its own first entries and every
+# well after it re-read the CSV from disk (and a missing-survey None occupies a
+# slot too, so even the 91 on-disk surveys don't bound the key count). 256 is 2x
+# fleet headroom; each entry is a ~few-hundred-row 2-column frame.
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=256)
 def get_well_survey_data(well_name):
     """Load deviation survey CSV for specific well. Cached — this used to be
     read from disk twice per rerun of the single-well page.
@@ -1952,7 +2081,12 @@ def get_well_survey_data(well_name):
         return None
 
 
-@st.cache_data(ttl=3600, show_spinner=False, max_entries=64)
+# max_entries: keyed on (well_name, jpump_tvd, field_model) — more than the well
+# name, so one well occupies several entries as its TVD or model is varied. With
+# a ~130-well fleet, 64 could not even hold one entry per well: a fleet-wide pass
+# evicted itself and re-paid the 12-412 ms Nelder-Mead fit per miss. 512 leaves
+# ~4 variants per well; the cached WellProfile is two short float arrays.
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=512)
 def create_well_profile_from_survey(well_name, jpump_tvd=None, field_model=None):
     """Create WellProfile using actual survey data instead of defaults.
 

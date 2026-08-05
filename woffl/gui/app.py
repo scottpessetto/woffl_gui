@@ -15,8 +15,13 @@ from pathlib import Path
 
 import streamlit as st
 
-# Add the parent directory to the Python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+# Add the parent directory to the Python path. Streamlit re-executes this entry
+# script on EVERY rerun, so an unconditional insert grew sys.path without bound
+# for the life of the session and made every subsequent import pay a longer
+# linear scan. Insert only when absent — same resulting path, one entry.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from woffl.assembly.jp_history import parse_jp_history
 from woffl.gui.sidebar import render_sidebar
@@ -48,8 +53,10 @@ def _streamlit_forwarded_user():
 
 # prop_hist writes stamp entry_user. On the hosted app, current_user() is the
 # SERVICE PRINCIPAL for every session — this provider recovers the actual
-# engineer per session instead. Registered at import (idempotent);
-# WOFFL_ENTRY_USER in the env still overrides everything.
+# engineer per session instead. Re-runs harmlessly on every Streamlit rerun of
+# this entry script: set_entry_user_provider REBINDS one module global (it does
+# not accumulate registrations), so this stays a single provider. WOFFL_ENTRY_USER
+# in the env still overrides everything.
 from woffl.assembly.prop_hist_client import set_entry_user_provider
 
 set_entry_user_provider(_streamlit_forwarded_user)
@@ -137,11 +144,43 @@ def main():
         initial_sidebar_state="expanded",
     )
 
-    # The Solver view is the densest screen in the app, so it reclaims the
-    # ~120px of app chrome for content. Both keys are widget state from the
-    # PREVIOUS run, which is exactly what we want: the decision has to be made
-    # before either widget renders this run. Every other mode/view keeps the
-    # header.
+    # Mode migrations run FIRST: they rewrite `app_mode_radio` in place, and
+    # the app-header decision below reads it. Doing them after would show the
+    # header for one frame on a session still holding a retired mode name.
+    # Writing a widget key pre-render is allowed; the radio itself renders far
+    # below, and a session_state value that isn't in `modes` would silently
+    # reset the radio.
+    _legacy_pads = {  # the S/I/M pad modes merged into the hub (R-1 §3)
+        "S-Pad Optimization": "S-Pad",
+        "I-Pad Optimization": "I-Pad",
+        "M-Pad Optimization": "M-Pad",
+    }
+    if st.session_state.get("app_mode_radio") in _legacy_pads:
+        st.session_state["pad_hub_pad_shadow"] = _legacy_pads[
+            st.session_state["app_mode_radio"]
+        ]
+        st.session_state["app_mode_radio"] = "Optimization"
+    # 2026-07-30: "Pad Optimization" renamed to "Optimization", and the separate
+    # "Optimization Workflow" mode retired — the CFP/PW work lives on the hub's
+    # "PW Pressure Optimization" radio.
+    if st.session_state.get("app_mode_radio") in (
+        "Pad Optimization",
+        "Optimization Workflow",
+    ):
+        st.session_state["app_mode_radio"] = "Optimization"
+
+    # Modes that render their OWN page title (pad_page/cfp_pad_page's
+    # spec.title, "Well Database", "Well Sort"). Stacking "WOFFL Haus 🧇" on
+    # top of those is ~120px of chrome saying nothing the page doesn't already
+    # say, so they drop it — same reclaim the Solver view has always done.
+    _MODES_WITH_OWN_HEADER = frozenset(
+        {"Optimization", "Well Database", "Well Sort"}
+    )
+
+    # The Solver view is the densest screen in the app and has no title of its
+    # own, so it only reclaims the chrome once a run is actually up. Both keys
+    # are widget state from the PREVIOUS run, which is exactly what we want:
+    # the decision has to be made before either widget renders this run.
     #
     # Seed the view default here too. Without it the FIRST render after picking
     # a well still has `sw_active_view` unset (single_well_page seeds it a few
@@ -149,13 +188,13 @@ def main():
     # rerun — a visible jump. single_well_page re-validates the value against
     # its label list, so a stale default self-corrects rather than sticking.
     st.session_state.setdefault("sw_active_view", "Solver")
+    _mode = st.session_state.get("app_mode_radio", "Single Well Analysis")
     _bare_solver = (
-        st.session_state.get("app_mode_radio", "Single Well Analysis")
-        == "Single Well Analysis"
+        _mode == "Single Well Analysis"
         and st.session_state.get("sw_active_view") == "Solver"
         and st.session_state.get("sw_sim_active", False)
     )
-    if not _bare_solver:
+    if not (_bare_solver or _mode in _MODES_WITH_OWN_HEADER):
         st.title("WOFFL Haus 🧇")
         st.caption("*Built on Kaelin Ellis's WOFFL Jet Pump Model*")
 
@@ -318,29 +357,6 @@ def main():
     ]
     if st.session_state.get("_scotts_tools", False):
         modes.append("Scott's Tools")
-
-    # The dedicated S/I/M pad modes merged into "Pad Optimization" (R-1 §3).
-    # Migrate a session still holding an old mode name BEFORE the radio
-    # renders (writing a widget key pre-render is allowed), landing the user
-    # on the same pad via the hub's shadow key.
-    _legacy_pads = {
-        "S-Pad Optimization": "S-Pad",
-        "I-Pad Optimization": "I-Pad",
-        "M-Pad Optimization": "M-Pad",
-    }
-    if st.session_state.get("app_mode_radio") in _legacy_pads:
-        st.session_state["pad_hub_pad_shadow"] = _legacy_pads[
-            st.session_state["app_mode_radio"]
-        ]
-        st.session_state["app_mode_radio"] = "Optimization"
-
-    # 2026-07-30: "Pad Optimization" renamed to "Optimization", and the separate
-    # "Optimization Workflow" mode retired — the CFP/PW work lives on the hub's
-    # "PW Pressure Optimization" radio. A session_state value that isn't in
-    # `modes` resets the radio, so migrate both old names here, pre-render.
-    _retired_modes = ("Pad Optimization", "Optimization Workflow")
-    if st.session_state.get("app_mode_radio") in _retired_modes:
-        st.session_state["app_mode_radio"] = "Optimization"
 
     # Mode selection. The key matters: without one, the widget identity is
     # derived from its options, so unlocking Scott's Tools (options change)

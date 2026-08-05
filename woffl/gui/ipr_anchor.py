@@ -19,6 +19,7 @@ The returned dict is shaped like a row of
 from __future__ import annotations
 
 import os
+import time
 
 import numpy as np
 import pandas as pd
@@ -170,10 +171,24 @@ def find_test_row_by_wt_uid(
 # Streamlit, no `woffl.gui` imports) so it stays import-cycle-safe.
 
 _IPR_PIN_PROP_ID = "ipr_wt_uid"
-# NOTE: `wt_uid` values in `vw_well_test` are signed and span roughly
-# -3.6M to +3.1M (almost all negative in practice) -- there is no numeric
-# sentinel that can't collide with a real uid. Un-pinning writes a SQL NULL
-# prop_value instead (see `clear_ipr_pin` / `prop_hist_client.push_prop`).
+
+# "Cleared" markers. prop_hist.prop_value is DOUBLE **NOT NULL** — a NULL
+# INSERT is rejected outright with DELTA_NOT_NULL_CONSTRAINT_VIOLATED. Both
+# clear paths here used to push None, so neither had EVER worked: the whole
+# table holds zero NULL prop_value rows, un-pinning silently failed, and
+# unchecking a 🔒 lock silently failed (Scott on B-28, 2026-08-04 — the WC
+# lock came back checked on reload because the unlock never landed).
+#
+# 0.0 is safe for BOTH, verified against live data 2026-08-04:
+#   * `ipr_wt_uid` — `wt_uid = 0` occurs in 0 of 164,452 rows of
+#     vw_well_test (range -3,598,569 .. 3,135,427). The old note here said no
+#     sentinel was safe; that was true of -1 (a plausible uid) but not of 0.
+#   * `*_lock` — only 1.0 has ever been stored, and the read predicate is
+#     already `>= 0.5`, so 0.0 reads as unlocked with NO read-side change.
+# Neither is a blanket "0 means cleared" rule: 0.0 is a legitimate value for
+# props like form_wc, which is why these are named per use.
+PIN_CLEARED_VALUE = 0.0
+LOCK_UNLOCKED_VALUE = 0.0
 
 # Message prefixes callers pattern-match on to pick st.caption (expected,
 # non-error skip) vs st.warning (an actual push/clear failure) without this
@@ -287,19 +302,19 @@ def pin_ipr_anchor(well_name: str, anchor_row) -> tuple[bool, str]:
 
 
 def clear_ipr_pin(well_name: str) -> tuple[bool, str]:
-    """Un-pin ``well_name``'s saved IPR default: push a NULL prop_value.
+    """Un-pin ``well_name``'s saved IPR default.
 
-    ``jetpump_solver._load_pinned_anchor`` treats a NULL/NaN ``prop_value``
-    as "no pin" -- there is no numeric sentinel that works, since real
-    ``wt_uid`` values are signed and span both positive and negative ranges.
-    Corrections/un-pins are new rows (prop_hist is append-only), never a
-    DELETE (see the plan's DART review). Same failure handling as
+    Writes :data:`PIN_CLEARED_VALUE` (0.0), which readers treat as "no pin".
+    This used to push a SQL NULL, which the table's NOT NULL constraint
+    rejected — so the 🗑 Clear button had never actually cleared anything (see
+    the block comment on PIN_CLEARED_VALUE). Corrections/un-pins are new rows
+    (prop_hist is append-only), never a DELETE. Same failure handling as
     :func:`pin_ipr_anchor`; callers should also call
     `jetpump_solver._clear_pin_cache(well_name)` after a successful clear.
     """
     try:
         entry_user = resolve_entry_user()
-        push_prop(well_name, _IPR_PIN_PROP_ID, None, entry_user)
+        push_prop(well_name, _IPR_PIN_PROP_ID, PIN_CLEARED_VALUE, entry_user)
     except Exception as e:
         return False, f"{UNPIN_FAILURE_PREFIX} {e}"
     return True, "Saved IPR cleared"
@@ -512,17 +527,101 @@ def saved_wins(saved_at, pin_at) -> bool:
     return saved_at >= pin_at
 
 
+def _assemble_saved_ipr(latest: dict):
+    """Build one well's saved-IPR record from its latest-row-per-prop_id map.
+
+    Shared by the single-well read (:func:`load_saved_ipr`) and the pad-wide
+    warm-up (:func:`warm_saved_ipr_cache`) so the two can never disagree about
+    what a set of prop_hist rows MEANS. ``latest`` maps prop_id -> a row-like
+    with ``prop_value`` / ``entry_datetime`` / ``entry_user``.
+    """
+    values, saved_at, saved_by = {}, None, None
+    for pid, key in IPR_VALUE_PROPS.items():
+        row = latest.get(pid)
+        if row is None or pd.isna(row["prop_value"]):
+            continue
+        values[key] = float(row["prop_value"])
+        if pid != "resvr_press":  # canon doesn't date the SAVED set
+            ts = row["entry_datetime"]
+            if saved_at is None or ts > saved_at:
+                saved_at, saved_by = ts, row.get("entry_user")
+
+    # The pin's VALUE and author ride along, not just its timestamp: this row
+    # is already in hand, so a second per-well round trip for it
+    # (jetpump_solver's old fetch_latest_prop call) was 150 ms of duplication.
+    pin_row = latest.get("ipr_wt_uid")
+    pin_live = (
+        pin_row is not None
+        and not pd.isna(pin_row["prop_value"])
+        # 0.0 is the explicit "cleared" marker (PIN_CLEARED_VALUE); a real
+        # wt_uid is never 0. NaN is still honoured for defensive reads.
+        and float(pin_row["prop_value"]) != PIN_CLEARED_VALUE
+    )
+
+    friction = {}
+    for pid, key in FRICTION_PROPS.items():
+        row = latest.get(pid)
+        if row is not None and not pd.isna(row["prop_value"]):
+            friction[key] = float(row["prop_value"])
+
+    locks, lock_values = {}, {}
+    for skey, (lock_id, value_id, _label) in LOCKABLE_FIELDS.items():
+        lock_row = latest.get(lock_id)
+        locks[skey] = (
+            lock_row is not None
+            and not pd.isna(lock_row["prop_value"])
+            and float(lock_row["prop_value"]) >= 0.5
+        )
+        value_row = latest.get(value_id)
+        if value_row is not None and not pd.isna(value_row["prop_value"]):
+            lock_values[skey] = float(value_row["prop_value"])
+
+    # A saved IPR needs the operating pair; friction, the locks, and a bare pin
+    # stand on their own (a calibration, a locked field, or a 📌-only well may
+    # exist with no saved curve, and all sit OUTSIDE the pin-vs-values
+    # precedence). The pin has to count or a pin-only well would return None
+    # and lose its anchor.
+    has_curve = "qwf_liq" in values and "pwf" in values
+    if not (has_curve or friction or any(locks.values()) or pin_live):
+        return None
+    return {
+        "values": values if has_curve else {},
+        "friction": friction,
+        "locks": locks,
+        "lock_values": lock_values,
+        # back-compat aliases (pre-registry callers/tests)
+        "wc_locked": locks["form_wc"],
+        "wc_value": lock_values.get("form_wc"),
+        "saved_at": saved_at if has_curve else None,
+        "saved_by": saved_by,
+        "pin_at": pin_row["entry_datetime"] if pin_live else None,
+        "pin_value": float(pin_row["prop_value"]) if pin_live else None,
+        "pin_user": str(pin_row.get("entry_user") or "") if pin_live else None,
+    }
+
+
+def _saved_ipr_prop_ids() -> list:
+    """Every prop_id a saved-IPR record is assembled from."""
+    return (
+        list(IPR_VALUE_PROPS)
+        + list(FRICTION_PROPS)
+        + ["ipr_wt_uid"]
+        + [lock_id for lock_id, _, _ in LOCKABLE_FIELDS.values()]
+    )
+
+
 def load_saved_ipr(well_name: str):
-    """Latest saved IPR values + the pin timestamp for one well, or None.
+    """Latest saved IPR values + the anchor pin for one well, or None.
 
     One latest-per-prop query over prop_hist (memoized per well per session —
-    cleared by :func:`save_ipr_values`). Read path: works without the write
-    gate, and hosted via the SP's inherited SELECT. A saved-IPR record only
-    COUNTS when both ``ipr_qwf_liq`` and ``ipr_pwf`` are present — canonical
+    cleared by :func:`save_ipr_values`, warmed pad-wide by
+    :func:`warm_saved_ipr_cache`). Read path: works without the write gate,
+    and hosted via the SP's inherited SELECT. A saved-IPR record only COUNTS
+    when both ``ipr_qwf_liq`` and ``ipr_pwf`` are present — canonical
     ``resvr_press`` alone is well characterization, not a saved curve.
 
-    Returns ``{"values": {...}, "saved_at", "saved_by", "pin_at"}`` or None.
-    Fail-soft: any error → None (the sidebar just seeds normally).
+    Returns the :func:`_assemble_saved_ipr` record (values, friction, locks,
+    pin) or None. Fail-soft: any error → None (the sidebar seeds normally).
     """
     if well_name in _saved_ipr_cache:
         return _saved_ipr_cache[well_name]
@@ -533,13 +632,7 @@ def load_saved_ipr(well_name: str):
         from woffl.assembly.prop_hist_client import _resolve_enthid
 
         enthid = _resolve_enthid(well_name)
-        ids = ",".join(
-            f"'{p}'"
-            for p in list(IPR_VALUE_PROPS)
-            + list(FRICTION_PROPS)
-            + ["ipr_wt_uid"]
-            + [lock_id for lock_id, _, _ in LOCKABLE_FIELDS.values()]
-        )
+        ids = ",".join(f"'{p}'" for p in _saved_ipr_prop_ids())
         df = execute_query(
             f"""
             SELECT prop_id, prop_value, entry_datetime, entry_user FROM (
@@ -553,62 +646,92 @@ def load_saved_ipr(well_name: str):
             """
         )
         if df is not None and not df.empty:
-            latest = {str(r["prop_id"]): r for _, r in df.iterrows()}
-            values, saved_at, saved_by = {}, None, None
-            for pid, key in IPR_VALUE_PROPS.items():
-                row = latest.get(pid)
-                if row is None or pd.isna(row["prop_value"]):
-                    continue
-                values[key] = float(row["prop_value"])
-                if pid != "resvr_press":  # canon doesn't date the SAVED set
-                    ts = row["entry_datetime"]
-                    if saved_at is None or ts > saved_at:
-                        saved_at, saved_by = ts, row.get("entry_user")
-            pin_row = latest.get("ipr_wt_uid")
-            pin_at = (
-                pin_row["entry_datetime"]
-                if pin_row is not None and not pd.isna(pin_row["prop_value"])
-                else None
+            result = _assemble_saved_ipr(
+                {str(r["prop_id"]): r for _, r in df.iterrows()}
             )
-            friction = {}
-            for pid, key in FRICTION_PROPS.items():
-                row = latest.get(pid)
-                if row is not None and not pd.isna(row["prop_value"]):
-                    friction[key] = float(row["prop_value"])
-            locks, lock_values = {}, {}
-            for skey, (lock_id, value_id, _label) in LOCKABLE_FIELDS.items():
-                lock_row = latest.get(lock_id)
-                locks[skey] = (
-                    lock_row is not None
-                    and not pd.isna(lock_row["prop_value"])
-                    and float(lock_row["prop_value"]) >= 0.5
-                )
-                value_row = latest.get(value_id)
-                if value_row is not None and not pd.isna(value_row["prop_value"]):
-                    lock_values[skey] = float(value_row["prop_value"])
-            # A saved IPR needs the operating pair; friction and the locks
-            # stand on their own (a calibration or a locked field may exist
-            # with no saved curve, and all sit OUTSIDE the pin-vs-values
-            # precedence).
-            has_curve = "qwf_liq" in values and "pwf" in values
-            if has_curve or friction or any(locks.values()):
-                result = {
-                    "values": values if has_curve else {},
-                    "friction": friction,
-                    "locks": locks,
-                    "lock_values": lock_values,
-                    # back-compat aliases (pre-registry callers/tests)
-                    "wc_locked": locks["form_wc"],
-                    "wc_value": lock_values.get("form_wc"),
-                    "saved_at": saved_at if has_curve else None,
-                    "saved_by": saved_by,
-                    "pin_at": pin_at,
-                }
     except Exception:
         result = None
 
     _saved_ipr_cache[well_name] = result
     return result
+
+
+_WARM_TTL_SECONDS = 300.0
+_warmed_at: float = 0.0
+
+
+def warm_saved_ipr_cache(force: bool = False) -> int:
+    """Fill :data:`_saved_ipr_cache` for EVERY well in ONE query.
+
+    ``load_saved_ipr`` is one Databricks round trip per well, and a pad review
+    walks ~20 wells — 20 x 150 ms of pure latency (measured 2026-08-04) before
+    the engineer touches anything, four pads' worth on the CFP page. This is
+    the same latest-per-(enthid, prop_id) window function partitioned across
+    every well instead of one, which the pad page already proves is cheap
+    (``review_persistence._latest_props`` runs that shape every render).
+
+    Not pad-scoped: the query cost is the same either way (the window function
+    reads prop_hist regardless), so scoping would just mean re-running it per
+    pad. Guarded by a process-wide TTL instead, which makes the repeat calls
+    on every rerun — and the CFP page's four pads — free.
+
+    Wells with NO matching rows are cached as ``None`` too; otherwise each
+    would still pay its own round trip to discover it has nothing.
+
+    Never overwrites an existing entry: a live per-well read, or a save that
+    just called :func:`clear_saved_ipr_cache`, always wins over this snapshot.
+
+    Fail-soft: any error leaves the cache untouched and the per-well path
+    takes over. Returns the number of wells warmed.
+    """
+    global _warmed_at
+
+    now = time.monotonic()
+    if not force and _warmed_at and (now - _warmed_at) < _WARM_TTL_SECONDS:
+        return 0
+
+    try:
+        from woffl.assembly.databricks_client import execute_query
+        from woffl.assembly.well_test_client import _normalize_well_name
+
+        ids = ",".join(f"'{p}'" for p in _saved_ipr_prop_ids())
+        df = execute_query(
+            f"""
+            SELECT h.well_name, p.prop_id, p.prop_value,
+                   p.entry_datetime, p.entry_user
+            FROM (
+                SELECT enthid, prop_id, prop_value, entry_datetime, entry_user,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY enthid, prop_id
+                           ORDER BY entry_datetime DESC
+                       ) AS rn
+                FROM mpu.wells.prop_hist
+                WHERE prop_id IN ({ids})
+            ) p
+            JOIN mpu.wells.vw_well_header h ON p.enthid = h.enthid
+            WHERE p.rn = 1
+            """
+        )
+        # Stamp only on success, so a failed warm-up retries next render
+        # instead of going quiet for the whole TTL.
+        if df is None or df.empty:
+            return 0
+
+        by_well: dict = {}
+        for _, r in df.iterrows():
+            well = _normalize_well_name(str(r["well_name"]).strip())
+            by_well.setdefault(well, {})[str(r["prop_id"])] = r
+
+        warmed = 0
+        for well, latest in by_well.items():
+            if well in _saved_ipr_cache:
+                continue  # a live per-well read (or a save) already won
+            _saved_ipr_cache[well] = _assemble_saved_ipr(latest)
+            warmed += 1
+        _warmed_at = now
+        return warmed
+    except Exception:
+        return 0
 
 
 def save_ipr_values(
@@ -735,8 +858,9 @@ def set_prop_lock(
     """Set or clear a per-well field lock (see :data:`LOCKABLE_FIELDS`).
 
     Locking also pushes the CURRENT sidebar value when given, so the locked
-    value is pinned in the same click. Unlocking writes NULL (the un-pin
-    precedent) — the field goes back to following the automated seed.
+    value is pinned in the same click. Unlocking writes
+    :data:`LOCK_UNLOCKED_VALUE` — the field goes back to following the
+    automated seed.
     """
     try:
         lock_id, value_id, label = LOCKABLE_FIELDS[field]
@@ -756,7 +880,10 @@ def set_prop_lock(
                 "overrides every test-derived seed until unlocked."
             )
         else:
-            push_prop(well_name, lock_id, None, entry_user)
+            # 0.0, not NULL: prop_value is NOT NULL, so the old None push was
+            # rejected and the unlock never persisted. The read predicate is
+            # `>= 0.5`, so 0.0 already means unlocked.
+            push_prop(well_name, lock_id, LOCK_UNLOCKED_VALUE, entry_user)
             message = (
                 f"🔓 {label} unlocked for {well_name} — it follows the "
                 "chosen anchor / fit again."

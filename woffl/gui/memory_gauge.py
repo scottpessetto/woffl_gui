@@ -445,7 +445,13 @@ def fetch_databricks_bhp_daily(
 _EXT_TESTS_KEY = "_extended_well_tests"
 
 
-@st.cache_data(ttl=86400, show_spinner=False, max_entries=64)
+# max_entries: keyed on (well, start_date, end_date), so one well holds several
+# entries as the gauge window moves. A miss here is a Databricks round trip
+# (~3.8 s: this is the fleet query narrowed to a 1-well IN list), so with a
+# ~130-well fleet 64 was far too small — walking the fleet's gauges evicted the
+# earlier wells and re-paid the query for each one. 512 gives ~4 windows per
+# well; each entry is one well's test rows, not a fleet frame.
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=512)
 def _cached_extended_tests_for_well(
     db_well_name: str, start_date: str, end_date: str
 ) -> pd.DataFrame:

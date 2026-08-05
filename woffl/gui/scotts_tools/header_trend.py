@@ -211,7 +211,13 @@ def _resolve_bhp(wide: pd.DataFrame, esp_tag: str | None, other_tag: str | None)
 # max_entries bounds the shared 6 GB process: each entry holds up to 24 months
 # of HOURLY trends for every well in a pad selection, and every distinct
 # (pad-set, window) combination used to accumulate for a full day.
-@st.cache_data(ttl=86400, show_spinner=False, max_entries=8)
+# 8 was too tight to be a cache at all: a session cycles through pad sets,
+# analog-donor sets and month windows well past 8 distinct keys, so entries
+# evicted each other and every render paid the historian round trip again
+# (150 ms warm, 1.3-14 s on a cold warehouse) for the app's most expensive
+# query shape. 48 comfortably holds a session's distinct (well-set, window)
+# combinations; the TTL still caps staleness at 24 h.
+@st.cache_data(ttl=86400, show_spinner=False, max_entries=48)
 def fetch_header_trends(
     well_names: tuple[str, ...],
     start_date: str,

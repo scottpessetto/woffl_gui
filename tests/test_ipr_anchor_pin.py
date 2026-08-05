@@ -141,7 +141,7 @@ class TestPinIprAnchor:
 
 
 class TestClearIprPin:
-    def test_pushes_null_value(self, monkeypatch):
+    def test_pushes_the_cleared_sentinel(self, monkeypatch):
         # There is no numeric sentinel that's safe -- real wt_uid values are
         # signed and span both positive and negative ranges (observed
         # roughly -3.6M to +3.1M). clear_ipr_pin must push None so
@@ -159,7 +159,7 @@ class TestClearIprPin:
         cleared, message = ipr_anchor.clear_ipr_pin("MPB-28")
 
         assert cleared is True
-        assert calls == {"value": None, "prop_id": "ipr_wt_uid"}
+        assert calls == {"value": 0.0, "prop_id": "ipr_wt_uid"}
         assert message == "Saved IPR cleared"
 
     def test_push_failure_surfaces(self, monkeypatch):

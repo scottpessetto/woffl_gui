@@ -509,32 +509,25 @@ class TestPushPropInsertParameters(_CacheResetMixin):
 
     @patch("woffl.assembly.prop_hist_client.execute_write")
     @patch("woffl.assembly.prop_hist_client.execute_query")
-    def test_none_value_pushes_sql_null(self, mock_query, mock_write):
-        # None is the un-pin marker (W3): it must bind as a SQL NULL, not be
-        # coerced through float() -- a negative-number sentinel isn't safe
-        # since real wt_uid values are signed and can be negative themselves.
+    def test_none_value_is_refused_not_bound_as_null(self, mock_query, mock_write):
+        """prop_value is DOUBLE **NOT NULL** in mpu.wells.prop_hist.
+
+        This test used to assert None bound as a SQL NULL "un-pin marker" —
+        it passed only because the write was mocked. Against the real table
+        every such push died with DELTA_NOT_NULL_CONSTRAINT_VIOLATED, and the
+        callers' broad `except` turned that into a silent no-op: the 🗑 Clear
+        saved IPR button and the 🔒 lock checkboxes never persisted anything,
+        and the table holds ZERO NULL prop_value rows (found 2026-08-04).
+        Clearing is an explicit per-prop sentinel now."""
         mock_query.side_effect = _query_router(
             xref=pd.DataFrame({"prop_id": ["ipr_wt_uid"]}),
             enthid=pd.DataFrame({"enthid": [12345], "well_name": ["B-028"]}),
         )
-        mock_write.return_value = 1
 
-        result = push_prop("MPB-28", "ipr_wt_uid", None, "scott")
+        with pytest.raises(phc.PropHistError, match="NOT NULL"):
+            push_prop("MPB-28", "ipr_wt_uid", None, "scott")
 
-        assert result == 1
-        _, params_arg = mock_write.call_args[0]
-        assert params_arg["prop_value"] is None
-
-        entry_dt = params_arg.pop("entry_datetime")
-        assert isinstance(entry_dt, datetime)
-        assert entry_dt.tzinfo is not None
-
-        assert params_arg == {
-            "enthid": 12345,
-            "prop_id": "ipr_wt_uid",
-            "prop_value": None,
-            "entry_user": "scott",
-        }
+        mock_write.assert_not_called()
 
     @patch("woffl.assembly.prop_hist_client.execute_write")
     @patch("woffl.assembly.prop_hist_client.execute_query")

@@ -4279,6 +4279,47 @@ def _render_analog(months_back: int, delta_p: float) -> None:
         start = (datetime.now() - relativedelta(months=int(months_back))).strftime(
             "%Y-%m-%d"
         )
+
+        # Pre-pass: the distinct donors the loop below will actually reach.
+        # The loop is over (target, donor) pairs so a donor can repeat; both
+        # bulk helpers below are keyed on the deduped set.
+        donors: set[str] = set()
+        for _, r in ed.iterrows():
+            tgt = normalize_short_name(str(r.get("Target", "")).strip())
+            donor = normalize_short_name(str(r.get("Donor", "")).strip())
+            if not tgt or tgt.upper() == "MP" or not donor:
+                continue
+            try:
+                if (
+                    float(r["Target oil (BOPD)"]) <= 0
+                    or float(r["Target ResP (psi)"]) <= 0
+                ):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            donors.add(donor)
+
+        # Both lookups are hoisted OUT of the pair loop. fetch_header_trends
+        # already unions every well's tags into ONE historian query, so calling
+        # it per donor bought nothing but round trips — 150 ms each warm, 1.3-14 s
+        # on the session's first (cold-warehouse) query. get_vogel_for_wells
+        # filters one cached test frame, so per-donor calls re-ran the whole
+        # Vogel pipeline every time. Results are unchanged: fetch_header_trends
+        # resolves tags per well and estimate_reservoir_pressure /
+        # compute_vogel_coefficients both group strictly by well. Same bulk
+        # pattern as _fetch_empirical_fits.
+        dwd: dict = {}
+        vogel_all: dict = {}
+        trend_err: str | None = None
+        if donors:
+            donor_names = tuple(sorted(donors))
+            try:
+                dwd, _ = ht.fetch_header_trends(donor_names, start, end)
+            except Exception as e:
+                trend_err = str(e)
+            else:
+                vogel_all = get_vogel_for_wells(list(donor_names), months_back)
+
         rows = []
         for _, r in ed.iterrows():
             tgt = normalize_short_name(str(r.get("Target", "")).strip())
@@ -4295,11 +4336,13 @@ def _render_analog(months_back: int, delta_p: float) -> None:
                     {"Target": tgt, "Donor": donor, "Note": "need oil > 0 and ResP > 0"}
                 )
                 continue
-            try:
-                dwd, _ = ht.fetch_header_trends((donor,), start, end)
-            except Exception as e:
+            if trend_err is not None:
                 rows.append(
-                    {"Target": tgt, "Donor": donor, "Note": f"donor trend error: {e}"}
+                    {
+                        "Target": tgt,
+                        "Donor": donor,
+                        "Note": f"donor trend error: {trend_err}",
+                    }
                 )
                 continue
             dfit = ht.fit_well(dwd[donor]).get("BHP~WHP") if donor in dwd else None
@@ -4312,7 +4355,7 @@ def _render_analog(months_back: int, delta_p: float) -> None:
                     }
                 )
                 continue
-            dvogel = get_vogel_for_wells([donor], months_back).get(donor)
+            dvogel = vogel_all.get(donor)
             if not dvogel or not dvogel.get("ResP"):
                 rows.append(
                     {

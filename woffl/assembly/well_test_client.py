@@ -150,7 +150,19 @@ def fetch_milne_well_tests(
         the FDC CSV format expected by ipr_analyzer.py, and dropped_wells is a
         list of well names that had no usable BHP or fluid rate data.
     """
-    # Step 1: get well names if not provided
+    # Step 1: get well names if not provided.
+    #
+    # This costs an extra ~150 ms Databricks round trip (plus a multi-KB IN list
+    # of ~487 names) on the startup critical path, and we looked at dropping it
+    # by letting vw_well_test scope itself. VERDICT (2026-08-04): keep the round
+    # trip. vw_well_test is NOT provably MPU-only — vw_well_header carries a
+    # `field` column that every query in this repo filters to 'MPU' (see
+    # WELL_HEADER_QUERY above, well_sort_client, pad_watercut_client), so the
+    # shared enthid universe spans more than MPU; and the two other bulk readers
+    # of vw_well_test (pad_watercut_client.py, well_sort_client.py) both gate it
+    # through a vw_well_header join on field = 'MPU' rather than trusting the
+    # view. Dropping the IN list would silently widen the fleet, so it stays
+    # until someone confirms the view's scope against live data.
     if well_names is None:
         well_names = get_mpu_well_names()
     if not well_names:
@@ -244,27 +256,3 @@ def fetch_milne_well_tests(
     df = df.sort_values(by=["well", "WtDate"])
 
     return df, dropped_wells
-
-
-def fetch_single_well_tests(well_name: str, months_back: int = 3) -> pd.DataFrame:
-    """Query last N months of tests for one well.
-
-    Args:
-        well_name: MP-prefixed name (e.g., 'MPB-28').
-        months_back: Number of months of history to fetch.
-
-    Returns:
-        DataFrame with ipr_analyzer-compatible columns, or empty DataFrame.
-    """
-    from datetime import datetime
-
-    from dateutil.relativedelta import relativedelta
-
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - relativedelta(months=months_back)).strftime(
-        "%Y-%m-%d"
-    )
-
-    db_name = _denormalize_well_name(well_name)
-    df, _ = fetch_milne_well_tests(start_date, end_date, well_names=[db_name])
-    return df

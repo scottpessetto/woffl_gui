@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Optional
 
 import pandas as pd
+import streamlit as st
 
 from woffl.assembly.prop_hist_client import to_alaska
 
@@ -35,6 +36,13 @@ LIQ_PROP_ID = "ipr_qwf_liq"
 WC_PROP_ID = "form_wc"
 
 
+# 5 min, not the usual hour: this is the page an engineer refreshes right after
+# a 📌 save to confirm the row landed, so a long TTL would show them a lie.
+# Measured 2026-08-04: a Databricks round trip costs 150 ms warm and up to
+# several seconds cold, and this used to run UNCACHED in the page's
+# straight-line path — one full 3-way join per widget interaction (every
+# selectbox change, every table sort). The page's Refresh button clears it.
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_prop_history(well_name: str) -> pd.DataFrame:
     """Every prop_hist row for one well, newest first, names joined from
     prop_xref. Raises on failure — the page catches and shows why."""

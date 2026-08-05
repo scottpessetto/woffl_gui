@@ -1599,6 +1599,15 @@ def run_pad_page(spec: PadSpec) -> None:
     sync_result = {spec.pad: rp.sync_pad(spec.pad)}
     rp.render_caption(sync_result)
 
+    # One pad-wide prop_hist read instead of ~20 per-well ones. Each well the
+    # engineer opens in the Solver otherwise costs its own `load_saved_ipr`
+    # round trip (150 ms floor, measured 2026-08-04) before anything renders.
+    # Idempotent and fail-soft: already-cached wells and any error leave the
+    # per-well path in charge.
+    from woffl.gui.ipr_anchor import warm_saved_ipr_cache
+
+    warm_saved_ipr_cache()
+
     stage_key = f"{spec.prefix}_page_stage"
     stage = st.session_state.setdefault(stage_key, 0)
 

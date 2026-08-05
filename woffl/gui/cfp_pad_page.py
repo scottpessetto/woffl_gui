@@ -727,9 +727,24 @@ def _render_configure() -> None:
         )
 
 
-def _fleet_signature(pad_configs, online, current, nozzles, throats, p0) -> tuple:
+def _fleet_signature(
+    pad_configs, online, current, nozzles, throats, p0, c_pad_pf, measured_pf
+) -> tuple:
     """Cache key for the response surfaces — any input that changes the WOFFL
-    physics must appear here (the AGENTS.md sweep-signature rule)."""
+    physics must appear here (the AGENTS.md sweep-signature rule).
+
+    Every keyword ``build_response_surfaces`` consumes is covered:
+    ``pad_configs`` via ``store_sigs``; ``online``/``current``/``nozzles``/
+    ``throats``/``p0`` directly; ``p_grid`` is a pure function of ``p0``;
+    ``c_pad_pf_psi`` and ``measured_pad_pf`` set the delivered PF per pad
+    (cfp_optimize.delivered_by_pad) so both are keyed; ``PLANT`` is an
+    immutable module constant and ``progress`` is a UI callback.
+
+    ``slope`` is DELIBERATELY absent: it is only consumed by ``cmv.anchor``,
+    which re-runs on every call outside this memo, so it cannot stale the
+    surfaces. ``c_pad_pf`` used to be absent for no stated reason and silently
+    served surfaces built at the previous pressure — hence this list.
+    """
     store_sigs = tuple(
         wrs.store_signature(
             {wc.well_name: store_for(p).get(wc.well_name, {}) for wc in wells}
@@ -743,6 +758,8 @@ def _fleet_signature(pad_configs, online, current, nozzles, throats, p0) -> tupl
         tuple(sorted(nozzles)),
         tuple(sorted(throats)),
         round(float(p0), 1),
+        round(float(c_pad_pf), 1),
+        tuple(sorted((p, round(float(v), 1)) for p, v in measured_pf.items())),
     )
 
 
@@ -754,7 +771,13 @@ def _run_moves(
     # Grid spans well below today (BOL sag) up to just under the trip.
     lo = p0 - 300.0
     grid = [round(lo + i * (2880.0 - lo) / 6.0, 1) for i in range(7)]
-    sig = _fleet_signature(pad_configs, online, current, nozzles, throats, p0)
+    # Resolved once: it feeds the surfaces AND their cache key, and the memo
+    # (ttl=3600) can hand back new readings mid-session — two calls could
+    # disagree and key the cache to a pad PF the surfaces were not built at.
+    measured_pf = {p: v["psi"] for p, v in _measured_pad_pf().items()}
+    sig = _fleet_signature(
+        pad_configs, online, current, nozzles, throats, p0, c_pad_pf, measured_pf
+    )
     cached = st.session_state.get(_SURF_CACHE_KEY)
 
     if cached and cached.get("sig") == sig:
@@ -783,9 +806,7 @@ def _run_moves(
                     throats=throats,
                     p0=p0,
                     c_pad_pf_psi=c_pad_pf,
-                    measured_pad_pf={
-                        p: v["psi"] for p, v in _measured_pad_pf().items()
-                    },
+                    measured_pad_pf=measured_pf,
                     progress=_prog,
                 )
         except Exception as e:
@@ -1031,6 +1052,13 @@ def run_cfp_page() -> None:
 
     sync_results = {p: rp.sync_pad(p) for p in PADS}
     rp.render_caption(sync_results)
+
+    # Same prop_hist warm-up the single-pad page does. One query covers all
+    # four pads' wells, and its TTL guard makes the repeat on every rerun free
+    # — this page has the most wells, so it saves the most round trips.
+    from woffl.gui.ipr_anchor import warm_saved_ipr_cache
+
+    warm_saved_ipr_cache()
 
     stage_key = f"{_PREFIX}_page_stage"
     stage = st.session_state.setdefault(stage_key, 0)

@@ -317,13 +317,14 @@ def _resolve_enthid(well_name: str) -> int:
     """Resolve well_name -> enthid via `well_enthid_map`'s grouping.
 
     Tries `well_name` as-is first -- the canonical GUI form used everywhere
-    else in the app (e.g. 'MPB-28', per well_test_client.fetch_single_well_tests
-    and friends) -- and only falls back to `_normalize_well_name` (which
-    expects the raw Databricks form, e.g. 'B-028') if that direct lookup
-    misses. Normalizing unconditionally would corrupt an already-normalized
-    single-digit well number: `_normalize_well_name` strips ONE leading
-    zero, so re-applying it to 'MPB-01' yields 'MPB-1', not 'MPB-01' -- i.e.
-    it is a one-way DB->GUI conversion, not idempotent on GUI input.
+    else in the app (e.g. 'MPB-28', the output of
+    `well_test_client._normalize_well_name`) -- and only falls back to
+    `_normalize_well_name` (which expects the raw Databricks form, e.g.
+    'B-028') if that direct lookup misses. Normalizing unconditionally would
+    corrupt an already-normalized single-digit well number:
+    `_normalize_well_name` strips ONE leading zero, so re-applying it to
+    'MPB-01' yields 'MPB-1', not 'MPB-01' -- i.e. it is a one-way DB->GUI
+    conversion, not idempotent on GUI input.
 
     Raises EnthidResolutionError on zero or multiple matches (DART's
     `_resolve_enthid` guard, ported to the cached bulk map instead of a
@@ -470,13 +471,24 @@ def push_prop(
     enthid = _resolve_enthid(well_name)
 
     if value is None:
-        prop_value: Optional[float] = None
-    else:
-        prop_value = float(value)
-        if not math.isfinite(prop_value):
-            raise PropHistError(
-                f"prop_value must be finite (got {prop_value!r}) or None for NULL."
-            )
+        # prop_value is DOUBLE **NOT NULL**. A None here reaches Databricks and
+        # comes back as DELTA_NOT_NULL_CONSTRAINT_VIOLATED after a full round
+        # trip — and callers that wrapped the push in a broad `except` turned
+        # that into a silent no-op. The 🗑 Clear-saved-IPR button and the 🔒
+        # lock checkboxes both did exactly that, for months, with zero NULL
+        # rows ever written (found 2026-08-04). Fail here instead, naming the
+        # convention: "cleared" is an explicit sentinel chosen per prop_id
+        # (see ipr_anchor.PIN_CLEARED_VALUE / LOCK_UNLOCKED_VALUE).
+        raise PropHistError(
+            f"prop_value is NOT NULL in mpu.wells.prop_hist, so prop_id "
+            f"'{prop_id}' cannot be cleared by writing None. Push an explicit "
+            "sentinel the readers understand instead."
+        )
+    prop_value = float(value)
+    if not math.isfinite(prop_value):
+        raise PropHistError(
+            f"prop_value must be finite (got {prop_value!r})."
+        )
 
     parameters = {
         "enthid": enthid,

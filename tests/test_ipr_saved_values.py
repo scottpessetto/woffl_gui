@@ -575,10 +575,10 @@ class TestSetWcLock:
             ("MPB-28", "form_wc_lock", 1.0, "scott"),
         ]
 
-    def test_unlocking_writes_the_null_tombstone_only(self, pushes):
+    def test_unlocking_writes_the_unlocked_sentinel_only(self, pushes):
         ok, msg = ia.set_wc_lock("MPB-28", False)
         assert ok and "🔓" in msg
-        assert pushes == [("MPB-28", "form_wc_lock", None, "scott")]
+        assert pushes == [("MPB-28", "form_wc_lock", 0.0, "scott")]
 
     def test_lock_clears_the_load_memo(self, pushes):
         ia._saved_ipr_cache["MPB-28"] = {"stale": True}
@@ -628,9 +628,9 @@ class TestPropLockRegistry:
             ("MPB-28", "resvr_press_lock", 1.0, "scott"),
         ]
 
-    def test_unlock_is_a_null_tombstone(self, pushes):
+    def test_unlock_is_the_unlocked_sentinel(self, pushes):
         ia.set_prop_lock("MPB-28", "form_gor", False)
-        assert pushes == [("MPB-28", "form_gor_lock", None, "scott")]
+        assert pushes == [("MPB-28", "form_gor_lock", 0.0, "scott")]
 
     def test_unknown_field_reports_not_raises(self, pushes):
         ok, msg = ia.set_prop_lock("MPB-28", "surf_pres", True, value=210.0)

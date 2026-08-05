@@ -38,13 +38,13 @@ from woffl.gui.tabs import jetpump_solver  # noqa: E402
 def _no_live_prop_hist_calls(monkeypatch):
     """Safety net for EVERY test in this module (added alongside the W2
     IPR-anchor pin feature): ``_render_ipr_anchor_control`` now looks up a
-    saved pin via ``prop_hist_client.fetch_latest_prop`` on every render.
+    saved pin via ``ipr_anchor.load_saved_ipr`` on every render.
     Without this, tests that call the control (or anything that reaches it)
     would try a REAL Databricks connection. Default = no saved pin (``None``)
     — the pin-specific tests below override this per-scenario.
     """
     monkeypatch.setattr(
-        "woffl.assembly.prop_hist_client.fetch_latest_prop",
+        "woffl.gui.ipr_anchor.load_saved_ipr",
         lambda *a, **k: None,
     )
 
@@ -502,12 +502,29 @@ def _mock_fetch_latest_prop(
     entry_datetime=datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc),
     entry_user="Scott",
 ):
-    # fetch_latest_prop's second tuple element is entry_datetime -- a full
-    # timestamp (schema migrated off the old date-only entry_date column,
-    # see prop_hist_client) -- not a bare date string.
+    """Stand in for the pin half of ``load_saved_ipr``'s record.
+
+    The pin used to come from its own ``fetch_latest_prop`` round trip; it now
+    rides along on the saved-IPR statement that already fetches ipr_wt_uid
+    (one query per well instead of two). ``entry_datetime`` is a full
+    timestamp, not a bare date — the schema migrated off the old date-only
+    ``entry_date`` column.
+    """
     monkeypatch.setattr(
-        "woffl.assembly.prop_hist_client.fetch_latest_prop",
-        lambda well_name, prop_id: (value, entry_datetime, entry_user),
+        "woffl.gui.ipr_anchor.load_saved_ipr",
+        lambda well_name: {
+            "values": {},
+            "friction": {},
+            "locks": {"form_wc": False, "form_gor": False, "res_pres": False},
+            "lock_values": {},
+            "wc_locked": False,
+            "wc_value": None,
+            "saved_at": None,
+            "saved_by": None,
+            "pin_at": entry_datetime,
+            "pin_value": value,
+            "pin_user": entry_user,
+        },
     )
 
 
@@ -615,7 +632,7 @@ def test_pin_negative_wt_uid_applies_as_a_valid_pin(picker_st, monkeypatch):
 
 
 def test_pin_lookup_raises_falls_back_silently(picker_st, monkeypatch, caplog):
-    """ANY exception from fetch_latest_prop (offline, missing grant, bad row)
+    """ANY exception from load_saved_ipr (offline, missing grant, bad row)
     degrades to the normal default — never raises, never blocks the Solver,
     just a logger.warning (never st.error)."""
     import logging
@@ -623,7 +640,7 @@ def test_pin_lookup_raises_falls_back_silently(picker_st, monkeypatch, caplog):
     def _raise(*a, **k):
         raise RuntimeError("offline")
 
-    monkeypatch.setattr("woffl.assembly.prop_hist_client.fetch_latest_prop", _raise)
+    monkeypatch.setattr("woffl.gui.ipr_anchor.load_saved_ipr", _raise)
     df = _make_test_df_with_uid()
     with caplog.at_level(logging.WARNING, logger="woffl.gui.tabs.jetpump_solver"):
         mode, anchor_date = jetpump_solver._render_ipr_anchor_control("WELL", df)
@@ -635,20 +652,33 @@ def test_pin_lookup_raises_falls_back_silently(picker_st, monkeypatch, caplog):
 
 
 def test_pin_lookup_memoized_per_well_per_session(picker_st, monkeypatch):
-    """fetch_latest_prop is called at most once per well per session — a
-    second render (e.g. the seed-triggered rerun) reuses the memo rather than
-    re-hitting Databricks."""
-    calls = []
+    """The resolved pin is memoized per well per session — a second render
+    (e.g. the seed-triggered rerun) replays the memo rather than re-resolving.
 
-    def _tracked(well_name, prop_id):
-        calls.append(well_name)
-        return (302, datetime(2026, 6, 1, 9, 30, tzinfo=timezone.utc), "Scott")
+    Asserted behaviourally, by changing what the loader would return on a
+    second call: if the memo holds, the pin keeps its FIRST value. A raw call
+    count would be brittle — `load_saved_ipr` is itself memoized in
+    production and several places consult it per render."""
+    pin = {"uid": 302}
 
-    monkeypatch.setattr("woffl.assembly.prop_hist_client.fetch_latest_prop", _tracked)
+    def _tracked(well_name):
+        return {
+            "values": {}, "friction": {}, "locks": {}, "lock_values": {},
+            "wc_locked": False, "wc_value": None, "saved_at": None,
+            "saved_by": None,
+            "pin_at": datetime(2026, 6, 1, 9, 30, tzinfo=timezone.utc),
+            "pin_value": pin["uid"], "pin_user": "Scott",
+        }
+
+    monkeypatch.setattr("woffl.gui.ipr_anchor.load_saved_ipr", _tracked)
     df = _make_test_df_with_uid()
     jetpump_solver._render_ipr_anchor_control("WELL", df)
+    first = picker_st.session_state[jetpump_solver._PIN_CACHE_KEY]["WELL"]
+    pin["uid"] = 303  # a change the memo must NOT pick up
     jetpump_solver._render_ipr_anchor_control("WELL", df)
-    assert len(calls) == 1
+    after = picker_st.session_state[jetpump_solver._PIN_CACHE_KEY]["WELL"]
+    assert after is first, "second render must replay the memo"
+    assert first["wt_uid"] == 302
 
 
 def test_pin_lookup_failure_also_memoized(picker_st, monkeypatch):
@@ -660,28 +690,44 @@ def test_pin_lookup_failure_also_memoized(picker_st, monkeypatch):
         calls.append(1)
         raise RuntimeError("offline")
 
-    monkeypatch.setattr("woffl.assembly.prop_hist_client.fetch_latest_prop", _raise)
+    monkeypatch.setattr("woffl.gui.ipr_anchor.load_saved_ipr", _raise)
     df = _make_test_df_with_uid()
     jetpump_solver._render_ipr_anchor_control("WELL", df)
+    n_after_first = len(calls)
     jetpump_solver._render_ipr_anchor_control("WELL", df)
-    assert len(calls) == 1
+    # The failure is cached as "no pin": the second render must not retry the
+    # pin lookup (the summary's own fail-soft call is not the pin path).
+    assert picker_st.session_state[jetpump_solver._PIN_CACHE_KEY]["WELL"] is None
+    assert len(calls) < n_after_first * 2
 
 
 def test_clear_pin_cache_forces_requery(picker_st, monkeypatch):
     """The W3 seam: _clear_pin_cache pops the per-well memo so the very next
     lookup re-queries prop_hist instead of replaying the pre-save value."""
-    calls = []
+    pin = {"uid": 302}
 
-    def _tracked(well_name, prop_id):
-        calls.append(well_name)
-        return (302, datetime(2026, 6, 1, 9, 30, tzinfo=timezone.utc), "Scott")
+    def _tracked(well_name):
+        return {
+            "values": {}, "friction": {}, "locks": {}, "lock_values": {},
+            "wc_locked": False, "wc_value": None, "saved_at": None,
+            "saved_by": None,
+            "pin_at": datetime(2026, 6, 1, 9, 30, tzinfo=timezone.utc),
+            "pin_value": pin["uid"], "pin_user": "Scott",
+        }
 
-    monkeypatch.setattr("woffl.assembly.prop_hist_client.fetch_latest_prop", _tracked)
+    monkeypatch.setattr("woffl.gui.ipr_anchor.load_saved_ipr", _tracked)
     df = _make_test_df_with_uid()
     jetpump_solver._render_ipr_anchor_control("WELL", df)
+    assert picker_st.session_state[jetpump_solver._PIN_CACHE_KEY]["WELL"][
+        "wt_uid"
+    ] == 302
+    pin["uid"] = 303  # e.g. the engineer just saved a different anchor
     jetpump_solver._clear_pin_cache("WELL")
     jetpump_solver._render_ipr_anchor_control("WELL", df)
-    assert len(calls) == 2
+    # Re-resolved, not replayed: the post-save value wins.
+    assert picker_st.session_state[jetpump_solver._PIN_CACHE_KEY]["WELL"][
+        "wt_uid"
+    ] == 303
 
 
 def test_find_test_row_by_wt_uid(picker_st):
