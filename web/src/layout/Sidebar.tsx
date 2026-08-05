@@ -11,13 +11,7 @@ import type { KeyboardEvent } from "react";
 import { NOZZLE_OPTIONS, THROAT_OPTIONS } from "../api/types";
 import { Button } from "../components/ui";
 import { useParamsStore } from "../state/params";
-import {
-  CheckboxField,
-  MultiChipSelect,
-  NumberField,
-  RadioRow,
-  SelectField,
-} from "./ParamFields";
+import { CheckboxField, NumberField, RadioRow, SelectField } from "./ParamFields";
 import { WellSelector } from "./WellSelector";
 
 const WINDOW_INPUT_CLS =
@@ -370,43 +364,9 @@ export function Sidebar() {
                   dp={2}
                 />
               </div>
+              {/* Batch Run and Power Fluid Range sweep selectors live on
+                  their pages now - see BatchPage / PfRangePage. */}
 
-              <div className="space-y-2">
-                <SubHeader text="Batch Run" />
-                <MultiChipSelect
-                  label="Nozzle Sizes to Test"
-                  field="nozzle_batch_options"
-                  options={NOZZLE_OPTIONS}
-                />
-                <MultiChipSelect
-                  label="Throat Ratios to Test"
-                  field="throat_batch_options"
-                  options={THROAT_OPTIONS}
-                />
-                <RadioRow
-                  label="Water Type"
-                  field="water_type"
-                  options={[
-                    { value: "total", label: "Total", hint: "Total liquid (oil + water)" },
-                    { value: "formation", label: "Formation", hint: "Formation water only" },
-                  ]}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <SubHeader text="Power Fluid Range" />
-                <NumberField
-                  label="Min Power Fluid Pressure (psi)"
-                  field="power_fluid_min"
-                  step={100}
-                />
-                <NumberField
-                  label="Max Power Fluid Pressure (psi)"
-                  field="power_fluid_max"
-                  step={100}
-                />
-                <NumberField label="Pressure Step (psi)" field="power_fluid_step" step={50} />
-              </div>
             </div>
           </details>
         </section>

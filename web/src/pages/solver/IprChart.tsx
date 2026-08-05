@@ -128,6 +128,10 @@ export function IprChart({
           type: "scatter",
           symbolSize: showJpLabels ? 26 : 11,
           itemStyle: { borderColor: "#0f172a", borderWidth: 1 },
+          // No animation: zoom filtering animates leaving points, and label
+          // formatters run on those transitional elements with value
+          // undefined - one throw mid-render blanks the whole canvas.
+          animation: false,
           label: showJpLabels
             ? {
                 show: true,
@@ -138,9 +142,13 @@ export function IprChart({
                 textBorderColor: "rgba(15,23,42,0.85)",
                 textBorderWidth: 2,
                 formatter: (raw: unknown): string => {
-                  // ECharts label param: value is this series' TestPoint datum.
-                  const p = raw as { value: TestPoint };
-                  return p.value[5] ?? "";
+                  // Defensive narrowing: during zoom transitions ECharts can
+                  // invoke this for filtered-out points with value undefined.
+                  if (raw && typeof raw === "object" && "value" in raw) {
+                    const v = raw.value;
+                    if (Array.isArray(v) && typeof v[5] === "string") return v[5];
+                  }
+                  return "";
                 },
               }
             : { show: false },

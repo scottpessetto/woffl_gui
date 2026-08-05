@@ -10,6 +10,7 @@ import { useMemo, useState } from "react";
 import { stableStringify } from "../api/client";
 import { usePfRange } from "../api/hooks";
 import type { PfRangeRow, SimParams } from "../api/types";
+import { NOZZLE_OPTIONS, THROAT_OPTIONS } from "../api/types";
 import type { EChartsOption } from "../charts/echarts";
 import { axis, baseGrid, baseTooltip, CATEGORY20, houseOption } from "../charts/theme";
 import { useEChart } from "../charts/useEChart";
@@ -26,6 +27,7 @@ import {
   Spinner,
   WarnNote,
 } from "../components/ui";
+import { MultiChipSelect, NumberField } from "../layout/ParamFields";
 import { downloadCsv } from "../lib/csv";
 import { fmtNum } from "../lib/format";
 import { effectiveParams, useParamsStore } from "../state/params";
@@ -135,22 +137,41 @@ export default function PfRangePage() {
 
   return (
     <div className="space-y-4">
-      <Card className="flex flex-wrap items-center gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge tone="info">
-            {fmtNum(params.power_fluid_min)}-{fmtNum(params.power_fluid_max)} psi, step {fmtNum(params.power_fluid_step)}
-          </Badge>
-          <Badge>{pumpCount} pumps</Badge>
-          <Badge>{well}</Badge>
-        </div>
-        <div className="ml-auto">
+      <Card className="space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="grid flex-1 gap-3 sm:grid-cols-3">
+            <NumberField label="Min Power Fluid Pressure (psi)" field="power_fluid_min" step={100} />
+            <NumberField label="Max Power Fluid Pressure (psi)" field="power_fluid_max" step={100} />
+            <NumberField label="Pressure Step (psi)" field="power_fluid_step" step={50} />
+          </div>
           <Button
             variant="primary"
             busy={query.isFetching}
+            disabled={pumpCount === 0 || params.power_fluid_max < params.power_fluid_min}
             onClick={() => setSnapshot(effectiveParams(params))}
           >
             Run PF range analysis
           </Button>
+        </div>
+        <div className="grid gap-3 lg:grid-cols-2">
+          <MultiChipSelect
+            label="Nozzle sizes to test"
+            field="nozzle_batch_options"
+            options={NOZZLE_OPTIONS}
+          />
+          <MultiChipSelect
+            label="Throat ratios to test"
+            field="throat_batch_options"
+            options={THROAT_OPTIONS}
+          />
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone="info">
+            {fmtNum(params.power_fluid_min)}-{fmtNum(params.power_fluid_max)} psi, step{" "}
+            {fmtNum(params.power_fluid_step)}
+          </Badge>
+          <Badge>{pumpCount} pumps</Badge>
+          <Badge>{well}</Badge>
         </div>
       </Card>
 
@@ -160,8 +181,8 @@ export default function PfRangePage() {
 
       {snapshot === null && (
         <InfoNote>
-          Sweeps every selected pump across the power-fluid pressure range from the sidebar
-          (Advanced section). Press Run PF range analysis to start.
+          Sweeps every selected pump across the pressure range above. Press Run PF range
+          analysis to start.
         </InfoNote>
       )}
 

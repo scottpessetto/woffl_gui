@@ -13,12 +13,14 @@ import { useMemo, useState } from "react";
 import { stableStringify } from "../api/client";
 import { useBatch } from "../api/hooks";
 import type { BatchRecommendation, BatchRow, SimParams, WaterType } from "../api/types";
+import { NOZZLE_OPTIONS, THROAT_OPTIONS } from "../api/types";
 import type { EChartsOption } from "../charts/echarts";
 import { ACCENT, axis, baseGrid, baseTooltip, CRIMSON, GOLD, houseOption } from "../charts/theme";
 import { useEChart } from "../charts/useEChart";
 import {
   Badge,
   Button,
+  Card,
   type Column,
   DataTable,
   ErrorNote,
@@ -28,6 +30,7 @@ import {
   Spinner,
   WarnNote,
 } from "../components/ui";
+import { MultiChipSelect, RadioRow } from "../layout/ParamFields";
 import { downloadCsv } from "../lib/csv";
 import { fmtNum, fmtPct, pumpCode } from "../lib/format";
 import { effectiveParams, useParamsStore } from "../state/params";
@@ -262,31 +265,49 @@ export default function BatchPage() {
           <Button
             variant="primary"
             busy={query.isFetching}
+            disabled={combos === 0}
             onClick={() => setSnapshot(effectiveParams(params))}
           >
             Run batch sweep
           </Button>
         }
       >
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge title="Selected nozzle sizes">
-            Nozzles: {params.nozzle_batch_options.join(", ") || "none"}
-          </Badge>
-          <Badge title="Selected throat ratios">
-            Throats: {params.throat_batch_options.join(", ") || "none"}
-          </Badge>
-          <Badge tone="info">Water: {params.water_type}</Badge>
-          <Badge>{combos} combinations</Badge>
-          <Badge title="Marginal watercut cutoff">
-            Marginal WC: {fmtNum(params.marginal_watercut, 2)}
-          </Badge>
-        </div>
+        <Card className="space-y-3">
+          <div className="grid gap-3 lg:grid-cols-2">
+            <MultiChipSelect
+              label="Nozzle sizes to test"
+              field="nozzle_batch_options"
+              options={NOZZLE_OPTIONS}
+            />
+            <MultiChipSelect
+              label="Throat ratios to test"
+              field="throat_batch_options"
+              options={THROAT_OPTIONS}
+            />
+          </div>
+          <div className="flex flex-wrap items-end gap-6">
+            <RadioRow
+              label="Water Type"
+              field="water_type"
+              options={[
+                { value: "total", label: "Total", hint: "Total liquid (oil + water)" },
+                { value: "formation", label: "Formation", hint: "Formation water only" },
+              ]}
+            />
+            <div className="flex items-center gap-2 pb-0.5">
+              <Badge>{combos} combinations</Badge>
+              <Badge title="Recommender cutoff - set under Advanced > Field in the sidebar">
+                Marginal WC: {fmtNum(params.marginal_watercut, 2)}
+              </Badge>
+            </div>
+          </div>
+        </Card>
       </Section>
 
       {snapshot === null ? (
         <InfoNote>
-          Pick the nozzle and throat grid in the sidebar, then run the sweep. Nothing runs
-          until you submit - this solve is expensive.
+          Pick the nozzle and throat grid above, then run the sweep. Nothing runs until you
+          submit - this solve is expensive.
         </InfoNote>
       ) : query.isPending ? (
         <Spinner label="Sweeping nozzle x throat grid..." />
