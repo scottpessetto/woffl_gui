@@ -116,7 +116,13 @@ separate app name.
 
 ## Local dev
 
-See `web/README.md`. API: `uvicorn server.main:app --reload --port 8000`
-(uses .env `bricks_host`/`bricks_token` for SELECT-only reads). SPA:
-`npm run dev` (proxies /api). Without Databricks creds the app serves the
-jp_chars.csv fallback universe and bundled JP history.
+**Quick test before committing: double-click `run_local.bat`** (repo root)
+or run `run_local` from a terminal there. It builds the SPA, serves the app
+at http://127.0.0.1:8000 exactly as a deploy would, and opens the browser
+(`run_local nobrowser` skips that). Ctrl+C stops it.
+
+For frontend iteration with hot reload, see `web/README.md`. API:
+`uvicorn server.main:app --reload --port 8000` (uses .env
+`bricks_host`/`bricks_token` for SELECT-only reads). SPA: `npm run dev`
+(proxies /api). Without Databricks creds the app serves the jp_chars.csv
+fallback universe and bundled JP history.
