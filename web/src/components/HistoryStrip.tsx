@@ -16,7 +16,7 @@ import { useMemo } from "react";
 
 import type { JpHistoryResponse } from "../api/types";
 import type { EChartsOption } from "../charts/echarts";
-import { axis, baseTooltip, houseOption, SLATE } from "../charts/theme";
+import { axis, baseTooltip, houseOption, nearestByX, SLATE, ttHeader, ttRow } from "../charts/theme";
 import { ChartPanel } from "../charts/ChartPanel";
 import { fmtDate, fmtNum, pumpCode } from "../lib/format";
 
@@ -58,26 +58,6 @@ interface Era {
 interface JpChange {
   x: number;
   label: string;
-  /** alternate label offset to reduce overlap (original y_frac 0.95/0.85) */
-  tier: number;
-}
-
-/** Cartesian rect handed to custom renderItem. */
-interface CoordSys {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-interface RenderParams {
-  coordSys: CoordSys;
-}
-
-interface RenderApi {
-  value: (dim: number) => number;
-  coord: (point: [number, number]) => [number, number];
-  getHeight: () => number;
 }
 
 /**
@@ -114,7 +94,7 @@ export function buildTimeline(data: JpHistoryResponse): { eras: Era[]; changes: 
     } else {
       label = `JPCO ${installs[i - 1].code} to ${ins.code}`;
     }
-    return { x: ins.set, label, tier: i % 2 };
+    return { x: ins.set, label };
   });
 
   return { eras, changes };
@@ -136,15 +116,18 @@ export function HistoryStrip({
     if (eras.length === 0) return null;
 
     // Oil and Form Water come from the SAME test rows in the same order -
-    // index alignment is what makes the ECharts stack correct. Missing
-    // values coerce to 0 so the stacked fill never breaks.
+    // index alignment is what makes the ECharts stack correct, so the rows
+    // are sorted ONCE by date and every per-series array is built from that
+    // order. Missing values coerce to 0 so the stacked fill never breaks.
+    const tests = [...data.tests]
+      .map((t) => ({ x: ms(t.date), t }))
+      .filter((r): r is { x: number; t: (typeof data.tests)[number] } => r.x !== null)
+      .sort((a, b) => a.x - b.x);
     const oilPts: [number, number][] = [];
     const fwatPts: [number, number][] = [];
     const pfPts: [number, number][] = [];
     const bhpTestPts: [number, number][] = [];
-    for (const t of data.tests) {
-      const x = ms(t.date);
-      if (x === null) continue;
+    for (const { x, t } of tests) {
       oilPts.push([x, num(t.oil_rate) ?? 0]);
       fwatPts.push([x, num(t.fwat_rate) ?? 0]);
       const pf = num(t.pf_press);
@@ -157,82 +140,94 @@ export function HistoryStrip({
       const x = ms(d.date);
       if (x !== null && Number.isFinite(d.bhp)) bhpDailyPts.push([x, d.bhp]);
     }
+    bhpDailyPts.sort((a, b) => a[0] - b[0]);
+    // Prefer the daily BHP series; fall back to test-date BHP (original).
+    const bhpPts = bhpDailyPts.length > 0 ? bhpDailyPts : bhpTestPts;
+
+    /**
+     * Unified tooltip, plotly x-unified style: ONE date header, then the
+     * nearest point of EVERY series - the default axis tooltip drops series
+     * whose x grid differs from the snapped value (tests are ~weekly, BHP
+     * daily) and dumps custom-series data raw (the era band's epoch-ms
+     * datum rendered as a 13-digit "JP" number). Era membership becomes a
+     * readable "Pump in hole" row instead.
+     */
+    const tooltipFormatter = (raw: unknown): string => {
+      const list = (Array.isArray(raw) ? raw : [raw]) as { axisValue?: unknown }[];
+      const at = list.find((p) => typeof p.axisValue === "number");
+      if (!at) return "";
+      const ms0 = at.axisValue as number;
+      const rows: string[] = [ttHeader(fmtDate(new Date(ms0)))];
+      const oil = nearestByX(oilPts, ms0);
+      if (oil) rows.push(ttRow(OIL_LINE, "Oil", `${fmtNum(oil[1])} BOPD`));
+      const fwat = nearestByX(fwatPts, ms0);
+      if (fwat) rows.push(ttRow(WAT_LINE, "Form Water", `${fmtNum(fwat[1])} BWPD`));
+      const bhp = nearestByX(bhpPts, ms0);
+      if (bhp) rows.push(ttRow(BHP_COLOR, "BHP", `${fmtNum(bhp[1])} psi`));
+      if (showPf) {
+        const pf = nearestByX(pfPts, ms0);
+        if (pf) rows.push(ttRow(PF_COLOR, "PF pressure", `${fmtNum(pf[1])} psi`));
+      }
+      const era = eras.find((e) => ms0 >= e.start && ms0 <= e.end);
+      rows.push(
+        ttRow(
+          era?.color ?? "#e2e8f0",
+          "Pump in hole",
+          era ? `${era.code} (set ${fmtDate(new Date(era.start))})` : "-",
+        ),
+      );
+      return rows.join("");
+    };
 
     // Shared x-range: earliest install - 15d .. today + 15d (original).
     const minMs = eras[0].start - 15 * DAY_MS;
     const maxMs = Date.now() + 15 * DAY_MS;
     const span = maxMs - minMs;
 
-    // --- bottom strip: one rect per era ------------------------------------
-    const bandData: [number, number, number][] = eras.map((e, i) => [e.start, e.end, i]);
-    const renderBand = (p: RenderParams, api: RenderApi): Record<string, unknown> => {
-      const era = eras[api.value(2)];
-      const cs = p.coordSys;
-      const x0 = Math.max(api.coord([api.value(0), 0])[0], cs.x);
-      const x1 = Math.min(api.coord([api.value(1), 0])[0], cs.x + cs.width);
-      if (x1 <= x0) return { type: "group", children: [] };
-      const children: Record<string, unknown>[] = [
-        {
-          type: "rect",
-          shape: { x: x0, y: cs.y, width: x1 - x0, height: cs.height },
-          style: { fill: era.color, stroke: "#ffffff", lineWidth: 1 },
-        },
-      ];
-      // Only label segments wide enough to carry text (original: >3% of span).
-      if ((era.end - era.start) / span > 0.03) {
-        children.push({
-          type: "text",
-          style: {
-            x: (x0 + x1) / 2,
-            y: cs.y + cs.height / 2,
-            text: era.code,
-            align: "center",
-            verticalAlign: "middle",
-            fill: "#1a1a1a",
-            fontSize: 12,
-          },
-        });
-      }
-      return { type: "group", children };
-    };
+    // --- bottom strip: one markArea rect per era. markArea (unlike a
+    // custom-series renderItem) relayouts natively on every dataZoom, so
+    // the bands can never drift from the date axis while zooming.
+    const bandAreas = eras.map((e) => [
+      {
+        xAxis: e.start,
+        itemStyle: { color: e.color, borderColor: "#ffffff", borderWidth: 1 },
+        // Only label segments wide enough to carry text (original: >3% of span).
+        label:
+          (e.end - e.start) / span > 0.03
+            ? {
+                show: true,
+                position: "inside",
+                formatter: e.code,
+                color: "#1a1a1a",
+                fontSize: 12,
+              }
+            : { show: false },
+      },
+      { xAxis: e.end },
+    ]);
 
-    // --- JPCO change lines: dashed red verticals spanning BOTH grids, with
-    // rotated labels at the top (original: paper-referenced shapes) ---------
-    const changeData: [number, number, number][] = changes.map((c, i) => [c.x, c.tier, i]);
-    const renderChange = (p: RenderParams, api: RenderApi): Record<string, unknown> => {
-      const change = changes[api.value(2)];
-      const cs = p.coordSys;
-      const x = api.coord([api.value(0), 0])[0];
-      if (x < cs.x || x > cs.x + cs.width) return { type: "group", children: [] };
-      const yTop = cs.y;
-      // Extend through the gap and the strip below (clip:false); the strip
-      // grid ends ~18px above the container bottom.
-      const yBottom = api.getHeight() - 20;
-      return {
-        type: "group",
-        children: [
-          {
-            type: "line",
-            shape: { x1: x, y1: yTop, x2: x, y2: yBottom },
-            style: { stroke: JPCO_LINE, lineWidth: 1.5, lineDash: [5, 4] },
-          },
-          {
-            type: "text",
-            rotation: Math.PI / 2,
-            origin: [x - 6, yTop + 4],
-            style: {
-              x: x - 6,
-              y: yTop + 4,
-              text: change.label,
+    // --- JPCO change lines: dashed red verticals with rotated labels on
+    // the main grid, mirrored (unlabeled) through the strip below. Two
+    // markLine sets because marks clip to their own grid.
+    const changeLineStyle = { color: JPCO_LINE, width: 1.5, type: [5, 4] };
+    const changeLines = (labeled: boolean) =>
+      changes.map((c) => ({
+        xAxis: c.x,
+        lineStyle: changeLineStyle,
+        label: labeled
+          ? {
+              show: true,
+              formatter: c.label,
+              position: "insideEndTop",
+              rotate: 90,
               align: "right",
               verticalAlign: "middle",
-              fill: JPCO_TEXT,
+              color: JPCO_TEXT,
               fontSize: 10,
-            },
-          },
-        ],
-      };
-    };
+              distance: 6,
+            }
+          : { show: false },
+      }));
 
     const series: Record<string, unknown>[] = [
       {
@@ -259,59 +254,50 @@ export function HistoryStrip({
         itemStyle: { color: WAT_LINE },
         areaStyle: { color: WAT_FILL },
       },
-      // Prefer the daily BHP series; fall back to test-date BHP (original).
-      bhpDailyPts.length > 0
-        ? {
-            name: "BHP (psi)",
-            type: "line",
-            xAxisIndex: 0,
-            yAxisIndex: 1,
-            data: bhpDailyPts,
-            showSymbol: false,
-            lineStyle: { color: BHP_COLOR, width: 1.5 },
-            itemStyle: { color: BHP_COLOR },
-          }
-        : {
-            name: "BHP (psi)",
-            type: "line",
-            xAxisIndex: 0,
-            yAxisIndex: 1,
-            data: bhpTestPts,
-            symbolSize: 4,
-            lineStyle: { color: BHP_COLOR, width: 2 },
-            itemStyle: { color: BHP_COLOR },
-          },
       {
-        name: "JP changes",
-        type: "custom",
+        name: "BHP (psi)",
+        type: "line",
+        xAxisIndex: 0,
+        yAxisIndex: 1,
+        data: bhpPts,
+        ...(bhpPts === bhpDailyPts
+          ? { showSymbol: false, lineStyle: { color: BHP_COLOR, width: 1.5 } }
+          : { symbolSize: 4, lineStyle: { color: BHP_COLOR, width: 2 } }),
+        itemStyle: { color: BHP_COLOR },
+      },
+      // Invisible carriers for the marks: unnamed so legend toggles can
+      // never hide them, one per grid because marks clip to their grid.
+      {
+        type: "line",
         xAxisIndex: 0,
         yAxisIndex: 0,
-        renderItem: renderChange,
-        data: changeData,
-        clip: false,
+        data: [],
         silent: true,
-        z: 20,
-        tooltip: { show: false },
+        markLine: {
+          silent: true,
+          symbol: "none",
+          animation: false,
+          data: changeLines(true),
+          z: 20,
+        },
       },
       {
-        name: "Pumps in hole",
-        type: "custom",
+        type: "line",
         xAxisIndex: 1,
         yAxisIndex: 2,
-        renderItem: renderBand,
-        data: bandData,
-        tooltip: {
-          formatter: (raw: unknown): string => {
-            // Custom-series tooltip param: value is this band's datum.
-            const p = raw as { value: [number, number, number] };
-            const era = eras[p.value[2]];
-            const days = Math.round((era.end - era.start) / DAY_MS);
-            return [
-              `<b>${era.code}</b>`,
-              `Set ${fmtDate(new Date(era.start))} to ${fmtDate(new Date(era.end))}`,
-              `${fmtNum(days)} days`,
-            ].join("<br/>");
-          },
+        data: [],
+        silent: true,
+        markArea: {
+          silent: true,
+          animation: false,
+          data: bandAreas,
+        },
+        markLine: {
+          silent: true,
+          symbol: "none",
+          animation: false,
+          data: changeLines(false),
+          z: 20,
         },
       },
     ];
@@ -333,6 +319,7 @@ export function HistoryStrip({
         ...baseTooltip,
         trigger: "axis",
         axisPointer: { type: "line" },
+        formatter: tooltipFormatter,
       },
       axisPointer: { link: [{ xAxisIndex: "all" }] },
       legend: {
@@ -388,14 +375,15 @@ export function HistoryStrip({
   }, [data, bhpFromZero, showPf]);
 
   if (option === null) return null;
-  // Brush zooms the main grid (x0 + both rate/BHP axes); the strip's own x
-  // axis mirrors x0's window via linkX so the bands stay date-aligned.
+  // Brush zooms the main grid (x0 + both rate/BHP axes). Listing BOTH x
+  // axes keeps the pump-era strip natively window-synced with the main
+  // grid: ECharts links dataZoom components that share an axis, and both
+  // time axes span the identical min/max range.
   return (
     <ChartPanel
       option={option}
       height={height}
-      zoom={{ xAxisIndex: [0], yAxisIndex: [0, 1] }}
-      linkX={{ targetAxis: 1, leftPx: 64, rightPx: 64 }}
+      zoom={{ xAxisIndex: [0, 1], yAxisIndex: [0, 1] }}
     />
   );
 }

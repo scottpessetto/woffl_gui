@@ -13,7 +13,8 @@ Python and does not move. So:
 
 - **Frontend = the Node.js part.** TypeScript + React 19 SPA built with Vite;
   Tailwind v4; TanStack Query for server state; Zustand for sim inputs;
-  ECharts (canvas) for charts. Fully client-rendered: interactions never
+  ECharts (SVG renderer - crisp at fractional Windows display scaling; see
+  web/README.md "The chart rule"). Fully client-rendered: interactions never
   re-execute a server script (the Streamlit model) - only real compute makes
   a network call.
 - **Backend = thin FastAPI** (`server/`) importing the existing assembly
@@ -50,8 +51,14 @@ mirrored by `web/src/api/types.ts`.
 | POST /batch | nozzle x throat sweep + recommender + exp fit curve |
 | POST /pf-range | oil vs PF-pressure sweep |
 | POST /pressure-profile | surface -> suction traverse, both strings |
-| GET /pumps/equivalents | cross-brand pump match |
 | GET /database/wells, /database/aging-pumps, /database/prop-history/{well} | Well Database page |
+| GET /well-sort/tables | online / offline / LTSI tables + POPs config echo |
+| GET /well-sort/events | 30-day shut-in events (down-day threshold walk) |
+| GET /well-sort/marginal-wc | field marginal WC (cumulative-water walk) |
+| GET /well-sort/pad-marginal-wc | per-POPs-pad marginal WC + pump headroom |
+| GET /well-sort/triage | keep / SI / BOL decisions vs the marginal line |
+| GET /well-sort/bench.xlsx | 3-sheet MPU_Well_Bench workbook |
+| POST /well-sort/refresh | clears the Well Sort fetch caches (read-only op) |
 
 Server caching mirrors the old `@st.cache_data` TTLs (`server/config.py`):
 tests 24 h, chars/PF/profiles 1 h, saved IPR / prop history 5 min. Failures
@@ -76,11 +83,14 @@ full 37-field parameter sidebar with as-built and saved-prop locks, Solver
 tests table, WC-washout detection), Batch Run (sweep, performance chart,
 recommender, CSV), PF Range, Pressure Profile, Well Profile, Pump
 Equivalents, JP History (strip chart + installs), Well Database (chars,
-aging pumps, prop history audit).
+aging pumps, prop history audit), Well Sort (Wells / Triage / Marginal WC
+views, shared POPs config, bench xlsx + CSV exports; decision + marginal
+math single-sourced in `woffl/assembly/well_sort_engine.py`, shared with
+Streamlit).
 
 Not ported yet (Streamlit remains the tool for these): pad optimization
-(S/I/M/CFP), Well Sort, Scott's Tools, memory-gauge upload, manual test
-entry, calibration/auto-match actions, IPR pin/save writes, PDF export.
+(S/I/M/CFP), Scott's Tools, memory-gauge upload, manual test entry,
+calibration/auto-match actions, IPR pin/save writes, PDF export.
 
 ## Deploy
 

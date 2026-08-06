@@ -8,7 +8,7 @@
 import clsx from "clsx";
 import { X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 
 import { useWellContext } from "../api/hooks";
 import { WarnNote } from "../components/ui";
@@ -18,8 +18,14 @@ import { Topbar } from "./Topbar";
 import { useSidebarPref } from "./useSidebarPref";
 import { ViewTabs } from "./ViewTabs";
 
+const NO_SIDEBAR_PATHS = ["/well-database", "/well-sort"];
+
 export function Layout() {
-  const sidebar = useSidebarPref();
+  // Well Database and Well Sort are cross-well browsers: the single-well
+  // parameter sidebar (well selector + SimParams) does not apply there.
+  const { pathname } = useLocation();
+  const hasSidebar = !NO_SIDEBAR_PATHS.some((p) => pathname.startsWith(p));
+  const sidebar = useSidebarPref(hasSidebar);
 
   const well = useParamsStore((s) => s.well);
   const months = useParamsStore((s) => s.months);
@@ -46,14 +52,14 @@ export function Layout() {
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-slate-100">
       <div className="relative z-40 shrink-0">
-        <Topbar onToggleSidebar={sidebar.toggle} />
+        <Topbar onToggleSidebar={sidebar.toggle} sidebarAvailable={hasSidebar} />
         {ctx.isFetching && (
           <div className="absolute inset-x-0 top-full h-[2px] animate-pulse bg-blue-500" />
         )}
       </div>
 
       <div className="flex min-h-0 flex-1">
-        {!sidebar.overlay && (
+        {hasSidebar && !sidebar.overlay && (
           <div
             className={clsx(
               // min-w-0 is load-bearing: as a flex item the container's
@@ -67,7 +73,7 @@ export function Layout() {
           </div>
         )}
 
-        {sidebar.overlay && sidebar.open && (
+        {hasSidebar && sidebar.overlay && sidebar.open && (
           <>
             <div
               className="fixed inset-0 top-12 z-20 bg-slate-900/40"

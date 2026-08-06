@@ -415,3 +415,68 @@ class PropHistoryResponse(BaseModel):
     well: str
     current: list[dict[str, Any]]  # latest value per prop
     history: list[dict[str, Any]]  # full audit rows
+
+
+# ---------------------------------------------------------------------------
+# Well Sort
+# ---------------------------------------------------------------------------
+
+
+class WellSortTablesResponse(BaseModel):
+    online: list[dict[str, Any]]  # see services/well_sort._ONLINE_COLUMNS
+    offline: list[dict[str, Any]]  # see services/well_sort._SHUT_COLUMNS
+    ltsi: list[dict[str, Any]]  # same shape as offline
+    all_pads: list[str]
+    producers: list[str]
+    xv_available: bool
+    tests_window_days: int
+    outliers_flagged: int
+    just_restarted: int
+    default_pops_pads: list[str]
+    pump_limit_presets: dict[str, int]
+    pops_pump_handles: dict[str, str]  # pad -> "total" | "lift"
+
+
+class WellSortEventsResponse(BaseModel):
+    rows: list[dict[str, Any]]  # see services/well_sort._EVENT_COLUMNS
+
+
+class MarginalWcResponse(BaseModel):
+    marginal_wc: float
+    well: str
+    pad: str
+    total_field_water: float
+    well_count: int
+    threshold_pct: float
+    marg_idx: int
+    cum_water_at_marginal: Optional[float] = None
+    rows: list[dict[str, Any]]  # ranked walk, worst WC first
+
+
+class PadMarginalWcResponse(BaseModel):
+    marginal_wc: float
+    well: str
+    pad: str
+    pad_water: float
+    pump_limit: float
+    headroom: Optional[float] = None
+    well_count: int
+    water_basis: Literal["total", "lift"]
+    rows: list[dict[str, Any]]  # ranked by pad-stream WC, worst first
+
+
+class TriageResponse(BaseModel):
+    marginal_wc: float
+    well: str
+    pad: str
+    threshold_pct: float
+    raw_worst_wc: Optional[float] = None
+    raw_worst_well: Optional[str] = None
+    raw_worst_water: Optional[float] = None
+    xv_available: bool
+    online: list[dict[str, Any]]  # online cols + decision_code/why/rank
+    shut: list[dict[str, Any]]  # shut cols + decision_code/why/rank
+
+
+class WellSortRefreshResponse(BaseModel):
+    cleared: int

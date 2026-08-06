@@ -447,3 +447,204 @@ export interface PropHistoryResponse {
   current: Record<string, unknown>[];
   history: Record<string, unknown>[];
 }
+
+// ---------------------------------------------------------------------------
+// Well Sort
+// ---------------------------------------------------------------------------
+
+export type WellSortMode = "allocated" | "any";
+
+/** Online-table row - server/services/well_sort._ONLINE_COLUMNS. */
+export interface WellSortOnlineRow extends Record<string, unknown> {
+  well: string;
+  pad: string | null;
+  reservoir: string | null;
+  lift_type: string | null;
+  pops_pad: boolean;
+  test_date: string | null;
+  days_since_test: number | null;
+  stale_test: boolean;
+  allocated: boolean;
+  fallback_used: boolean;
+  oil: number | null;
+  water: number | null;
+  gas: number | null;
+  lift_water: number | null;
+  lift_gas: number | null;
+  total_water: number | null;
+  total_gas: number | null;
+  esp_hz: number | null;
+  esp_amps: number | null;
+  wc: number | null; // fraction
+  total_wc: number | null; // fraction
+  gor: number | null;
+  total_gor: number | null;
+  bhp: number | null;
+  whp: number | null;
+  oil_2mo_avg: number | null;
+  wat_2mo_avg: number | null;
+  oil_dev: number | null; // fraction vs 2-mo avg
+  wat_dev: number | null;
+  flag_outlier: boolean;
+  alloc_vs_info_oil_pct: number | null;
+  latest_alloc_date: string | null;
+  latest_info_date: string | null;
+  prod_xv: number | null; // 1=open 0=closed
+  pf_xv: number | null;
+  xv_time: string | null; // pre-formatted "MM-DD HH:mm"
+  just_restarted: boolean;
+}
+
+/** Offline/LTSI row - server/services/well_sort._SHUT_COLUMNS. */
+export interface WellSortShutRow extends Record<string, unknown> {
+  well: string;
+  pad: string | null;
+  reservoir: string | null;
+  lift_type: string | null;
+  pops_pad: boolean;
+  shut_in_since: string | null;
+  current_code: string | null;
+  current_reason: string | null;
+  notes: string | null;
+  down_hours: number | null;
+  last_online_date: string | null;
+  last_test_date: string | null;
+  oil: number | null;
+  water: number | null;
+  gas: number | null;
+  lift_water: number | null;
+  lift_gas: number | null;
+  total_water: number | null;
+  total_gas: number | null;
+  esp_hz: number | null;
+  esp_amps: number | null;
+  wc: number | null;
+  total_wc: number | null;
+  gor: number | null;
+  total_gor: number | null;
+  near_avg_oil: number | null;
+  near_avg_water: number | null;
+  near_avg_gas: number | null;
+  n_tests_near: number | null;
+  prod_xv: number | null;
+  pf_xv: number | null;
+  xv_time: string | null;
+}
+
+export interface WellSortTablesResponse {
+  online: WellSortOnlineRow[];
+  offline: WellSortShutRow[];
+  ltsi: WellSortShutRow[];
+  all_pads: string[];
+  producers: string[];
+  xv_available: boolean;
+  tests_window_days: number;
+  outliers_flagged: number;
+  just_restarted: number;
+  default_pops_pads: string[];
+  pump_limit_presets: Record<string, number>;
+  pops_pump_handles: Record<string, "total" | "lift">;
+}
+
+export interface WellSortEventRow extends Record<string, unknown> {
+  well: string;
+  pad: string | null;
+  reservoir: string | null;
+  started: string | null;
+  ended: string | null; // null while ongoing
+  days: number;
+  max_hrs: number;
+  total_hrs: number;
+  code: string | null;
+  reason: string | null;
+  notes: string | null;
+  ongoing: boolean;
+}
+
+export interface WellSortEventsResponse {
+  rows: WellSortEventRow[];
+}
+
+export interface MarginalRankedRow extends Record<string, unknown> {
+  well: string;
+  pad: string | null;
+  reservoir: string | null;
+  oil: number | null;
+  total_water: number | null;
+  total_wc: number | null; // fraction
+  cum_water: number | null;
+  cum_water_pct: number | null; // 0-100
+}
+
+export interface MarginalWcResponse {
+  marginal_wc: number; // fraction
+  well: string;
+  pad: string;
+  total_field_water: number;
+  well_count: number;
+  threshold_pct: number;
+  marg_idx: number;
+  cum_water_at_marginal: number | null;
+  rows: MarginalRankedRow[];
+}
+
+export interface PadRankedRow extends Record<string, unknown> {
+  well: string;
+  reservoir: string | null;
+  oil: number | null;
+  lift_water: number | null;
+  total_water: number | null;
+  total_wc: number | null;
+  wc_pad: number | null; // fraction, on the pad pump's stream
+}
+
+export interface PadMarginalWcResponse {
+  marginal_wc: number;
+  well: string;
+  pad: string;
+  pad_water: number;
+  pump_limit: number;
+  headroom: number | null; // null when limit unset
+  well_count: number;
+  water_basis: "total" | "lift";
+  rows: PadRankedRow[];
+}
+
+export type TriageOnlineCode = "pops" | "verify_stale" | "keep" | "verify_si" | "si";
+export type TriageShutCode =
+  | "verify_no_test"
+  | "bol"
+  | "bol_trial"
+  | "verify_form_hist"
+  | "leave_shut";
+
+export interface TriageOnlineRow extends WellSortOnlineRow {
+  decision_code: TriageOnlineCode;
+  why: string;
+  wc_vs_marginal: number | null; // fraction delta
+  wc_basis: "total" | "form" | null;
+  rank: number; // 0=SI 1=verify 2=keep 4=pops
+}
+
+export interface TriageShutRow extends WellSortShutRow {
+  decision_code: TriageShutCode;
+  why: string;
+  wc_vs_marginal: number | null;
+  wc_basis: "total" | "form" | null;
+  near_avg_wc: number | null; // fraction
+  near_avg_wc_basis: "total" | "form" | null;
+  rank: number; // 0=BOL 1=trial 2=verify 3=leave shut
+}
+
+export interface TriageResponse {
+  marginal_wc: number;
+  well: string;
+  pad: string;
+  threshold_pct: number;
+  raw_worst_wc: number | null;
+  raw_worst_well: string | null;
+  raw_worst_water: number | null;
+  xv_available: boolean;
+  online: TriageOnlineRow[];
+  shut: TriageShutRow[];
+}

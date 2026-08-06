@@ -4,7 +4,8 @@
  */
 
 import clsx from "clsx";
-import { Loader2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Loader2 } from "lucide-react";
+import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
 import { ApiError } from "../api/client";
@@ -223,6 +224,17 @@ export interface Column<Row> {
   /** Render the cell; defaults to String(row[key] ?? "-"). */
   render?: (row: Row) => ReactNode;
   width?: string;
+  /** Hover tooltip on the header (ports st.column_config help). */
+  help?: string;
+}
+
+/** null/undefined sort last in either direction; numbers before strings. */
+function compareCells(a: unknown, b: unknown): number {
+  if (a === null || a === undefined) return b === null || b === undefined ? 0 : 1;
+  if (b === null || b === undefined) return -1;
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  if (typeof a === "boolean" && typeof b === "boolean") return Number(a) - Number(b);
+  return String(a).localeCompare(String(b), undefined, { numeric: true });
 }
 
 export function DataTable<Row extends Record<string, unknown>>({
@@ -233,6 +245,8 @@ export function DataTable<Row extends Record<string, unknown>>({
   highlightRow,
   onRowClick,
   emptyLabel = "No data",
+  sortable = false,
+  pinFirst = false,
 }: {
   columns: Column<Row>[];
   rows: Row[];
@@ -241,53 +255,89 @@ export function DataTable<Row extends Record<string, unknown>>({
   highlightRow?: (row: Row) => boolean;
   onRowClick?: (row: Row) => void;
   emptyLabel?: string;
+  /** Click a header to sort by that column (raw row values, toggles dir). */
+  sortable?: boolean;
+  /** Keep the first column visible under horizontal scroll (wide tables). */
+  pinFirst?: boolean;
 }) {
+  const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
+
+  const sorted = useMemo(() => {
+    if (!sort) return rows;
+    const { key, dir } = sort;
+    return [...rows].sort((a, b) => dir * compareCells(a[key], b[key]));
+  }, [rows, sort]);
+
   if (rows.length === 0) {
     return <div className="py-6 text-center text-sm text-slate-400">{emptyLabel}</div>;
   }
+  const toggleSort = (key: string) =>
+    setSort((s) => (s?.key === key ? (s.dir === 1 ? { key, dir: -1 } : null) : { key, dir: 1 }));
+
   return (
     <div className="overflow-auto rounded-md border border-slate-200" style={{ maxHeight }}>
       <table className="w-full border-collapse text-[13px]">
         <thead className="sticky top-0 z-10">
           <tr className="bg-slate-50">
-            {columns.map((col) => (
+            {columns.map((col, ci) => (
               <th
                 key={col.key}
                 style={col.width ? { width: col.width } : undefined}
+                title={col.help}
+                onClick={sortable ? () => toggleSort(col.key) : undefined}
                 className={clsx(
-                  "border-b border-slate-200 px-2.5 py-1.5 font-semibold text-slate-600 whitespace-nowrap",
+                  "border-b border-slate-200 bg-slate-50 px-2.5 py-1.5 font-semibold text-slate-600 whitespace-nowrap",
                   col.align === "right" ? "text-right" : col.align === "center" ? "text-center" : "text-left",
+                  sortable && "cursor-pointer select-none hover:text-slate-900",
+                  pinFirst && ci === 0 && "sticky left-0 z-20 border-r border-r-slate-200",
                 )}
               >
-                {col.label}
+                <span className="inline-flex items-center gap-0.5">
+                  {col.label}
+                  {sortable && sort?.key === col.key && (
+                    sort.dir === 1
+                      ? <ChevronUp className="h-3 w-3 text-blue-600" />
+                      : <ChevronDown className="h-3 w-3 text-blue-600" />
+                  )}
+                </span>
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, i) => (
+          {sorted.map((row, i) => {
+            const lit = highlightRow?.(row) ?? false;
+            return (
             <tr
               key={rowKey(row, i)}
               onClick={onRowClick ? () => onRowClick(row) : undefined}
               className={clsx(
                 "border-b border-slate-100 last:border-b-0",
-                highlightRow?.(row) ? "bg-blue-50/60" : i % 2 === 1 ? "bg-slate-50/40" : "bg-white",
+                lit ? "bg-blue-50/60" : i % 2 === 1 ? "bg-slate-50/40" : "bg-white",
                 onRowClick && "cursor-pointer hover:bg-blue-50",
               )}
             >
-              {columns.map((col) => (
+              {columns.map((col, ci) => (
                 <td
                   key={col.key}
                   className={clsx(
                     "px-2.5 py-1.5 whitespace-nowrap tabular-nums text-slate-700",
                     col.align === "right" ? "text-right" : col.align === "center" ? "text-center" : "text-left",
+                    // Pinned cells need an OPAQUE bg (the stripe tints are
+                    // alpha washes; scrolled columns would ghost through).
+                    pinFirst && ci === 0 &&
+                      clsx(
+                        "sticky left-0 z-[1] border-r border-r-slate-200",
+                        lit ? "bg-blue-50" : i % 2 === 1 ? "bg-slate-50" : "bg-white",
+                      ),
                   )}
                 >
                   {col.render ? col.render(row) : String(row[col.key] ?? "-")}
                 </td>
               ))}
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>

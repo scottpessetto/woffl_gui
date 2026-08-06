@@ -9,8 +9,8 @@ import { useMemo } from "react";
 
 import { useWellProfile } from "../api/hooks";
 import type { EChartsOption } from "../charts/echarts";
-import { ACCENT, axis, baseGrid, baseTooltip, GOLD, houseOption, SLATE } from "../charts/theme";
-import { useEChart } from "../charts/useEChart";
+import { ACCENT, axis, axisTooltip, baseGrid, baseTooltip, GOLD, houseOption, SLATE } from "../charts/theme";
+import { ChartPanel } from "../charts/ChartPanel";
 import { Badge, Card, ErrorNote, InfoNote, Spinner } from "../components/ui";
 import { fmtNum } from "../lib/format";
 import { useParamsStore } from "../state/params";
@@ -62,7 +62,7 @@ export default function WellProfilePage() {
     }
     return houseOption({
       title: { text: "Wellbore Profile", left: 8, textStyle: { fontSize: 13, fontWeight: 600 } },
-      tooltip: { ...baseTooltip, trigger: "axis" },
+      tooltip: { ...baseTooltip, trigger: "axis", formatter: axisTooltip({ headerUnit: "ft out", unit: "ft TVD" }) },
       grid: { ...baseGrid },
       xAxis: { type: "value", ...axis("Horizontal Departure (ft)") },
       yAxis: { type: "value", ...axis("True Vertical Depth (ft)"), inverse: true },
@@ -123,7 +123,7 @@ export default function WellProfilePage() {
     }
     return houseOption({
       title: { text: "MD vs TVD", left: 8, textStyle: { fontSize: 13, fontWeight: 600 } },
-      tooltip: { ...baseTooltip, trigger: "axis" },
+      tooltip: { ...baseTooltip, trigger: "axis", formatter: axisTooltip({ headerUnit: "ft MD", unit: "ft TVD" }) },
       legend: { bottom: 0, itemWidth: 16, textStyle: { fontSize: 11 } },
       grid: { ...baseGrid, bottom: 68 },
       xAxis: { type: "value", ...axis("Measured Depth (ft)") },
@@ -138,7 +138,7 @@ export default function WellProfilePage() {
     const pts = inc.md.map((m, i) => [m, inc.deg[i]]);
     return houseOption({
       title: { text: "Inclination", left: 8, textStyle: { fontSize: 13, fontWeight: 600 } },
-      tooltip: { ...baseTooltip, trigger: "axis" },
+      tooltip: { ...baseTooltip, trigger: "axis", formatter: axisTooltip({ headerUnit: "ft MD", unit: "deg", dp: 1 }) },
       grid: { ...baseGrid },
       xAxis: { type: "value", ...axis("Measured Depth (ft)") },
       yAxis: { type: "value", ...axis("Inclination (deg)") },
@@ -155,9 +155,6 @@ export default function WellProfilePage() {
     });
   }, [data]);
 
-  const profileRef = useEChart(profileOption);
-  const mdTvdRef = useEChart(mdTvdOption);
-  const inclinationRef = useEChart(inclinationOption);
 
   if (query.isError) {
     return <ErrorNote error={query.error} />;
@@ -186,15 +183,15 @@ export default function WellProfilePage() {
       )}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
-          <div ref={profileRef} className="h-[480px]" />
+          <ChartPanel option={profileOption} height={480} zoom={{ xAxisIndex: [0], yAxisIndex: [0] }} />
         </Card>
         <Card>
-          <div ref={mdTvdRef} className="h-[480px]" />
+          <ChartPanel option={mdTvdOption} height={480} zoom={{ xAxisIndex: [0], yAxisIndex: [0] }} />
         </Card>
       </div>
       {inclinationOption && (
         <Card>
-          <div ref={inclinationRef} className="h-[320px]" />
+          <ChartPanel option={inclinationOption} height={320} zoom={{ xAxisIndex: [0], yAxisIndex: [0] }} />
         </Card>
       )}
     </div>

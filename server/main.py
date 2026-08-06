@@ -32,7 +32,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from server.config import WEB_DIST
-from server.routers import compute, database, history, meta, pumps, wells
+from server.routers import compute, database, history, meta, pumps, well_sort, wells
 
 log = logging.getLogger("woffl.web")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -61,6 +61,11 @@ def _warm_caches() -> None:
         ("jp_history", datasources.jp_history_safe),
         ("well_tests", partial(tests_svc.fetch_all_well_tests, DEFAULT_TEST_MONTHS)),
     ]
+    # Well Sort pulls (producers, catalog, shut-in log, 180-day tests) warm
+    # in their own daemon threads; failures degrade to lazy loading too.
+    from server.services import well_sort as well_sort_svc
+
+    well_sort_svc.warm()
     for label, fn in targets:
         threading.Thread(target=_warm, args=(label, fn), daemon=True, name=f"warm-{label}").start()
 
@@ -89,6 +94,7 @@ app.include_router(compute.router, prefix="/api")
 app.include_router(history.router, prefix="/api")
 app.include_router(pumps.router, prefix="/api")
 app.include_router(database.router, prefix="/api")
+app.include_router(well_sort.router, prefix="/api")
 
 
 @app.exception_handler(Exception)

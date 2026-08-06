@@ -8,8 +8,8 @@ import { useMemo } from "react";
 
 import { usePressureProfile } from "../api/hooks";
 import type { EChartsOption } from "../charts/echarts";
-import { ACCENT, axis, baseGrid, baseTooltip, CRIMSON, GOLD, houseOption, SLATE } from "../charts/theme";
-import { useEChart } from "../charts/useEChart";
+import { ACCENT, axis, axisTooltip, baseGrid, baseTooltip, CRIMSON, GOLD, houseOption, SLATE } from "../charts/theme";
+import { ChartPanel } from "../charts/ChartPanel";
 import { Card, ErrorNote, InfoNote, Metric, Spinner } from "../components/ui";
 import { fmtNum } from "../lib/format";
 import { useDebounced } from "../lib/useDebounced";
@@ -53,7 +53,9 @@ export default function PressureProfilePage() {
     const pfPts = data.pf.md.map((md, i) => [data.pf.press[i], md]);
     return houseOption({
       title: { text: "Pressure vs Depth", left: 8, textStyle: { fontSize: 13, fontWeight: 600 } },
-      tooltip: { ...baseTooltip, trigger: "axis" },
+      // Depth is the independent variable: the pointer tracks the y axis,
+      // rows show each string's pressure (datum dim 0) at that depth.
+      tooltip: { ...baseTooltip, trigger: "axis", axisPointer: { axis: "y" }, formatter: axisTooltip({ headerUnit: "ft MD", unit: "psi", valueDim: 0 }) },
       legend: { bottom: 0, itemWidth: 16, textStyle: { fontSize: 11 } },
       grid: { ...baseGrid, bottom: 68 },
       xAxis: { type: "value", ...axis("Pressure (psi)") },
@@ -97,7 +99,7 @@ export default function PressureProfilePage() {
         left: 8,
         textStyle: { fontSize: 13, fontWeight: 600 },
       },
-      tooltip: { ...baseTooltip, trigger: "axis" },
+      tooltip: { ...baseTooltip, trigger: "axis", axisPointer: { axis: "y" }, formatter: axisTooltip({ headerUnit: "ft MD", unit: "psi", valueDim: 0 }) },
       grid: { ...baseGrid, bottom: 68 },
       xAxis: { type: "value", ...axis("Differential (psi)") },
       yAxis: { type: "value", ...axis("Depth (ft MD)"), inverse: true },
@@ -122,8 +124,6 @@ export default function PressureProfilePage() {
     });
   }, [data]);
 
-  const profileRef = useEChart(profileOption);
-  const diffRef = useEChart(diffOption);
 
   if (!simActive) {
     return (
@@ -146,10 +146,10 @@ export default function PressureProfilePage() {
       {query.isFetching && <Spinner label="Updating" />}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
-          <div ref={profileRef} className="h-[520px]" />
+          <ChartPanel option={profileOption} height={520} zoom={{ xAxisIndex: [0], yAxisIndex: [0] }} />
         </Card>
         <Card>
-          <div ref={diffRef} className="h-[520px]" />
+          <ChartPanel option={diffOption} height={520} zoom={{ xAxisIndex: [0], yAxisIndex: [0] }} />
         </Card>
       </div>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">

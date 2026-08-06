@@ -12,8 +12,8 @@ import { usePfRange } from "../api/hooks";
 import type { PfRangeRow, SimParams } from "../api/types";
 import { NOZZLE_OPTIONS, THROAT_OPTIONS } from "../api/types";
 import type { EChartsOption } from "../charts/echarts";
-import { axis, baseGrid, baseTooltip, CATEGORY20, houseOption } from "../charts/theme";
-import { useEChart } from "../charts/useEChart";
+import { axis, axisTooltip, baseGrid, baseTooltip, CATEGORY20, houseOption } from "../charts/theme";
+import { ChartPanel } from "../charts/ChartPanel";
 import {
   Badge,
   Button,
@@ -75,7 +75,10 @@ function sweepChart(
     tooltip: {
       ...baseTooltip,
       trigger: "axis",
-      valueFormatter: (v: unknown) => (typeof v === "number" ? fmtNum(v) : "-"),
+      formatter: axisTooltip({
+        headerUnit: "psi PF",
+        unit: yKey === "qoil_std" ? "BOPD" : "BWPD",
+      }),
     },
     legend: {
       type: "scroll",
@@ -129,8 +132,6 @@ export default function PfRangePage() {
     () => (data && subView === "charts" ? sweepChart(data.rows, pumps, "totl_wat", "Total Water Rate (BWPD)") : null),
     [data, pumps, subView],
   );
-  const oilRef = useEChart(oilOption);
-  const waterRef = useEChart(waterOption);
 
   const pumpCount = params.nozzle_batch_options.length * params.throat_batch_options.length;
   const stale = snapshot !== null && stableStringify(effectiveParams(params)) !== stableStringify(snapshot);
@@ -223,10 +224,10 @@ export default function PfRangePage() {
           {subView === "charts" && (
             <div className="space-y-4">
               <Card padded={false} className="p-2">
-                <div ref={oilRef} className="h-[420px]" />
+                <ChartPanel option={oilOption} height={420} zoom={{ xAxisIndex: [0], yAxisIndex: [0] }} />
               </Card>
               <Card padded={false} className="p-2">
-                <div ref={waterRef} className="h-[420px]" />
+                <ChartPanel option={waterOption} height={420} zoom={{ xAxisIndex: [0], yAxisIndex: [0] }} />
               </Card>
             </div>
           )}

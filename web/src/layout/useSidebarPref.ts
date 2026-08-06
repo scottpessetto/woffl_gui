@@ -32,7 +32,7 @@ export interface SidebarPref {
   close: () => void;
 }
 
-export function useSidebarPref(): SidebarPref {
+export function useSidebarPref(enabled = true): SidebarPref {
   const [overlay, setOverlay] = useState(() => window.matchMedia(OVERLAY_QUERY).matches);
   const [open, setOpen] = useState(() => (window.matchMedia(OVERLAY_QUERY).matches ? false : readStored()));
 
@@ -58,8 +58,9 @@ export function useSidebarPref(): SidebarPref {
     }
   }, [open, overlay]);
 
-  // '[' toggles, unless the user is typing.
+  // '[' toggles, unless the user is typing or the route has no sidebar.
   useEffect(() => {
+    if (!enabled) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "[" || e.ctrlKey || e.metaKey || e.altKey) return;
       if (isTypingTarget(e.target)) return;
@@ -68,7 +69,7 @@ export function useSidebarPref(): SidebarPref {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [enabled]);
 
   const toggle = useCallback(() => setOpen((v) => !v), []);
   const close = useCallback(() => setOpen(false), []);

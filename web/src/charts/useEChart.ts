@@ -9,7 +9,17 @@ export interface EChartInstance {
   getChart: () => echarts.ECharts | null;
 }
 
-/** Re-arm the toolbox box-select so plain dragging always draws a zoom rect. */
+/**
+ * Activate the toolbox box-select so plain dragging draws a zoom rect.
+ *
+ * MUST run EXACTLY ONCE per chart instance: each takeGlobalCursor dispatch
+ * stacks another zoom-apply handler inside ECharts 6 (they survive
+ * deactivation, restore, and notMerge setOption), and N stacked handlers
+ * compound one drag into N nested zooms - the "zooms to the wrong place"
+ * bug. Verified on a scratch chart: one arm = exact window; the cursor
+ * persists across restore and notMerge setOption, so re-arming is never
+ * needed.
+ */
 function armBoxZoom(chart: echarts.ECharts): void {
   chart.dispatchAction({
     type: "takeGlobalCursor",
@@ -37,17 +47,25 @@ export function useEChartInstance(
   const optionRef = useRef<EChartsOption | null>(option);
   const boxZoomRef = useRef(boxZoom);
   const onReadyRef = useRef(onReady);
+  const armedRef = useRef(false);
   optionRef.current = option;
   boxZoomRef.current = boxZoom;
   onReadyRef.current = onReady;
+
+  const maybeArm = useCallback((chart: echarts.ECharts) => {
+    if (boxZoomRef.current && !armedRef.current) {
+      armBoxZoom(chart);
+      armedRef.current = true;
+    }
+  }, []);
 
   useEffect(() => {
     const chart = chartRef.current;
     if (option && chart) {
       chart.setOption(option, { notMerge: true });
-      if (boxZoom) armBoxZoom(chart);
+      maybeArm(chart);
     }
-  }, [option, boxZoom]);
+  }, [option, maybeArm]);
 
   useEffect(
     () => () => {
@@ -62,14 +80,18 @@ export function useEChartInstance(
   const attachRef = useCallback((node: HTMLDivElement | null) => {
     if (node) {
       if (chartRef.current) return; // same node re-attach (StrictMode)
-      const chart = echarts.init(node);
+      // SVG renderer: vector text/lines stay crisp at any devicePixelRatio
+      // (Windows 125/150% scaling blurs canvas backing stores) and at any
+      // browser zoom - the "plotly-crisp" look. Data volumes here (<= a few
+      // thousand points per chart) are well inside SVG's comfort zone.
+      const chart = echarts.init(node, undefined, { renderer: "svg" });
       chartRef.current = chart;
       const observer = new ResizeObserver(() => chart.resize());
       observer.observe(node);
       observerRef.current = observer;
       if (optionRef.current) {
         chart.setOption(optionRef.current, { notMerge: true });
-        if (boxZoomRef.current) armBoxZoom(chart);
+        maybeArm(chart);
       }
       onReadyRef.current?.(chart);
     } else {
@@ -77,22 +99,15 @@ export function useEChartInstance(
       observerRef.current = null;
       chartRef.current?.dispose();
       chartRef.current = null;
+      armedRef.current = false; // a fresh instance needs its one arming
     }
-  }, []);
+  }, [maybeArm]);
 
   const getChart = useCallback(() => chartRef.current, []);
 
   return { attachRef, getChart };
 }
 
-/**
- * Plain chart mount - the original hook, kept for simple charts.
- *
- *   const ref = useEChart(option);
- *   return <div ref={ref} className="h-[500px]" />;
- */
-export function useEChart(option: EChartsOption | null): (node: HTMLDivElement | null) => void {
-  return useEChartInstance(option).attachRef;
-}
 
-export { armBoxZoom };
+/** Chart instance type for consumers that dispatch actions. */
+export type EChart = echarts.ECharts;

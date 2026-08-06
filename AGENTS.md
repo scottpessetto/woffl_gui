@@ -302,6 +302,20 @@ unit-tested. `params.SimulationParams` is the one container threaded sidebar →
 | A stored per-well review field | the right tuple in `workflow_steps/well_review_store.py:46-121` (lands in the CSV schema) |
 | A GUI module | `tests/test_gui_smoke.py` `PAGE_MODULES` |
 
+### Web app (web/ + server/) charts - one stack, no exceptions
+
+The React port (`web/` SPA, `server/` FastAPI; prose in `docs/web_port.md`) renders every
+chart through one stack. The full rule lives in `web/README.md` ("The chart rule"); the
+parts you will otherwise violate:
+
+- Mount charts ONLY via `web/src/charts/ChartPanel.tsx` (drag box zoom, ctrl-wheel zoom,
+  shift-wheel pan, dbl-click reset, fullscreen). Never a bare div + `useEChartInstance`.
+- ECharts **SVG renderer only** - canvas text blurs at Windows 125/150% display scaling.
+- Tooltips through `theme.ts` helpers (`axisTooltip`, `ttHeader`/`ttRow`, `nearestByX`).
+  The ECharts default tooltip leaks raw epoch-ms datums and drops unaligned time series.
+- Nothing zoom-tracked may use custom-series `renderItem` (it does not re-render on
+  dataZoom with `filterMode: "none"`); use markArea/markLine carriers like HistoryStrip.
+
 ---
 
 ## 7. Testing

@@ -13,6 +13,7 @@ const WellProfilePage = lazy(() => import("./pages/WellProfilePage"));
 const EquivalentsPage = lazy(() => import("./pages/EquivalentsPage"));
 const JpHistoryPage = lazy(() => import("./pages/JpHistoryPage"));
 const WellDatabasePage = lazy(() => import("./pages/WellDatabasePage"));
+const WellSortPage = lazy(() => import("./pages/WellSortPage"));
 
 export default function App() {
   return (
@@ -72,6 +73,14 @@ export default function App() {
           element={
             <Suspense fallback={<Spinner label="Loading view" />}>
               <JpHistoryPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="/well-sort"
+          element={
+            <Suspense fallback={<Spinner label="Loading view" />}>
+              <WellSortPage />
             </Suspense>
           }
         />

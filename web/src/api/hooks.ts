@@ -9,15 +9,21 @@ import type {
   IprFitResponse,
   IprPinResponse,
   JpHistoryResponse,
+  MarginalWcResponse,
   MetaResponse,
+  PadMarginalWcResponse,
   PfRangeResponse,
   PressureProfileResponse,
   PropHistoryResponse,
   SimParams,
   SolveResult,
+  TriageResponse,
   WellContext,
   WellDatabaseResponse,
   WellProfileResponse,
+  WellSortEventsResponse,
+  WellSortMode,
+  WellSortTablesResponse,
   WellTestsResponse,
   WellsResponse,
 } from "./types";
@@ -183,4 +189,100 @@ export const usePropHistory = (well: string | null) =>
       get<PropHistoryResponse>(`/database/prop-history/${encodeURIComponent(well!)}`, signal),
     enabled: well !== null,
     staleTime: MIN_5,
+  });
+
+// ---------------------------------------------------------------------------
+// Well Sort
+// ---------------------------------------------------------------------------
+
+/** ?pops_pad=E&pops_pad=S...&force_true=MPS-08... - FastAPI list params.
+ * An explicitly empty pads selection is a valid state and must reach the
+ * server (else it falls back to the field defaults), hence the marker. */
+export function popsQuery(popsPads: string[], forceTrue: string[]): string {
+  const parts = popsPads.map((p) => `pops_pad=${encodeURIComponent(p)}`);
+  if (popsPads.length === 0) parts.push("pops_pad=");
+  for (const w of forceTrue) parts.push(`force_true=${encodeURIComponent(w)}`);
+  return parts.join("&");
+}
+
+export const useWellSortTables = (
+  mode: WellSortMode,
+  staleDays: number,
+  popsPads: string[],
+  forceTrue: string[],
+) =>
+  useQuery({
+    queryKey: ["well-sort", "tables", mode, staleDays, popsPads, forceTrue],
+    queryFn: ({ signal }) =>
+      get<WellSortTablesResponse>(
+        `/well-sort/tables?mode=${mode}&stale_days=${staleDays}&${popsQuery(popsPads, forceTrue)}`,
+        signal,
+      ),
+    staleTime: MIN_5,
+    placeholderData: keepPreviousData,
+  });
+
+export const useWellSortEvents = (windowDays: number, downHours: number) =>
+  useQuery({
+    queryKey: ["well-sort", "events", windowDays, downHours],
+    queryFn: ({ signal }) =>
+      get<WellSortEventsResponse>(
+        `/well-sort/events?window_days=${windowDays}&down_hours=${downHours}`,
+        signal,
+      ),
+    staleTime: MIN_5,
+    placeholderData: keepPreviousData,
+  });
+
+export const useMarginalWc = (
+  thresholdPct: number,
+  staleDays: number,
+  popsPads: string[],
+  forceTrue: string[],
+) =>
+  useQuery({
+    queryKey: ["well-sort", "marginal", thresholdPct, staleDays, popsPads, forceTrue],
+    queryFn: ({ signal }) =>
+      get<MarginalWcResponse>(
+        `/well-sort/marginal-wc?threshold_pct=${thresholdPct}&stale_days=${staleDays}&${popsQuery(popsPads, forceTrue)}`,
+        signal,
+      ),
+    staleTime: MIN_5,
+    placeholderData: keepPreviousData,
+  });
+
+export const usePadMarginalWc = (
+  pad: string | null,
+  pumpLimit: number,
+  staleDays: number,
+  popsPads: string[],
+  forceTrue: string[],
+) =>
+  useQuery({
+    queryKey: ["well-sort", "pad-marginal", pad, pumpLimit, staleDays, popsPads, forceTrue],
+    queryFn: ({ signal }) =>
+      get<PadMarginalWcResponse>(
+        `/well-sort/pad-marginal-wc?pad=${encodeURIComponent(pad!)}&pump_limit=${pumpLimit}&stale_days=${staleDays}&${popsQuery(popsPads, forceTrue)}`,
+        signal,
+      ),
+    enabled: pad !== null,
+    staleTime: MIN_5,
+    placeholderData: keepPreviousData,
+  });
+
+export const useTriage = (
+  thresholdPct: number,
+  staleDays: number,
+  popsPads: string[],
+  forceTrue: string[],
+) =>
+  useQuery({
+    queryKey: ["well-sort", "triage", thresholdPct, staleDays, popsPads, forceTrue],
+    queryFn: ({ signal }) =>
+      get<TriageResponse>(
+        `/well-sort/triage?threshold_pct=${thresholdPct}&stale_days=${staleDays}&${popsQuery(popsPads, forceTrue)}`,
+        signal,
+      ),
+    staleTime: MIN_5,
+    placeholderData: keepPreviousData,
   });

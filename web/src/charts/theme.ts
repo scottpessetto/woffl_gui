@@ -82,3 +82,95 @@ export function houseOption(option: EChartsOption): EChartsOption {
     ...option,
   };
 }
+
+/* ---------------------------------------------------------------- tooltip
+ * Shared building blocks so every chart's tooltip reads the same way:
+ * bold date/x header, one row per series with the series' marker color,
+ * label left, formatted value right. Custom series (era bands, marker
+ * overlays) never dump raw data into tooltips - they either render through
+ * these helpers or are excluded by the chart's formatter.
+ */
+
+/** Nearest point by x in an x-sorted [x, y, ...] array; null if empty. */
+export function nearestByX<T extends readonly [number, ...unknown[]]>(
+  pts: readonly T[],
+  x: number,
+): T | null {
+  if (pts.length === 0) return null;
+  let lo = 0;
+  let hi = pts.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (pts[mid][0] < x) lo = mid;
+    else hi = mid;
+  }
+  return x - pts[lo][0] <= pts[hi][0] - x ? pts[lo] : pts[hi];
+}
+
+/** Bold header line (date or x value) for a tooltip. */
+export function ttHeader(text: string): string {
+  return `<div style="font-weight:600;margin-bottom:4px">${text}</div>`;
+}
+
+/** One tooltip row: colored dot, label, right-aligned tabular value. */
+export function ttRow(color: string, label: string, value: string): string {
+  return (
+    `<div style="display:flex;align-items:center;gap:6px;line-height:1.7">` +
+    `<span style="width:8px;height:8px;border-radius:9999px;background:${color};flex:none"></span>` +
+    `<span>${label}</span>` +
+    `<span style="margin-left:auto;padding-left:16px;font-variant-numeric:tabular-nums;font-weight:500">${value}</span>` +
+    `</div>`
+  );
+}
+
+/** Minimal shape of an axis-trigger tooltip param this app relies on. */
+interface AxisTooltipParam {
+  seriesName?: string;
+  color?: unknown;
+  axisValue?: unknown;
+  value?: unknown;
+}
+
+export interface AxisTooltipSpec {
+  /** unit appended to the header (the axis-pointer reading), e.g. "ft MD" */
+  headerUnit?: string;
+  headerDp?: number;
+  /** unit appended to each series value, e.g. "psi" */
+  unit: string;
+  dp?: number;
+  /** datum dimension holding the reading: 1 = y (default), 0 = x */
+  valueDim?: 0 | 1;
+}
+
+/**
+ * House axis-trigger tooltip for single-quantity charts: formatted header
+ * with unit, one ttRow per series. Charts mixing units (rates + pressures)
+ * write their own formatter from ttHeader/ttRow instead.
+ */
+export function axisTooltip(spec: AxisTooltipSpec): (raw: unknown) => string {
+  const { headerUnit = "", headerDp = 0, unit, dp = 0, valueDim = 1 } = spec;
+  const nf = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: dp,
+  });
+  const hf = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: headerDp,
+  });
+  return (raw: unknown): string => {
+    const list = (Array.isArray(raw) ? raw : [raw]) as AxisTooltipParam[];
+    if (list.length === 0) return "";
+    const head = list.find((p) => typeof p.axisValue === "number");
+    const out: string[] = [];
+    if (head) {
+      out.push(ttHeader(`${hf.format(head.axisValue as number)}${headerUnit ? ` ${headerUnit}` : ""}`));
+    }
+    for (const p of list) {
+      const v = Array.isArray(p.value) ? p.value[valueDim] : p.value;
+      if (typeof v !== "number" || !Number.isFinite(v)) continue;
+      const color = typeof p.color === "string" ? p.color : SLATE;
+      out.push(ttRow(color, p.seriesName ?? "", `${nf.format(v)} ${unit}`));
+    }
+    return out.join("");
+  };
+}

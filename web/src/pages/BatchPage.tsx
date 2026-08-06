@@ -16,7 +16,7 @@ import type { BatchRecommendation, BatchRow, SimParams, WaterType } from "../api
 import { NOZZLE_OPTIONS, THROAT_OPTIONS } from "../api/types";
 import type { EChartsOption } from "../charts/echarts";
 import { ACCENT, axis, baseGrid, baseTooltip, CRIMSON, GOLD, houseOption } from "../charts/theme";
-import { useEChart } from "../charts/useEChart";
+import { ChartPanel } from "../charts/ChartPanel";
 import {
   Badge,
   Button,
@@ -210,7 +210,6 @@ export default function BatchPage() {
       data ? performanceOption(okRows, data.fit_curve, data.recommended, data.x_mode) : null,
     [data, okRows],
   );
-  const chartRef = useEChart(chartOption);
 
   const recommenderRows = useMemo<RecommenderRow[]>(() => {
     if (!data) return [];
@@ -333,7 +332,7 @@ export default function BatchPage() {
           )}
 
           <Section title={`Jet Pump Performance (${waterLabel})`}>
-            <div ref={chartRef} className="h-[560px]" />
+            <ChartPanel option={chartOption} height={560} zoom={{ xAxisIndex: [0], yAxisIndex: [0] }} />
           </Section>
 
           {rec && (

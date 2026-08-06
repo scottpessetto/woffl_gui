@@ -18,7 +18,7 @@ import {
   VisualMapComponent,
 } from "echarts/components";
 import * as echarts from "echarts/core";
-import { CanvasRenderer } from "echarts/renderers";
+import { SVGRenderer } from "echarts/renderers";
 
 echarts.use([
   LineChart,
@@ -35,13 +35,13 @@ echarts.use([
   DataZoomComponent,
   ToolboxComponent,
   TitleComponent,
-  CanvasRenderer,
+  SVGRenderer,
 ]);
 
 export { echarts };
 
 // E2E/diagnostic hook: lets browser automation reach chart instances via
-// window.__ECHARTS__.getInstanceByDom(canvas.parentElement). Harmless for
+// window.__ECHARTS__.getInstanceByDom(div[_echarts_instance_]). Harmless for
 // an internal tool; the bundle already ships the echarts core.
 declare global {
   interface Window {
