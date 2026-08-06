@@ -1,8 +1,9 @@
 # WOFFL web port (React + FastAPI)
 
-Status: v1 shipped 2026-08. Owner docs for the Node.js-era WOFFL app that
-replaces the Streamlit GUI page by page. The Streamlit app remains deployed
-from the root `app.yaml` until cutover; both apps share this repo.
+Status: v1 shipped 2026-08; CUT OVER to production 2026-08-06 - the root
+`app.yaml` now runs this app. The Streamlit config is preserved in
+`app-streamlit.yaml` for rollback; the Streamlit GUI still runs locally for
+the flows not yet ported.
 
 ## Why this architecture
 
@@ -67,7 +68,7 @@ are never cached. Startup warms chars/PF/jp-history/tests in daemon threads.
 ## Write safety (v1 = read-only)
 
 The server has **no write endpoints**. It never calls `execute_write` /
-`push_prop` / `sync_pad`. `app-web.yaml` deliberately omits
+`push_prop` / `sync_pad`. The root `app.yaml` deliberately omits
 ALLOW_DATABRICKS_WRITES; `/api/meta.writes_enabled` is display-only and the
 UI shows a read-only badge. The .env local-write landmine documented in
 AGENTS.md section 3 therefore cannot fire through this app. When write flows
@@ -94,16 +95,21 @@ calibration/auto-match actions, IPR pin/save writes, PDF export.
 
 ## Deploy
 
-```bash
-python scripts/stage_web_app.py          # builds SPA + stages build/webapp_stage
-databricks sync ./build/webapp_stage /Workspace/Users/<you>/woffl-web --full
-databricks apps deploy woffl-web --source-code-path /Workspace/Users/<you>/woffl-web
-```
+Production deploys straight from the repo (same flow as the old Streamlit
+app): the root `app.yaml` runs `uvicorn server.main:app`, and `web/dist` is
+COMMITTED because Databricks Apps never runs npm.
 
-Staging exists because Databricks Apps requires `app.yaml` at the source
-root and the repo root's `app.yaml` belongs to the production Streamlit app.
-`app-web.yaml` is copied to `app.yaml` inside the stage. Cutover later =
-replace the root app.yaml command and add web/dist to the main deploy.
+1. `npm run build` in `web/` and commit the refreshed `web/dist` whenever
+   `web/src` changes.
+2. Push, then pull the repo in the workspace Git folder.
+3. App page -> Deploy (source path unchanged).
+
+Rollback: copy `app-streamlit.yaml` over `app.yaml` (or `git revert` the
+cutover commit), pull, Deploy.
+
+For a throwaway test instance beside prod, `scripts/stage_web_app.py` stages
+a minimal tree for `databricks sync` + `databricks apps deploy` under a
+separate app name.
 
 ## Local dev
 

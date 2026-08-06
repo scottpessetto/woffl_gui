@@ -34,7 +34,7 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
+/dist/
 downloads/
 eggs/
 .eggs/
@@ -136,8 +136,10 @@ venv.bak/
 dmypy.json
 
 # Web app (React SPA)
+# web/dist IS committed: Databricks Apps deploys straight from the repo pull
+# and never runs npm - the built SPA must ship in git. Rebuild + commit dist
+# whenever web/src changes (npm run build).
 node_modules/
-web/dist/
 !web/src/lib/
 build/webapp_stage/
 *.tsbuildinfo

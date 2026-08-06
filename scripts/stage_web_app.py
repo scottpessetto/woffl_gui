@@ -1,9 +1,13 @@
-"""Stage the WOFFL web app for Databricks Apps deployment.
+"""Stage the WOFFL web app for a side-instance Databricks Apps deployment.
+
+NOTE: production now deploys the web app straight from the repo pull (root
+app.yaml runs uvicorn; web/dist is committed). This script remains for
+standing up a TEST instance beside prod via the Databricks CLI.
 
 Builds the SPA, then assembles a minimal deployable tree under
 build/webapp_stage/ containing only what the web app needs:
 
-    app.yaml            (from app-web.yaml)
+    app.yaml            (copied from the repo root app.yaml)
     requirements.txt    (server deps; streamlit not required)
     server/             FastAPI backend
     woffl/              physics + clients + jp_data (surveys, csv)
@@ -13,17 +17,17 @@ build/webapp_stage/ containing only what the web app needs:
 Usage (from repo root):
     python scripts/stage_web_app.py [--skip-build]
 
-Then deploy with the Databricks CLI (your auth, your app name):
-    databricks sync ./build/webapp_stage /Workspace/Users/<you>/woffl-web --full
-    databricks apps deploy woffl-web --source-code-path /Workspace/Users/<you>/woffl-web
-
-The production Streamlit app (root app.yaml) is untouched.
+Then deploy with the Databricks CLI (your auth, your test app name):
+    databricks sync ./build/webapp_stage /Workspace/Users/<you>/woffl-web-test --full
+    databricks apps deploy woffl-web-test --source-code-path /Workspace/Users/<you>/woffl-web-test
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -74,23 +78,31 @@ def main() -> None:
         sys.exit("web/dist/index.html missing - build failed or --skip-build without a prior build")
 
     if STAGE.exists():
-        shutil.rmtree(STAGE)
+        # Windows: copied read-only entries (e.g. .claude worktree dirs from a
+        # previous buggy run) make plain rmtree fail - chmod and retry.
+        def _chmod_retry(func, path):
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+
+        shutil.rmtree(STAGE, onexc=lambda f, p, e: _chmod_retry(f, p))
     STAGE.mkdir(parents=True)
 
-    ignore_py = shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache")
+    ignore_py = shutil.ignore_patterns(
+        "__pycache__", "*.pyc", ".pytest_cache", ".claude", ".git*"
+    )
     copy_tree(REPO / "server", STAGE / "server", ignore=ignore_py)
     copy_tree(REPO / "woffl", STAGE / "woffl", ignore=ignore_py)
     copy_tree(dist, STAGE / "web" / "dist")
     copy_tree(REPO / "data", STAGE / "data")
 
-    shutil.copy2(REPO / "app-web.yaml", STAGE / "app.yaml")
+    shutil.copy2(REPO / "app.yaml", STAGE / "app.yaml")
     (STAGE / "requirements.txt").write_text(WEB_REQUIREMENTS, encoding="utf-8")
 
     total_mb = sum(f.stat().st_size for f in STAGE.rglob("*") if f.is_file()) / 1e6
     print(f"\nStaged {total_mb:.1f} MB at {STAGE}")
     print("Deploy:")
-    print("  databricks sync ./build/webapp_stage /Workspace/Users/<you>/woffl-web --full")
-    print("  databricks apps deploy woffl-web --source-code-path /Workspace/Users/<you>/woffl-web")
+    print("  databricks sync ./build/webapp_stage /Workspace/Users/<you>/woffl-web-test --full")
+    print("  databricks apps deploy woffl-web-test --source-code-path /Workspace/Users/<you>/woffl-web-test")
 
 
 if __name__ == "__main__":
