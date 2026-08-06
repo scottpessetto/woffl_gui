@@ -1,0 +1,2 @@
+# Git hooks run under git's sh.exe on Windows - CRLF breaks them.
+scripts/git-hooks/* text eol=lf

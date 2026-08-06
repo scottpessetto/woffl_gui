@@ -99,8 +99,11 @@ Production deploys straight from the repo (same flow as the old Streamlit
 app): the root `app.yaml` runs `uvicorn server.main:app`, and `web/dist` is
 COMMITTED because Databricks Apps never runs npm.
 
-1. `npm run build` in `web/` and commit the refreshed `web/dist` whenever
-   `web/src` changes.
+1. Commit as usual. The pre-commit hook (`scripts/git-hooks/pre-commit`)
+   rebuilds and stages `web/dist` automatically whenever web sources are in
+   the commit. Fresh clones wire it once with
+   `git config core.hooksPath scripts/git-hooks`. A `--no-verify` commit
+   skips the rebuild and would deploy a stale UI.
 2. Push, then pull the repo in the workspace Git folder.
 3. App page -> Deploy (source path unchanged).
 

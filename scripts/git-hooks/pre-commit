@@ -1,0 +1,24 @@
+#!/bin/sh
+# Rebuild + stage web/dist whenever web sources are part of the commit.
+#
+# Databricks Apps deploys straight from the repo pull and never runs npm, so
+# the built SPA must be committed alongside any web/src change. This hook
+# makes that automatic.
+#
+# Wiring (once per clone):  git config core.hooksPath scripts/git-hooks
+# Bypass (emergencies):     git commit --no-verify
+
+changed=$(git diff --cached --name-only -- \
+    web/src web/index.html web/package.json web/package-lock.json \
+    web/vite.config.ts web/tsconfig.json)
+[ -z "$changed" ] && exit 0
+
+echo "pre-commit: web sources staged -> rebuilding web/dist"
+(cd web && npm run build) || {
+    echo "pre-commit: npm run build FAILED - commit aborted." >&2
+    echo "pre-commit: fix the build, or bypass with git commit --no-verify" >&2
+    echo "pre-commit: (a bypassed commit deploys a STALE UI to Databricks)" >&2
+    exit 1
+}
+git add web/dist
+echo "pre-commit: web/dist rebuilt and staged"
