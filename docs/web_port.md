@@ -93,6 +93,10 @@ Not ported yet (Streamlit remains the tool for these): pad optimization
 (S/I/M/CFP), Scott's Tools, memory-gauge upload, manual test entry,
 calibration/auto-match actions, IPR pin/save writes, PDF export.
 
+Layout convention (single-well analysis pages): the pump-history strip
+renders just above the historical-tests table, never above the page's
+primary chart - the top of the page stays chart-first while history loads.
+
 ## Deploy
 
 Production deploys straight from the repo (same flow as the old Streamlit

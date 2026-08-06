@@ -1,7 +1,10 @@
 /**
  * Solver workbench - the React port of woffl/gui/tabs/jetpump_solver.py.
  * Layout: verdict bar, solve errors, IPR chart | control column (comparison,
- * anchor controls, rate calculator), full-width test table. The solve runs
+ * anchor controls, rate calculator), pump-history strip, full-width test
+ * table. Convention for every single-well analysis page: the pump-history
+ * strip sits just above the historical-tests table, never above the page's
+ * primary chart. The solve runs
  * automatically off the DEBOUNCED sidebar params; the IPR curve itself is
  * pure client math so it redraws instantly as ResP or the anchor moves.
  */
@@ -149,38 +152,6 @@ function Workbench({ well }: { well: string }) {
         </div>
       )}
 
-      {showStrip && installsQ.data && installsQ.data.installs.length > 0 && (
-        <Card>
-          <div className="mb-1 flex items-center justify-between">
-            <h3 className="text-sm font-semibold tracking-tight text-slate-700">
-              Pump history
-              {installsQ.data.current_pump && (
-                <span className="ml-2 font-normal text-slate-500">
-                  Current: {installsQ.data.current_pump}
-                </span>
-              )}
-            </h3>
-            <button
-              type="button"
-              className="text-xs text-slate-500 hover:text-slate-700"
-              onClick={() => setShowStrip(false)}
-            >
-              Hide
-            </button>
-          </div>
-          <HistoryStrip data={installsQ.data} height={430} />
-        </Card>
-      )}
-      {!showStrip && (
-        <button
-          type="button"
-          className="text-xs text-slate-500 hover:text-slate-700"
-          onClick={() => setShowStrip(true)}
-        >
-          Show pump history
-        </button>
-      )}
-
       <div className="grid gap-4 xl:grid-cols-2">
         <IprChart
           tests={sortedTests}
@@ -221,6 +192,38 @@ function Workbench({ well }: { well: string }) {
           />
         </div>
       </div>
+
+      {showStrip && installsQ.data && installsQ.data.installs.length > 0 && (
+        <Card>
+          <div className="mb-1 flex items-center justify-between">
+            <h3 className="text-sm font-semibold tracking-tight text-slate-700">
+              Pump history
+              {installsQ.data.current_pump && (
+                <span className="ml-2 font-normal text-slate-500">
+                  Current: {installsQ.data.current_pump}
+                </span>
+              )}
+            </h3>
+            <button
+              type="button"
+              className="text-xs text-slate-500 hover:text-slate-700"
+              onClick={() => setShowStrip(false)}
+            >
+              Hide
+            </button>
+          </div>
+          <HistoryStrip data={installsQ.data} height={430} />
+        </Card>
+      )}
+      {!showStrip && (
+        <button
+          type="button"
+          className="text-xs text-slate-500 hover:text-slate-700"
+          onClick={() => setShowStrip(true)}
+        >
+          Show pump history
+        </button>
+      )}
 
       <TestsTable
         tests={sortedTests}
