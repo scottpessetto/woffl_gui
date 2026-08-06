@@ -8,17 +8,29 @@
  *   double-click  reset zoom (also the reset button)
  *   button        browser fullscreen
  *
- * Implementation: the box brush rides ECharts' toolbox dataZoomSelect
- * feature (toolbox parked offscreen, select cursor armed once per instance
- * by useEChartInstance). Pan/wheel come from injected `inside` dataZoom
- * components on the same axes. Because dataZoom components sharing an axis
- * are linked by ECharts, a multi-grid chart that lists both x axes in
- * `zoom.xAxisIndex` keeps them window-synced natively - no pixel-space
- * mirroring. All injected zooms use filterMode "none" so series data is
- * never dropped, only the window moves.
+ * Implementation: the box brush is OWN CODE on zrender mouse events - an
+ * overlay rect plus a dataZoom dispatch whose value windows come from
+ * chart.convertFromPixel at mouseup, i.e. always the LIVE axis mapping. It
+ * deliberately does NOT use the ECharts toolbox dataZoomSelect feature:
+ * that feature converts the brush rect through the axis scale it captured
+ * when the select cursor was armed. Arm it while the chart is still
+ * rendering with empty series (data queries in flight) and every later
+ * drag maps pixels through the default empty-axis extent [0, 1000] - the
+ * recurring "box zoom lands in the wrong place" bug (x window =
+ * grid-fraction x 1000 while y, whose scale object happened to be mutated
+ * in place, stayed correct). No setOption or resize heals it, and
+ * re-arming stacks zoom handlers instead of replacing them. Percent-window
+ * dispatch is no alternative: each component's percent domain is an
+ * internal blend of data and nice extents that differs per axis.
  *
- * Reset dispatches `restore`, which replays the last option = un-zoomed
- * state with default full-range windows.
+ * Pan/wheel come from injected `inside` dataZoom components. X axes share
+ * ONE component - ECharts links axes sharing a component, which keeps
+ * HistoryStrip's two stacked time axes window-synced natively, and a value
+ * window is valid for all of them because they span the same dates. Each Y
+ * axis gets its OWN component: stacked grids plot different units, so y
+ * windows are per-grid - the brush only zooms the y axes of the grid the
+ * drag started in. All injected zooms use filterMode "none" so series data
+ * is never dropped, only the window moves.
  */
 
 import { Maximize2, Minimize2, RotateCcw } from "lucide-react";
@@ -36,10 +48,13 @@ const BTN_CLS =
   "pointer-events-auto rounded-md border border-slate-200 bg-white/90 p-1 " +
   "text-slate-400 shadow-sm transition-colors hover:text-slate-700";
 
+/** Minimum drag extent (px) in BOTH dimensions before a drag counts as a zoom. */
+const MIN_DRAG_PX = 6;
+
 /** Count axes of one dimension in an option (axis may be object or array). */
 function axisCount(ax: unknown): number {
-  if (Array.isArray(ax)) return ax.length;
-  return ax ? 1 : 0;
+  if (ax === undefined || ax === null) return 0;
+  return Array.isArray(ax) ? ax.length : 1;
 }
 
 /** Resolve a ZoomAxes entry to a concrete index list; null = no zoom. */
@@ -47,10 +62,25 @@ function resolveAxes(
   sel: number[] | "all" | "none",
   count: number,
 ): number[] | null {
-  if (sel === "none") return null;
+  if (sel === "none" || count === 0) return null;
   if (sel === "all") return Array.from({ length: count }, (_, i) => i);
   return sel.length > 0 ? sel : null;
 }
+
+/** Index of the y axis living on `gridIndex` per the armed option, or -1. */
+function yAxisOnGrid(yAxes: { axisIdx: number; gridIdx: number }[], gridIndex: number): number {
+  const hit = yAxes.find((a) => a.gridIdx === gridIndex);
+  return hit ? hit.axisIdx : -1;
+}
+
+/** Index of the grid containing a chart-local pixel point, or -1. */
+function gridAt(chart: EChart, gridCount: number, x: number, y: number): number {
+  for (let g = 0; g < gridCount; g++) {
+    if (chart.containPixel({ gridIndex: g }, [x, y])) return g;
+  }
+  return -1;
+}
+
 
 export function ChartPanel({
   option,
@@ -64,6 +94,13 @@ export function ChartPanel({
 }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  // Latest zoom wiring for the (once-attached) brush handlers: which axes
+  // zoom, which dataZoom component covers them, and the y-axis -> grid map.
+  const brushCfg = useRef<{
+    xRefAxis: number | null;
+    yAxes: { axisIdx: number; gridIdx: number; compIdx: number }[];
+    gridCount: number;
+  }>({ xRefAxis: null, yAxes: [], gridCount: 1 });
 
   const armedOption = useMemo<EChartsOption | null>(() => {
     if (!option) return null;
@@ -72,9 +109,7 @@ export function ChartPanel({
 
     // inside zooms: ctrl-wheel zoom at cursor, shift-wheel pan along x.
     // Plain wheel must keep scrolling the page, so both are modifier-gated.
-    // Pan is wheel-based (not drag) because the always-armed box brush owns
-    // every drag gesture, and re-toggling the brush cursor per-gesture would
-    // stack zoom handlers (see armBoxZoom in useEChart.ts).
+    // Plain drag belongs to the box brush below.
     const inside = {
       type: "inside",
       filterMode: "none",
@@ -84,46 +119,111 @@ export function ChartPanel({
     } as const;
     const dataZoom: Record<string, unknown>[] = [];
     if (xs) dataZoom.push({ ...inside, xAxisIndex: xs, moveOnMouseWheel: "shift" });
-    if (ys) dataZoom.push({ ...inside, yAxisIndex: ys, moveOnMouseWheel: false });
-
-    return {
-      ...option,
-      dataZoom,
-      // Offscreen toolbox carries the dataZoom feature that powers the
-      // drag-a-rectangle brush; its own icons stay hidden.
-      toolbox: {
-        show: true,
-        top: -1000,
-        feature: {
-          dataZoom: {
-            show: true,
-            xAxisIndex: xs ?? false,
-            yAxisIndex: ys ?? false,
-            filterMode: "none",
-            brushStyle: {
-              color: "rgba(37, 99, 235, 0.08)",
-              borderColor: "rgba(37, 99, 235, 0.6)",
-              borderWidth: 1,
-            },
-          },
-        },
-      },
+    const yAxisDefs = Array.isArray(option.yAxis) ? option.yAxis : option.yAxis ? [option.yAxis] : [];
+    const yAxes = (ys ?? []).map((axisIdx) => {
+      const def: unknown = yAxisDefs[axisIdx];
+      const gridIdx =
+        def && typeof def === "object" && "gridIndex" in def && typeof def.gridIndex === "number"
+          ? def.gridIndex
+          : 0;
+      const compIdx = dataZoom.length;
+      dataZoom.push({ ...inside, yAxisIndex: [axisIdx], moveOnMouseWheel: false });
+      return { axisIdx, gridIdx, compIdx };
+    });
+    brushCfg.current = {
+      xRefAxis: xs ? xs[0] : null,
+      yAxes,
+      gridCount: Math.max(1, axisCount(option.grid)),
     };
+
+    return { ...option, dataZoom };
   }, [option, zoom.xAxisIndex, zoom.yAxisIndex]);
 
   const onReady = useCallback((chart: EChart) => {
     const zr = chart.getZr();
     // Double-click resets the zoom (plotly muscle memory).
     zr.on("dblclick", () => chart.dispatchAction({ type: "restore" }));
-    // A drag start would otherwise leave a stale tooltip frozen on screen.
-    zr.on("mousedown", () => chart.dispatchAction({ type: "hideTip" }));
+
+    // ---- box brush ---------------------------------------------------
+    // Overlay rect lives inside the chart container (ECharts forces the
+    // container to position:relative), so offsetX/Y map 1:1.
+    const box = document.createElement("div");
+    box.style.cssText =
+      "position:absolute;display:none;pointer-events:none;z-index:5;" +
+      "border:1px solid rgba(37,99,235,0.6);background:rgba(37,99,235,0.08);";
+    chart.getDom().appendChild(box);
+
+    let start: { x: number; y: number; grid: number } | null = null;
+
+    const hideBox = () => {
+      start = null;
+      box.style.display = "none";
+    };
+
+    type ZrMouse = { offsetX: number; offsetY: number; which?: number; event: MouseEvent };
+
+    zr.on("mousedown", (e: ZrMouse) => {
+      // A drag start would otherwise leave a stale tooltip frozen on screen.
+      chart.dispatchAction({ type: "hideTip" });
+      const raw = e.event;
+      if ((e.which ?? 1) !== 1 || raw.ctrlKey || raw.metaKey || raw.shiftKey || raw.altKey) return;
+      const cfg = brushCfg.current;
+      if (cfg.xRefAxis === null && cfg.yAxes.length === 0) return;
+      const g = gridAt(chart, cfg.gridCount, e.offsetX, e.offsetY);
+      if (g < 0) return;
+      start = { x: e.offsetX, y: e.offsetY, grid: g };
+    });
+
+    zr.on("mousemove", (e: ZrMouse) => {
+      if (!start) return;
+      e.event.preventDefault(); // no text selection mid-drag
+      box.style.display = "block";
+      box.style.left = `${Math.min(start.x, e.offsetX)}px`;
+      box.style.top = `${Math.min(start.y, e.offsetY)}px`;
+      box.style.width = `${Math.abs(e.offsetX - start.x)}px`;
+      box.style.height = `${Math.abs(e.offsetY - start.y)}px`;
+    });
+
+    zr.on("mouseup", (e: ZrMouse) => {
+      if (!start) return;
+      const s = start;
+      hideBox();
+      if (Math.abs(e.offsetX - s.x) < MIN_DRAG_PX || Math.abs(e.offsetY - s.y) < MIN_DRAG_PX) return;
+
+      // convertFromPixel at mouseup = the LIVE pixel->value mapping; no
+      // captured scale, no percent-domain guesswork. Values go per
+      // component: the shared x component (same date/value span on every
+      // linked axis) and ONLY the y component of the grid dragged in.
+      const cfg = brushCfg.current;
+      const batch: { dataZoomIndex: number; startValue: number; endValue: number }[] = [];
+      if (cfg.xRefAxis !== null) {
+        const v0 = chart.convertFromPixel({ xAxisIndex: cfg.xRefAxis }, s.x);
+        const v1 = chart.convertFromPixel({ xAxisIndex: cfg.xRefAxis }, e.offsetX);
+        batch.push({ dataZoomIndex: 0, startValue: Math.min(v0, v1), endValue: Math.max(v0, v1) });
+      }
+      const yAxisIdx = yAxisOnGrid(cfg.yAxes, s.grid);
+      if (yAxisIdx >= 0) {
+        const comp = cfg.yAxes.find((a) => a.axisIdx === yAxisIdx);
+        if (comp) {
+          const v0 = chart.convertFromPixel({ yAxisIndex: yAxisIdx }, s.y);
+          const v1 = chart.convertFromPixel({ yAxisIndex: yAxisIdx }, e.offsetY);
+          batch.push({
+            dataZoomIndex: comp.compIdx,
+            startValue: Math.min(v0, v1),
+            endValue: Math.max(v0, v1),
+          });
+        }
+      }
+      if (batch.length > 0) chart.dispatchAction({ type: "dataZoom", batch });
+    });
+
+    // Cursor left the chart mid-drag: abandon the gesture.
+    zr.on("globalout", hideBox);
   }, []);
 
-  const { attachRef, getChart } = useEChartInstance(armedOption, true, onReady);
+  const { attachRef, getChart } = useEChartInstance(armedOption, onReady);
 
   const resetZoom = useCallback(() => {
-    // restore replays the last armed option; the box-select cursor persists
-    // across restore (re-arming here would stack another zoom handler).
     getChart()?.dispatchAction({ type: "restore" });
   }, [getChart]);
 
