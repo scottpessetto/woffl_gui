@@ -79,6 +79,19 @@ def post_pressure_profile(req: schemas.PressureProfileRequest) -> schemas.Pressu
         raise _invalid(exc) from exc
 
 
+@router.post("/calibrate", response_model=schemas.CalibrateResponse)
+def post_calibrate(req: schemas.CalibrateRequest) -> schemas.CalibrateResponse:
+    """BHP friction calibration: fit ken/kth/kdi toward the test's measured
+    BHP (read-only compute; nothing persisted - the client applies coefs to
+    the sidebar, an explicit save keeps them)."""
+    try:
+        return schemas.CalibrateResponse(**solve.calibrate(req))
+    except solve.SolveFailure as exc:
+        raise _solver_error(exc) from exc
+    except ValueError as exc:
+        raise _invalid(exc) from exc
+
+
 @router.post("/ipr/fit", response_model=schemas.IprFitResponse)
 def post_ipr_fit(req: schemas.IprFitRequest) -> schemas.IprFitResponse:
     """Vogel IPR fit for one well (recent / median / specific anchor)."""

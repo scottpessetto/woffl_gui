@@ -32,7 +32,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from server.config import WEB_DIST
-from server.routers import compute, database, history, meta, pumps, well_sort, wells
+from server.routers import compute, database, gauge, history, meta, pumps, well_sort, wells
 
 log = logging.getLogger("woffl.web")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -95,6 +95,7 @@ app.include_router(history.router, prefix="/api")
 app.include_router(pumps.router, prefix="/api")
 app.include_router(database.router, prefix="/api")
 app.include_router(well_sort.router, prefix="/api")
+app.include_router(gauge.router, prefix="/api")
 
 
 @app.exception_handler(Exception)

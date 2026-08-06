@@ -48,6 +48,16 @@ export const get = <T>(path: string, signal?: AbortSignal): Promise<T> =>
 export const post = <T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> =>
   api<T>(path, { method: "POST", body: JSON.stringify(body), signal });
 
+/** Multipart upload: NO explicit Content-Type so the browser sets the
+ * boundary. Same error contract as api(). */
+export async function upload<T>(path: string, form: FormData): Promise<T> {
+  const res = await fetch(`/api${path}`, { method: "POST", body: form });
+  if (!res.ok) {
+    throw new ApiError(res.status, await parseError(res));
+  }
+  return (await res.json()) as T;
+}
+
 /** Deterministic JSON for query keys: object keys sorted recursively. */
 export function stableStringify(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);

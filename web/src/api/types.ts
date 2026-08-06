@@ -242,6 +242,54 @@ export interface ApiErrorDetail {
 
 export type AnchorMode = "recent" | "median" | "specific";
 
+/** POST /calibrate - mirror of server.schemas.CalibrateRequest. Only
+ * ken/kth/kdi are searched; as-built geometry is never varied. */
+export interface CalibrateRequest {
+  well: string;
+  params: SimParams;
+  target_bhp: number;
+  test_whp: number | null;
+}
+
+export interface CalibrateResponse {
+  converged: boolean;
+  match_quality: "good" | "fair" | "poor" | "failed";
+  bounded: boolean;
+  sonic: boolean;
+  ken: number;
+  kth: number;
+  kdi: number;
+  target_bhp: number;
+  modeled_bhp: number | null;
+  bhp_error: number | null;
+  iterations: number;
+  starts_tried: number;
+}
+
+/** One daily-median BHP from an uploaded memory gauge. */
+export interface GaugeDay {
+  date: string; // YYYY-MM-DD
+  bhp: number;
+}
+
+export interface GaugeFileMeta {
+  filename: string;
+  start_date: string;
+  end_date: string;
+  sample_count: number; // RAW pre-downsample points
+  pressure_min: number;
+  pressure_max: number;
+}
+
+/** POST /gauge/parse - combined server-side parse of all of a well's files. */
+export interface GaugeParseResponse {
+  files: GaugeFileMeta[];
+  daily: GaugeDay[];
+  start_date: string;
+  end_date: string;
+  sample_count: number;
+}
+
 export interface IprFitRequest {
   well: string;
   anchor_mode: AnchorMode;
@@ -249,6 +297,8 @@ export interface IprFitRequest {
   field_model: FieldModel;
   months: number;
   cap: number;
+  /** Memory-gauge daily medians - override test BHP inside coverage. */
+  bhp_overrides: GaugeDay[] | null;
 }
 
 export interface IprCoeffs {

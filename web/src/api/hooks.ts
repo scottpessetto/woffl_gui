@@ -4,6 +4,8 @@ import { api, get, post, stableStringify } from "./client";
 import type {
   AgingPumpsResponse,
   BatchResponse,
+  CalibrateRequest,
+  CalibrateResponse,
   ClearIprPinResponse,
   EquivalentsResponse,
   IprFitRequest,
@@ -148,6 +150,14 @@ export const usePropLock = (well: string) => {
   });
 };
 
+/** BHP friction calibration - read-only compute, can take tens of seconds
+ * (Nelder-Mead multi-start over full solves). The caller applies the
+ * returned ken/kth/kdi to the sidebar on success. */
+export const useCalibrate = () =>
+  useMutation({
+    mutationFn: (req: CalibrateRequest) => post<CalibrateResponse>("/calibrate", req),
+  });
+
 /**
  * Expensive sweeps run on explicit submit: pages snapshot the params into
  * local state and pass the snapshot here (null = not requested yet).
@@ -237,6 +247,14 @@ export const usePropHistory = (well: string | null) =>
 
 // ---------------------------------------------------------------------------
 // Well Sort
+//
+// Cache contract: these pulls are the app's most expensive (~8 s cold) and
+// the server holds its own 1 h TTL, so the client mirrors it - staleTime 30
+// min (no silent background refetch churn) and gcTime 1 h so the data
+// SURVIVES navigating to other pages and back within a session. TanStack's
+// default gcTime of 5 min was evicting the cache on any longer detour,
+// forcing a from-scratch reload on return. The page's Refresh button
+// invalidates the ["well-sort"] prefix for an on-demand refetch.
 // ---------------------------------------------------------------------------
 
 /** ?pops_pad=E&pops_pad=S...&force_true=MPS-08... - FastAPI list params.
@@ -262,7 +280,8 @@ export const useWellSortTables = (
         `/well-sort/tables?mode=${mode}&stale_days=${staleDays}&${popsQuery(popsPads, forceTrue)}`,
         signal,
       ),
-    staleTime: MIN_5,
+    staleTime: MIN_30,
+    gcTime: HOUR_1,
     placeholderData: keepPreviousData,
   });
 
@@ -274,7 +293,8 @@ export const useWellSortEvents = (windowDays: number, downHours: number) =>
         `/well-sort/events?window_days=${windowDays}&down_hours=${downHours}`,
         signal,
       ),
-    staleTime: MIN_5,
+    staleTime: MIN_30,
+    gcTime: HOUR_1,
     placeholderData: keepPreviousData,
   });
 
@@ -291,7 +311,8 @@ export const useMarginalWc = (
         `/well-sort/marginal-wc?threshold_pct=${thresholdPct}&stale_days=${staleDays}&${popsQuery(popsPads, forceTrue)}`,
         signal,
       ),
-    staleTime: MIN_5,
+    staleTime: MIN_30,
+    gcTime: HOUR_1,
     placeholderData: keepPreviousData,
   });
 
@@ -310,7 +331,8 @@ export const usePadMarginalWc = (
         signal,
       ),
     enabled: pad !== null,
-    staleTime: MIN_5,
+    staleTime: MIN_30,
+    gcTime: HOUR_1,
     placeholderData: keepPreviousData,
   });
 
@@ -327,6 +349,7 @@ export const useTriage = (
         `/well-sort/triage?threshold_pct=${thresholdPct}&stale_days=${staleDays}&${popsQuery(popsPads, forceTrue)}`,
         signal,
       ),
-    staleTime: MIN_5,
+    staleTime: MIN_30,
+    gcTime: HOUR_1,
     placeholderData: keepPreviousData,
   });

@@ -6,7 +6,7 @@
  * reservoir pressure, so dragging ResP redraws instantly.
  */
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import type { IprFitResponse, JpInstallRow, SimParams, SolveResult, WellTestRow } from "../../api/types";
 import type { EChartsOption } from "../../charts/echarts";
@@ -29,6 +29,7 @@ export function IprChart({
   compareTest,
   installs,
   loading = false,
+  gaugeSlot,
 }: {
   tests: WellTestRow[];
   fit: IprFitResponse | null;
@@ -39,6 +40,8 @@ export function IprChart({
   /** First-load settle gate: dim the chart until every input series arrived
    * once, so the plot never mutates under the engineer's eyes. */
   loading?: boolean;
+  /** The memory-gauge control, rendered in the card header's left slot. */
+  gaugeSlot?: ReactNode;
 }) {
   // Old GUI: checkbox "Show JP label inside each test point"
   // (mva_show_jp_labels_{well}); per-well because the workbench remounts.
@@ -204,7 +207,8 @@ export function IprChart({
               : "transition-opacity duration-300"
           }
         >
-          <div className="mb-1 flex justify-end">
+          <div className="mb-1 flex items-center justify-between">
+            <div>{gaugeSlot}</div>
             <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-600">
               <input
                 type="checkbox"

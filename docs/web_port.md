@@ -55,6 +55,7 @@ mirrored by `web/src/api/types.ts`.
 | POST /batch | nozzle x throat sweep + recommender + exp fit curve |
 | POST /pf-range | oil vs PF-pressure sweep |
 | POST /pressure-profile | surface -> suction traverse, both strings |
+| POST /calibrate | BHP friction calibration: fit ken/kth/kdi to the test's measured BHP (Nelder-Mead multi-start in woffl.gui.fric_calibration; as-built geometry never varied; result applied to the sidebar, saved only via Save-as-default) |
 | GET /database/wells, /database/aging-pumps, /database/prop-history/{well} | Well Database page |
 | GET /well-sort/tables | online / offline / LTSI tables + POPs config echo |
 | GET /well-sort/events | 30-day shut-in events (down-day threshold walk) |
@@ -63,6 +64,7 @@ mirrored by `web/src/api/types.ts`.
 | GET /well-sort/triage | keep / SI / BOL decisions vs the marginal line |
 | GET /well-sort/bench.xlsx | 3-sheet MPU_Well_Bench workbook |
 | POST /well-sort/refresh | clears the Well Sort fetch caches (read-only op) |
+| POST /gauge/parse | memory-gauge XLSX parse + multi-file combine (stateless; client holds gauge state per session, math in woffl.gui.memory_gauge) |
 
 Server caching mirrors the old `@st.cache_data` TTLs (`server/config.py`):
 tests 24 h, chars/PF/profiles 1 h, saved IPR / prop history 5 min. Failures
@@ -111,11 +113,15 @@ Equivalents, JP History (strip chart + installs), Well Database (chars,
 aging pumps, prop history audit), Well Sort (Wells / Triage / Marginal WC
 views, shared POPs config, bench xlsx + CSV exports; decision + marginal
 math single-sourced in `woffl/assembly/well_sort_engine.py`, shared with
-Streamlit).
+Streamlit), memory-gauge upload (Solver IPR card: gauge daily medians
+override test BHP for the chart, tests table, pump-history strip and the
+server-side Vogel fit via `bhp_overrides`; session-only like Streamlit;
+the divergence-based "disregard Databricks BHP" flag is NOT ported yet).
 
 Not ported yet (Streamlit remains the tool for these): pad optimization
-(S/I/M/CFP), Scott's Tools, memory-gauge upload, manual test entry,
-calibration/auto-match actions, pad-review sync writes, PDF export.
+(S/I/M/CFP), Scott's Tools, manual test entry, the joint oil+PF
+auto-match, pad-review sync writes, the gauge "disregard Databricks BHP"
+flag, PDF export.
 
 Layout convention (single-well analysis pages): the pump-history strip
 renders just above the historical-tests table, never above the page's

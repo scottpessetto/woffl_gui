@@ -27,7 +27,7 @@ def get_wells() -> dict[str, Any]:
 @router.get("/wells/{name}/context", response_model=WellContext)
 def get_well_context(
     name: str,
-    months: int = Query(6, ge=1, le=24),
+    months: int = Query(6, ge=1, le=60),
     cap: int = Query(0, ge=0, le=50),
 ) -> dict[str, Any]:
     """Server-side replay of the sidebar seeding pipeline for one well."""
@@ -43,7 +43,7 @@ def get_well_context(
 @router.get("/wells/{name}/tests", response_model=WellTestsResponse)
 def get_well_tests(
     name: str,
-    months: int = Query(6, ge=1, le=24),
+    months: int = Query(6, ge=1, le=60),
     cap: int = Query(0, ge=0, le=50),
 ) -> dict[str, Any]:
     """JSON-safe well-test rows, newest first ([] when the well has none)."""

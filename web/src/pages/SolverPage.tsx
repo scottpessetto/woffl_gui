@@ -19,9 +19,12 @@ import { Button, Card, ErrorNote, Spinner, WarnNote } from "../components/ui";
 import { Welcome } from "../layout/Welcome";
 import { useDebounced } from "../lib/useDebounced";
 import { vogelQmax } from "../lib/vogel";
+import { gaugeMonths, useGaugeStore } from "../state/gauge";
 import { effectiveParams, useParamsStore } from "../state/params";
 
 import { ComparisonCard } from "./solver/ComparisonCard";
+import { CalibrateBar } from "./solver/CalibrateBar";
+import { GaugePanel } from "./solver/GaugePanel";
 import { IprChart } from "./solver/IprChart";
 import { IprControls } from "./solver/IprControls";
 import { RateCalculator } from "./solver/RateCalculator";
@@ -50,7 +53,12 @@ function Workbench({ well }: { well: string }) {
   const effective = useMemo(() => effectiveParams(params), [params]);
   const debounced = useDebounced(effective, 400);
   const solveQ = useSolve(well, debounced, simActive);
-  const testsQ = useWellTests(well, months, cap);
+  const gauge = useGaugeStore((s) => s.byWell[well]);
+  // A gauge window usually reaches further back than the sidebar lookback -
+  // widen the test fetch to cover it (mirror of the Streamlit extended-tests
+  // fetch), in coarse 6-month steps so the fleet-test cache stays warm.
+  const effectiveMonths = gauge ? gaugeMonths(gauge.meta, months) : months;
+  const testsQ = useWellTests(well, effectiveMonths, cap);
   const pinQ = useIprPin(well);
   const installsQ = useJpHistory(well);
 
@@ -76,8 +84,16 @@ function Workbench({ well }: { well: string }) {
 
   const sortedTests = useMemo<WellTestRow[]>(() => {
     const rows = testsQ.data?.tests ?? [];
-    return [...rows].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
-  }, [testsQ.data]);
+    const sorted = [...rows].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    if (!gauge) return sorted;
+    // Gauge daily medians override BHP wherever covered (display mirror of
+    // memory_gauge.apply_to_well_tests; the fit applies the SAME overrides
+    // server-side via bhp_overrides on the request).
+    return sorted.map((t) => {
+      const bhp = gauge.dailyByDate[t.date.slice(0, 10)];
+      return bhp === undefined ? t : { ...t, bhp };
+    });
+  }, [testsQ.data, gauge]);
 
   const compareTest = useMemo<WellTestRow | null>(() => {
     if (sortedTests.length === 0) return null;
@@ -96,8 +112,9 @@ function Workbench({ well }: { well: string }) {
       anchor_mode: anchorMode,
       anchor_date: anchorMode === "specific" ? anchorDate : null,
       field_model: params.field_model,
-      months,
+      months: effectiveMonths,
       cap,
+      bhp_overrides: gauge ? gauge.meta.daily : null,
     },
     fitEnabled,
   );
@@ -122,6 +139,21 @@ function Workbench({ well }: { well: string }) {
   const fit = iprFitQ.data ?? null;
   const solve = solveQ.data ?? null;
   const installs = installsQ.data?.installs ?? [];
+
+  // Pump-history strip data with gauge daily medians laid over the feed
+  // (gauge wins inside its coverage - mirror of daily_bhp_from_gauge).
+  const stripData = useMemo(() => {
+    const data = installsQ.data;
+    if (!data || !gauge) return data;
+    const merged = new Map(data.bhp_daily.map((d) => [d.date.slice(0, 10), d.bhp]));
+    for (const g of gauge.meta.daily) merged.set(g.date, g.bhp);
+    return {
+      ...data,
+      bhp_daily: [...merged.entries()]
+        .map(([date, bhp]) => ({ date, bhp }))
+        .sort((a, b) => (a.date < b.date ? -1 : 1)),
+    };
+  }, [installsQ.data, gauge]);
 
   // Qmax for the rate calculator: same anchor precedence the chart uses
   // (fit > comparison test > sidebar inflow), at the SIDEBAR ResP.
@@ -183,6 +215,7 @@ function Workbench({ well }: { well: string }) {
           compareTest={compareTest}
           installs={installs}
           loading={!iprReady}
+          gaugeSlot={<GaugePanel well={well} tests={sortedTests} />}
         />
         <div className="space-y-4">
           <ComparisonCard
@@ -190,6 +223,7 @@ function Workbench({ well }: { well: string }) {
             compareTest={compareTest}
             formWc={params.form_wc}
             ppfSurf={params.ppf_surf}
+            footer={<CalibrateBar well={well} compareTest={compareTest} installs={installs} />}
           />
           <IprControls
             anchorMode={anchorMode}
@@ -248,7 +282,7 @@ function Workbench({ well }: { well: string }) {
               Hide
             </button>
           </div>
-          <HistoryStrip data={installsQ.data} height={430} />
+          <HistoryStrip data={stripData ?? installsQ.data} height={430} />
         </Card>
       )}
       {!showStrip && (

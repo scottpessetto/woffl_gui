@@ -614,3 +614,61 @@ def pressure_profile(well: str, sp: schemas.SimParams) -> dict[str, Any]:
             "dp_at_jp": float(differential[-1]),
         },
     }
+
+
+def calibrate(req: schemas.CalibrateRequest) -> dict[str, Any]:
+    """BHP friction calibration (CalibrateResponse shape).
+
+    All mechanics live in woffl.gui.fric_calibration.calibrate_friction_coefs
+    - the SAME Nelder-Mead multi-start the Streamlit "Run BHP Calibration"
+    button executes - fed with sim objects built from the request params
+    exactly like a solve. Only (ken, kth, kdi) are searched within their
+    bounds; wellbore geometry (pump depth, casing/tubing dimensions) is a
+    fixed as-built input and is NEVER varied. knz is held at 0.01, the
+    Streamlit call site's constant. Nothing is written anywhere - the
+    client lays the fitted coefs over the sidebar, and only an explicit
+    "Save as well default" persists them.
+    """
+    from woffl.gui.fric_calibration import calibrate_friction_coefs
+
+    p = req.params.to_simulation_params(req.well)
+    _jetpump, wellbore, inflow, res_mix, wp = factories.build_sim_objects(req.params, req.well)
+    prop_pf = factories.power_fluid(p.field_model)
+
+    # Test-day WHP when measured, else the sidebar wellhead pressure
+    # (mirror of build_calibration_inputs' model_surf_pres rule).
+    whp = frames.opt_float(req.test_whp)
+    pwh = whp if whp is not None and whp > 0 else float(p.surf_pres)
+
+    result = calibrate_friction_coefs(
+        well_name=req.well,
+        target_bhp=float(req.target_bhp),
+        pwh=pwh,
+        tsu=float(p.form_temp),
+        ppf_surf=float(p.ppf_surf),
+        nozzle=p.nozzle_no,
+        throat=p.area_ratio,
+        knz=0.01,
+        ken=float(p.ken),
+        wellbore=wellbore,
+        wellprof=wp,
+        ipr_su=inflow,
+        prop_su=res_mix,
+        prop_pf=prop_pf,
+        jpump_direction=p.jpump_direction,
+    )
+
+    return {
+        "converged": bool(result.converged),
+        "match_quality": result.match_quality,
+        "bounded": bool(result.bounded),
+        "sonic": bool(result.sonic),
+        "ken": float(result.best_ken),
+        "kth": float(result.best_kth),
+        "kdi": float(result.best_kdi),
+        "target_bhp": float(result.target_bhp),
+        "modeled_bhp": frames.opt_float(result.best_modeled_bhp),
+        "bhp_error": frames.opt_float(result.bhp_error),
+        "iterations": int(result.iterations),
+        "starts_tried": int(result.starts_tried),
+    }

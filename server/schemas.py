@@ -238,13 +238,85 @@ class SolveErrorDetail(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class CalibrateRequest(BaseModel):
+    """Run BHP friction calibration: fit (ken, kth, kdi) so the modeled
+    suction pressure matches the selected test's measured BHP.
+
+    ONLY the three friction coefficients are searched (fric_calibration's
+    KEN/KTH/KDI bounds) - wellbore geometry (pump depth, casing/tubing
+    dimensions) enters as fixed as-built inputs and is never varied."""
+
+    well: str
+    params: SimParams
+    target_bhp: float = Field(..., gt=0.0, le=10_000.0)
+    # Test-day wellhead pressure; None/invalid falls back to params.surf_pres
+    # (mirror of build_calibration_inputs' model_surf_pres rule).
+    test_whp: Optional[float] = None
+
+
+class CalibrateResponse(BaseModel):
+    converged: bool
+    match_quality: Literal["good", "fair", "poor", "failed"]
+    bounded: bool  # a coef sits on its search bound
+    sonic: bool  # throat-choked: friction cannot lower BHP further
+    ken: float
+    kth: float
+    kdi: float
+    target_bhp: float
+    modeled_bhp: Optional[float] = None
+    bhp_error: Optional[float] = None  # modeled - target (psi)
+    iterations: int
+    starts_tried: int
+
+
+class GaugeDay(BaseModel):
+    """One daily-median BHP from an uploaded memory gauge."""
+
+    date: str  # YYYY-MM-DD
+    bhp: float
+
+
 class IprFitRequest(BaseModel):
     well: str
     anchor_mode: Literal["recent", "median", "specific"] = "recent"
     anchor_date: Optional[str] = None  # YYYY-MM-DD, required for "specific"
     field_model: Literal["Schrader", "Kuparuk"] = "Schrader"
-    months: int = Field(6, ge=1, le=24)
+    # le=60: a memory-gauge window can reach years back, past the sidebar's
+    # 24-month cap (the client widens months to cover the gauge coverage).
+    months: int = Field(6, ge=1, le=60)
     cap: int = Field(0, ge=0, le=50)
+    # Memory-gauge daily medians: test rows whose date has an entry get
+    # their BHP OVERRIDDEN before the fit (mirror of
+    # memory_gauge.apply_to_well_tests) - gauge wins wherever it has
+    # coverage, including tests with no Databricks BHP at all.
+    bhp_overrides: Optional[list[GaugeDay]] = None
+
+
+class GaugeFileMeta(BaseModel):
+    """Per-file parse summary (upload preview: raw extremes stay visible)."""
+
+    filename: str
+    start_date: str
+    end_date: str
+    sample_count: int  # RAW pre-downsample points
+    pressure_min: float
+    pressure_max: float
+
+
+class GaugeParseResponse(BaseModel):
+    """Combined memory-gauge data for one well (all uploaded files).
+
+    The client re-sends EVERY file when one is added/removed, so the
+    combination (timestamp dedupe across files -> daily medians) always
+    runs server-side in memory_gauge.MemoryGaugeData - byte-identical to
+    the Streamlit path, no client-side math.
+    """
+
+    files: list[GaugeFileMeta]
+    daily: list[GaugeDay]
+    start_date: str
+    end_date: str
+    sample_count: int
 
 
 class IprCoeffs(BaseModel):

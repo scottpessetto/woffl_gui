@@ -6,6 +6,7 @@
  */
 
 import clsx from "clsx";
+import type { ReactNode } from "react";
 
 import type { SolveResult, WellTestRow } from "../../api/types";
 import { Card, InfoNote, Metric, Section, WarnNote } from "../../components/ui";
@@ -17,11 +18,14 @@ export function ComparisonCard({
   compareTest,
   formWc,
   ppfSurf,
+  footer,
 }: {
   solve: SolveResult | null;
   compareTest: WellTestRow | null;
   formWc: number;
   ppfSurf: number;
+  /** Action row rendered at the card's bottom (the calibrate bar). */
+  footer?: ReactNode;
 }) {
   if (!solve) {
     return (
@@ -120,6 +124,7 @@ export function ComparisonCard({
           Throat-entry Mach {fmtNum(solve.mach_te, 3)} ({solve.sonic_status ? "sonic" : "subsonic"})
         </p>
         {washout && <WarnNote className="mt-2">{washout.reason}</WarnNote>}
+        {footer}
       </Card>
     </Section>
   );

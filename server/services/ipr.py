@@ -64,6 +64,26 @@ def _anchor_test_row(usable: pd.DataFrame, row: dict[str, Any]) -> Optional[pd.S
     return matches.iloc[0]
 
 
+def _apply_bhp_overrides(df: pd.DataFrame, overrides: list[schemas.GaugeDay]) -> pd.DataFrame:
+    """Lay memory-gauge daily medians over the test frame's BHP.
+
+    Same mechanics as memory_gauge.apply_to_well_tests - called through it,
+    duck-typing the gauge (it only reads ``.daily_df``) - so the stateless
+    fit path and the Streamlit session path can never disagree.
+    """
+    from types import SimpleNamespace
+
+    from woffl.gui.memory_gauge import apply_to_well_tests
+
+    daily = pd.DataFrame(
+        {
+            "tag_date": [pd.Timestamp(o.date).normalize() for o in overrides],
+            "bhp": [float(o.bhp) for o in overrides],
+        }
+    )
+    return apply_to_well_tests(df, SimpleNamespace(daily_df=daily))  # type: ignore[arg-type]
+
+
 def fit(req: schemas.IprFitRequest) -> dict[str, Any]:
     """Fit a Vogel IPR for one well (IprFitResponse shape).
 
@@ -80,6 +100,8 @@ def fit(req: schemas.IprFitRequest) -> dict[str, Any]:
     df = tests.tests_for_well(req.well, req.months, req.cap)
     if df is None or df.empty:
         raise ValueError(_FIT_ERROR)
+    if req.bhp_overrides:
+        df = _apply_bhp_overrides(df, req.bhp_overrides)
     usable = df.dropna(subset=["BHP", "WtTotalFluid"])
     if len(usable) < 2:
         raise ValueError(_FIT_ERROR)
