@@ -1,9 +1,10 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 
-import { get, post, stableStringify } from "./client";
+import { api, get, post, stableStringify } from "./client";
 import type {
   AgingPumpsResponse,
   BatchResponse,
+  ClearIprPinResponse,
   EquivalentsResponse,
   IprFitRequest,
   IprFitResponse,
@@ -15,6 +16,10 @@ import type {
   PfRangeResponse,
   PressureProfileResponse,
   PropHistoryResponse,
+  PropLockRequest,
+  PropLockResponse,
+  SaveIprRequest,
+  SaveIprResponse,
   SimParams,
   SolveResult,
   TriageResponse,
@@ -103,6 +108,45 @@ export const useIprPin = (well: string) =>
     staleTime: MIN_5,
     retry: false,
   });
+
+/** Queries that reflect prop_hist state - refetched after any save/clear. */
+const invalidateSavedIpr = (qc: QueryClient, well: string) => {
+  void qc.invalidateQueries({ queryKey: ["ipr-pin", well] });
+  void qc.invalidateQueries({ queryKey: ["well-context", well] });
+  void qc.invalidateQueries({ queryKey: ["prop-history", well] });
+};
+
+export const useSaveIpr = (well: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (req: SaveIprRequest) =>
+      post<SaveIprResponse>(`/wells/${encodeURIComponent(well)}/save-ipr`, req),
+    onSuccess: () => invalidateSavedIpr(qc, well),
+  });
+};
+
+export const useClearIprPin = (well: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api<ClearIprPinResponse>(`/wells/${encodeURIComponent(well)}/ipr-pin`, { method: "DELETE" }),
+    onSuccess: () => invalidateSavedIpr(qc, well),
+  });
+};
+
+/** Toggle a WC/GOR/ResP field lock. The caller updates the params store's
+ * propLocks from the response - a context refetch never reseeds (the
+ * seededFor guard), so the store is the only live mirror of lock state. */
+export const usePropLock = (well: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (req: PropLockRequest) =>
+      post<PropLockResponse>(`/wells/${encodeURIComponent(well)}/prop-lock`, req),
+    onSuccess: (r) => {
+      if (r.ok) invalidateSavedIpr(qc, well);
+    },
+  });
+};
 
 /**
  * Expensive sweeps run on explicit submit: pages snapshot the params into

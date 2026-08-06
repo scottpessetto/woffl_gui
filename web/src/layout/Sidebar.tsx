@@ -7,10 +7,12 @@
 
 import { useState } from "react";
 import type { KeyboardEvent } from "react";
+import { Lock, LockOpen } from "lucide-react";
 
+import { useMeta, usePropLock } from "../api/hooks";
 import { NOZZLE_OPTIONS, THROAT_OPTIONS } from "../api/types";
 import { Button } from "../components/ui";
-import { useParamsStore } from "../state/params";
+import { useParamsStore, type PropLocks } from "../state/params";
 import { CheckboxField, NumberField, RadioRow, SelectField } from "./ParamFields";
 import { WellSelector } from "./WellSelector";
 
@@ -39,6 +41,76 @@ function LockChip({ text }: { text: string }) {
     >
       {text}
     </span>
+  );
+}
+
+// Sidebar param key + short label per lockable field (lock keys follow the
+// prop_hist registry: res_pres lock rides the sidebar's `pres` field).
+const LOCK_META: Record<keyof PropLocks, { label: string; paramKey: "form_wc" | "form_gor" | "pres" }> = {
+  form_wc: { label: "WC", paramKey: "form_wc" },
+  form_gor: { label: "GOR", paramKey: "form_gor" },
+  res_pres: { label: "ResP", paramKey: "pres" },
+};
+
+/**
+ * The WC/GOR/ResP lock toggle (port of the Solver's 🔒 checkboxes,
+ * jetpump_solver._render_ipr_pin_controls lock block). Locking pins the
+ * sidebar's CURRENT value in the same click; unlocking hands the field back
+ * to the automated seed. Writes off -> falls back to the passive saved-lock
+ * chip; hypothetical wells have nothing to lock.
+ */
+function PropLockToggle({ field }: { field: keyof PropLocks }) {
+  const well = useParamsStore((s) => s.well);
+  const lock = useParamsStore((s) => s.propLocks[field]);
+  const setPropLock = useParamsStore((s) => s.setPropLock);
+  const meta = useMeta();
+  const mut = usePropLock(well);
+  const [err, setErr] = useState<string | null>(null);
+  const { label, paramKey } = LOCK_META[field];
+
+  if (well === "Custom") return null;
+  if (meta.data?.writes_enabled !== true) {
+    return lock.locked ? <LockChip text={`${label} locked (saved)`} /> : null;
+  }
+
+  const toggle = () => {
+    setErr(null);
+    const next = !lock.locked;
+    mut.mutate(
+      { field, locked: next, value: next ? useParamsStore.getState().params[paramKey] : null },
+      {
+        onSuccess: (r) => {
+          if (r.ok) setPropLock(field, { locked: r.locked, value: r.value });
+          else setErr(r.message);
+        },
+        onError: (e) => setErr(e.message),
+      },
+    );
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      disabled={mut.isPending}
+      title={
+        err ??
+        (lock.locked
+          ? `${label} is locked - the saved value overrides every test-derived seed. Click to unlock.`
+          : `Lock ${label} at the current sidebar value - it will override every test-derived seed (on open, on anchor change) until unlocked. For wells where the automated ${label} is systematically wrong.`)
+      }
+      className={
+        "flex shrink-0 items-center gap-0.5 rounded px-1 py-px text-[10px] font-medium transition-colors disabled:opacity-50 " +
+        (err
+          ? "bg-red-50 text-red-700"
+          : lock.locked
+            ? "bg-amber-50 text-amber-700 hover:bg-amber-100"
+            : "border border-slate-200 bg-white text-slate-400 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-600")
+      }
+    >
+      {lock.locked ? <Lock className="h-2.5 w-2.5" /> : <LockOpen className="h-2.5 w-2.5" />}
+      {err ? "failed" : lock.locked ? `${label} locked` : "lock"}
+    </button>
   );
 }
 
@@ -132,7 +204,6 @@ export function Sidebar() {
   const cap = useParamsStore((s) => s.cap);
   const setWindow = useParamsStore((s) => s.setWindow);
   const asBuiltLocks = useParamsStore((s) => s.asBuiltLocks);
-  const propLocks = useParamsStore((s) => s.propLocks);
 
   return (
     <aside className="flex h-full w-[300px] flex-col overflow-y-auto border-r border-slate-200 bg-white">
@@ -244,20 +315,20 @@ export function Sidebar() {
                 label="Reservoir Pressure (psi)"
                 field="pres"
                 step={10}
-                chip={propLocks.res_pres.locked ? <LockChip text="ResP locked (saved)" /> : undefined}
+                chip={<PropLockToggle field="res_pres" />}
               />
               <NumberField
                 label="Water Cut"
                 field="form_wc"
                 step={0.01}
                 dp={2}
-                chip={propLocks.form_wc.locked ? <LockChip text="WC locked (saved)" /> : undefined}
+                chip={<PropLockToggle field="form_wc" />}
               />
               <NumberField
                 label="Gas-Oil Ratio (scf/bbl)"
                 field="form_gor"
                 step={25}
-                chip={propLocks.form_gor.locked ? <LockChip text="GOR locked (saved)" /> : undefined}
+                chip={<PropLockToggle field="form_gor" />}
               />
               <NumberField label="Formation Temperature (deg F)" field="form_temp" />
               <CheckboxField

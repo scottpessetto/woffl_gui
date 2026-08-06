@@ -4,13 +4,21 @@ Error contract (SolveErrorDetail): every failure is an HTTPException 422
 whose detail is {"error", "message", "suggested_gor"}. Typed solver failures
 come from services.solve.SolveFailure; plain ValueError means bad inputs and
 maps to "invalid".
+
+Write endpoints (save-ipr / clear pin): gated on ALLOW_DATABRICKS_WRITES -
+403 when off, mirroring the Streamlit pre-check that hides the button.
+push_prop re-enforces the gate (and the prop_xref whitelist + the as-built
+physical-property rejection) on the actual INSERT, so a race or a stale
+client can never write past a closed gate. Every write stamps the acting
+engineer via identity.bind_entry_user (X-Forwarded-Email).
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from server import schemas
+from server.identity import bind_entry_user
 from server.services import ipr, solve
 
 router = APIRouter(tags=["compute"])
@@ -84,3 +92,46 @@ def post_ipr_fit(req: schemas.IprFitRequest) -> schemas.IprFitResponse:
 def get_ipr_pin(name: str) -> schemas.IprPinResponse:
     """Saved IPR-anchor pin status for one well (fail-soft: none)."""
     return schemas.IprPinResponse(**ipr.pin(name))
+
+
+def _writes_gate() -> None:
+    """403 when the ALLOW_DATABRICKS_WRITES gate is off - the UI hides the
+    save controls on /meta.writes_enabled, so hitting this means a stale
+    client or a deliberate probe."""
+    from woffl.gui.ipr_anchor import writes_enabled
+
+    if not writes_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "writes_disabled",
+                "message": "Saving requires ALLOW_DATABRICKS_WRITES=true in the app environment.",
+            },
+        )
+
+
+@router.post("/wells/{name}/save-ipr", response_model=schemas.SaveIprResponse)
+def post_save_ipr(name: str, req: schemas.SaveIprRequest, request: Request) -> schemas.SaveIprResponse:
+    """Pin the resolved anchor test AND save the sidebar's current IPR/fluid
+    values as the well's defaults (mpu.wells.prop_hist, append-only)."""
+    _writes_gate()
+    bind_entry_user(request)
+    return schemas.SaveIprResponse(**ipr.save(name, req))
+
+
+@router.delete("/wells/{name}/ipr-pin", response_model=schemas.ClearIprPinResponse)
+def delete_ipr_pin(name: str, request: Request) -> schemas.ClearIprPinResponse:
+    """Clear the saved IPR default (appends the cleared-marker row - prop_hist
+    is append-only, nothing is ever deleted)."""
+    _writes_gate()
+    bind_entry_user(request)
+    return schemas.ClearIprPinResponse(**ipr.clear_pin(name))
+
+
+@router.post("/wells/{name}/prop-lock", response_model=schemas.PropLockResponse)
+def post_prop_lock(name: str, req: schemas.PropLockRequest, request: Request) -> schemas.PropLockResponse:
+    """Toggle a WC/GOR/ResP field lock; locking pins the sent value in the
+    same click (mpu.wells.prop_hist, append-only)."""
+    _writes_gate()
+    bind_entry_user(request)
+    return schemas.PropLockResponse(**ipr.set_lock(name, req))

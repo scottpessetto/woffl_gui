@@ -15,7 +15,7 @@ import { ApiError } from "../api/client";
 import { useIprFit, useIprPin, useJpHistory, useSolve, useWellTests } from "../api/hooks";
 import type { AnchorMode, WellTestRow } from "../api/types";
 import { HistoryStrip } from "../components/HistoryStrip";
-import { Button, Card, ErrorNote, WarnNote } from "../components/ui";
+import { Button, Card, ErrorNote, Spinner, WarnNote } from "../components/ui";
 import { Welcome } from "../layout/Welcome";
 import { useDebounced } from "../lib/useDebounced";
 import { vogelQmax } from "../lib/vogel";
@@ -88,6 +88,8 @@ function Workbench({ well }: { well: string }) {
     return resolveAnchorTest(sortedTests, anchorMode, anchorDate);
   }, [sortedTests, decouple, compareKey, anchorMode, anchorDate]);
 
+  const fitEnabled =
+    simActive && well !== "Custom" && !params.model_as_water && sortedTests.length >= 2;
   const iprFitQ = useIprFit(
     {
       well,
@@ -97,8 +99,25 @@ function Workbench({ well }: { well: string }) {
       months,
       cap,
     },
-    simActive && well !== "Custom" && !params.model_as_water && sortedTests.length >= 2,
+    fitEnabled,
   );
+
+  // First-load settle gate for the IPR chart: hold it greyed until every
+  // input series has arrived ONCE (tests, installs/pump labels, pin, the
+  // fit when it will run, the first solve), so the plot doesn't visibly
+  // mutate while the engineer is already reading it. Latches true and stays
+  // true - later param edits redraw live, which is the point of the
+  // client-rendered chart. Workbench remounts per well, resetting the latch.
+  const settledNow =
+    (testsQ.isSuccess || testsQ.isError) &&
+    (installsQ.isSuccess || installsQ.isError) &&
+    (pinQ.isSuccess || pinQ.isError) &&
+    (!fitEnabled || iprFitQ.isSuccess || iprFitQ.isError) &&
+    (!simActive || solveQ.isSuccess || solveQ.isError);
+  const [iprReady, setIprReady] = useState(false);
+  useEffect(() => {
+    if (settledNow) setIprReady(true);
+  }, [settledNow]);
 
   const fit = iprFitQ.data ?? null;
   const solve = solveQ.data ?? null;
@@ -152,7 +171,10 @@ function Workbench({ well }: { well: string }) {
         </div>
       )}
 
-      <div className="grid gap-4 xl:grid-cols-2">
+      {/* items-start: grid items stretch to the row by default, and the
+          control column is usually the taller one - a stretched chart card
+          would trail a block of empty white below the plot. */}
+      <div className="grid items-start gap-4 xl:grid-cols-2">
         <IprChart
           tests={sortedTests}
           fit={fit}
@@ -160,6 +182,7 @@ function Workbench({ well }: { well: string }) {
           solve={solve}
           compareTest={compareTest}
           installs={installs}
+          loading={!iprReady}
         />
         <div className="space-y-4">
           <ComparisonCard
@@ -170,6 +193,7 @@ function Workbench({ well }: { well: string }) {
           />
           <IprControls
             anchorMode={anchorMode}
+            well={well}
             anchorDate={anchorDate}
             onAnchorChange={(mode, date) => {
               setAnchorMode(mode);
@@ -193,6 +217,18 @@ function Workbench({ well }: { well: string }) {
         </div>
       </div>
 
+      {/* Same-size skeleton while pump history loads: the strip appearing
+          later would otherwise shove the tests table down mid-read. */}
+      {showStrip && installsQ.isLoading && (
+        <Card>
+          <div className="mb-1 flex items-center justify-between">
+            <h3 className="text-sm font-semibold tracking-tight text-slate-700">Pump history</h3>
+          </div>
+          <div className="flex h-[430px] animate-pulse items-center justify-center rounded-lg bg-slate-50">
+            <Spinner label="Loading pump history" />
+          </div>
+        </Card>
+      )}
       {showStrip && installsQ.data && installsQ.data.installs.length > 0 && (
         <Card>
           <div className="mb-1 flex items-center justify-between">

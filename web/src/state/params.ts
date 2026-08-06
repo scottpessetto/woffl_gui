@@ -75,27 +75,18 @@ interface ParamsState {
   setWindow: (months: number, cap: number) => void;
   selectWell: (name: string) => void;
   applyContext: (ctx: WellContext) => void;
+  /** Mirror a server-confirmed lock toggle (usePropLock response). */
+  setPropLock: (field: keyof PropLocks, lock: PropLock) => void;
   run: () => void;
 }
 
-const WELL_STORAGE_KEY = "woffl.well";
-
-function persistedWell(): string {
-  try {
-    return localStorage.getItem(WELL_STORAGE_KEY) || "Custom";
-  } catch {
-    return "Custom";
-  }
-}
-
-const initialWell = persistedWell();
-
 export const useParamsStore = create<ParamsState>((set) => ({
-  // Restore the last-selected well across reloads; context fetch + seeding
-  // re-run exactly as they do for a fresh selection.
-  well: initialWell,
+  // Every fresh load starts at the Welcome screen (well = Custom): opening
+  // on a remembered well invites working yesterday's problem by accident.
+  // Deliberately NO localStorage restore (removed 2026-08-06, Scott).
+  well: "Custom",
   params: { ...DEFAULT_PARAMS },
-  simActive: initialWell !== "Custom",
+  simActive: false,
   months: 6,
   cap: 0,
   asBuiltLocks: NO_AS_BUILT,
@@ -109,13 +100,8 @@ export const useParamsStore = create<ParamsState>((set) => ({
 
   setWindow: (months, cap) => set({ months, cap, seededFor: null }),
 
-  selectWell: (name) => {
-    try {
-      localStorage.setItem(WELL_STORAGE_KEY, name);
-    } catch {
-      // storage unavailable (private mode) - selection still works in-memory
-    }
-    return set(() => ({
+  selectWell: (name) =>
+    set(() => ({
       well: name,
       // Custom = clean bench; a named well seeds on context arrival.
       params: { ...DEFAULT_PARAMS },
@@ -124,8 +110,7 @@ export const useParamsStore = create<ParamsState>((set) => ({
       propLocks: NO_PROP_LOCKS,
       context: null,
       seededFor: null,
-    }));
-  },
+    })),
 
   applyContext: (ctx) =>
     set((s) => {
@@ -145,6 +130,8 @@ export const useParamsStore = create<ParamsState>((set) => ({
         propLocks: { ...NO_PROP_LOCKS, ...ctx.prop_locks },
       };
     }),
+
+  setPropLock: (field, lock) => set((s) => ({ propLocks: { ...s.propLocks, [field]: lock } })),
 
   run: () => set({ simActive: true }),
 }));

@@ -276,6 +276,63 @@ class IprPinResponse(BaseModel):
     entry_datetime: Optional[str] = None
 
 
+class SaveIprRequest(BaseModel):
+    """The Solver's "Save as well default" payload - mirror of the Streamlit
+    button (_render_ipr_pin_controls): pin the resolved anchor test AND push
+    the sidebar's current curve/rate values in one click. Bounds mirror the
+    SimParams widget bounds; ipr_anchor.save_ipr_values re-caps WC at 0.99."""
+
+    qwf_liq: float = Field(..., gt=0.0, le=50_000.0)  # TOTAL LIQUID (BLPD), stored verbatim
+    pwf: float = Field(..., ge=50.0, le=5_000.0)
+    res_pres: float = Field(..., ge=100.0, le=10_000.0)
+    form_wc: float = Field(..., ge=0.0, le=1.0)
+    form_gor: float = Field(..., ge=0.0, le=20_000.0)
+    surf_pres: Optional[float] = Field(None, ge=0.0, le=5_000.0)
+    # BHP-calibrated friction rides along; save_ipr_values skips unchanged /
+    # never-calibrated-default values so no noise rows materialize.
+    ken: Optional[float] = None
+    kth: Optional[float] = None
+    kdi: Optional[float] = None
+    comment: Optional[str] = Field(None, max_length=500)
+    # Anchor pin: the CLIENT-resolved anchor test. None = values-only save
+    # (forced/manual IPR - nothing pinnable).
+    pin_wt_uid: Optional[float] = None
+    pin_date: Optional[str] = None  # YYYY-MM-DD, for the confirmation label
+
+
+class SaveIprResponse(BaseModel):
+    pinned: bool
+    pin_skipped: bool  # expected no-pin (manual/provisional anchor), not an error
+    pin_message: Optional[str] = None
+    n_values: int  # prop rows written by the values save
+    values_message: str
+
+
+class ClearIprPinResponse(BaseModel):
+    cleared: bool
+    message: str
+
+
+class PropLockRequest(BaseModel):
+    """Toggle a per-well field lock (ipr_anchor.LOCKABLE_FIELDS) - "the
+    automated seed for this field is systematically wrong on this well; my
+    saved value stands until I unlock". Locking also pushes `value` (the
+    sidebar's current number) so the locked value is pinned in the same
+    click; unlocking writes the 0.0 unlocked marker."""
+
+    field: Literal["form_wc", "form_gor", "res_pres"]
+    locked: bool
+    value: Optional[float] = None  # pushed only when locking; WC re-capped at 0.99
+
+
+class PropLockResponse(BaseModel):
+    ok: bool
+    message: str
+    field: str
+    locked: bool  # the field's lock state AFTER this call
+    value: Optional[float] = None  # the value pinned with the lock, if any
+
+
 # ---------------------------------------------------------------------------
 # Batch sweep
 # ---------------------------------------------------------------------------

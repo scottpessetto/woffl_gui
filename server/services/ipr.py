@@ -233,3 +233,92 @@ def pin(well: str) -> dict[str, Any]:
         "entry_user": entry_user,
         "entry_datetime": entry_datetime,
     }
+
+
+# ---------------------------------------------------------------------------
+# Writes - the Solver's "Save as well default" / "Clear saved IPR"
+# ---------------------------------------------------------------------------
+#
+# All mechanics live in woffl.gui.ipr_anchor (pin_ipr_anchor /
+# save_ipr_values / clear_ipr_pin) - the SAME functions the Streamlit button
+# calls - so the rules can never diverge: prop_xref whitelist, as-built
+# physical properties rejected outright (AS_BUILT_PROP_IDS), WC capped at
+# 0.99, friction pushed only when changed and never as materialized
+# defaults, one batch stamp per save, comment best-effort. Routers pre-check
+# the write gate; push_prop enforces it again on the actual INSERT.
+
+
+def save(well: str, req: schemas.SaveIprRequest) -> dict[str, Any]:
+    """Pin the anchor test (when given) and save the sidebar values.
+
+    Mirrors the Streamlit click exactly: pin first, values second, same
+    latest-timestamp precedence. Returns SaveIprResponse shape; per-part
+    failures ride in the messages (the Streamlit toast/warning contract)
+    rather than failing the whole request.
+    """
+    pinned = False
+    pin_skipped = False
+    pin_message: Any = None
+    if req.pin_wt_uid is not None:
+        anchor_row = {"wt_uid": req.pin_wt_uid, "WtDate": req.pin_date}
+        pinned, pin_message = ipr_anchor.pin_ipr_anchor(well, anchor_row)
+        pin_skipped = not pinned and str(pin_message).startswith(ipr_anchor.PIN_SKIP_PREFIX)
+
+    n_values, values_message = ipr_anchor.save_ipr_values(
+        well,
+        qwf_liq=req.qwf_liq,
+        pwf=req.pwf,
+        res_pres=req.res_pres,
+        form_wc=req.form_wc,
+        form_gor=req.form_gor,
+        surf_pres=req.surf_pres,
+        ken=req.ken,
+        kth=req.kth,
+        kdi=req.kdi,
+        comment=req.comment,
+    )
+
+    # save_ipr_values cleared the woffl memo; drop the server's own 5-min
+    # TTL layer too so the next pin/context read reflects this save.
+    _saved_ipr.cache_clear()
+    return {
+        "pinned": pinned,
+        "pin_skipped": pin_skipped,
+        "pin_message": pin_message,
+        "n_values": n_values,
+        "values_message": values_message,
+    }
+
+
+def clear_pin(well: str) -> dict[str, Any]:
+    """Un-pin the saved IPR default (appends the cleared marker row)."""
+    cleared, message = ipr_anchor.clear_ipr_pin(well)
+    if cleared:
+        ipr_anchor.clear_saved_ipr_cache(well)
+        _saved_ipr.cache_clear()
+    return {"cleared": cleared, "message": message}
+
+
+def set_lock(well: str, req: schemas.PropLockRequest) -> dict[str, Any]:
+    """Toggle one of the WC/GOR/ResP field locks.
+
+    Mechanics live in ipr_anchor.set_prop_lock (the Streamlit checkbox's
+    function): locking pushes the current sidebar value THEN the 1.0 lock
+    row; unlocking pushes the 0.0 unlocked marker. On failure the previous
+    state is reported back so the client's toggle stays truthful.
+    """
+    ok, message = ipr_anchor.set_prop_lock(well, req.field, req.locked, value=req.value)
+    if ok:
+        # set_prop_lock cleared the woffl memo; drop the server TTL layer too.
+        _saved_ipr.cache_clear()
+    # Echo the value the way it was actually stored (set_prop_lock caps WC).
+    value = req.value
+    if value is not None and req.field == "form_wc":
+        value = min(max(value, 0.0), 0.99)
+    return {
+        "ok": ok,
+        "message": message,
+        "field": req.field,
+        "locked": req.locked if ok else not req.locked,
+        "value": value if ok and req.locked else None,
+    }

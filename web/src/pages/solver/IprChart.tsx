@@ -12,7 +12,7 @@ import type { IprFitResponse, JpInstallRow, SimParams, SolveResult, WellTestRow 
 import type { EChartsOption } from "../../charts/echarts";
 import { ACCENT, axis, baseGrid, baseTooltip, CRIMSON, houseOption, SLATE, TEXT, VIRIDIS } from "../../charts/theme";
 import { ChartPanel } from "../../charts/ChartPanel";
-import { Card, WarnNote } from "../../components/ui";
+import { Card, Spinner, WarnNote } from "../../components/ui";
 import { fmtDate, fmtNum, daysAgo } from "../../lib/format";
 import { iprCurveFromAnchor, vogelQmax } from "../../lib/vogel";
 
@@ -28,6 +28,7 @@ export function IprChart({
   solve,
   compareTest,
   installs,
+  loading = false,
 }: {
   tests: WellTestRow[];
   fit: IprFitResponse | null;
@@ -35,6 +36,9 @@ export function IprChart({
   solve: SolveResult | null;
   compareTest: WellTestRow | null;
   installs: JpInstallRow[];
+  /** First-load settle gate: dim the chart until every input series arrived
+   * once, so the plot never mutates under the engineer's eyes. */
+  loading?: boolean;
 }) {
   // Old GUI: checkbox "Show JP label inside each test point"
   // (mva_show_jp_labels_{well}); per-well because the workbench remounts.
@@ -192,23 +196,38 @@ export function IprChart({
 
   return (
     <Card>
-      <div className="mb-1 flex justify-end">
-        <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-600">
-          <input
-            type="checkbox"
-            checked={showJpLabels}
-            onChange={(e) => setShowJpLabels(e.target.checked)}
-            className="h-4 w-4 rounded border-slate-300 accent-blue-600"
-          />
-          Show JP label inside each test point
-        </label>
+      <div className="relative">
+        <div
+          className={
+            loading
+              ? "pointer-events-none opacity-30 grayscale transition-opacity duration-300"
+              : "transition-opacity duration-300"
+          }
+        >
+          <div className="mb-1 flex justify-end">
+            <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-600">
+              <input
+                type="checkbox"
+                checked={showJpLabels}
+                onChange={(e) => setShowJpLabels(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 accent-blue-600"
+              />
+              Show JP label inside each test point
+            </label>
+          </div>
+          <ChartPanel option={option} height={520} zoom={{ xAxisIndex: [0], yAxisIndex: [0] }} />
+          {fit?.weak && (
+            <WarnNote className="mt-2">
+              IPR fit is weak (R2 {fmtNum(fit.coeffs.r2, 2)}) - treat the curve as a sketch
+            </WarnNote>
+          )}
+        </div>
+        {loading && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <Spinner label="Loading well data" />
+          </div>
+        )}
       </div>
-      <ChartPanel option={option} height={520} zoom={{ xAxisIndex: [0], yAxisIndex: [0] }} />
-      {fit?.weak && (
-        <WarnNote className="mt-2">
-          IPR fit is weak (R2 {fmtNum(fit.coeffs.r2, 2)}) - treat the curve as a sketch
-        </WarnNote>
-      )}
     </Card>
   );
 }

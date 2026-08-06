@@ -280,6 +280,50 @@ export interface IprPinResponse {
   entry_datetime: string | null;
 }
 
+/** POST /wells/{name}/save-ipr - mirror of server.schemas.SaveIprRequest. */
+export interface SaveIprRequest {
+  qwf_liq: number; // TOTAL LIQUID (BLPD) - the sidebar's qwf verbatim
+  pwf: number;
+  res_pres: number;
+  form_wc: number;
+  form_gor: number;
+  surf_pres: number | null;
+  ken: number | null;
+  kth: number | null;
+  kdi: number | null;
+  comment: string | null;
+  pin_wt_uid: number | null; // null = values-only save (no pinnable anchor)
+  pin_date: string | null;
+}
+
+export interface SaveIprResponse {
+  pinned: boolean;
+  pin_skipped: boolean;
+  pin_message: string | null;
+  n_values: number;
+  values_message: string;
+}
+
+export interface ClearIprPinResponse {
+  cleared: boolean;
+  message: string;
+}
+
+/** POST /wells/{name}/prop-lock - mirror of server.schemas.PropLockRequest. */
+export interface PropLockRequest {
+  field: "form_wc" | "form_gor" | "res_pres";
+  locked: boolean;
+  value: number | null; // pushed only when locking; server re-caps WC at 0.99
+}
+
+export interface PropLockResponse {
+  ok: boolean;
+  message: string;
+  field: string;
+  locked: boolean; // lock state AFTER the call
+  value: number | null;
+}
+
 // ---------------------------------------------------------------------------
 // Batch
 // ---------------------------------------------------------------------------

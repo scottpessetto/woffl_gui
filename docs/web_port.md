@@ -46,7 +46,10 @@ mirrored by `web/src/api/types.ts`.
 | GET /wells/{name}/tests | windowed well tests (months, cap) |
 | GET /wells/{name}/profile | survey MD/VD/HD + filtered profile + JP marker |
 | GET /wells/{name}/jp-history | installs + extended tests + daily BHP |
-| GET /wells/{name}/ipr-pin | saved anchor pin (read-only) |
+| GET /wells/{name}/ipr-pin | saved anchor pin status |
+| POST /wells/{name}/save-ipr | WRITE: pin the anchor test + save the sidebar's IPR/fluid values (+ calibrated friction) to prop_hist |
+| DELETE /wells/{name}/ipr-pin | WRITE: un-pin (appends the cleared-marker row) |
+| POST /wells/{name}/prop-lock | WRITE: toggle a WC/GOR/ResP field lock (locking pins the sent value in the same click) |
 | POST /solve | single solve -> psu, qoil_std, fwat, qnz, mach, sonic |
 | POST /ipr/fit | Vogel fit (recent / median / specific anchor) + seeds |
 | POST /batch | nozzle x throat sweep + recommender + exp fit curve |
@@ -65,15 +68,36 @@ Server caching mirrors the old `@st.cache_data` TTLs (`server/config.py`):
 tests 24 h, chars/PF/profiles 1 h, saved IPR / prop history 5 min. Failures
 are never cached. Startup warms chars/PF/jp-history/tests in daemon threads.
 
-## Write safety (v1 = read-only)
+## Write safety
 
-The server has **no write endpoints**. It never calls `execute_write` /
-`push_prop` / `sync_pad`. The root `app.yaml` deliberately omits
-ALLOW_DATABRICKS_WRITES; `/api/meta.writes_enabled` is display-only and the
-UI shows a read-only badge. The .env local-write landmine documented in
-AGENTS.md section 3 therefore cannot fire through this app. When write flows
-(IPR pin/save, pad review sync) are ported, they must replicate the full gate
-chain and entry-user attribution.
+The server has exactly THREE write endpoints - the Solver's "Save as well
+default", its un-pin, and the sidebar's WC/GOR/ResP lock toggles (ported
+2026-08-06). All replicate the Streamlit gate chain in full:
+
+1. Router pre-check: `writes_enabled()` off -> 403, and the UI hides the
+   save controls entirely on `/api/meta.writes_enabled` (the read-only
+   badge shows instead).
+2. All mechanics go through `woffl.gui.ipr_anchor.pin_ipr_anchor` /
+   `save_ipr_values` / `clear_ipr_pin` - the SAME functions the Streamlit
+   button calls - so the rules can never diverge: `push_prop` re-checks the
+   gate, enforces the prop_xref whitelist, and REJECTS as-built physical
+   properties outright (`AS_BUILT_PROP_IDS`); WC caps at 0.99; friction
+   coefficients ride along only when calibrated (never materialized
+   defaults); one batch stamp per save with the engineer comment joined on
+   it; prop_hist stays append-only.
+3. Attribution: `server/identity.py` binds X-Forwarded-Email per request
+   into a ContextVar consumed by `resolve_entry_user`'s provider hook - the
+   FastAPI equivalent of the Streamlit `set_entry_user_provider`
+   registration. Without the header (local dev) it falls back to the SQL
+   session's `current_user()`.
+
+The root `app.yaml` sets ALLOW_DATABRICKS_WRITES=true; the app's service
+principal has held MODIFY on mpu.wells.prop_hist since 2026-07-30 (same app
+as the Streamlit era - no new grants). The .env local-write landmine
+(AGENTS.md section 3) now applies to this app too: local runs with the .env
+gate on write REAL rows. Contract tests: tests/test_web_save_ipr.py.
+`sync_pad` (pad review) remains unported; `execute_write` is reachable only
+through `push_prop`.
 
 ## v1 scope
 
@@ -91,7 +115,7 @@ Streamlit).
 
 Not ported yet (Streamlit remains the tool for these): pad optimization
 (S/I/M/CFP), Scott's Tools, memory-gauge upload, manual test entry,
-calibration/auto-match actions, IPR pin/save writes, PDF export.
+calibration/auto-match actions, pad-review sync writes, PDF export.
 
 Layout convention (single-well analysis pages): the pump-history strip
 renders just above the historical-tests table, never above the page's

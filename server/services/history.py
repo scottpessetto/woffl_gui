@@ -10,6 +10,7 @@ mirrors woffl/gui/tabs/jp_history_tab.py (queries + fetch flow)
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Optional
 
@@ -280,13 +281,19 @@ def jp_history_payload(well: str) -> dict[str, Any]:
     start = pd.Timestamp(well_jp["Date Set"].min()).strftime("%Y-%m-%d")
     end = datetime.now().strftime("%Y-%m-%d")
 
-    # Fail-soft per series - the tab warns and renders what it has.
-    try:
-        payload["tests"] = frames.records(extended_tests(db_name, start, end), _TEST_COLUMNS)
-    except Exception:
-        payload["tests"] = []
-    try:
-        payload["bhp_daily"] = frames.records(bhp_daily(db_name, start, end), _BHP_COLUMNS)
-    except Exception:
-        payload["bhp_daily"] = []
+    # Fail-soft per series - the tab warns and renders what it has. The two
+    # pulls are independent Databricks queries at seconds each, so they run
+    # in PARALLEL (thread-local warehouse connections; ttl_cache is locked):
+    # total = max(t1, t2) instead of t1 + t2.
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="jp-hist") as pool:
+        tests_future = pool.submit(extended_tests, db_name, start, end)
+        bhp_future = pool.submit(bhp_daily, db_name, start, end)
+        try:
+            payload["tests"] = frames.records(tests_future.result(), _TEST_COLUMNS)
+        except Exception:
+            payload["tests"] = []
+        try:
+            payload["bhp_daily"] = frames.records(bhp_future.result(), _BHP_COLUMNS)
+        except Exception:
+            payload["bhp_daily"] = []
     return payload

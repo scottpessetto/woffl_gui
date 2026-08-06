@@ -81,11 +81,14 @@ export function Topbar({
             OFFLINE chars
           </Badge>
         )}
-        {/* v1 ships no write endpoints, so the app is read-only regardless of
-            the server's ALLOW_DATABRICKS_WRITES gate (which .env can flip). */}
-        <Badge tone="neutral" title="This app has no Databricks write paths (v1)">
-          read-only
-        </Badge>
+        {/* Writes exist now (Solver save-as-default); the badge only shows
+            when the ALLOW_DATABRICKS_WRITES gate is off, i.e. saves are
+            unavailable in this environment. */}
+        {meta.data?.writes_enabled !== true && (
+          <Badge tone="neutral" title="ALLOW_DATABRICKS_WRITES is off - saving well defaults is disabled">
+            read-only
+          </Badge>
+        )}
         <span className="text-xs text-slate-500">{meta.data?.user ?? "local"}</span>
       </div>
     </header>

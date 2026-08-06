@@ -18,9 +18,21 @@ env:
   - name: WOFFL_MAX_WORKERS
     value: "2"
 
-  # NOTE: ALLOW_DATABRICKS_WRITES is deliberately ABSENT. The web app is
-  # read-only in v1 - it has no write endpoints - and the gate stays off as
-  # defense in depth. Add the var only when write flows are ported.
+  # prop_hist writes (the Solver's "Save as well default" / clear-pin).
+  #
+  # ENABLED 2026-08-06 with the first ported write flow. Same app = same
+  # service principal (App ID 2013fc45-c30e-40ac-bef0-df0a758faa3c) that has
+  # held MODIFY on mpu.wells.prop_hist since 2026-07-30 (granted under
+  # Scott's identity, docs/prop_hist_asks.md ask (b)) - no new grants needed.
+  #
+  # The server has exactly two write endpoints (POST /wells/{name}/save-ipr,
+  # DELETE /wells/{name}/ipr-pin), both routed through prop_hist_client.
+  # push_prop: prop_xref whitelist, as-built physical properties rejected,
+  # single parameterized INSERT only. Attribution: entry_user resolves the
+  # REAL engineer from X-Forwarded-Email per request (server/identity.py);
+  # without the header it falls back to current_user() = the SP.
+  - name: ALLOW_DATABRICKS_WRITES
+    value: "true"
 
 resources:
   - name: sql-warehouse
