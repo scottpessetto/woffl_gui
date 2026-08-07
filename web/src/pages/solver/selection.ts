@@ -32,11 +32,15 @@ export function resolveAnchorTest(
 }
 
 /**
- * Pump installed on or before `date`, as a "13C" code.
+ * Pump installed on or before `date`. Tenure is set-to-set - a pump runs
+ * until the NEXT Date Set, and Date Pulled is never consulted.
  * Mirror of woffl/gui/ipr_viz.py:_pump_label_at_date (ISO strings compare
  * lexicographically, so no Date parsing is needed).
  */
-export function pumpLabelAt(installs: JpInstallRow[], date: string): string | null {
+export function pumpAt(
+  installs: JpInstallRow[],
+  date: string,
+): { nozzle: string; throat: string } | null {
   let best: JpInstallRow | null = null;
   for (const row of installs) {
     if (row.date_set === null || row.date_set.slice(0, 10) > date) continue;
@@ -45,7 +49,13 @@ export function pumpLabelAt(installs: JpInstallRow[], date: string): string | nu
     }
   }
   if (!best || best.nozzle === null || best.throat === null) return null;
-  return `${best.nozzle}${best.throat}`;
+  return { nozzle: best.nozzle, throat: best.throat };
+}
+
+/** ``pumpAt`` as a "13C" code. */
+export function pumpLabelAt(installs: JpInstallRow[], date: string): string | null {
+  const p = pumpAt(installs, date);
+  return p && `${p.nozzle}${p.throat}`;
 }
 
 /** Picker option label: "2026-05-14 | 13C | BHP 812 | Liq 1,940". */

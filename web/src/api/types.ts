@@ -293,6 +293,14 @@ export interface PadRunRow {
   suction: number | null;
   marginal_oil: number | null;
   sonic: boolean | null;
+  /** Where this well's inflow curve came from: "saved" = an engineer-reviewed
+   *  fit, "vogel" = an automatic fit over recent tests, "single_test" = one
+   *  test, null = neither, so the run used generic defaults. */
+  ipr_source: "saved" | "vogel" | "single_test" | null;
+  /** Vogel fit quality when ipr_source is "vogel". */
+  ipr_r2: number | null;
+  /** ken/kth/kdi came from a BHP calibration rather than library defaults. */
+  has_friction: boolean;
 }
 
 export interface PadRunResult {
@@ -470,6 +478,170 @@ export interface CalibrateResponse {
   bhp_error: number | null;
   iterations: number;
   starts_tried: number;
+}
+
+// ---------------------------------------------------------------------------
+// Sensitivity
+// ---------------------------------------------------------------------------
+
+/** One solve at one swept value - mirror of server.schemas.SensitivityPoint.
+ * Null metrics mean the solver failed at that value; `error` says why. */
+export interface SensitivityPoint {
+  value: number; // the swept value; catalog index for discrete knobs
+  label: string; // display value, e.g. "0.30" or "14C"
+  psu: number | null; // suction BHP, psig
+  qoil: number | null; // STBOPD
+  qliq: number | null; // oil + formation water, BLPD
+  qpf: number | null; // power fluid, BWPD
+  mach: number | null;
+  sonic: boolean | null;
+  error: string | null; // short reason when the solve failed
+}
+
+/** Engineer override for one knob's swept range, in the knob's OWN units -
+ * mirror of server.schemas.KnobBounds.
+ *
+ * Continuous knobs take ABSOLUTE field values (form_gor in scf/bbl, ken
+ * unitless, pressures in psi), NOT multipliers or deltas. Catalog knobs
+ * (nozzle_no, area_ratio) take 0-based indices into the knob's `options`
+ * list. Which one a knob is is `SensitivityKnob.kind`. */
+export interface KnobBounds {
+  low: number;
+  high: number;
+  steps: number | null; // 2-15; null = the knob's default
+}
+
+/** One calibration knob swept over its range - mirror of
+ * server.schemas.SensitivityKnob. */
+export interface SensitivityKnob {
+  id: string;
+  label: string;
+  unit: string; // "psi", "scf/bbl", "" for unitless
+  baseline_label: string;
+  basis: string; // one line: WHY this range (goes in the tooltip)
+  points: SensitivityPoint[];
+  /** Signed excursions from baseline over the whole sweep, keyed
+   * psu | qoil | qliq | qpf - same units as SensitivityPoint (psig, STBOPD,
+   * BLPD, BWPD). A metric is null when every solve on that side failed. */
+  low: Record<string, number | null>;
+  high: Record<string, number | null>;
+  /** True when the knob moves NOTHING measurably across its whole sweep -
+   * the headline finding on a choked well. */
+  inert: boolean;
+  field: string; // the SimParams field this knob drives
+  kind: string; // "mult" | "abs" | "delta" | "catalog"
+  default_low: number; // resolved ABSOLUTE low with no override, knob units
+  default_high: number; // resolved ABSOLUTE high with no override, knob units
+  swept_low: number; // what was actually swept (post-clamp), knob units
+  swept_high: number;
+  clamp_low: number | null; // hard limit the sidebar/model enforces
+  clamp_high: number | null;
+  options: string[] | null; // catalog knobs only: the full option list
+  overridden: boolean; // an override was supplied AND applied
+}
+
+/** POST /sensitivity - mirror of server.schemas.SensitivityResponse.
+ * Read-only diagnostic: nothing here changes the model or is persisted. */
+export interface SensitivityResponse {
+  baseline: SensitivityPoint;
+  knobs: SensitivityKnob[];
+  // Measured test values to compare against, echoed back when supplied.
+  target_psu: number | null; // psig
+  target_qoil: number | null; // STBOPD
+  target_qliq: number | null; // BLPD
+  target_qpf: number | null; // BWPD
+  notes: string[];
+}
+
+/** Mirror of server.schemas.SensitivityRequest. */
+export interface SensitivityRequest {
+  well: string;
+  params: SimParams;
+  // Measured test values for the reference lines; all optional.
+  target_psu: number | null; // psig
+  target_qoil: number | null; // STBOPD
+  target_qliq: number | null; // BLPD
+  target_qpf: number | null; // BWPD
+  // Knob id -> engineer override of that knob's swept range. Absent ids keep
+  // their default range.
+  bounds: Record<string, KnobBounds>;
+}
+
+/** One knob to vary in the combined study - mirror of
+ * server.schemas.CombineKnob. Same units as KnobBounds. */
+export interface CombineKnob {
+  id: string;
+  low: number;
+  high: number;
+  levels: number; // 2-7 values across [low, high]; 2 = corners only
+}
+
+/** One permutation of the combined study - mirror of
+ * server.schemas.CombineRun. Nulls where the solver failed. */
+export interface CombineRun {
+  values: Record<string, number>; // knob id -> swept value, knob units
+  labels: Record<string, string>; // knob id -> display value
+  psu: number | null; // suction BHP, psig
+  qoil: number | null; // STBOPD
+  qliq: number | null; // oil + formation water, BLPD
+  qpf: number | null; // power fluid, BWPD
+  sonic: boolean | null;
+  error: string | null; // short reason when the solve failed
+  /** Root-mean-square fractional error across the SUPPLIED targets only.
+   * Unitless; lower is better. Null when no target was supplied or the run
+   * failed. */
+  score: number | null;
+}
+
+/** POST /sensitivity/combine - mirror of server.schemas.CombineRequest. */
+export interface CombineRequest {
+  well: string;
+  params: SimParams;
+  // Measured test values scored against; all optional.
+  target_psu: number | null; // psig
+  target_qoil: number | null; // STBOPD
+  target_qliq: number | null; // BLPD
+  target_qpf: number | null; // BWPD
+  // Knobs varied together, each with its own range and level count. The
+  // factorial is prod(levels) runs; the server rejects more than 1200.
+  knobs: CombineKnob[];
+}
+
+/** Mirror of server.schemas.CombineResponse. Read-only diagnostic. */
+export interface CombineResponse {
+  baseline: SensitivityPoint;
+  runs: CombineRun[];
+  /** Reachable [min, max] per metric across every solved run, keyed
+   * psu | qoil | qliq | qpf (psig, STBOPD, BLPD, BWPD). Sparse: a metric key
+   * is absent when no run solved for it, so index it defensively. */
+  envelope: Record<string, number[]>;
+  /** Per metric: is the supplied target inside the envelope? Sparse in the
+   * same way - the key is absent when no target was supplied for that
+   * metric, which is NOT the same as false. */
+  reachable: Record<string, boolean>;
+  best_index: number | null; // index into runs, lowest score
+  n_runs: number;
+  n_failed: number;
+  notes: string[];
+}
+
+/** POST /sensitivity/combine - mirror of server.schemas.CombineStarted. The
+ * study is a background job; poll it with the id. */
+export interface CombineStarted {
+  job_id: string;
+}
+
+/** GET /sensitivity/combine/{job_id} - mirror of
+ * server.schemas.CombineJobStatus. `result` populates when status is done. */
+export interface CombineJobStatus {
+  job_id: string;
+  kind: "sensitivity";
+  status: "running" | "done" | "error";
+  progress: string | null;
+  result: CombineResponse | null;
+  error: string | null;
+  started_at: string;
+  seconds: number;
 }
 
 /** One daily-median BHP from an uploaded memory gauge. */

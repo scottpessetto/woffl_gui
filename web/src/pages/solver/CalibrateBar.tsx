@@ -10,11 +10,15 @@
  * Gates, mirroring Streamlit:
  *   - the selected test needs a measured BHP (gauge overrides count);
  *   - the sidebar pump must match the pump installed on the test date -
- *     calibrating one pump against another's test is meaningless.
+ *     calibrating one pump against another's test is meaningless. Picking an
+ *     older anchor usually lands on the PREVIOUS pump, so the block is the
+ *     normal case, not an error: it says which pump ran that day and offers a
+ *     "Model 13C" button rather than sending the engineer to the sidebar.
  */
 
-import { Crosshair } from "lucide-react";
+import { Crosshair, SlidersHorizontal } from "lucide-react";
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 import { useCalibrate } from "../../api/hooks";
 import type { CalibrateResponse, JpInstallRow, WellTestRow } from "../../api/types";
@@ -22,7 +26,7 @@ import { Button } from "../../components/ui";
 import { fmtNum } from "../../lib/format";
 import { useParamsStore } from "../../state/params";
 
-import { pumpLabelAt } from "./selection";
+import { pumpAt } from "./selection";
 import { KcoefExplainer } from "./KcoefExplainer";
 
 function resultLine(r: CalibrateResponse): { tone: "ok" | "warn"; text: string } {
@@ -54,19 +58,26 @@ export function CalibrateBar({
   const setMany = useParamsStore((s) => s.setMany);
   const mut = useCalibrate();
   const [notice, setNotice] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
+  const navigate = useNavigate();
 
   if (params.model_as_water) return null; // water mode has no oil-anchored match
 
   const targetBhp = compareTest?.bhp ?? null;
   const sidebarPump = `${params.nozzle_no}${params.area_ratio}`;
-  const testPump = compareTest ? pumpLabelAt(installs, compareTest.date) : null;
+  const testPumpParts = compareTest ? pumpAt(installs, compareTest.date) : null;
+  const testPump = testPumpParts && `${testPumpParts.nozzle}${testPumpParts.throat}`;
   const pumpMismatch = testPump !== null && testPump !== sidebarPump;
 
+  // A pump changeout between the selected test and today is the common case
+  // (pick an older anchor and you are almost always looking at the previous
+  // pump). Fitting THIS pump's friction to THAT pump's test is meaningless,
+  // so the gate stays - but the way out is one click, not a trip to the
+  // sidebar.
   const reason =
     targetBhp === null
-      ? "The selected test has no measured BHP - pick a test with one, or add gauge data."
+      ? `The ${compareTest?.date?.slice(0, 10) ?? "selected"} test has no measured BHP - pick a test with one, or add gauge data.`
       : pumpMismatch
-        ? `Comparing against the test's pump ${testPump} but the sidebar models ${sidebarPump} - set the sidebar pump to ${testPump} first.`
+        ? `${compareTest?.date?.slice(0, 10)} ran the ${testPump} pump; the sidebar models ${sidebarPump}.`
         : null;
 
   const run = () => {
@@ -86,7 +97,7 @@ export function CalibrateBar({
 
   return (
     <div className="space-y-1.5 border-t border-slate-100 pt-2.5">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="secondary"
           size="sm"
@@ -105,7 +116,33 @@ export function CalibrateBar({
             {mut.isPending ? "Matching BHP..." : "Auto-match BHP"}
           </span>
         </Button>
-        {reason && <span className="text-[11px] text-slate-400">{reason}</span>}
+        {reason && <span className="text-xs text-amber-700">{reason}</span>}
+        {pumpMismatch && testPumpParts && (
+          <Button
+            variant="secondary"
+            size="sm"
+            title={`Model the ${testPump} pump that was actually in the hole on ${compareTest?.date?.slice(0, 10)}, so the fit is against its own test.`}
+            onClick={() =>
+              setMany({ nozzle_no: testPumpParts.nozzle, area_ratio: testPumpParts.throat })
+            }
+          >
+            Model {testPump}
+          </Button>
+        )}
+        {/* Always enabled, including when the match above is blocked - a
+            blocked match is exactly when you want to see which inputs are
+            live on this well. */}
+        <Button
+          variant="secondary"
+          size="sm"
+          title="See what each input does to the BHP, oil, liquid and power-fluid match, and whether any combination reaches this test."
+          onClick={() => navigate("/sensitivity")}
+        >
+          <span className="flex items-center gap-1.5">
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            Match Sensitivities
+          </span>
+        </Button>
       </div>
       {notice && (
         <p className={notice.tone === "ok" ? "text-xs text-emerald-700" : "text-xs text-amber-700"}>

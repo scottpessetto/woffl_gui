@@ -7,11 +7,15 @@ import type {
   CalibrateRequest,
   CalibrateResponse,
   ClearIprPinResponse,
+  CombineJobStatus,
+  CombineRequest,
+  CombineStarted,
   EquivalentsResponse,
   IprFitRequest,
   IprFitResponse,
   IprPinResponse,
   JpHistoryResponse,
+  KnobBounds,
   MarginalWcResponse,
   MetaResponse,
   OptimizeJobStatus,
@@ -27,6 +31,8 @@ import type {
   PumpCurveResponse,
   SaveIprRequest,
   SaveIprResponse,
+  SensitivityRequest,
+  SensitivityResponse,
   SimParams,
   SolveResult,
   TriageResponse,
@@ -197,6 +203,66 @@ export const usePressureProfile = (well: string, params: SimParams, enabled: boo
     enabled,
     staleTime: MIN_30,
     placeholderData: keepPreviousData,
+    retry: false,
+  });
+
+/**
+ * Per-knob sensitivity of the four match quantities. One solve per swept
+ * value (about 90 solves, roughly a second), so it is gated by an explicit
+ * `enabled` - a mounted Sensitivity page with a solvable well - rather than
+ * firing on every sidebar keystroke. `targets` are the measured test values
+ * for the reference lines; any subset, all optional. `bounds` are the
+ * engineer's per-knob range overrides, keyed by knob id; an empty object
+ * sweeps every knob over its default range.
+ */
+export const useSensitivity = (
+  well: string,
+  params: SimParams,
+  targets: Partial<Omit<SensitivityRequest, "well" | "params" | "bounds">>,
+  bounds: Record<string, KnobBounds>,
+  enabled: boolean,
+) =>
+  useQuery({
+    queryKey: [
+      "sensitivity",
+      well,
+      stableStringify(params),
+      stableStringify(targets),
+      stableStringify(bounds),
+    ],
+    queryFn: ({ signal }) =>
+      post<SensitivityResponse>("/sensitivity", { well, params, ...targets, bounds }, signal),
+    enabled,
+    staleTime: MIN_5,
+    retry: false,
+  });
+
+/** Start a combined-permutation study: a factorial over the selected inputs,
+ * one solve per permutation (up to 10,000, which is minutes). Explicitly
+ * triggered and expensive, so it is a mutation rather than a query - it must
+ * never fire off a render. Resolves to a job id; poll it with useCombineJob.
+ * The server returns 422 synchronously when the requested run count exceeds
+ * the cap or nothing was selected. */
+export const useSensitivityCombine = () =>
+  useMutation({
+    mutationFn: (req: CombineRequest) => post<CombineStarted>("/sensitivity/combine", req),
+    retry: false,
+  });
+
+/** Poll one combine study every second while it's running; stops when
+ * settled. A 404 (expired/unknown job after a server restart) surfaces as
+ * error - callers clear their stored job id on it. */
+export const useCombineJob = (jobId: string | null) =>
+  useQuery({
+    queryKey: ["combine-job", jobId],
+    queryFn: ({ signal }) => get<CombineJobStatus>(`/sensitivity/combine/${jobId}`, signal),
+    enabled: jobId !== null,
+    refetchInterval: (query) => (query.state.data?.status === "running" ? 1000 : false),
+    // Keep polling when the window loses focus - a big factorial runs for
+    // minutes and the engineer alt-tabs; the monitor must not freeze.
+    refetchIntervalInBackground: true,
+    staleTime: Infinity,
+    gcTime: HOUR_1,
     retry: false,
   });
 

@@ -19,6 +19,7 @@ import type {
   CfpRunResult,
   OptimizeRunRequest,
   PadRunResult,
+  PadRunRow,
 } from "../../api/types";
 import { Card, Spinner, WarnNote } from "../../components/ui";
 import { fmtNum } from "../../lib/format";
@@ -86,6 +87,43 @@ function Metric({ label, value, title }: { label: string; value: string; title?:
 const TH_CLS = "px-2 py-1.5 text-right font-semibold";
 const TD_CLS = "px-2 py-1 text-right tabular-nums";
 
+/** Which inflow curve the well's pump was picked against. A reviewed save is
+ *  the point of the whole save-fits workflow; a weak auto-fit or generic
+ *  defaults mean the recommended pump is only as good as a sketch. */
+function FitSource({ row }: { row: PadRunRow }) {
+  const r2 = row.ipr_r2;
+  // R2 <= 0 means the Vogel curve tracks the tests WORSE than a flat line -
+  // the pump picked against it is noise, so it reads as loud as defaults.
+  const broken = r2 !== null && r2 <= 0;
+  const weak = r2 !== null && r2 > 0 && r2 < 0.5;
+  const [label, tone, hint] =
+    row.ipr_source === "saved"
+      ? ["saved", "text-emerald-700", "Engineer-reviewed IPR from prop_hist."]
+      : row.ipr_source === "vogel"
+        ? [
+            `auto R2 ${r2 === null ? "-" : r2.toFixed(2)}`,
+            broken ? "text-rose-700" : weak ? "text-amber-700" : "text-slate-500",
+            broken
+              ? "The Vogel fit is worse than a flat line - this well's pump pick is noise until someone reviews it."
+              : weak
+                ? "Automatic Vogel fit, and a weak one - review this well before trusting its pump."
+                : "Automatic Vogel fit over recent tests; not reviewed.",
+          ]
+        : row.ipr_source === "single_test"
+          ? ["1 test", "text-amber-700", "Seeded from one well test - no fit, so no curvature."]
+          : ["defaults", "text-rose-700", "No usable tests: generic IPR (qwf 750 / pwf 500 / ResP 1700). The pump pick is a guess."];
+  return (
+    <span className={clsx("text-[11px] font-medium", tone)} title={hint}>
+      {label}
+      {!row.has_friction && (
+        <span className="ml-1 text-slate-400" title="Library friction coefficients - no BHP calibration saved.">
+          nofric
+        </span>
+      )}
+    </span>
+  );
+}
+
 function PadResults({ result }: { result: PadRunResult }) {
   const meta = result.meta;
   const swaps = Array.isArray(meta.parsimony_swaps) ? meta.parsimony_swaps.length : 0;
@@ -116,6 +154,12 @@ function PadResults({ result }: { result: PadRunResult }) {
           <thead>
             <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
               <th className="px-2 py-1.5 text-left font-semibold">Well</th>
+              <th
+                className="px-2 py-1.5 text-left font-semibold"
+                title="The inflow curve this well's pump was chosen against. saved = an engineer-reviewed fit; auto = a Vogel fit over recent tests, with its R2; 1 test = a single test; defaults = no tests, so generic values were used and the pump pick is a guess."
+              >
+                Fit
+              </th>
               <th className="px-2 py-1.5 text-left font-semibold">Current</th>
               <th className={TH_CLS}>Test oil</th>
               <th className={TH_CLS}>Test PF</th>
@@ -132,6 +176,9 @@ function PadResults({ result }: { result: PadRunResult }) {
               return (
                 <tr key={r.well} className="border-b border-slate-100 last:border-b-0">
                   <td className="px-2 py-1 text-left font-medium text-slate-700">{r.well}</td>
+                  <td className="px-2 py-1 text-left">
+                    <FitSource row={r} />
+                  </td>
                   <td className="px-2 py-1 text-left text-slate-600">{r.current_pump ?? "-"}</td>
                   <td className={clsx(TD_CLS, "text-slate-600")}>{fmtNum(r.test_oil)}</td>
                   <td className={clsx(TD_CLS, "text-slate-500")}>{fmtNum(r.test_pf)}</td>

@@ -17,8 +17,10 @@ seeds (generic well profile when no survey exists for the new name).
 
 Every trial header re-simulates every well x nozzle x throat, so a run
 takes minutes. POST /optimize/run starts a daemon thread and returns a job
-id; GET /optimize/run/{id} polls {status, progress, result}. Jobs live in
-process memory (single-worker deployment) and are pruned after an hour.
+id; GET /optimize/run/{id} polls {status, progress, result}. The registry
+behind that is ``server.jobs`` - in process memory (single-worker
+deployment), pruned an hour after a job settles - shared with the
+sensitivity combine study.
 
 Engine mutation hazard: the run loops write the trial header into
 ``WellConfig.ppf_surf_well`` IN PLACE, so configs are built fresh per run
@@ -27,11 +29,7 @@ and never shared between jobs.
 
 from __future__ import annotations
 
-import logging
 import math
-import threading
-import time
-import uuid
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from typing import Any, Optional
@@ -39,82 +37,32 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
-from server import schemas
+from server import jobs, schemas
 from server.services import datasources, tests as tests_svc, wells as wells_svc
-
-log = logging.getLogger("woffl.web.optimizer")
 
 # ---------------------------------------------------------------------------
 # Job registry
 # ---------------------------------------------------------------------------
+#
+# The registry itself is server.jobs, shared with the sensitivity combine
+# study. These two are the optimizer's typed door onto it.
 
-_JOB_TTL_SECONDS = 3600.0
-_JOBS: dict[str, dict[str, Any]] = {}
-_JOBS_LOCK = threading.Lock()
-
-
-def _prune_jobs() -> None:
-    now = time.monotonic()
-    with _JOBS_LOCK:
-        dead = [
-            jid
-            for jid, j in _JOBS.items()
-            if j["status"] != "running" and now - j["settled_mono"] > _JOB_TTL_SECONDS
-        ]
-        for jid in dead:
-            del _JOBS[jid]
+_KINDS = ("pad", "cfp")
 
 
 def get_job(job_id: str) -> Optional[dict[str, Any]]:
-    with _JOBS_LOCK:
-        job = _JOBS.get(job_id)
-        if job is None:
-            return None
-        return {
-            "job_id": job_id,
-            "kind": job["kind"],
-            "status": job["status"],
-            "progress": job["progress"],
-            "result": job["result"],
-            "error": job["error"],
-            "started_at": job["started_at"],
-            "seconds": round(time.monotonic() - job["started_mono"], 1),
-        }
+    """Poll envelope for one optimization run; None when unknown/expired."""
+    return jobs.get(job_id, _KINDS)
 
 
 def start_run(req: schemas.OptimizeRunRequest) -> str:
     """Spawn the run thread; returns the job id immediately."""
-    _prune_jobs()
-    job_id = uuid.uuid4().hex[:12]
-    job: dict[str, Any] = {
-        "kind": req.kind,
-        "status": "running",
-        "progress": "building well models from saved fits...",
-        "result": None,
-        "error": None,
-        "started_at": datetime.now().isoformat(timespec="seconds"),
-        "started_mono": time.monotonic(),
-        "settled_mono": 0.0,
-    }
-    with _JOBS_LOCK:
-        _JOBS[job_id] = job
-
     runner = _run_pad_job if req.kind == "pad" else _run_cfp_job
-
-    def target() -> None:
-        try:
-            job["result"] = runner(job, req)
-            job["status"] = "done"
-            job["progress"] = "done"
-        except Exception as exc:  # noqa: BLE001 - job surface, never crash the server
-            log.exception("optimize run %s failed", job_id)
-            job["status"] = "error"
-            job["error"] = str(exc)
-        finally:
-            job["settled_mono"] = time.monotonic()
-
-    threading.Thread(target=target, daemon=True, name=f"opt-run-{job_id}").start()
-    return job_id
+    return jobs.start(
+        req.kind,
+        lambda job: runner(job, req),
+        progress="building well models from saved fits...",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +143,7 @@ def _build_configs(
     offline: set[str],
     future: list[schemas.FutureWellSpec],
     note: list[str],
+    prov: Optional[dict[str, dict[str, Any]]] = None,
 ) -> list[Any]:
     """WellConfigs for every ACTIVE well on ``pads`` + the future wells.
 
@@ -211,7 +160,18 @@ def _build_configs(
         if name in offline and name not in donors:
             continue
         try:
-            seeds_by_well[name] = wells_svc.well_context(name, 6, 0)["seeds"]
+            ctx = wells_svc.well_context(name, 6, 0)
+            seeds_by_well[name] = ctx["seeds"]
+            if prov is not None:
+                # Where this well's inflow curve came from. The pump the
+                # optimizer picks is only as trustworthy as this.
+                prov[name] = {
+                    "ipr_source": ctx.get("ipr_source"),
+                    "ipr_r2": ctx.get("ipr_r2"),
+                    "has_friction": any(
+                        ctx["seeds"].get(k) is not None for k in ("ken", "kth", "kdi")
+                    ),
+                }
         except Exception as exc:  # noqa: BLE001 - fail-soft per well
             note.append(f"{name}: seeding failed ({exc})")
 
@@ -312,7 +272,8 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
     pad = req.pad or "S"
     defaults = _PAD_DEFAULTS[pad]
     notes: list[str] = []
-    configs = _build_configs([pad], set(req.offline), req.future, notes)
+    prov: dict[str, dict[str, Any]] = {}
+    configs = _build_configs([pad], set(req.offline), req.future, notes, prov)
     if len(configs) == 0:
         raise ValueError(f"no active wells with usable saved fits on {pad}-Pad")
 
@@ -358,8 +319,14 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
                 "pf": r.allocated_power_fluid if r else None,
                 "form_water": r.predicted_formation_water if r else None,
                 "suction": r.suction_pressure if r else None,
-                "marginal_oil": r.marginal_oil_rate if r else None,
                 "sonic": bool(r.sonic_status) if r else None,
+                "marginal_oil": r.marginal_oil_rate if r else None,
+                # Fit provenance: which inflow curve this pump was chosen
+                # against, so a saved fit is visibly not a weak auto-fit.
+                **(
+                    prov.get(cfg.well_name)
+                    or {"ipr_source": None, "ipr_r2": None, "has_friction": False}
+                ),
             }
         )
 

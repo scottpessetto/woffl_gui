@@ -69,6 +69,13 @@ interface ParamsState {
   context: WellContext | null;
   /** well name the current context seeds were applied for (dedupe) */
   seededFor: string | null;
+  /** Well the open-time IPR fit has already been laid over. Per WELL, not
+   *  per SolverPage mount: the latch used to live in component state, so
+   *  every return to the Solver re-applied the fit and silently discarded
+   *  manual sidebar edits to WC / GOR / qwf / pwf - including a permutation
+   *  applied from Match Sensitivities. */
+  fitAppliedFor: string | null;
+  markFitApplied: (well: string) => void;
 
   set: <K extends keyof SimParams>(key: K, value: SimParams[K]) => void;
   setMany: (partial: Partial<SimParams>) => void;
@@ -97,12 +104,14 @@ export const useParamsStore = create<ParamsState>((set) => ({
   propLocks: NO_PROP_LOCKS,
   context: null,
   seededFor: null,
+  fitAppliedFor: null,
+  markFitApplied: (name) => set({ fitAppliedFor: name }),
   set: (key, value) =>
     set((s) => ({ params: { ...s.params, [key]: clampToBounds(key, value) } })),
 
   setMany: (partial) => set((s) => ({ params: mergeClamped(s.params, partial) })),
 
-  setWindow: (months, cap) => set({ months, cap, seededFor: null }),
+  setWindow: (months, cap) => set({ months, cap, seededFor: null, fitAppliedFor: null }),
 
   selectWell: (name) =>
     set(() => ({
@@ -114,6 +123,7 @@ export const useParamsStore = create<ParamsState>((set) => ({
       propLocks: NO_PROP_LOCKS,
       context: null,
       seededFor: null,
+      fitAppliedFor: null,
     })),
 
   applyContext: (ctx) =>

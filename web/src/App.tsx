@@ -8,6 +8,7 @@ import { Layout } from "./layout/Layout";
 const SolverPage = lazy(() => import("./pages/SolverPage"));
 const BatchPage = lazy(() => import("./pages/BatchPage"));
 const PfRangePage = lazy(() => import("./pages/PfRangePage"));
+const SensitivityPage = lazy(() => import("./pages/SensitivityPage"));
 const PressureProfilePage = lazy(() => import("./pages/PressureProfilePage"));
 const WellProfilePage = lazy(() => import("./pages/WellProfilePage"));
 const EquivalentsPage = lazy(() => import("./pages/EquivalentsPage"));
@@ -42,6 +43,14 @@ export default function App() {
           element={
             <Suspense fallback={<Spinner label="Loading view" />}>
               <PfRangePage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="/sensitivity"
+          element={
+            <Suspense fallback={<Spinner label="Loading view" />}>
+              <SensitivityPage />
             </Suspense>
           }
         />

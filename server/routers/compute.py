@@ -1,4 +1,5 @@
-"""Compute endpoints - solve, batch, PF-range, pressure profile, IPR.
+"""Compute endpoints - solve, batch, PF-range, pressure profile, IPR,
+knob sensitivity.
 
 Error contract (SolveErrorDetail): every failure is an HTTPException 422
 whose detail is {"error", "message", "suggested_gor"}. Typed solver failures
@@ -15,11 +16,13 @@ engineer via identity.bind_entry_user (X-Forwarded-Email).
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Request
 
 from server import schemas
 from server.identity import bind_entry_user
-from server.services import ipr, solve
+from server.services import ipr, sensitivity, solve
 
 router = APIRouter(tags=["compute"])
 
@@ -90,6 +93,85 @@ def post_calibrate(req: schemas.CalibrateRequest) -> schemas.CalibrateResponse:
         raise _solver_error(exc) from exc
     except ValueError as exc:
         raise _invalid(exc) from exc
+
+
+@router.post("/sensitivity", response_model=schemas.SensitivityResponse)
+def post_sensitivity(req: schemas.SensitivityRequest) -> schemas.SensitivityResponse:
+    """Per-knob sensitivity of the four match quantities (suction BHP, oil,
+    liquid, power fluid) at the current operating point: every calibration
+    knob swept across a defensible range, with its signed low/high excursion
+    and an inert flag.
+
+    Read-only diagnostic - no gate, no persistence, no physics change. It
+    exists to show which knobs are actually live on THIS operating point:
+    on a choked well the solver returns the choked-flow floor directly, so
+    PF pressure, kth, kdi and wellhead pressure are provably inert and the
+    engineer would otherwise turn them blind.
+    """
+    try:
+        return schemas.SensitivityResponse(
+            **sensitivity.run_sensitivity(
+                req.well,
+                req.params,
+                {
+                    "target_psu": req.target_psu,
+                    "target_qoil": req.target_qoil,
+                    "target_qliq": req.target_qliq,
+                    "target_qpf": req.target_qpf,
+                },
+                req.bounds,
+            )
+        )
+    except solve.SolveFailure as exc:
+        raise _solver_error(exc) from exc
+    except ValueError as exc:
+        raise _invalid(exc) from exc
+
+
+@router.post("/sensitivity/combine", response_model=schemas.CombineStarted)
+def post_sensitivity_combine(req: schemas.CombineRequest) -> Any:
+    """Start a combined-permutations study: vary the selected inputs TOGETHER
+    over the engineer's own ranges and report what the combination can reach.
+
+    This is the question a one-at-a-time sweep cannot answer. Where no single
+    input closes the gap to the measured test, this solves the full factorial
+    of the requested levels and returns the reachable [min, max] per match
+    quantity, whether each supplied target falls inside it, and the
+    permutation with the lowest RMS fractional error.
+
+    The sizes that matter are minutes of serial solving (8 inputs at 3 levels
+    is 6,561 solves), so it runs as a background job: this returns a job id
+    and GET /sensitivity/combine/{job_id} polls status, progress and result.
+    The request-level refusals still happen HERE, synchronously, so a typo is
+    an immediate 422 rather than a job that fails a second later.
+
+    The run cap (sensitivity.MAX_COMBINE_RUNS) is one of them, deliberately
+    not a silent sample: a subset of a factorial would misrepresent what was
+    explored, and the engineer reads "no combination reaches this" off the
+    envelope.
+
+    Read-only diagnostic - no gate, no persistence, no physics change.
+    """
+    try:
+        return {"job_id": sensitivity.start_combine(req)}
+    except ValueError as exc:
+        raise _invalid(exc) from exc
+
+
+@router.get("/sensitivity/combine/{job_id}", response_model=schemas.CombineJobStatus)
+def get_sensitivity_combine(job_id: str) -> Any:
+    """Combine study status; `result` populates when status becomes done.
+
+    Jobs live in process memory and are pruned an hour after they settle, so
+    an id from before a restart is a 404 and the client drops it.
+    """
+    job = sensitivity.get_combine_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "invalid", "message": f"unknown or expired job {job_id}"},
+        )
+    return job
 
 
 @router.post("/ipr/fit", response_model=schemas.IprFitResponse)

@@ -17,6 +17,7 @@ const VIEWS: View[] = [
   { path: "/solver", label: "Solver", caption: "Predicted oil, water, and power-fluid rates for the current pump." },
   { path: "/batch", label: "Batch Run", caption: "Sweep across nozzle/throat combinations to find the best pump." },
   { path: "/pf-range", label: "PF Range", caption: "How does oil rate trade off against power-fluid pressure?" },
+  { path: "/sensitivity", label: "Sensitivity", caption: "What each input does to the BHP, oil, liquid and power-fluid match." },
   { path: "/pressure-profile", label: "Pressure Profile", caption: "Pressure traverse from surface to suction along the wellbore." },
   { path: "/well-profile", label: "Well Profile", caption: "Deviation survey (MD vs TVD) used by the simulator." },
   { path: "/equivalents", label: "Pump Equivalents", caption: "Other nozzle/throat pairs with similar nozzle and throat areas." },

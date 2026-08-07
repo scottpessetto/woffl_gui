@@ -133,13 +133,17 @@ function Workbench({ well }: { well: string }) {
   //     overwrite the applied seeds - the exact mismatch this fixes.
   const ctxSeeded = useParamsStore((s) => s.seededFor) === well;
   const pinSettled = pinQ.isSuccess || pinQ.isError;
-  const [fitApplied, setFitApplied] = useState(false);
+  // The latch is PER WELL in the params store, not per mount: a component
+  // useState reset on every return to the Solver and re-applied the fit over
+  // whatever the engineer had since set by hand (or applied from Match
+  // Sensitivities). Cleared by selectWell and setWindow.
+  const fitApplied = useParamsStore((s) => s.fitAppliedFor) === well;
   useEffect(() => {
     const f = iprFitQ.data;
     if (fitApplied || !pinSettled || !ctxSeeded || !f) return;
-    setFitApplied(true);
+    useParamsStore.getState().markFitApplied(well);
     useParamsStore.getState().applyIprSeeds(f.seeds);
-  }, [iprFitQ.data, pinSettled, ctxSeeded, fitApplied]);
+  }, [iprFitQ.data, pinSettled, ctxSeeded, fitApplied, well]);
 
   // First-load settle gate for the IPR chart: hold it greyed until every
   // input series has arrived ONCE (tests, installs/pump labels, pin, the

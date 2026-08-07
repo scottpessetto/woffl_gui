@@ -123,6 +123,16 @@ export function ComparisonCard({
         <p className="mt-2 text-xs text-slate-500">
           Throat-entry Mach {fmtNum(solve.mach_te, 3)} ({solve.sonic_status ? "sonic" : "subsonic"})
         </p>
+        {solve.sonic_status && (
+          <p
+            className="mt-1 text-xs text-amber-700"
+            title="jetpump_solver returns psu_minimize(tsu, ken, ate, IPR, suction fluid) directly on the choked branch - power-fluid pressure is not one of its arguments. Only the throat-entry area, the entrance loss, the IPR and the free gas at suction can move it."
+          >
+            Suction is pinned at the choked-flow floor. Power-fluid pressure, kth, kdi and
+            wellhead pressure cannot move this BHP - only throat area, ken, the IPR and the
+            free gas at suction can.
+          </p>
+        )}
         {washout && <WarnNote className="mt-2">{washout.reason}</WarnNote>}
         {footer}
       </Card>

@@ -437,6 +437,197 @@ class CalibrateResponse(BaseModel):
     starts_tried: int
 
 
+class SensitivityPoint(BaseModel):
+    """One solve at one swept value. Nulls mean the solver failed there."""
+
+    value: float  # the swept value; catalog index for discrete knobs
+    label: str  # display value, e.g. "0.30" or "14C"
+    psu: Optional[float] = None  # suction BHP, psig
+    qoil: Optional[float] = None  # STBOPD
+    qliq: Optional[float] = None  # oil + formation water, BLPD
+    qpf: Optional[float] = None  # power fluid, BWPD
+    mach: Optional[float] = None
+    sonic: Optional[bool] = None
+    error: Optional[str] = None  # short reason when the solve failed
+
+
+class KnobBounds(BaseModel):
+    """Engineer override for one knob's swept range, in the knob's OWN units.
+
+    Continuous knobs: absolute field values (GOR in scf/bbl, ken unitless,
+    pressures in psi). Catalog knobs (nozzle_no, area_ratio): 0-based indices
+    into NOZZLE_OPTIONS / THROAT_OPTIONS.
+
+    ``low`` > ``high`` swaps rather than errors, ``low`` == ``high`` sweeps a
+    single point, and both ends are clamped into the range the sidebar itself
+    enforces so the sweep can never propose a value the engineer could not
+    type.
+    """
+
+    low: float
+    high: float
+    # Points across the range, clamped to 2-15 by the service. None = the
+    # knob's own default.
+    steps: Optional[int] = None
+
+
+class SensitivityKnob(BaseModel):
+    """One calibration knob swept across its defensible range.
+
+    ``low`` / ``high`` are the signed extreme excursions the sweep produced
+    per match quantity, which is what the tornado draws. ``basis`` is the one
+    line explaining WHY the range is what it is.
+    """
+
+    id: str
+    label: str
+    unit: str  # "psi", "scf/bbl", "" for unitless
+    baseline_label: str
+    basis: str  # one line: WHY this range (goes in the tooltip)
+    points: list[SensitivityPoint]
+    # Signed excursions from baseline over the whole sweep, per metric.
+    # None when every solve on that side failed.
+    low: dict[str, Optional[float]]  # keys: psu, qoil, qliq, qpf
+    high: dict[str, Optional[float]]
+    # True when the knob moves NOTHING measurably (all four metrics within tol
+    # across the entire sweep). This is the headline finding on a choked well.
+    inert: bool
+    # Everything below describes the RANGE, so the client can render a bounds
+    # editor without duplicating the knob table.
+    field: str  # the SimParams field this knob drives
+    kind: str  # "mult" | "abs" | "delta" | "catalog"
+    default_low: float  # resolved ABSOLUTE low with no override, pre-clamp
+    default_high: float  # resolved ABSOLUTE high with no override, pre-clamp
+    swept_low: float  # what was actually swept (post-clamp)
+    swept_high: float
+    clamp_low: Optional[float]  # hard limit the sidebar/model enforces
+    clamp_high: Optional[float]  # None when the field has no upper bound
+    options: Optional[list[str]]  # catalog knobs only: the full option list
+    overridden: bool  # an override was supplied AND applied
+
+
+class SensitivityResponse(BaseModel):
+    """Per-knob sensitivity of the match quantities. Read-only diagnostic:
+    nothing here changes the model or is persisted."""
+
+    baseline: SensitivityPoint
+    knobs: list[SensitivityKnob]
+    # Measured test values to compare against, echoed back when supplied.
+    target_psu: Optional[float] = None
+    target_qoil: Optional[float] = None
+    target_qliq: Optional[float] = None
+    target_qpf: Optional[float] = None
+    notes: list[str] = []
+
+
+class SensitivityRequest(BaseModel):
+    """Sweep every calibration knob around the current operating point.
+
+    Read-only: the params are the sidebar's current values and nothing is
+    written back. The targets are the measured test values the tornado draws
+    its reach lines from.
+    """
+
+    well: str
+    params: SimParams
+    # Measured test values for the reference lines; all optional.
+    target_psu: Optional[float] = None
+    target_qoil: Optional[float] = None
+    target_qliq: Optional[float] = None
+    target_qpf: Optional[float] = None
+    # Per-knob range overrides, keyed by knob id. An entry for an unknown
+    # knob is ignored with a note; missing knobs keep their table range.
+    bounds: dict[str, KnobBounds] = {}
+
+
+class CombineKnob(BaseModel):
+    """One knob to vary inside a combined-permutations study.
+
+    ``low`` / ``high`` are in the knob's own units, same convention as
+    KnobBounds. ``levels`` is how many values to take across that range
+    (2 = corners only).
+    """
+
+    id: str
+    low: float
+    high: float
+    levels: int = Field(3, ge=2, le=7)
+
+
+class CombineRun(BaseModel):
+    """One permutation. Nulls where the solver failed."""
+
+    values: dict[str, float]  # knob id -> swept value
+    labels: dict[str, str]  # knob id -> display value
+    psu: Optional[float] = None  # suction BHP, psig
+    qoil: Optional[float] = None  # STBOPD
+    qliq: Optional[float] = None  # oil + formation water, BLPD
+    qpf: Optional[float] = None  # power fluid, BWPD
+    sonic: Optional[bool] = None
+    error: Optional[str] = None  # short reason when the solve failed
+    # Root-mean-square fractional error across the SUPPLIED targets only.
+    # None when no target was supplied or the run failed.
+    score: Optional[float] = None
+
+
+class CombineRequest(BaseModel):
+    """Vary several knobs TOGETHER and report what the combination reaches.
+
+    The question single-knob sensitivity cannot answer: when no one knob
+    closes the gap to the measured test, does any combination inside the
+    engineer's believable ranges? Read-only - nothing is persisted.
+    """
+
+    well: str
+    params: SimParams
+    # Measured test values; the score and the reachability verdict are
+    # computed against whichever of these are supplied.
+    target_psu: Optional[float] = None
+    target_qoil: Optional[float] = None
+    target_qliq: Optional[float] = None
+    target_qpf: Optional[float] = None
+    # Knobs to vary together. Empty is an error, not an empty study.
+    knobs: list[CombineKnob]
+
+
+class CombineResponse(BaseModel):
+    """Full factorial over the selected knobs. Read-only diagnostic:
+    nothing here changes the model or is persisted."""
+
+    baseline: SensitivityPoint
+    runs: list[CombineRun]
+    # Reachable [min, max] per metric across every solved run. A metric with
+    # no solved run is absent.
+    envelope: dict[str, list[float]]
+    # Per metric: is the supplied target inside the envelope? Absent key when
+    # no target was supplied for that metric.
+    reachable: dict[str, bool]
+    best_index: Optional[int] = None  # index into runs, lowest score
+    n_runs: int
+    n_failed: int
+    notes: list[str] = []
+
+
+class CombineStarted(BaseModel):
+    """POST /sensitivity/combine - the study runs as a background job."""
+
+    job_id: str
+
+
+class CombineJobStatus(BaseModel):
+    """Poll envelope for one combined-permutations study. `result` populates
+    when status becomes done."""
+
+    job_id: str
+    kind: Literal["sensitivity"]
+    status: Literal["running", "done", "error"]
+    progress: Optional[str] = None
+    result: Optional[CombineResponse] = None
+    error: Optional[str] = None
+    started_at: str
+    seconds: float
+
+
 class GaugeDay(BaseModel):
     """One daily-median BHP from an uploaded memory gauge."""
 

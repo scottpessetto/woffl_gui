@@ -200,6 +200,20 @@ only): own oil cost, PW freed/added (server-enriched own_water_delta on
 every single move), net fleet oil after pressure feedback, and whether the
 move made the best plan.
 
+Every pad-run row carries where its inflow curve came from, because a pump
+recommendation is only as good as the IPR it was chosen against and the run
+table otherwise presents all of them with equal confidence. The Fit column
+reads `saved` (an engineer-reviewed IPR from prop_hist), `auto R2 <n>` (an
+automatic Vogel fit over recent tests, amber under 0.5 and crimson at or
+below 0 where the curve tracks worse than a flat line), `1 test`, or
+`defaults` - the last meaning the well had no usable tests and was modeled on
+qwf 750 / pwf 500 / ResP 1700, which is why several such wells return the
+same predicted oil. `nofric` marks a well running library friction
+coefficients rather than a saved BHP calibration. The provenance rides
+`well_context` (`ipr_source` / `ipr_r2`, set where the seeds are), is
+collected per well by `_build_configs` and lands on each row - nothing is
+recomputed for it.
+
 Pad runs (S/I/M) render the booster plant as an industry pump-curve sheet,
 served static and cached from `GET /api/optimize/pump-curve?pad=&n_pumps=`
 (`PadPlant.curve_report`, `server/services/pad_curves.py`), so the plant is

@@ -360,6 +360,11 @@ def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
     test_count = int(len(tests_df)) if tests_df is not None else 0
 
     ipr_info: Optional[str] = None
+    # Where the IPR numbers below actually came from, and how well the fit
+    # held. The optimizer reports this per well: a pump recommendation is
+    # only as good as the inflow curve it was chosen against.
+    ipr_source: Optional[str] = None
+    ipr_r2: Optional[float] = None
     vogel_seeded = False
     if tests_df is not None and len(tests_df) >= 2:
         try:
@@ -405,6 +410,8 @@ def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
                     f"(most recent: {date_str})"
                 )
                 vogel_seeded = True
+                ipr_source = "vogel"
+                ipr_r2 = frames.opt_float(coeff.get("R2"))
         except Exception as exc:
             # Fall through to the single-test seed path below, but LOG it -
             # a systemic failure degrading every well needs a signal.
@@ -441,6 +448,7 @@ def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
             f"Sidebar seeded from 1 well test ({date_str}) - "
             "Vogel IPR fit unavailable"
         )
+        ipr_source = "single_test"
 
     # -- (d) saved-IPR overlay -------------------------------------------------
     # mirrors woffl/gui/sidebar.py:_seed_saved_ipr
@@ -509,6 +517,10 @@ def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
                     if who
                     else f"Restored saved IPR values ({when})"
                 )
+                # A reviewed save outranks whatever the tests fitted, and its
+                # R2 no longer describes the numbers in play.
+                ipr_source = "saved"
+                ipr_r2 = None
     except Exception:
         log.warning(
             "Saved-IPR seed failed for %s; auto-populated values stand.",
@@ -578,6 +590,8 @@ def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
         "pump": pump,
         "pf": pf,
         "ipr_info": ipr_info,
+        "ipr_source": ipr_source,
+        "ipr_r2": ipr_r2,
         "saved_ipr_info": saved_ipr_info,
         "test_count": test_count,
     }

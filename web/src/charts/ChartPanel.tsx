@@ -86,13 +86,21 @@ export function ChartPanel({
   option,
   height,
   zoom,
+  onSelect,
 }: {
   option: EChartsOption | null;
   height: number;
   /** Which axes zooming (brush, pan, wheel) applies to. */
   zoom: ZoomAxes;
+  /** Category-axis charts where clicking a row picks a detail view (the
+   *  sensitivity tornado). Receives the clicked category name. Not a
+   *  general event bus - nothing else is forwarded. */
+  onSelect?: (name: string) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  // onReady runs once per chart instance; keep the live callback in a ref.
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
   const [fullscreen, setFullscreen] = useState(false);
   // Latest zoom wiring for the (once-attached) brush handlers: which axes
   // zoom, which dataZoom component covers them, and the y-axis -> grid map.
@@ -143,6 +151,13 @@ export function ChartPanel({
     const zr = chart.getZr();
     // Double-click resets the zoom (plotly muscle memory).
     zr.on("dblclick", () => chart.dispatchAction({ type: "restore" }));
+
+    // Row selection on category charts. Harmless where onSelect is unset.
+    chart.on("click", (p: unknown) => {
+      if (p === null || typeof p !== "object" || !("name" in p)) return;
+      const name = p.name;
+      if (typeof name === "string" && name !== "") onSelectRef.current?.(name);
+    });
 
     // ---- box brush ---------------------------------------------------
     // Overlay rect lives inside the chart container (ECharts forces the
