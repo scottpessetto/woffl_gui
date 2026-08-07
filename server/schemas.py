@@ -329,6 +329,83 @@ class OptimizeJobStatus(BaseModel):
     seconds: float
 
 
+class PumpCurveNameplate(BaseModel):
+    """Vendor/equipment identity for a pad's booster plant - the block an
+    engineer reads off a curve sheet before trusting the curve."""
+
+    equipment: str
+    model: str
+    arrangement: str
+    speed: str
+    source: str
+    validated: str
+
+
+class PumpCurveLine(BaseModel):
+    """One station line: delivered header pressure vs TOTAL station flow.
+    `points` are [flow_bpd, discharge_psi]. Exactly one line in a family
+    carries active=True (the configured pump count / speed)."""
+
+    label: str
+    n_pumps: Optional[int] = None
+    hz: Optional[float] = None
+    active: bool = False
+    points: list[list[float]]
+
+
+class PumpStationCurve(BaseModel):
+    """Station-level view: the curve family, the capability frontier, and the
+    flow markers (BEP, preferred and allowable operating regions, minimum
+    continuous flow) expressed as TOTAL station flow in BPD."""
+
+    curves: list[PumpCurveLine]
+    frontier: Optional[PumpCurveLine] = None
+    bep: Optional[float] = None
+    por: Optional[list[float]] = None
+    aor: Optional[list[float]] = None
+    min_flow: Optional[float] = None
+    header_cap: Optional[float] = None
+
+
+class PumpMachineCurve(BaseModel):
+    """One machine's vendor curve sheet at PER-PUMP flow. `points` are
+    [flow_bpd, head_ft, bhp, eff_pct]; `head_derated` is the same flow grid
+    scaled by the field wear factor when the pad models one."""
+
+    label: str
+    hz: float
+    points: list[list[float]]
+    head_derated: Optional[list[list[float]]] = None
+    derate_note: Optional[str] = None
+    bep: Optional[float] = None
+    por: Optional[list[float]] = None
+    aor: Optional[list[float]] = None
+    min_flow: Optional[float] = None
+
+
+class PumpCurveResponse(BaseModel):
+    """GET /optimize/pump-curve - the pad plant's industry-format curve set:
+    head / BHP / efficiency vs flow per machine, the station family of
+    delivered header pressure vs total flow, BEP, the preferred and allowable
+    operating regions, and the capability frontier.
+
+    Pure static physics read off the plant model and its data files - no run
+    state, no Databricks, nothing well-specific - so it renders before a run
+    and is cached hard. The duty point the optimizer landed on is overlaid
+    client-side from the pad run meta; it is deliberately not in this payload.
+    """
+
+    pad: str
+    coupling: str
+    n_pumps: Optional[int]
+    sg: float
+    suction_psi: float
+    max_header_psi: Optional[float]
+    nameplate: PumpCurveNameplate
+    station: PumpStationCurve
+    pumps: list[PumpMachineCurve]
+
+
 class CalibrateRequest(BaseModel):
     """Run BHP friction calibration: fit (ken, kth, kdi) so the modeled
     suction pressure matches the selected test's measured BHP.

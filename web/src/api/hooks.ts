@@ -24,6 +24,7 @@ import type {
   PropHistoryResponse,
   PropLockRequest,
   PropLockResponse,
+  PumpCurveResponse,
   SaveIprRequest,
   SaveIprResponse,
   SimParams,
@@ -294,6 +295,21 @@ export const useOptimizeJob = (jobId: string | null) =>
     staleTime: Infinity,
     gcTime: HOUR_1,
     retry: false,
+  });
+
+/** Booster-pump curves for one pad's plant, for the S/I/M chart panels.
+ * Pure static physics read off files on disk - nothing invalidates them,
+ * hence staleTime Infinity. */
+export const usePumpCurve = (pad: string | null, nPumps: number | null) =>
+  useQuery({
+    queryKey: ["pump-curve", pad, nPumps],
+    queryFn: ({ signal }) =>
+      get<PumpCurveResponse>(
+        `/optimize/pump-curve?pad=${pad}${nPumps !== null ? `&n_pumps=${nPumps}` : ""}`,
+        signal,
+      ),
+    enabled: pad !== null,
+    staleTime: Infinity,
   });
 
 // ---------------------------------------------------------------------------

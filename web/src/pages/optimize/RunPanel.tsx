@@ -11,7 +11,7 @@
 
 import clsx from "clsx";
 import { Play } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { useOptimizeJob, useStartOptimizeRun, useWells } from "../../api/hooks";
 import type {
@@ -26,6 +26,7 @@ import { DEFAULT_POPS_PADS } from "../../state/wellSort";
 import { useOptimizeStore } from "../../state/optimize";
 
 import { CfpResultCharts } from "./CfpCharts";
+import { PadCharts } from "./PadCharts";
 const NOZZLE_OPTIONS = ["8", "9", "10", "11", "12", "13", "14", "15"];
 const THROAT_OPTIONS = ["X", "A", "B", "C", "D", "E"];
 const CFP_PADS = ["B", "G", "C", "J"];
@@ -358,7 +359,17 @@ function CfpResults({ result }: { result: CfpRunResult }) {
   );
 }
 
-export function RunPanel({ kind, pad }: { kind: "pad" | "cfp"; pad: "S" | "I" | "M" | null }) {
+/** ``aside`` rides beside the pump curves (the pad readiness board). Pad
+ *  runs only - CFP has no per-pad board and keeps its own full-width charts. */
+export function RunPanel({
+  kind,
+  pad,
+  aside,
+}: {
+  kind: "pad" | "cfp";
+  pad: "S" | "I" | "M" | null;
+  aside?: ReactNode;
+}) {
   const runKey = kind === "cfp" ? "CFP" : (pad as string);
   const wells = useWells();
   const offlineByPad = useOptimizeStore((s) => s.offline);
@@ -439,6 +450,7 @@ export function RunPanel({ kind, pad }: { kind: "pad" | "cfp"; pad: "S" | "I" | 
   };
 
   const result = job.data?.status === "done" ? job.data.result : null;
+  const padResult = result !== null && "rows" in result ? result : null;
 
   return (
     <div className="space-y-3">
@@ -551,7 +563,19 @@ export function RunPanel({ kind, pad }: { kind: "pad" | "cfp"; pad: "S" | "I" | 
       </Card>
 
       {running && !job.data?.progress && <Spinner label="Starting run" />}
-      {result !== null && "rows" in result && <PadResults result={result} />}
+      {kind === "pad" && pad && (
+        // Curves left, readiness right, 50/50: the plant and the wells
+        // feeding it read together instead of a full screen apart.
+        // grid-cols-2 is repeat(2, minmax(0, 1fr)), so the chart half can
+        // actually shrink; min-w-0 does the same for the flex-less children.
+        <div className={clsx("grid gap-4", aside && "xl:grid-cols-2")}>
+          <div className="min-w-0">
+            <PadCharts pad={pad} result={padResult} />
+          </div>
+          {aside && <div className="min-w-0">{aside}</div>}
+        </div>
+      )}
+      {padResult !== null && <PadResults result={padResult} />}
       {result !== null && "summary" in result && <CfpResults result={result} />}
     </div>
   );

@@ -38,6 +38,9 @@ _JP_DATA_DIR = Path(__file__).resolve().parent.parent / "jp_data"
 
 _FT_TO_PSI_DIVISOR = 2.31  # ft of head -> psi at SG 1.0 (README/meta convention)
 
+_CURVE_POINTS = 61  # samples per reported curve, both ends inclusive
+_BPD_TO_GPM = 42.0 / 1440.0  # 42 gal/bbl over 1440 min/day
+
 # woffl.assembly.network_optimizer.PowerFluidConstraint validates
 # 1000 <= pressure <= 5000 psi at construction.
 PF_CONSTRAINT_MIN_PSI = 1000.0
@@ -82,6 +85,9 @@ class PadPlant:
     * ``envelope(flows, n_pumps, at_pressure)`` — per-flow operating rows
       wrapping the legacy ``operating_envelope`` shapes (keys beyond ``flow``
       / ``max_discharge_psi`` / ``feasible`` / ``pumps`` are pad-specific).
+    * ``curve_report(n_pumps)`` -- industry-format pump-curve payload: the
+      station curve family + capability frontier, and the per-machine head /
+      BHP / efficiency sheet with BEP, POR and AOR.
     """
 
     coupling: str = "free_pressure"  # or "fixed_curve"
@@ -116,6 +122,28 @@ class PadPlant:
         n_pumps: int | None = None,
         at_pressure: float | None = None,
     ) -> list[dict]:
+        raise NotImplementedError
+
+    def curve_report(self, n_pumps: int | None = None) -> dict:
+        """Industry-format booster pump curves for this plant (JSON-safe).
+
+        Args:
+            n_pumps (int | None): online pump count; None resolves through
+                ``_n`` to the plant's own default.
+
+        Returns:
+            dict: ``{pad, coupling, n_pumps, sg, suction_psi, max_header_psi,
+                nameplate{}, station{curves, frontier, bep, por, aor,
+                min_flow, header_cap}, pumps[]}``. Station curve points are
+                ``[total_flow_bpd, discharge_psi]``; machine curve points are
+                ``[flow_bpd, head_ft, bhp, eff_pct]`` at PER-PUMP flow. Plain
+                dicts, lists, floats and strings only.
+
+        Implemented by ``SPadPlant`` (fixed-speed parallel family),
+        ``IPadPlant`` (iso-speed series train + amp frontier) and
+        ``MPadPlant`` (iso-speed parallel VFD bank). ``FixedHeaderPlant`` has
+        no pumps and does not implement it.
+        """
         raise NotImplementedError
 
     # -- optimizer policy (R-1 Phase B: consumed by woffl.gui.pad_optimize) --
@@ -227,6 +255,53 @@ class PadPlant:
     def _head_ft_to_psi(head_ft: float, sg: float) -> float:
         return head_ft * sg / _FT_TO_PSI_DIVISOR
 
+    # -- curve reporting (head / BHP / efficiency sheets) --------------------
+
+    @staticmethod
+    def hydraulic_efficiency(
+        q_bpd: float, head_ft: float, bhp: float, sg: float
+    ) -> float:
+        """Pump hydraulic efficiency (percent) at one point on a curve.
+
+        ``eff = Q_gpm * H_ft * SG / (3960 * BHP)``, water horsepower over
+        shaft horsepower.
+
+        Args:
+            q_bpd (float): flow through the machine (BPD).
+            head_ft (float): head the machine makes at that flow (ft).
+            bhp (float): shaft power at that flow (BHP).
+            sg (float): the SG THE BHP CURVE WAS FIT AT, which is not always
+                the SG used for the head-to-psi conversion. S and I fit BHP on
+                water so they read at 1.0 (I converts psi at 1.04); M's
+                datasheet power is the design SG 1.05 while its psi conversion
+                uses the field 1.03. Only with those values do S and I
+                reproduce the ``eff_pct`` / ``stage_eff_pct`` columns of the
+                committed CSVs and M the Schlumberger datasheet efficiency.
+
+        Returns:
+            float: efficiency (percent, 0-100). 0.0 at zero flow and wherever
+                the power curve is non-positive (efficiency is undefined
+                there); clamped into [0, 100] everywhere else.
+        """
+        if q_bpd <= 0.0:
+            return 0.0
+        if bhp <= 0.0:
+            return 0.0
+        eff = 100.0 * (q_bpd * _BPD_TO_GPM) * head_ft * sg / (3960.0 * bhp)
+        return min(max(eff, 0.0), 100.0)
+
+    @staticmethod
+    def _curve_grid(q_max: float, n: int = _CURVE_POINTS) -> list[float]:
+        """``n`` evenly spaced flows (BPD) from shut-off (0) to ``q_max``,
+        both ends inclusive."""
+        return [q_max * i / (n - 1) for i in range(n)]
+
+    @staticmethod
+    def _por(bep: Optional[float]) -> Optional[list[float]]:
+        """Preferred operating region [lo, hi] (BPD) about a BEP flow, 0.70x
+        to 1.20x. None when there is no BEP to hang it on."""
+        return None if not bep else [0.70 * bep, 1.20 * bep]
+
     @staticmethod
     def _grow_and_bisect(ok, lo: float, hi: float, cap: float) -> float:
         """Doubling + 50-step bisection inverse of a falling frontier.
@@ -288,6 +363,12 @@ class SPadPlant(PadPlant):
             "c2": -4.557184603974567e-08,
             "c3": -3.867646778059496e-12,
         },
+        "bhp_per_stage_poly": {
+            "c0": 5.49354336433901,
+            "c1": 0.0003478302405478312,
+            "c2": 6.361293991469625e-09,
+            "c3": -3.505560158491784e-13,
+        },
     }
 
     def _load_meta(self) -> dict:
@@ -323,6 +404,16 @@ class SPadPlant(PadPlant):
         p = self._meta().get(
             "head_per_stage_poly", self._FALLBACK["head_per_stage_poly"]
         )
+        q = q_per_pump_bpd
+        return p["c0"] + p["c1"] * q + p["c2"] * q**2 + p["c3"] * q**3
+
+    def bhp_per_stage(self, q_per_pump_bpd: float) -> float:
+        """Shaft power (BHP) one stage draws at the given per-pump flow (BPD).
+
+        Explicit cubic in the same style as ``head_per_stage`` (NOT poly_eval)
+        so the two curve accessors stay term-for-term identical.
+        """
+        p = self._meta().get("bhp_per_stage_poly", self._FALLBACK["bhp_per_stage_poly"])
         q = q_per_pump_bpd
         return p["c0"] + p["c1"] * q + p["c2"] * q**2 + p["c3"] * q**3
 
@@ -422,6 +513,98 @@ class SPadPlant(PadPlant):
             for q in flows
         ]
 
+    # -- curve report ---------------------------------------------------------
+
+    def curve_report(self, n_pumps: int | None = None) -> dict:
+        """Station + machine pump curves for the S-Pad boosters.
+
+        Args:
+            n_pumps (int | None): online pump count (BPD physics is per-pump
+                flow = total / n); None = the plant default.
+
+        Returns:
+            dict: the ``PadPlant.curve_report`` payload. The station family is
+                one fixed-speed delivered-header curve per online-pump count;
+                the single machine sheet is one 79-stage unit at 3,500 RPM.
+        """
+        meta = self._meta()
+        n = self._n(n_pumps)
+        installed = self.n_pumps_installed()
+        # the family always highlights a curve the station actually has, even
+        # if a caller asks for a count it does not
+        n_on = min(max(int(n or installed), 1), installed)
+        rec_lo, rec_hi = self.recommended_flow_per_pump()
+        n_stages = int(meta.get("n_stages", 79))
+        rpm = int(meta.get("speed_rpm", 3500))
+        bep_pp = float(meta.get("bep_flow_per_pump_bpd", 12000))
+
+        curves = []
+        for count in range(1, installed + 1):
+            # 1.12x the recommended max mirrors the Streamlit curve plot: it
+            # carries the curve past the thrust window into up-thrust
+            q_max = rec_hi * 1.12 * count
+            curves.append(
+                {
+                    "label": f"{count} pump{'s' if count != 1 else ''}",
+                    "n_pumps": count,
+                    "hz": 60.0,
+                    "active": count == n_on,
+                    "points": [
+                        [q, self.discharge_pressure(q, count)]
+                        for q in self._curve_grid(q_max)
+                    ],
+                }
+            )
+
+        pump_pts = []
+        for q in self._curve_grid(21000.0):  # the head poly's stated valid range
+            head = n_stages * self.head_per_stage(q)
+            bhp = n_stages * self.bhp_per_stage(q)
+            # the stage BHP poly is a water fit, so efficiency reads at SG 1.0
+            eff = self.hydraulic_efficiency(q, head, bhp, 1.0)
+            pump_pts.append([q, head, bhp, eff])
+
+        model = f"Weatherford/Borets ESPi675TJ-12000 (675 series), {n_stages} stg"
+        return {
+            "pad": "S",
+            "coupling": self.coupling,
+            "n_pumps": n,
+            "sg": self.specific_gravity(),
+            "suction_psi": self.suction_psi(),
+            "max_header_psi": self.max_header_psi,
+            "nameplate": {
+                "equipment": "P-800 B-1/B-2/B-3",
+                "model": model,
+                "arrangement": f"{installed} x parallel, fixed speed",
+                "speed": f"{rpm:,} RPM (60 Hz, no VFD)",
+                "source": str(meta.get("source", "")),
+                "validated": str(meta.get("validated", "")),
+            },
+            "station": {
+                "curves": curves,
+                # fixed speed: the curve family IS the capability
+                "frontier": None,
+                "bep": bep_pp * n_on,
+                "por": self._por(bep_pp * n_on),
+                "aor": [rec_lo * n_on, rec_hi * n_on],
+                "min_flow": None,
+                "header_cap": None,
+            },
+            "pumps": [
+                {
+                    "label": f"P-800 B-x - {n_stages} stg at {rpm:,} RPM",
+                    "hz": 60.0,
+                    "points": pump_pts,
+                    "head_derated": None,
+                    "derate_note": None,
+                    "bep": bep_pp,
+                    "por": self._por(bep_pp),
+                    "aor": [rec_lo, rec_hi],
+                    "min_flow": None,
+                }
+            ],
+        }
+
 
 class IPadPlant(PadPlant):
     """I-Pad: 2-pump SERIES VFD train — amp-limited delivered-pressure frontier.
@@ -456,6 +639,8 @@ class IPadPlant(PadPlant):
     _PUMP_DIR = _JP_DATA_DIR / "I_Pad_Pumps"
     _HZ_MAX = 60.0  # curve is normalized to 60 Hz; drives run at/below it
     _HZ_FLOOR = 10.0  # never search below this regardless of flow
+    # iso-speed lines the station panel draws (both units at the same speed)
+    _CURVE_SPEEDS_HZ = (45.0, 50.0, 55.0, 60.0)
 
     def _load_meta(self) -> dict:
         return self._load_meta_glob(self._PUMP_DIR, "I-Pad")
@@ -683,6 +868,121 @@ class IPadPlant(PadPlant):
         # concept, so ``n_pumps`` / ``at_pressure`` are ignored
         return self.operating_envelope(flows)
 
+    # -- curve report ---------------------------------------------------------
+
+    def curve_report(self, n_pumps: int | None = None) -> dict:
+        """Station + machine pump curves for the I-Pad series train.
+
+        Args:
+            n_pumps (int | None): carried into the payload only -- the LP+HP
+                train is fixed, so the physics ignores it.
+
+        Returns:
+            dict: the ``PadPlant.curve_report`` payload. The station family is
+                one iso-speed line per ``_CURVE_SPEEDS_HZ`` entry with BOTH
+                units at that speed; the frontier is the amp-limited
+                capability the optimizer rides. Two machine sheets, LP then HP.
+        """
+        meta = self._meta()
+        stage = meta["stage"]
+        sg = self.specific_gravity()
+        suction = self.suction_psi()
+        pumps = self.pumps()
+        q_valid = self.max_valid_flow()
+        bep = float(stage["bep_flow_bpd"])
+        aor = [float(q) for q in stage["recommended_operating_range_bpd"]]
+        min_flow = float(stage["min_continuous_flow_bpd"])
+
+        curves = []
+        for hz in self._CURVE_SPEEDS_HZ:
+            # affinity: the stage poly is only valid out to max_valid_flow in
+            # 60-Hz-equivalent flow, so the ceiling scales with speed
+            points = []
+            for q in self._curve_grid(q_valid * hz / 60.0):
+                dp = sum(self.pump_dP(p["n_stages"], q, hz, sg) for p in pumps)
+                points.append([q, suction + dp])
+            curves.append(
+                {
+                    "label": f"{hz:.0f} Hz (both units)",
+                    "n_pumps": None,
+                    "hz": hz,
+                    "active": hz == self._HZ_MAX,
+                    "points": points,
+                }
+            )
+
+        lp_amps, hp_amps = pumps[0]["amp_limit"], pumps[1]["amp_limit"]
+        front_pts = []
+        for q in self._curve_grid(self.flow_window()[1]):
+            psi = self.max_discharge_pressure(q, sg)
+            if psi is not None:  # past the amp ceiling the train has no point
+                front_pts.append([q, psi])
+
+        machines = []
+        for p in pumps:
+            pump_pts = []
+            for q in self._curve_grid(q_valid):
+                head = p["n_stages"] * self.head_per_stage(q)
+                bhp = p["n_stages"] * self.bhp_per_stage(q)
+                # the stage BHP poly is a water fit, so efficiency reads at
+                # SG 1.0 even though the psi conversion uses 1.04
+                eff = self.hydraulic_efficiency(q, head, bhp, 1.0)
+                pump_pts.append([q, head, bhp, eff])
+            machines.append(
+                {
+                    "label": f"{p['name']} - {p['n_stages']} stg at 60 Hz",
+                    "hz": 60.0,
+                    "points": pump_pts,
+                    "head_derated": None,
+                    "derate_note": None,
+                    # one shared stage curve, so both units carry it
+                    "bep": bep,
+                    "por": self._por(bep),
+                    "aor": list(aor),
+                    "min_flow": min_flow,
+                }
+            )
+
+        lp_stg, hp_stg = pumps[0]["n_stages"], pumps[1]["n_stages"]
+        model = f"Summit ESP SN35000 XRC CCW (950 series), {lp_stg} stg + {hp_stg} stg"
+        rpm = int(stage.get("ref_speed_rpm", 3500))
+        return {
+            "pad": "I",
+            "coupling": self.coupling,
+            "n_pumps": self._n(n_pumps),
+            "sg": sg,
+            "suction_psi": suction,
+            "max_header_psi": self.max_header_psi,
+            "nameplate": {
+                "equipment": f"{pumps[0]['name']} / {pumps[1]['name']}",
+                "model": model,
+                "arrangement": "2 x series (LP feeds HP), VFD",
+                "speed": f"{rpm:,} RPM at 60 Hz (VFD)",
+                "source": str(stage.get("source", "")),
+                "validated": str(meta.get("validated", "")),
+            },
+            "station": {
+                "curves": curves,
+                "frontier": {
+                    "label": f"Amp limit (LP {lp_amps:.0f} A / HP {hp_amps:.0f} A)",
+                    # same shape as a station curve: the capability bound is
+                    # not an operating line, and each unit rides its own
+                    # amp-limited speed, so n_pumps/hz/active stay empty
+                    "n_pumps": None,
+                    "hz": None,
+                    "active": False,
+                    "points": front_pts,
+                },
+                # series train: one flow through both units, nothing to scale
+                "bep": bep,
+                "por": self._por(bep),
+                "aor": list(aor),
+                "min_flow": min_flow,
+                "header_cap": self.max_header_psi,
+            },
+            "pumps": machines,
+        }
+
 
 class MPadPlant(PadPlant):
     """M-Pad (Moose Pad, Mod 42): 3x parallel VFD REDA M675 HP bank.
@@ -711,6 +1011,9 @@ class MPadPlant(PadPlant):
 
     _PUMP_DIR = _JP_DATA_DIR / "M_Pad_Pumps"
     _HP_SUCTION_DEFAULT = 1400.0  # LP-held header (PIC-4221 setpoint)
+    # iso-speed lines the station panel draws; the datasheet freq_range_hz
+    # for B_HP_4230 is [51, 61]
+    _CURVE_SPEEDS_HZ = (51.0, 55.0, 58.0, 61.0)
 
     def _load_meta(self) -> dict:
         return self._load_meta_glob(self._PUMP_DIR, "Moose Pad")
@@ -954,6 +1257,110 @@ class MPadPlant(PadPlant):
     ) -> list[dict]:
         cap = self.max_header_psi if at_pressure is None else at_pressure
         return self.operating_envelope(flows, self._n(n_pumps), header_cap=cap)
+
+    # -- curve report ---------------------------------------------------------
+
+    def curve_report(self, n_pumps: int | None = None) -> dict:
+        """Station + machine pump curves for the M-Pad HP bank.
+
+        Args:
+            n_pumps (int | None): online HP pumps; None = the plant default.
+
+        Returns:
+            dict: the ``PadPlant.curve_report`` payload. The station family is
+                one iso-speed line per ``_CURVE_SPEEDS_HZ`` entry at the
+                resolved pump count, WEAR-DERATED because that is the curve
+                the optimizer's frontier rides. The machine sheet is as-new
+                with the worn head carried alongside in ``head_derated``.
+        """
+        meta = self._meta()
+        hp = self.hp()
+        n = self._n(n_pumps)
+        n_on = max(int(n or hp["n_default"]), 1)
+        sg = self.specific_gravity()
+        wear = self.wear_factor()
+        suction = self.hp_suction_psi()
+        b = meta["pumps"]["B_HP_4230"]
+        stages = int(b.get("stages", 41))
+        bep_pp = float(b["bep_flow_bpd_60hz"])
+        rec_lo, rec_hi = self.hp_recommended_flow_per_pump()
+
+        curves = []
+        for hz in self._CURVE_SPEEDS_HZ:
+            points = []
+            for q in self._curve_grid(rec_hi * (hz / 60.0) * n_on):
+                # pump_boost applies the wear derate by default: the family is
+                # field-representative, not the as-new catalog curve
+                points.append([q, suction + self.pump_boost(q / n_on, hz, sg=sg)])
+            curves.append(
+                {
+                    "label": f"{n_on} pump{'s' if n_on != 1 else ''} at {hz:.0f} Hz",
+                    "n_pumps": n_on,
+                    "hz": hz,
+                    "active": hz == hp["hz_max"],
+                    "points": points,
+                }
+            )
+
+        # the machine sheet is the vendor curve: as-new head, datasheet power,
+        # and efficiency at the SG the BHP poly was fit at (design 1.05)
+        sg_design = float(meta.get("compute", {}).get("specific_gravity_design", 1.05))
+        pump_pts, derated = [], []
+        for q in self._curve_grid(rec_hi):
+            head = self._head_ft(hp, q)
+            bhp = self._bhp(hp, q)
+            eff = self.hydraulic_efficiency(q, head, bhp, sg_design)
+            pump_pts.append([q, head, bhp, eff])
+            derated.append([q, head * wear])
+
+        freq_lo, freq_hi = b["freq_range_hz"]
+        nominal_hz = int(b.get("nominal_freq_hz", 60))
+        return {
+            "pad": "M",
+            "coupling": self.coupling,
+            "n_pumps": n,
+            "sg": sg,
+            "suction_psi": suction,
+            "max_header_psi": self.max_header_psi,
+            "nameplate": {
+                "equipment": str(b.get("tags", "P-4230A / P-4230B / P-4230C")),
+                "model": f"Schlumberger REDA M675-A, 862 series, {stages} stg",
+                "arrangement": (
+                    f"{hp['n_default']} x parallel VFD, on the LP-held "
+                    f"{suction:,.0f} psig header"
+                ),
+                "speed": (
+                    f"{int(freq_lo)} to {int(freq_hi)} Hz (VFD), "
+                    f"nominal {nominal_hz} Hz"
+                ),
+                "source": str(meta.get("manufacturer", "")) + " data sheet"
+                " + Mod 42 HPS set-up sheets",
+                "validated": str(meta.get("validated", "")),
+            },
+            "station": {
+                # the max-speed iso-speed line already IS the capability
+                "frontier": None,
+                "curves": curves,
+                "bep": bep_pp * n_on,
+                "por": self._por(bep_pp * n_on),
+                "aor": [rec_lo * n_on, rec_hi * n_on],
+                "min_flow": self.min_total_flow(n_on),
+                "header_cap": self.max_header_psi,
+            },
+            "pumps": [
+                {
+                    "label": f"P-4230 HP - REDA M675-A, {stages} stg at 60 Hz",
+                    "hz": 60.0,
+                    "points": pump_pts,
+                    "head_derated": derated,
+                    "derate_note": f"field derated x{wear:.2f} (wear)",
+                    "bep": bep_pp,
+                    "por": self._por(bep_pp),
+                    "aor": [rec_lo, rec_hi],
+                    "min_flow": rec_lo,
+                }
+            ],
+        }
 
 
 class FixedHeaderPlant(PadPlant):

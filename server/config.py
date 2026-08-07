@@ -31,6 +31,8 @@ TTL_SAVED_IPR = 300
 TTL_PROP_HISTORY = 300
 TTL_WELL_SORT = 3_600
 TTL_XV_STATUS = 300
+# Pump curves are files on disk - they only change when the data files do.
+TTL_PUMP_CURVE = 86_400
 
 
 def writes_enabled() -> bool:

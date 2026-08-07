@@ -183,6 +183,28 @@ only): own oil cost, PW freed/added (server-enriched own_water_delta on
 every single move), net fleet oil after pressure feedback, and whether the
 move made the best plan.
 
+Pad runs (S/I/M) render the booster plant as an industry pump-curve sheet,
+served static and cached from `GET /api/optimize/pump-curve?pad=&n_pumps=`
+(`PadPlant.curve_report`, `server/services/pad_curves.py`), so the plant is
+on screen while the engineer configures the run and the duty point drops
+onto it when the run lands. Panel 1 is the station curve: the delivered
+header vs total PF family (1/2/3-pump curves for the fixed-speed S station,
+iso-speed lines for the I and M VFD trains), the amp-limited capability
+frontier on I-Pad, the 3,500 psi discharge cap and the recirc/min-continuous
+flow line, BEP, and the preferred (70-120 percent of BEP) and vendor
+allowable operating bands. POR is NOT always inside AOR - Summit's I-Pad
+range is 80-120 percent, so the preferred band hangs out to its left; the
+bands are drawn as reported, never clipped to look tidy. Panel 2 is the
+vendor curve sheet per machine (two for I-Pad's series train): head, BHP and
+efficiency vs flow per pump on three axes, with M-Pad's as-new head shown
+against its 0.91 field-derated curve. Efficiency is `Q_gpm * H_ft * SG /
+(3960 * BHP)` at the SG the BHP curve was FIT at - 1.0 for S and I, the
+Schlumberger design 1.05 for M, which is the difference between reproducing
+the datasheet's 78.2 percent and being two points low. Panel 3 is the
+optimizer's own trace: oil and total PF vs header pressure across the sweep
+for the free-pressure pads, or the header fixed-point convergence for
+S-Pad's curve coupling.
+
 Not ported yet (Streamlit remains the tool for these): the fixed-pump /
 existing-baseline scenario comparators and Base-vs-Future, the CFP
 dashboard (tradeoff verdict + match-check gate),
@@ -192,6 +214,13 @@ sync writes, the gauge "disregard Databricks BHP" flag, PDF export.
 Layout convention (single-well analysis pages): the pump-history strip
 renders just above the historical-tests table, never above the page's
 primary chart - the top of the page stays chart-first while history loads.
+
+Layout convention (optimization run tabs): the page runs edge to edge (no
+max-width, no gutter of its own - Layout's `main` already insets), pump
+curves and that pad's readiness board split it 50/50, and metrics plus the
+plan table sit full width underneath. The curve panels pair up on container
+queries (`@4xl`), not viewport ones, so they respond to the half they are
+actually given rather than the width of the window.
 
 ## Deploy
 

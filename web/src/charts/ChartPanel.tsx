@@ -246,7 +246,9 @@ export function ChartPanel({
   return (
     <div
       ref={wrapRef}
-      className={fullscreen ? "relative flex h-full w-full flex-col bg-white p-4" : "relative"}
+      className={
+        fullscreen ? "group relative flex h-full w-full flex-col bg-white p-4" : "group relative"
+      }
     >
       <div className="pointer-events-none absolute bottom-1 left-1 z-10 flex gap-1">
         <button
@@ -267,7 +269,13 @@ export function ChartPanel({
         >
           {fullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
         </button>
-        <span className="pointer-events-none select-none self-center text-[10px] text-slate-300">
+        {/* Hover-only: parked at bottom-left it lands on the x-axis name of
+            any half-width chart. The white chip keeps it legible over the
+            plot while it is showing. */}
+        <span
+          className="pointer-events-none select-none self-center rounded bg-white/90 px-1
+            text-[10px] text-slate-400 opacity-0 transition-opacity group-hover:opacity-100"
+        >
           drag zoom | ctrl-wheel zoom | shift-wheel pan | dbl-click reset
         </span>
       </div>

@@ -102,8 +102,10 @@ function PadReadiness({ pad }: { pad: string }) {
       {statusQ.isLoading && <Spinner label={`Loading ${pad}-Pad fits`} />}
 
       {statusQ.data && (
-        <Card padded={false} className="overflow-hidden">
-          <table className="w-full border-collapse text-[13px]">
+        <Card padded={false} className="overflow-x-auto">
+          {/* min-w so the run tabs' narrow column scrolls the table instead
+              of wrapping "MPS-03" onto two lines. */}
+          <table className="w-full min-w-[32rem] border-collapse text-[13px]">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-left text-slate-600">
                 <th className="px-3 py-2 font-semibold">Well</th>
@@ -126,7 +128,7 @@ function PadReadiness({ pad }: { pad: string }) {
                       isOffline && "opacity-50",
                     )}
                   >
-                    <td className="px-3 py-1.5">
+                    <td className="whitespace-nowrap px-3 py-1.5">
                       <button
                         type="button"
                         onClick={() => openWell(row.well)}
@@ -136,11 +138,11 @@ function PadReadiness({ pad }: { pad: string }) {
                         {row.well}
                       </button>
                     </td>
-                    <td className="px-3 py-1.5 tabular-nums text-slate-600">{row.saved_at?.slice(0, 10) ?? "-"}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5 tabular-nums text-slate-600">{row.saved_at?.slice(0, 10) ?? "-"}</td>
                     <td className="max-w-44 truncate px-3 py-1.5 text-slate-500" title={row.saved_by ?? undefined}>
                       {row.saved_by ? row.saved_by.split("@")[0] : "-"}
                     </td>
-                    <td className="px-3 py-1.5 text-slate-600">
+                    <td className="whitespace-nowrap px-3 py-1.5 text-slate-600">
                       {row.has_friction ? row.friction_keys.join(" ") : "-"}
                     </td>
                     <td className="px-3 py-1.5">
@@ -268,7 +270,16 @@ export default function OptimizePage() {
   ];
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4 p-4">
+    <div
+      className={clsx(
+        // No page padding: Layout's <main> already insets p-4 lg:p-6, and
+        // stacking another gutter here just narrows the run tabs.
+        "space-y-4",
+        // Run tabs run edge to edge - curves beside the readiness board need
+        // every pixel. The review board is one table and reads better narrow.
+        view === "board" && "mx-auto max-w-6xl",
+      )}
+    >
       <div>
         <h1 className="text-xl font-semibold tracking-tight text-slate-800">Optimization</h1>
         <p className="text-sm text-slate-500">
@@ -294,18 +305,22 @@ export default function OptimizePage() {
       </div>
 
       {view !== "board" && (
-        <RunPanel kind={view === "CFP" ? "cfp" : "pad"} pad={view === "CFP" ? null : view} />
-      )}
-
-      {/* Pad run tabs carry their own readiness board, scoped to the pad -
-          the same table the Pad review tab shows, minus the pad selector. */}
-      {(view === "S" || view === "I" || view === "M") && (
-        <div className="space-y-2">
-          <h2 className="text-sm font-semibold tracking-tight text-slate-700">
-            {view}-Pad readiness
-          </h2>
-          <PadReadiness pad={view} />
-        </div>
+        <RunPanel
+          kind={view === "CFP" ? "cfp" : "pad"}
+          pad={view === "CFP" ? null : view}
+          // Pad run tabs carry their own readiness board, scoped to the pad -
+          // the same table the Pad review tab shows, minus the pad selector.
+          aside={
+            view === "CFP" ? undefined : (
+              <div className="space-y-2">
+                <h2 className="text-sm font-semibold tracking-tight text-slate-700">
+                  {view}-Pad readiness
+                </h2>
+                <PadReadiness pad={view} />
+              </div>
+            )
+          }
+        />
       )}
 
       {view === "board" && (

@@ -394,6 +394,60 @@ export interface OptimizeRunStarted {
   job_id: string;
 }
 
+/** GET /optimize/pump-curve - mirror of server.schemas.PumpCurveResponse.
+ * Industry-format booster-pump curves for one pad's plant: station head
+ * capability, the vendor machine curves, and their operating regions. */
+export interface PumpCurveNameplate {
+  equipment: string;
+  model: string;
+  arrangement: string;
+  speed: string;
+  source: string;
+  validated: string;
+}
+
+export interface PumpCurveLine {
+  label: string;
+  n_pumps: number | null;
+  hz: number | null;
+  active: boolean;
+  points: number[][]; // [flow_bpd, discharge_psi]
+}
+
+export interface PumpStationCurve {
+  curves: PumpCurveLine[];
+  frontier: PumpCurveLine | null;
+  bep: number | null;
+  por: number[] | null;
+  aor: number[] | null;
+  min_flow: number | null;
+  header_cap: number | null;
+}
+
+export interface PumpMachineCurve {
+  label: string;
+  hz: number;
+  points: number[][]; // [flow_bpd, head_ft, bhp, eff_pct]
+  head_derated: number[][] | null;
+  derate_note: string | null;
+  bep: number | null;
+  por: number[] | null;
+  aor: number[] | null;
+  min_flow: number | null;
+}
+
+export interface PumpCurveResponse {
+  pad: string;
+  coupling: string;
+  n_pumps: number | null;
+  sg: number;
+  suction_psi: number;
+  max_header_psi: number | null;
+  nameplate: PumpCurveNameplate;
+  station: PumpStationCurve;
+  pumps: PumpMachineCurve[];
+}
+
 /** POST /calibrate - mirror of server.schemas.CalibrateRequest. Only
  * ken/kth/kdi are searched; as-built geometry is never varied. */
 export interface CalibrateRequest {

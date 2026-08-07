@@ -9,12 +9,12 @@ server stays stateless here.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
 from server import schemas
-from server.services import ipr, optimizer_runs
+from server.services import ipr, optimizer_runs, pad_curves
 
 router = APIRouter(prefix="/optimize", tags=["optimize"])
 
@@ -55,3 +55,26 @@ def run_status(job_id: str) -> Any:
             detail={"error": "invalid", "message": f"unknown or expired job {job_id}"},
         )
     return job
+
+
+@router.get("/pump-curve", response_model=schemas.PumpCurveResponse)
+def pump_curve(
+    pad: Literal["S", "I", "M"] = Query(...),
+    n_pumps: Optional[int] = Query(None, ge=1, le=3),
+) -> Any:
+    """Industry-format booster-pump curves for one pad's plant: the station
+    family of delivered header pressure vs total flow plus each machine's
+    head / BHP / efficiency curve, with BEP, the preferred and allowable
+    operating regions and the capability frontier.
+
+    Read-only static physics off the plant model and its data files - no run
+    state - so it renders before a run and the engineer sees plant capability
+    while configuring. n_pumps defaults to the plant's own.
+    """
+    try:
+        return pad_curves.pump_curve(pad, n_pumps)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid", "message": str(exc)},
+        ) from exc
