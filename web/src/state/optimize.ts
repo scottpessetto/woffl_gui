@@ -20,7 +20,11 @@ export interface FutureWell {
 
 interface Persisted {
   pad: string | null; // last-viewed pad on the board
-  offline: Record<string, string[]>; // pad -> wells checked offline
+  offline: Record<string, string[]>; // pad -> wells ticked offline by hand
+  /** pad -> wells the engineer explicitly ticked back ONLINE. Needed because
+   *  long-term shut-in wells arrive pre-ticked from the downtime log: without
+   *  a record of the override the auto-tick would return on every reload. */
+  keepOnline: Record<string, string[]>;
   future: Record<string, FutureWell[]>; // pad -> planned wells
   /** Run-tab key ("S"|"I"|"M"|"CFP") -> last job id, to re-attach after tab
    * switches/reloads. Server jobs expire after ~1 h; a 404 clears it. */
@@ -35,6 +39,8 @@ function restore(): Persisted {
       return {
         pad: typeof p.pad === "string" ? p.pad : null,
         offline: p.offline && typeof p.offline === "object" ? p.offline : {},
+        keepOnline:
+          p.keepOnline && typeof p.keepOnline === "object" ? p.keepOnline : {},
         future: p.future && typeof p.future === "object" ? p.future : {},
         lastJob: p.lastJob && typeof p.lastJob === "object" ? p.lastJob : {},
       };
@@ -42,7 +48,7 @@ function restore(): Persisted {
   } catch {
     // storage unavailable - defaults still work in-memory
   }
-  return { pad: null, offline: {}, future: {}, lastJob: {} };
+  return { pad: null, offline: {}, keepOnline: {}, future: {}, lastJob: {} };
 }
 
 function persist(state: OptimizeState): void {
@@ -52,6 +58,7 @@ function persist(state: OptimizeState): void {
       JSON.stringify({
         pad: state.pad,
         offline: state.offline,
+        keepOnline: state.keepOnline,
         future: state.future,
         lastJob: state.lastJob,
       }),
@@ -63,7 +70,10 @@ function persist(state: OptimizeState): void {
 
 interface OptimizeState extends Persisted {
   setPad: (pad: string) => void;
-  toggleOffline: (pad: string, well: string) => void;
+  /** Record the engineer's intent for one well. ``offline`` false is stored
+   *  as an explicit keep-online, not merely an absence, so it outranks the
+   *  LTSI auto-tick. */
+  setWellOffline: (pad: string, well: string, offline: boolean) => void;
   addFuture: (pad: string, fw: FutureWell) => void;
   removeFuture: (pad: string, name: string) => void;
   setLastJob: (runKey: string, jobId: string | null) => void;
@@ -79,11 +89,19 @@ export const useOptimizeStore = create<OptimizeState>((set, get) => ({
     persist(get());
   },
 
-  toggleOffline: (pad, well) => {
+  setWellOffline: (pad, well, offline) => {
     set((s) => {
-      const cur = s.offline[pad] ?? [];
-      const next = cur.includes(well) ? cur.filter((w) => w !== well) : [...cur, well].sort();
-      return { offline: { ...s.offline, [pad]: next } };
+      const drop = (list: string[] | undefined) => (list ?? []).filter((w) => w !== well);
+      const add = (list: string[] | undefined) => [...drop(list), well].sort();
+      return offline
+        ? {
+            offline: { ...s.offline, [pad]: add(s.offline[pad]) },
+            keepOnline: { ...s.keepOnline, [pad]: drop(s.keepOnline[pad]) },
+          }
+        : {
+            offline: { ...s.offline, [pad]: drop(s.offline[pad]) },
+            keepOnline: { ...s.keepOnline, [pad]: add(s.keepOnline[pad]) },
+          };
     });
     persist(get());
   },

@@ -157,6 +157,23 @@ to its pad, so check-offline -> run happens without leaving the tab.
 Offline + future config persists in localStorage per browser; fit status
 is live from prop_hist.
 
+The board also reads the field's daily downtime log (`/well-sort/tables`,
+the same cached fetch the Well Sort page uses) and badges every well that is
+currently down with its shut-in date and down code. Only LONG-TERM shut-in
+(T-coded: T01 mech, T02 reservoir, T03 convert, T05 P&A) pre-ticks offline -
+those wells have no business in a pad plan. An ordinary short-term shut-in is
+advisory only, because the log can lag a restart by a day and because on a
+bad day most of a pad is logged down; auto-excluding all of it would empty
+the run. Unticking an auto-ticked well is stored as an explicit `keepOnline`
+entry so the override survives reloads instead of being re-applied every
+visit, and the auto-tick itself is derived, never written. Test recency is
+deliberately NOT a source: the repo already computes a 60-day `StaleTest` and
+already reads it as "no representative test, do not judge" (Triage's
+`verify_stale`), not as "well is down" - a producing well with an overdue
+test would be silently dropped from the plan, and a well shut in last week
+with a test from the week before would not be flagged at all. If
+`/well-sort/tables` is unavailable the board degrades to manual ticks alone.
+
 Optimization runs (S/I/M pad + CFP) execute server-side as background jobs
 over the board's config: offline wells excluded, future wells modeled on
 their donor's saved fit, per-run constraint knobs mirroring the Streamlit

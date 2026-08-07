@@ -22,6 +22,7 @@ import { Card, ErrorNote, Spinner } from "../components/ui";
 import { useOptimizeStore } from "../state/optimize";
 import { useParamsStore } from "../state/params";
 
+import { usePadOffline, type ShutInfo } from "./optimize/offline";
 import { RunPanel } from "./optimize/RunPanel";
 
 const INPUT_CLS =
@@ -51,14 +52,38 @@ function FitStatus({ row }: { row: PadFitWell }) {
   );
 }
 
+/** Why the downtime log says this well is down. Long-term shut-in reads as a
+ *  fact (it also pre-ticks the well offline); an ordinary shut-in is advisory
+ *  - the log can lag a restart by a day, so the engineer decides. */
+function ShutBadge({ info }: { info: ShutInfo }) {
+  const parts = [info.code, info.reason].filter(Boolean).join(" ");
+  const since = info.since ? `shut in ${info.since.slice(0, 10)}` : "shut in";
+  return (
+    <span
+      title={`${since}${parts ? ` - ${parts}` : ""}. ${
+        info.ltsi
+          ? "Long-term shut-in, so it is excluded from the run by default."
+          : "Short-term: not excluded unless you tick it."
+      }`}
+      className={clsx(
+        "mt-0.5 block text-[11px] font-medium",
+        info.ltsi ? "text-rose-700" : "text-amber-700",
+      )}
+    >
+      {info.ltsi ? "LTSI" : "shut in"}
+      {info.since ? ` ${info.since.slice(0, 10)}` : ""}
+      {info.code ? ` - ${info.code}` : ""}
+    </span>
+  );
+}
+
 /** One pad's readiness board: every well's saved-fit status, offline
  * toggles, and planned future wells. Rendered by the Pad review tab (with
  * the pad selector) AND under each pad run tab, scoped to that pad. */
 function PadReadiness({ pad }: { pad: string }) {
   const wells = useWells();
-  const offlineByPad = useOptimizeStore((s) => s.offline);
   const futureByPad = useOptimizeStore((s) => s.future);
-  const toggleOffline = useOptimizeStore((s) => s.toggleOffline);
+  const setWellOffline = useOptimizeStore((s) => s.setWellOffline);
   const addFuture = useOptimizeStore((s) => s.addFuture);
   const removeFuture = useOptimizeStore((s) => s.removeFuture);
 
@@ -75,7 +100,8 @@ function PadReadiness({ pad }: { pad: string }) {
   const [newMatch, setNewMatch] = useState("");
 
   const future = futureByPad[pad] ?? [];
-  const offline = offlineByPad[pad] ?? [];
+  const padList = useMemo(() => [pad], [pad]);
+  const { offline, shut } = usePadOffline(padList);
   const donors = useMemo(() => future.map((f) => f.match), [future]);
 
   const statusQ = usePadFitStatus(pad, donors);
@@ -119,7 +145,8 @@ function PadReadiness({ pad }: { pad: string }) {
             </thead>
             <tbody>
               {statusQ.data.wells.map((row) => {
-                const isOffline = offline.includes(row.well);
+                const isOffline = offline.has(row.well);
+                const down = shut.get(row.well);
                 return (
                   <tr
                     key={row.well}
@@ -137,6 +164,7 @@ function PadReadiness({ pad }: { pad: string }) {
                       >
                         {row.well}
                       </button>
+                      {down && <ShutBadge info={down} />}
                     </td>
                     <td className="whitespace-nowrap px-3 py-1.5 tabular-nums text-slate-600">{row.saved_at?.slice(0, 10) ?? "-"}</td>
                     <td className="max-w-44 truncate px-3 py-1.5 text-slate-500" title={row.saved_by ?? undefined}>
@@ -152,7 +180,7 @@ function PadReadiness({ pad }: { pad: string }) {
                       <input
                         type="checkbox"
                         checked={isOffline}
-                        onChange={() => toggleOffline(pad, row.well)}
+                        onChange={() => setWellOffline(pad, row.well, !isOffline)}
                         title="Exclude this well from the optimization run"
                         className="h-4 w-4 rounded border-slate-300 accent-blue-600"
                       />

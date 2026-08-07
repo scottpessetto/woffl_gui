@@ -26,7 +26,9 @@ import { DEFAULT_POPS_PADS } from "../../state/wellSort";
 import { useOptimizeStore } from "../../state/optimize";
 
 import { CfpResultCharts } from "./CfpCharts";
+import { usePadOffline } from "./offline";
 import { PadCharts } from "./PadCharts";
+
 const NOZZLE_OPTIONS = ["8", "9", "10", "11", "12", "13", "14", "15"];
 const THROAT_OPTIONS = ["X", "A", "B", "C", "D", "E"];
 const CFP_PADS = ["B", "G", "C", "J"];
@@ -372,7 +374,6 @@ export function RunPanel({
 }) {
   const runKey = kind === "cfp" ? "CFP" : (pad as string);
   const wells = useWells();
-  const offlineByPad = useOptimizeStore((s) => s.offline);
   const futureByPad = useOptimizeStore((s) => s.future);
   const lastJob = useOptimizeStore((s) => s.lastJob);
   const setLastJob = useOptimizeStore((s) => s.setLastJob);
@@ -404,18 +405,18 @@ export function RunPanel({
   }, [wells.data]);
 
   const runPads = kind === "cfp" ? cfpPads : [pad ?? "S"];
-  const offline = useMemo(
-    () => runPads.flatMap((p) => offlineByPad[p] ?? []),
-    [runPads, offlineByPad],
-  );
+  // Manual ticks plus long-term shut-in wells the downtime log knows about,
+  // minus anything the engineer explicitly kept online.
+  const { offline: offlineSet, autoCount } = usePadOffline(runPads);
+  const offline = useMemo(() => [...offlineSet].sort(), [offlineSet]);
   const future = useMemo(
     () => runPads.flatMap((p) => futureByPad[p] ?? []),
     [runPads, futureByPad],
   );
   const activeCount = useMemo(() => {
     const names = (wells.data?.wells ?? []).filter((w) => runPads.includes(w.pad)).map((w) => w.name);
-    return names.filter((n) => !offline.includes(n)).length;
-  }, [wells.data, runPads, offline]);
+    return names.filter((n) => !offlineSet.has(n)).length;
+  }, [wells.data, runPads, offlineSet]);
 
   const start = useStartOptimizeRun();
   const jobId = lastJob[runKey] ?? null;
@@ -548,7 +549,9 @@ export function RunPanel({
           </button>
           <span className="text-xs text-slate-500">
             {activeCount} active well{activeCount === 1 ? "" : "s"}
-            {offline.length > 0 && ` - ${offline.length} offline`}
+            {offline.length > 0 &&
+              ` - ${offline.length} offline` +
+                (autoCount > 0 ? ` (${autoCount} long-term shut-in)` : "")}
             {future.length > 0 && ` - ${future.length} future`}
             {" - models from saved fits (set them on the Single Well solver)"}
           </span>
