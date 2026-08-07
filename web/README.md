@@ -38,6 +38,16 @@ npm run build        # typechecks (tsc -b) then emits web/dist
 - Vogel math in `src/lib/vogel.ts` is a line-for-line mirror of
   `woffl/gui/vogel.py` so IPR curves redraw client-side with zero latency.
   Keep them in lockstep.
+- Server-state caching (the snappiness contract - don't regress it):
+  `main.tsx` sets a 60 s default `staleTime`; expensive stable reads pin
+  their own windows (`MIN_30`, or `Infinity` + `gcTime` for snapshot-keyed
+  sweeps like Batch, where identical inputs give identical physics).
+  Background JOB pollers must set `refetchIntervalInBackground: true` -
+  TanStack pauses interval refetches in unfocused windows by default and
+  a run monitor that freezes when the engineer alt-tabs is a bug. Writes
+  invalidate exactly the queries they change (see `api/hooks.ts`
+  `invalidateSavedIpr`). Server-side TTLs + stale-while-revalidate live in
+  `server/cache.py`; the browser never needs to compensate for them.
 - Charts: follow "The chart rule" below. No exceptions, including one-offs.
 - Keyboard-typable characters only (no em dashes, curly quotes, ellipsis).
 

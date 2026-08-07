@@ -73,6 +73,12 @@ export function Topbar({
         >
           Well Database
         </NavLink>
+        <NavLink
+          to="/optimize"
+          className={({ isActive }) => clsx(NAV_BASE, isActive ? NAV_ACTIVE : NAV_INACTIVE)}
+        >
+          Optimization
+        </NavLink>
       </nav>
 
       <div className="ml-auto flex items-center gap-2">

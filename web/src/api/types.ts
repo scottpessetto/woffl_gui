@@ -242,6 +242,158 @@ export interface ApiErrorDetail {
 
 export type AnchorMode = "recent" | "median" | "specific";
 
+/** One well's saved-fit readiness on the Optimization pad board. */
+export interface PadFitWell {
+  well: string;
+  pad: string;
+  has_curve: boolean;
+  saved_at: string | null;
+  saved_by: string | null;
+  has_friction: boolean;
+  friction_keys: string[];
+  locks: Record<string, boolean>;
+  pin_at: string | null;
+  pin_user: string | null;
+}
+
+export interface PadFitStatusResponse {
+  pad: string;
+  wells: PadFitWell[];
+  extras: PadFitWell[];
+}
+
+/** POST /optimize/run - mirror of server.schemas.OptimizeRunRequest. */
+export interface OptimizeRunRequest {
+  kind: "pad" | "cfp";
+  pad: "S" | "I" | "M" | null;
+  offline: string[];
+  future: { name: string; match: string }[];
+  nozzles: string[];
+  throats: string[];
+  method: "milp" | "mckp";
+  marginal_wc: number | null; // null = auto-derive from the plant budget
+  parsimony_bopd: number;
+  n_pumps: number | null; // null = pad default
+  n_steps: number | null;
+  p0_psi: number;
+  psi_per_kbpd: number;
+  c_pad_pf_psi: number;
+  cfp_pads: string[]; // which of B/G/C/J participate (cfp runs)
+}
+
+export interface PadRunRow {
+  well: string;
+  current_pump: string | null;
+  test_oil: number | null;
+  test_pf: number | null;
+  pump: string | null; // null = not in plan / shut-in
+  oil: number | null;
+  pf: number | null;
+  form_water: number | null;
+  suction: number | null;
+  marginal_oil: number | null;
+  sonic: boolean | null;
+}
+
+export interface PadRunResult {
+  pad: string;
+  rows: PadRunRow[];
+  meta: Record<string, unknown>; // pad_optimize meta contract, JSON-flattened
+  notes: string[];
+  n_wells: number;
+}
+
+export interface CfpMoveRow {
+  well: string;
+  pad: string;
+  type: "resize" | "shut_in" | "bring_online";
+  from: string | null;
+  to: string | null;
+  fleet_oil_delta: number;
+  own_oil_delta: number;
+  pressure_delta: number;
+  pressure_after: number;
+  at_trip: boolean;
+  own_water_delta: number | null; // BWPD at the move's settled discharge
+}
+
+export interface CfpFrontierPoint {
+  lam: number;
+  pressure: number;
+  oil: number;
+  water: number;
+  at_trip: boolean;
+}
+
+export interface CfpPlanAction {
+  well: string;
+  pad: string;
+  type: "resize" | "shut_in" | "bring_online";
+  from: string | null;
+  to: string | null;
+  own_oil_delta: number;
+  own_water_delta: number;
+}
+
+export interface CfpPlan {
+  lam: number;
+  pressure: number;
+  oil: number;
+  water: number;
+  at_trip: boolean;
+  actions: CfpPlanAction[];
+  n_changes: number;
+  choices: Record<string, string>;
+}
+
+/** Today-vs-plan per well, read off the same response surfaces. */
+export interface CfpWellRow {
+  well: string;
+  pad: string;
+  online: boolean;
+  baseline_label: string;
+  plan_label: string;
+  baseline_oil: number;
+  plan_oil: number;
+  baseline_water: number;
+  plan_water: number;
+  changed: boolean;
+}
+
+export interface CfpRunResult {
+  pads: string[];
+  notes: string[];
+  n_wells: number;
+  p0_psi: number;
+  summary: {
+    today: { pressure: number; oil: number; water: number; n_online: number; n_bol_candidates: number };
+    lambda_bopd_per_psi: number | null;
+    singles: CfpMoveRow[];
+    n_positive_singles: number;
+    pairs: Record<string, unknown>[];
+    frontier: CfpFrontierPoint[];
+    plan: CfpPlan | null;
+    plan_gain: number | null;
+    baseline: Record<string, string>;
+  };
+  wells: CfpWellRow[];
+}
+
+export interface OptimizeJobStatus {
+  job_id: string;
+  kind: "pad" | "cfp";
+  status: "running" | "done" | "error";
+  progress: string | null;
+  result: PadRunResult | CfpRunResult | null;
+  error: string | null;
+  started_at: string;
+  seconds: number;
+}
+
+export interface OptimizeRunStarted {
+  job_id: string;
+}
+
 /** POST /calibrate - mirror of server.schemas.CalibrateRequest. Only
  * ken/kth/kdi are searched; as-built geometry is never varied. */
 export interface CalibrateRequest {

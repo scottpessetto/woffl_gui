@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # Simulation parameters (mirror of woffl.gui.params.SimulationParams)
@@ -236,6 +236,97 @@ class SolveErrorDetail(BaseModel):
 # ---------------------------------------------------------------------------
 # IPR fit
 # ---------------------------------------------------------------------------
+
+
+class PadFitWell(BaseModel):
+    """One well's saved-fit readiness for the Optimization pad board."""
+
+    well: str
+    pad: str
+    has_curve: bool  # saved ipr_qwf_liq + ipr_pwf pair exists
+    saved_at: Optional[str] = None  # values-save timestamp (None = never)
+    saved_by: Optional[str] = None
+    has_friction: bool  # any calibrated ken/kth/kdi stored
+    friction_keys: list[str] = []
+    locks: dict[str, bool] = {}
+    pin_at: Optional[str] = None
+    pin_user: Optional[str] = None
+
+
+class PadFitStatusResponse(BaseModel):
+    """GET /optimize/pad-status - fit readiness for a pad's wells, plus any
+    `extra` wells requested (donor wells that future wells match; donors may
+    live on any pad)."""
+
+    pad: str
+    wells: list[PadFitWell]
+    extras: list[PadFitWell]
+
+
+class FutureWellSpec(BaseModel):
+    name: str = Field(..., min_length=1, max_length=24)
+    match: str  # donor well whose saved fit models it
+
+
+class OptimizeRunRequest(BaseModel):
+    """Start an optimization run. kind=pad runs one of the S/I/M PadPlants
+    through pad_optimize.run_optimization; kind=cfp runs the anchored-delta
+    moves engine over the B/G/C/J CFP pads. Well models hydrate from saved
+    fits; `offline` wells are excluded; `future` wells clone their donor."""
+
+    kind: Literal["pad", "cfp"]
+    pad: Optional[Literal["S", "I", "M"]] = None  # required when kind=pad
+    offline: list[str] = []
+    future: list[FutureWellSpec] = []
+    nozzles: list[str] = ["9", "10", "11", "12", "13", "14", "15"]
+    throats: list[str] = ["A", "B", "C", "D"]
+    # pad-run knobs (mirror pad_page Configure stage)
+    method: Literal["milp", "mckp"] = "milp"
+    marginal_wc: Optional[float] = Field(None, ge=0.0, le=1.0)  # None = auto-derive
+    parsimony_bopd: float = Field(20.0, ge=0.0, le=500.0)
+    n_pumps: Optional[int] = Field(None, ge=1, le=3)
+    n_steps: Optional[int] = Field(None, ge=3, le=21)
+    # cfp-run knobs (mirror cfp_pad_page Configure stage)
+    p0_psi: float = Field(2792.0, ge=2300.0, le=2900.0)
+    psi_per_kbpd: float = Field(13.69, ge=9.0, le=17.5)
+    c_pad_pf_psi: float = Field(3400.0, ge=1000.0, le=5000.0)
+    # Pads in the run (default: the four CFP pads). Any non-POPs pad may
+    # join - its water rides the CFP machines; PF for pads beyond B/G/J is
+    # modeled as boosted on-pad at c_pad_pf_psi (the C-Pad treatment). POPs
+    # pads separate water on-pad, so they never load the machines: rejected.
+    cfp_pads: list[str] = ["B", "G", "C", "J"]
+
+    @field_validator("cfp_pads")
+    @classmethod
+    def _cfp_pads_not_pops(cls, v: list[str]) -> list[str]:
+        from woffl.assembly.well_sort_engine import DEFAULT_POPS_PADS
+
+        pads = [p.strip().upper() for p in v if p.strip()]
+        pops = [p for p in pads if p in DEFAULT_POPS_PADS]
+        if pops:
+            raise ValueError(
+                f"POPs pads ({', '.join(sorted(set(pops)))}) separate water on-pad - "
+                "their water never rides the CFP machines, so they cannot join a CFP run"
+            )
+        return pads
+
+
+class OptimizeRunStarted(BaseModel):
+    job_id: str
+
+
+class OptimizeJobStatus(BaseModel):
+    """Poll envelope. `result` is the run-type-specific payload (pad: rows +
+    meta from pad_optimize; cfp: the moves_summary), JSON-flattened."""
+
+    job_id: str
+    kind: Literal["pad", "cfp"]
+    status: Literal["running", "done", "error"]
+    progress: Optional[str] = None
+    result: Optional[dict[str, Any]] = None
+    error: Optional[str] = None
+    started_at: str
+    seconds: float
 
 
 class CalibrateRequest(BaseModel):

@@ -303,6 +303,7 @@ def save(well: str, req: schemas.SaveIprRequest) -> dict[str, Any]:
     # save_ipr_values cleared the woffl memo; drop the server's own 5-min
     # TTL layer too so the next pin/context read reflects this save.
     _saved_ipr.cache_clear()
+    _pad_fit.cache_clear()
     return {
         "pinned": pinned,
         "pin_skipped": pin_skipped,
@@ -318,6 +319,7 @@ def clear_pin(well: str) -> dict[str, Any]:
     if cleared:
         ipr_anchor.clear_saved_ipr_cache(well)
         _saved_ipr.cache_clear()
+        _pad_fit.cache_clear()
     return {"cleared": cleared, "message": message}
 
 
@@ -333,6 +335,7 @@ def set_lock(well: str, req: schemas.PropLockRequest) -> dict[str, Any]:
     if ok:
         # set_prop_lock cleared the woffl memo; drop the server TTL layer too.
         _saved_ipr.cache_clear()
+        _pad_fit.cache_clear()
     # Echo the value the way it was actually stored (set_prop_lock caps WC).
     value = req.value
     if value is not None and req.field == "form_wc":
@@ -344,3 +347,74 @@ def set_lock(well: str, req: schemas.PropLockRequest) -> dict[str, Any]:
         "locked": req.locked if ok else not req.locked,
         "value": value if ok and req.locked else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Optimization pad board - saved-fit readiness per well
+# ---------------------------------------------------------------------------
+
+
+def _fit_row(well: str, pad: str, info: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """PadFitWell shape from one _assemble_saved_ipr record (or None)."""
+    if not info:
+        return {
+            "well": well,
+            "pad": pad,
+            "has_curve": False,
+            "saved_at": None,
+            "saved_by": None,
+            "has_friction": False,
+            "friction_keys": [],
+            "locks": {},
+            "pin_at": None,
+            "pin_user": None,
+        }
+    saved_at = info.get("saved_at")
+    pin_at = info.get("pin_at")
+    return {
+        "well": well,
+        "pad": pad,
+        "has_curve": bool(info.get("values")),
+        "saved_at": None if saved_at is None or pd.isna(saved_at) else str(saved_at),
+        "saved_by": info.get("saved_by") or None,
+        "has_friction": bool(info.get("friction")),
+        "friction_keys": sorted((info.get("friction") or {}).keys()),
+        "locks": {k: bool(v) for k, v in (info.get("locks") or {}).items()},
+        "pin_at": None if pin_at is None or pd.isna(pin_at) else str(pin_at),
+        "pin_user": info.get("pin_user") or None,
+    }
+
+
+@ttl_cache(config.TTL_SAVED_IPR, maxsize=32)
+def _pad_fit(pad: str, extra: tuple[str, ...]) -> dict[str, Any]:
+    """PadFitStatusResponse payload: every well on ``pad`` + the requested
+    donor wells (any pad). One fleet-wide prop_hist snapshot via
+    warm_saved_ipr_cache makes the per-well load_saved_ipr calls free; a
+    failed warm degrades to per-well reads. Cleared by every write
+    (save / clear-pin / lock toggle) so the board reflects saves at once.
+    """
+    from server.services import wells as wells_svc
+
+    universe = wells_svc.list_wells()["wells"]
+    pad_wells = [w for w in universe if w.get("pad") == pad]
+
+    ipr_anchor.warm_saved_ipr_cache()
+
+    def status(name: str, well_pad: str) -> dict[str, Any]:
+        try:
+            info = ipr_anchor.load_saved_ipr(name)
+        except Exception:
+            info = None
+        return _fit_row(name, well_pad, info)
+
+    pad_by_name = {w["name"]: w.get("pad", "") for w in universe}
+    return {
+        "pad": pad,
+        "wells": [status(w["name"], pad) for w in pad_wells],
+        "extras": [status(name, pad_by_name.get(name, "")) for name in extra],
+    }
+
+
+def pad_fit_status(pad: str, extra: list[str]) -> dict[str, Any]:
+    """List-arg wrapper (ttl_cache needs hashable keys)."""
+    return _pad_fit(pad, tuple(sorted(set(extra))))

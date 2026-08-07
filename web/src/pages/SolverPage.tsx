@@ -119,18 +119,43 @@ function Workbench({ well }: { well: string }) {
     fitEnabled,
   );
 
+  // Auto-apply the FIRST fit's seeds once per well - the web equivalent of
+  // Streamlit's open-time anchor sync (_sync_chosen_ipr_to_sidebar): the
+  // chart curve and the solve then agree from the first settled paint
+  // instead of waiting for a manual "Apply IPR to inputs" click. Locked
+  // WC/GOR/ResP survive (applyIprSeeds filters them). Also heals wells
+  // whose pre-2026-08-03 saved values carry the double-converted liquid
+  // rate. Ordering guards:
+  //   - the pin must settle first, or the recent-anchor fit could land and
+  //     latch before the pin switches the anchor to its specific test;
+  //   - CONTEXT seeding must have applied first (seededFor === well), or
+  //     the slower context response would arrive later and wholesale-
+  //     overwrite the applied seeds - the exact mismatch this fixes.
+  const ctxSeeded = useParamsStore((s) => s.seededFor) === well;
+  const pinSettled = pinQ.isSuccess || pinQ.isError;
+  const [fitApplied, setFitApplied] = useState(false);
+  useEffect(() => {
+    const f = iprFitQ.data;
+    if (fitApplied || !pinSettled || !ctxSeeded || !f) return;
+    setFitApplied(true);
+    useParamsStore.getState().applyIprSeeds(f.seeds);
+  }, [iprFitQ.data, pinSettled, ctxSeeded, fitApplied]);
+
   // First-load settle gate for the IPR chart: hold it greyed until every
   // input series has arrived ONCE (tests, installs/pump labels, pin, the
-  // fit when it will run, the first solve), so the plot doesn't visibly
-  // mutate while the engineer is already reading it. Latches true and stays
-  // true - later param edits redraw live, which is the point of the
-  // client-rendered chart. Workbench remounts per well, resetting the latch.
+  // fit when it will run - APPLIED, and the solve of the applied state),
+  // so the plot doesn't visibly mutate while the engineer is already
+  // reading it. Latches true and stays true - later param edits redraw
+  // live, which is the point of the client-rendered chart. Workbench
+  // remounts per well, resetting the latch.
   const settledNow =
     (testsQ.isSuccess || testsQ.isError) &&
     (installsQ.isSuccess || installsQ.isError) &&
     (pinQ.isSuccess || pinQ.isError) &&
-    (!fitEnabled || iprFitQ.isSuccess || iprFitQ.isError) &&
-    (!simActive || solveQ.isSuccess || solveQ.isError);
+    (!fitEnabled || ((iprFitQ.isSuccess || iprFitQ.isError) && (fitApplied || iprFitQ.isError))) &&
+    // reference equality = the debounce is quiescent: the solve on screen
+    // corresponds to the CURRENT params (post-auto-apply), not a stale set.
+    (!simActive || (solveQ.isSuccess && debounced === effective) || solveQ.isError);
   const [iprReady, setIprReady] = useState(false);
   useEffect(() => {
     if (settledNow) setIprReady(true);
@@ -207,16 +232,24 @@ function Workbench({ well }: { well: string }) {
           control column is usually the taller one - a stretched chart card
           would trail a block of empty white below the plot. */}
       <div className="grid items-start gap-4 xl:grid-cols-2">
-        <IprChart
-          tests={sortedTests}
-          fit={fit}
-          params={params}
-          solve={solve}
-          compareTest={compareTest}
-          installs={installs}
-          loading={!iprReady}
-          gaugeSlot={<GaugePanel well={well} tests={sortedTests} />}
-        />
+        <div className="space-y-4">
+          <IprChart
+            tests={sortedTests}
+            fit={fit}
+            params={params}
+            solve={solve}
+            compareTest={compareTest}
+            installs={installs}
+            loading={!iprReady}
+            gaugeSlot={<GaugePanel well={well} tests={sortedTests} />}
+          />
+          <RateCalculator
+            qmax={qmax}
+            pres={params.pres}
+            formWc={params.form_wc}
+            defaultBhp={compareTest?.bhp ?? solve?.psu ?? null}
+          />
+        </div>
         <div className="space-y-4">
           <ComparisonCard
             solve={solve}
@@ -241,12 +274,6 @@ function Workbench({ well }: { well: string }) {
             onDecouple={setDecouple}
             compareKey={compareKey}
             onCompareChange={setCompareKey}
-          />
-          <RateCalculator
-            qmax={qmax}
-            pres={params.pres}
-            formWc={params.form_wc}
-            defaultBhp={compareTest?.bhp ?? solve?.psu ?? null}
           />
         </div>
       </div>

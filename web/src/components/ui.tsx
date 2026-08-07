@@ -134,14 +134,17 @@ export function Metric({
   value,
   sub,
   tone,
+  title,
 }: {
   label: string;
   value: ReactNode;
   sub?: ReactNode;
   tone?: Tone;
+  /** Native hover tooltip - use for "what does this number mean" prose. */
+  title?: string;
 }) {
   return (
-    <div className="min-w-[9rem] rounded-lg border border-slate-200 bg-white px-3.5 py-2.5">
+    <div title={title} className="min-w-[9rem] rounded-lg border border-slate-200 bg-white px-3.5 py-2.5">
       <div className="text-[11px] font-medium tracking-wide text-slate-500 uppercase">{label}</div>
       <div
         className={clsx(

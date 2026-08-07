@@ -11,6 +11,9 @@ const queryClient = new QueryClient({
     queries: {
       refetchOnWindowFocus: false,
       retry: 1,
+      // Default freshness floor for hooks that don't set their own: a
+      // remount within a minute re-renders from cache with zero requests.
+      staleTime: 60_000,
     },
   },
 });

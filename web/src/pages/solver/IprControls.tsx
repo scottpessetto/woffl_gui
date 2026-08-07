@@ -155,7 +155,7 @@ export function IprControls({
           disabled={!fit}
           title="Lay the fitted qwf / pwf / ResP / WC / GOR seeds over the sidebar inputs"
           onClick={() => {
-            if (fit) useParamsStore.getState().setMany(fit.seeds);
+            if (fit) useParamsStore.getState().applyIprSeeds(fit.seeds);
           }}
         >
           Apply IPR to inputs

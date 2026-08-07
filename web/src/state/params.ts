@@ -77,6 +77,10 @@ interface ParamsState {
   applyContext: (ctx: WellContext) => void;
   /** Mirror a server-confirmed lock toggle (usePropLock response). */
   setPropLock: (field: keyof PropLocks, lock: PropLock) => void;
+  /** Lay IPR fit seeds over the params, skipping LOCKED fields - the
+   * Streamlit contract: an anchor re-seed touches everything EXCEPT the
+   * locked WC/GOR/ResP (jetpump_solver.py's locked_fields filter). */
+  applyIprSeeds: (seeds: Partial<SimParams>) => void;
   run: () => void;
 }
 
@@ -132,6 +136,15 @@ export const useParamsStore = create<ParamsState>((set) => ({
     }),
 
   setPropLock: (field, lock) => set((s) => ({ propLocks: { ...s.propLocks, [field]: lock } })),
+
+  applyIprSeeds: (seeds) =>
+    set((s) => {
+      const filtered: Partial<SimParams> = { ...seeds };
+      if (s.propLocks.form_wc.locked) delete filtered.form_wc;
+      if (s.propLocks.form_gor.locked) delete filtered.form_gor;
+      if (s.propLocks.res_pres.locked) delete filtered.pres;
+      return { params: mergeClamped(s.params, filtered) };
+    }),
 
   run: () => set({ simActive: true }),
 }));

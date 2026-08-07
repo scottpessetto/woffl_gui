@@ -94,6 +94,10 @@ write gate ON for the rest of the process.** Tests document this exact leak
 Write functions to treat as live: `ipr_anchor.pin_ipr_anchor` / `clear_ipr_pin` /
 `save_ipr_values` / `set_prop_lock`, `review_persistence.sync_pad` (runs on **every pad-page
 rerun**), `workflow_steps/step_review_wells._maybe_pin_saved_ipr`.
+The FastAPI server (`server/`) rides the SAME gate through the same functions: a local
+`uvicorn` run with `.env` present writes REAL prop_hist rows via `POST
+/api/wells/{name}/save-ipr`, `DELETE .../ipr-pin`, and `POST .../prop-lock`
+(docs/web_port.md "Write safety").
 
 Reads (`execute_query`, `fetch_*`, `load_saved_ipr`) are SELECT-only and need no gate.
 `execute_query` has **no parameter binding** — any identifier spliced into read SQL must be

@@ -9,7 +9,7 @@ the flows not yet ported.
 
 The ask was "a real Node.js app": professional, faster, wide-screen, sidebar
 that gets out of the way. The physics (`woffl/flow|pvt|geometry|assembly`,
-1686 tests, bracket -> secant -> BHP re-seed -> bisection solve strategy) is
+bracket -> secant -> BHP re-seed -> bisection solve strategy) is
 Python and does not move. So:
 
 - **Frontend = the Node.js part.** TypeScript + React 19 SPA built with Vite;
@@ -56,6 +56,9 @@ mirrored by `web/src/api/types.ts`.
 | POST /pf-range | oil vs PF-pressure sweep |
 | POST /pressure-profile | surface -> suction traverse, both strings |
 | POST /calibrate | BHP friction calibration: fit ken/kth/kdi to the test's measured BHP (Nelder-Mead multi-start in woffl.gui.fric_calibration; as-built geometry never varied; result applied to the sidebar, saved only via Save-as-default) |
+| GET /optimize/pad-status | Optimization pad board: per-well saved-fit readiness (+ donor wells for planned future wells) |
+| POST /optimize/run | start an S/I/M pad or CFP optimization run as a background job over saved fits (engines: woffl.gui.pad_optimize / cfp_moves - the Streamlit pages' own compute cores) |
+| GET /optimize/run/{job_id} | poll a run job: status, live progress, result |
 | GET /database/wells, /database/aging-pumps, /database/prop-history/{well} | Well Database page |
 | GET /well-sort/tables | online / offline / LTSI tables + POPs config echo |
 | GET /well-sort/events | 30-day shut-in events (down-day threshold walk) |
@@ -68,7 +71,25 @@ mirrored by `web/src/api/types.ts`.
 
 Server caching mirrors the old `@st.cache_data` TTLs (`server/config.py`):
 tests 24 h, chars/PF/profiles 1 h, saved IPR / prop history 5 min. Failures
-are never cached. Startup warms chars/PF/jp-history/tests in daemon threads.
+are never cached. Beyond Streamlit, `server/cache.py` is stale-while-
+revalidate: an expired entry serves instantly while a persistent background
+thread refreshes it (single-flight per key, stale grace = one extra TTL),
+so TTL expiry never lands on a user request - only the first-ever read per
+process blocks. `clear()` bumps a version so a fetch that started before a
+write's cache-clear can never store pre-write data (read-your-writes).
+Startup warms chars/PF/jp-history/tests/well-sort/saved-IPR in daemon
+threads. Static assets: /assets/* are content-hashed and served
+`immutable` (1 y); index.html is `no-cache` so redeploys pick up new asset
+hashes immediately. API JSON is gzipped. On Databricks Apps this matters
+doubly: every request rides the Apps proxy, and warehouse queries carry
+0.5-1 s overhead - the SWR + immutable-asset combination keeps both off
+the interactive path.
+
+Client side: TanStack Query defaults to a 60 s staleTime floor
+(`web/src/main.tsx`); heavy immutable reads pin longer windows per hook,
+snapshot-keyed sweeps (Batch) hold for the whole session, and background
+job pollers set `refetchIntervalInBackground: true` so a run keeps
+updating while the engineer alt-tabs.
 
 ## Write safety
 
@@ -106,9 +127,16 @@ through `push_prop`.
 Complete: app shell (collapsible auto-hide sidebar, '[' shortcut, overlay on
 narrow screens, localStorage persistence, wide layout), well selection +
 full 37-field parameter sidebar with as-built and saved-prop locks, Solver
-(verdict, model-vs-actual, IPR chart with anchor modes + rate calculator,
-tests table, WC-washout detection), Batch Run (sweep, performance chart,
-recommender, CSV), PF Range, Pressure Profile, Well Profile, Pump
+(verdict, model-vs-actual with Auto-match BHP friction calibration +
+coefficient explainer, IPR chart with anchor modes; the fitted seeds
+auto-apply once per well on load - the web equivalent of Streamlit's
+open-time anchor sync, locked fields excluded - so the curve and the solve
+agree from the first paint; rate calculator sits directly under the IPR
+chart, comparison + anchor controls in the right column; tests table,
+WC-washout detection), Batch Run (sweep, performance chart, recommender,
+CSV; the submitted snapshot lives in a session store so results survive
+page detours without re-running, and the marginal-WC cutoff is editable on
+the run card), PF Range, Pressure Profile, Well Profile, Pump
 Equivalents, JP History (strip chart + installs), Well Database (chars,
 aging pumps, prop history audit), Well Sort (Wells / Triage / Marginal WC
 views, shared POPs config, bench xlsx + CSV exports; decision + marginal
@@ -118,10 +146,48 @@ override test BHP for the chart, tests table, pump-history strip and the
 server-side Vogel fit via `bhp_overrides`; session-only like Streamlit;
 the divergence-based "disregard Databricks BHP" flag is NOT ported yet).
 
-Not ported yet (Streamlit remains the tool for these): pad optimization
-(S/I/M/CFP), Scott's Tools, manual test entry, the joint oil+PF
-auto-match, pad-review sync writes, the gauge "disregard Databricks BHP"
-flag, PDF export.
+Optimization pad board (/optimize - REDESIGNED from the Streamlit pad
+pages): engineers match + save fits on the Single Well solver; the board
+shows per-pad readiness (saved IPR date/author, calibrated friction,
+missing parts), per-well offline flags, and planned FUTURE wells that
+match an existing well's saved fit (donor may be on any pad). Well names
+link to the Single Well solver (same selection flow as the sidebar
+picker), and each S/I/M run tab carries the same readiness board scoped
+to its pad, so check-offline -> run happens without leaving the tab.
+Offline + future config persists in localStorage per browser; fit status
+is live from prop_hist.
+
+Optimization runs (S/I/M pad + CFP) execute server-side as background jobs
+over the board's config: offline wells excluded, future wells modeled on
+their donor's saved fit, per-run constraint knobs mirroring the Streamlit
+Configure stages. CFP runs take a pad subset (cfp_pads chips, default the
+four CFP pads B/G/C/J). Any non-POPs pad in the universe (L, R, ...) may
+join: its produced water rides the CFP machines; PF for pads beyond B/G/J
+is modeled as boosted on-pad at the C-Pad booster knob, and the run notes
+say so. POPs pads separate water on-pad and are rejected with the reason
+(422). Wells whose saved fit violates the physics invariants (pwf >= ResP,
+no rate) are skipped with a note instead of killing the run.
+Engines are imported unchanged (MILP/MCKP allocation
+with plant coupling for S/I/M; anchored-delta moves with the equal-slope
+frontier for CFP). CFP results render three charts: the modeled-oil-vs-
+discharge efficiency frontier (today + plan markers, 2,900 psi trip line),
+a today-to-plan waterfall bridge decomposed by action with the plant
+pressure-feedback residual shown honestly as its own bar, and a per-well
+today-vs-plan dumbbell sorted by delta (solid dot = today, hollow ring =
+plan). Per-well chart rows are read off the same response surfaces at the
+settled pressures, so they sum exactly to the fleet totals. "Modeled oil"
+is deliberately labeled so (not "fleet oil"): the modeled total across the
+run's wells, the optimizer's baseline - not field production. The shut-in /
+bring-online ladder prices every on/off move per well (best pump option
+only): own oil cost, PW freed/added (server-enriched own_water_delta on
+every single move), net fleet oil after pressure feedback, and whether the
+move made the best plan.
+
+Not ported yet (Streamlit remains the tool for these): the fixed-pump /
+existing-baseline scenario comparators and Base-vs-Future, the CFP
+dashboard (tradeoff verdict + match-check gate),
+Scott's Tools, manual test entry, the joint oil+PF auto-match, pad-review
+sync writes, the gauge "disregard Databricks BHP" flag, PDF export.
 
 Layout convention (single-well analysis pages): the pump-history strip
 renders just above the historical-tests table, never above the page's

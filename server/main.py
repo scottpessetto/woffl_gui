@@ -32,7 +32,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from server.config import WEB_DIST
-from server.routers import compute, database, gauge, history, meta, pumps, well_sort, wells
+from server.routers import compute, database, gauge, history, meta, optimize, pumps, well_sort, wells
 
 log = logging.getLogger("woffl.web")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -60,6 +60,9 @@ def _warm_caches() -> None:
         ("pf_latest", datasources.pf_latest_safe),
         ("jp_history", datasources.jp_history_safe),
         ("well_tests", partial(tests_svc.fetch_all_well_tests, DEFAULT_TEST_MONTHS)),
+        # Fleet-wide saved-IPR snapshot: one Databricks query that makes the
+        # Optimization board and every saved-fit overlay read locally.
+        ("saved_ipr", _warm_saved_ipr),
     ]
     # Well Sort pulls (producers, catalog, shut-in log, 180-day tests) warm
     # in their own daemon threads; failures degrade to lazy loading too.
@@ -68,6 +71,12 @@ def _warm_caches() -> None:
     well_sort_svc.warm()
     for label, fn in targets:
         threading.Thread(target=_warm, args=(label, fn), daemon=True, name=f"warm-{label}").start()
+
+
+def _warm_saved_ipr() -> None:
+    from woffl.gui import ipr_anchor
+
+    ipr_anchor.warm_saved_ipr_cache()
 
 
 @asynccontextmanager
@@ -96,6 +105,7 @@ app.include_router(pumps.router, prefix="/api")
 app.include_router(database.router, prefix="/api")
 app.include_router(well_sort.router, prefix="/api")
 app.include_router(gauge.router, prefix="/api")
+app.include_router(optimize.router, prefix="/api")
 
 
 @app.exception_handler(Exception)
@@ -111,16 +121,29 @@ async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
 
 # --- SPA static hosting -----------------------------------------------------
 if WEB_DIST.is_dir():
-    app.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
 
-    @app.get("/{full_path:path}", include_in_schema=False)
+    class _HashedAssets(StaticFiles):
+        """Vite emits content-hashed filenames under /assets - a changed file
+        is a NEW URL, so the browser may cache forever. Through the Databricks
+        Apps proxy this removes ~10 conditional round trips per page load."""
+
+        async def get_response(self, path: str, scope):  # type: ignore[override]
+            resp = await super().get_response(path, scope)
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            return resp
+
+    app.mount("/assets", _HashedAssets(directory=WEB_DIST / "assets"), name="assets")
+
+    @app.api_route("/{full_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
     async def spa(full_path: str):
         candidate = (WEB_DIST / full_path).resolve()
         # Serve real files (favicon etc.); everything else falls back to the
         # SPA shell so client-side routes deep-link correctly.
         if full_path and candidate.is_file() and candidate.is_relative_to(WEB_DIST):
             return FileResponse(candidate)
-        return FileResponse(WEB_DIST / "index.html")
+        # The SPA shell must always revalidate: it names the current asset
+        # hashes, and a stale shell would 404 on redeployed assets.
+        return FileResponse(WEB_DIST / "index.html", headers={"Cache-Control": "no-cache"})
 else:
 
     @app.get("/", include_in_schema=False)

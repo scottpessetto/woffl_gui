@@ -14,6 +14,10 @@ import type {
   JpHistoryResponse,
   MarginalWcResponse,
   MetaResponse,
+  OptimizeJobStatus,
+  OptimizeRunRequest,
+  OptimizeRunStarted,
+  PadFitStatusResponse,
   PadMarginalWcResponse,
   PfRangeResponse,
   PressureProfileResponse,
@@ -116,6 +120,7 @@ const invalidateSavedIpr = (qc: QueryClient, well: string) => {
   void qc.invalidateQueries({ queryKey: ["ipr-pin", well] });
   void qc.invalidateQueries({ queryKey: ["well-context", well] });
   void qc.invalidateQueries({ queryKey: ["prop-history", well] });
+  void qc.invalidateQueries({ queryKey: ["pad-fit"] });
 };
 
 export const useSaveIpr = (well: string) => {
@@ -167,7 +172,10 @@ export const useBatch = (well: string, snapshot: SimParams | null) =>
     queryKey: ["batch", well, snapshot ? stableStringify(snapshot) : "none"],
     queryFn: ({ signal }) => post<BatchResponse>("/batch", { well, params: snapshot }, signal),
     enabled: snapshot !== null,
-    staleTime: MIN_30,
+    // A snapshot-keyed sweep never goes stale (same inputs = same physics)
+    // and must survive page detours - the snapshot store re-attaches to it.
+    staleTime: Infinity,
+    gcTime: HOUR_1,
     retry: false,
   });
 
@@ -243,6 +251,49 @@ export const usePropHistory = (well: string | null) =>
       get<PropHistoryResponse>(`/database/prop-history/${encodeURIComponent(well!)}`, signal),
     enabled: well !== null,
     staleTime: MIN_5,
+  });
+
+/** Optimization pad board: saved-fit readiness for a pad's wells + the
+ * donor wells of any future entries. Invalidated by every prop_hist write
+ * (see invalidateSavedIpr), so a fresh save shows up on the board at once. */
+export const usePadFitStatus = (pad: string | null, extras: string[]) =>
+  useQuery({
+    queryKey: ["pad-fit", pad, [...extras].sort()],
+    queryFn: ({ signal }) => {
+      const parts = extras.map((w) => `extra=${encodeURIComponent(w)}`).join("&");
+      return get<PadFitStatusResponse>(
+        `/optimize/pad-status?pad=${encodeURIComponent(pad!)}${parts ? `&${parts}` : ""}`,
+        signal,
+      );
+    },
+    enabled: pad !== null,
+    staleTime: MIN_5,
+    gcTime: HOUR_1,
+    placeholderData: keepPreviousData,
+  });
+
+/** Start a pad/CFP optimization run (background job server-side). */
+export const useStartOptimizeRun = () =>
+  useMutation({
+    mutationFn: (req: OptimizeRunRequest) =>
+      post<OptimizeRunStarted>("/optimize/run", req),
+  });
+
+/** Poll one run job every 2.5 s while it's running; stops when settled.
+ * A 404 (expired/unknown job after a server restart) surfaces as error -
+ * callers clear their stored job id on it. */
+export const useOptimizeJob = (jobId: string | null) =>
+  useQuery({
+    queryKey: ["optimize-job", jobId],
+    queryFn: ({ signal }) => get<OptimizeJobStatus>(`/optimize/run/${jobId}`, signal),
+    enabled: jobId !== null,
+    refetchInterval: (query) => (query.state.data?.status === "running" ? 2500 : false),
+    // Keep polling when the window loses focus - an engineer kicks off a
+    // multi-minute run and alt-tabs; the monitor must not freeze at 0s.
+    refetchIntervalInBackground: true,
+    staleTime: Infinity,
+    gcTime: HOUR_1,
+    retry: false,
   });
 
 // ---------------------------------------------------------------------------

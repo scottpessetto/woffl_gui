@@ -35,7 +35,8 @@ TTL_XV_STATUS = 300
 
 def writes_enabled() -> bool:
     """Same truthy convention as databricks_client._write_gate_enabled.
-    v1 reports this for UI display only - the server has no write endpoints."""
+    Gates the three write endpoints (save-ipr, ipr-pin delete, prop-lock)
+    at the router and hides the UI save controls via /api/meta."""
     return os.environ.get("ALLOW_DATABRICKS_WRITES", "").strip().lower() in ("1", "true", "yes")
 
 

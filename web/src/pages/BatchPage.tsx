@@ -8,11 +8,11 @@
  * click and hands the snapshot to useBatch (null = not requested yet).
  */
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 
 import { stableStringify } from "../api/client";
 import { useBatch } from "../api/hooks";
-import type { BatchRecommendation, BatchRow, SimParams, WaterType } from "../api/types";
+import type { BatchRecommendation, BatchRow, WaterType } from "../api/types";
 import { NOZZLE_OPTIONS, THROAT_OPTIONS } from "../api/types";
 import type { EChartsOption } from "../charts/echarts";
 import { ACCENT, axis, baseGrid, baseTooltip, CRIMSON, GOLD, houseOption } from "../charts/theme";
@@ -34,6 +34,7 @@ import { MultiChipSelect, RadioRow } from "../layout/ParamFields";
 import { downloadCsv } from "../lib/csv";
 import { fmtNum, fmtPct, pumpCode } from "../lib/format";
 import { effectiveParams, useParamsStore } from "../state/params";
+import { useSweepsStore } from "../state/sweeps";
 
 /** Five-point star (ECharts has no built-in star symbol). */
 const STAR_SYMBOL =
@@ -186,7 +187,12 @@ interface RecommenderRow extends Record<string, unknown> {
 export default function BatchPage() {
   const well = useParamsStore((s) => s.well);
   const params = useParamsStore((s) => s.params);
-  const [snapshot, setSnapshot] = useState<SimParams | null>(null);
+  const set = useParamsStore((s) => s.set);
+  // Snapshot lives in the session store, not component state: leaving the
+  // page and coming back re-attaches to the last run until the user runs
+  // again (the cached result is keyed by this snapshot).
+  const snapshot = useSweepsStore((s) => s.batch[well] ?? null);
+  const setBatchSnapshot = useSweepsStore((s) => s.setBatchSnapshot);
 
   const query = useBatch(well, snapshot);
   const data = query.data;
@@ -265,7 +271,7 @@ export default function BatchPage() {
             variant="primary"
             busy={query.isFetching}
             disabled={combos === 0}
-            onClick={() => setSnapshot(effectiveParams(params))}
+            onClick={() => setBatchSnapshot(well, effectiveParams(params))}
           >
             Run batch sweep
           </Button>
@@ -293,12 +299,24 @@ export default function BatchPage() {
                 { value: "formation", label: "Formation", hint: "Formation water only" },
               ]}
             />
-            <div className="flex items-center gap-2 pb-0.5">
+            <label className="flex items-center gap-2 pb-0.5">
+              <span
+                className="text-xs font-medium text-slate-500"
+                title="Recommender cutoff: the pump is picked where the sweep's marginal watercut reaches this value. Also editable in the sidebar under Advanced."
+              >
+                Marginal WC cutoff
+              </span>
+              <input
+                type="number"
+                value={params.marginal_watercut}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(e) => set("marginal_watercut", Number(e.target.value))}
+                className="h-8 w-20 rounded-md border border-slate-300 bg-white px-2 text-sm tabular-nums text-slate-800 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200"
+              />
               <Badge>{combos} combinations</Badge>
-              <Badge title="Recommender cutoff - set under Advanced > Field in the sidebar">
-                Marginal WC: {fmtNum(params.marginal_watercut, 2)}
-              </Badge>
-            </div>
+            </label>
           </div>
         </Card>
       </Section>
