@@ -98,7 +98,13 @@ function FitSource({ row }: { row: PadRunRow }) {
   const weak = r2 !== null && r2 > 0 && r2 < 0.5;
   const [label, tone, hint] =
     row.ipr_source === "saved"
-      ? ["saved", "text-emerald-700", "Engineer-reviewed IPR from prop_hist."]
+      ? ["saved", "text-emerald-700", "Engineer-reviewed IPR from prop_hist, anchored on a pinned well test."]
+      : row.ipr_source === "manual"
+      ? [
+          "manual pt",
+          "text-sky-700",
+          "Engineer-chosen operating point with NO well test behind it (a joint match, a backmatched BHP, an applied permutation). Reviewed, but not measured - the curve away from that point is an assumption.",
+        ]
       : row.ipr_source === "vogel"
         ? [
             `auto R2 ${r2 === null ? "-" : r2.toFixed(2)}`,

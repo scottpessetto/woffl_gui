@@ -2,8 +2,8 @@
  * Marginal WC view - the field-wide cumulative-water-threshold calculator
  * plus the per-pad (POPs) calculator with pump-limit headroom. Port of
  * well_sort.py:render_marginal_wc_tab + _render_pad_marginal_wc_section.
- * Both "Import to sidebar" buttons write params.marginal_watercut - the
- * value the Batch Run recommender and Single Well quickfix consume.
+ * Both import buttons write params.marginal_watercut - the cutoff the Batch
+ * Run recommender consumes, editable on the Batch Run card itself.
  */
 
 import { Check } from "lucide-react";
@@ -137,14 +137,14 @@ export function MarginalView() {
             variant="primary"
             size="sm"
             onClick={() => importMarginal(field.data.marginal_wc, "field")}
-            title="Updates the sidebar Marginal Watercut used by the Batch Run recommender"
+            title="Sets the Marginal Watercut the Batch Run recommender uses"
           >
-            Import {field.data.marginal_wc.toFixed(3)} to sidebar
+            Import {field.data.marginal_wc.toFixed(3)} to Batch Run
           </Button>
         )}
         {imported === "field" && (
           <span className="pb-1 text-xs font-medium text-green-700">
-            Imported into sidebar Marginal Watercut.
+            Imported into the Batch Run Marginal Watercut.
           </span>
         )}
       </ControlRow>
@@ -307,10 +307,10 @@ export function MarginalView() {
                     variant="primary"
                     size="sm"
                     onClick={() => importMarginal(padQuery.data.marginal_wc, `pad-${activePad}`)}
-                    title="Updates the sidebar Marginal Watercut used by the Batch Run recommender"
+                    title="Sets the Marginal Watercut the Batch Run recommender uses"
                   >
                     Import {activePad}-Pad Marginal WC ({padQuery.data.marginal_wc.toFixed(3)}) to
-                    sidebar
+                    Batch Run
                   </Button>
                   {imported === `pad-${activePad}` && (
                     <span className="pb-1 text-xs font-medium text-green-700">

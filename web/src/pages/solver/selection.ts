@@ -17,13 +17,18 @@ export function testKey(t: WellTestRow): string {
  * anchor semantics: recent = newest, median = middle of the date-sorted
  * window, specific = exact date (falling back to newest when the date
  * left the window).
+ *
+ * "manual" resolves to NULL on purpose: the anchor is the sidebar's own
+ * qwf/pwf, so there is no test to pin and the save must not claim one.
+ * Callers that need a test for COMPARISON (model vs actual) pick their own
+ * fallback rather than borrowing the anchor's.
  */
 export function resolveAnchorTest(
   sorted: WellTestRow[],
   mode: AnchorMode,
   anchorDate: string | null,
 ): WellTestRow | null {
-  if (sorted.length === 0) return null;
+  if (sorted.length === 0 || mode === "manual") return null;
   if (mode === "median") return sorted[Math.floor((sorted.length - 1) / 2)];
   if (mode === "specific" && anchorDate) {
     return sorted.find((t) => t.date === anchorDate) ?? sorted[0];

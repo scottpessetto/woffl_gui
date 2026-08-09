@@ -27,6 +27,25 @@ def _ts(s):
     return pd.Timestamp(s, tz="UTC")
 
 
+def _capture_pushes(monkeypatch, captured):
+    """Record every prop_hist row a save writes, whether it left as a lone
+    push or inside the batched statement. A save issues ONE `push_props` now
+    (2026-08-08, the multi-second hang); the lone-push stub stays so a caller
+    that regresses to the loop still lands in `captured` instead of reaching
+    the real client."""
+
+    def _one(well, prop_id, value, user, entry_datetime=None):
+        captured.append((well, prop_id, value, user))
+
+    def _many(well, values, user, entry_datetime=None):
+        for prop_id, value in values.items():
+            _one(well, prop_id, value, user, entry_datetime)
+        return len(values)
+
+    monkeypatch.setattr(ia, "push_prop", _one)
+    monkeypatch.setattr(ia, "push_props", _many)
+
+
 # ── the precedence rule ─────────────────────────────────────────────────────
 
 
@@ -66,11 +85,7 @@ class TestSaveIprValues:
     @pytest.fixture
     def pushes(self, monkeypatch):
         captured = []
-        monkeypatch.setattr(
-            ia,
-            "push_prop",
-            lambda w, p, v, u, entry_datetime=None: captured.append((w, p, v, u)),
-        )
+        _capture_pushes(monkeypatch, captured)
         monkeypatch.setattr(ia, "resolve_entry_user", lambda: "scott")
         # save_ipr_values consults the stored latest for the friction push
         # discipline — stub it, or the test would hit the REAL Databricks
@@ -126,11 +141,10 @@ class TestSaveIprValues:
         assert not any(p == "surf_press" for (_, p, _, _) in pushes)
 
     def test_failure_returns_the_prefixed_message(self, monkeypatch):
-        def boom(w, p, v, u, entry_datetime=None):
-
+        def boom(well, values, user, entry_datetime=None):
             raise RuntimeError("gate closed")
 
-        monkeypatch.setattr(ia, "push_prop", boom)
+        monkeypatch.setattr(ia, "push_props", boom)
         monkeypatch.setattr(ia, "resolve_entry_user", lambda: "scott")
         monkeypatch.setattr(ia, "load_saved_ipr", lambda w: None)
         n, msg = ia.save_ipr_values(
@@ -163,6 +177,11 @@ class TestSaveBatchStampAndComment:
         def _push(w, p, v, u, entry_datetime=None):
             pushes.append({"prop": p, "stamp": entry_datetime})
 
+        def _push_many(w, values, u, entry_datetime=None):
+            for prop_id in values:
+                pushes.append({"prop": prop_id, "stamp": entry_datetime})
+            return len(values)
+
         def _comment(w, stamp, user, text, context="ipr_save"):
             comments.append(
                 {"well": w, "stamp": stamp, "user": user, "text": text,
@@ -170,6 +189,7 @@ class TestSaveBatchStampAndComment:
             )
 
         monkeypatch.setattr(ia, "push_prop", _push)
+        monkeypatch.setattr(ia, "push_props", _push_many)
         monkeypatch.setattr(ia, "push_eng_comment", _comment)
         monkeypatch.setattr(ia, "resolve_entry_user", lambda: "scott")
         monkeypatch.setattr(ia, "load_saved_ipr", lambda w: None)
@@ -188,6 +208,28 @@ class TestSaveBatchStampAndComment:
         assert len(pushes) == 6
         # One distinct, non-None value — not six now() calls microseconds apart.
         assert len(stamps) == 1 and None not in stamps
+
+    def test_the_whole_save_is_one_statement(self, monkeypatch):
+        """The latency contract (2026-08-08). One click used to issue one
+        INSERT per property — six to nine serialized Delta commits, which is
+        what made the button hang. Every value row must leave in a SINGLE
+        push_props call, and no lone push may sneak back in."""
+        batches, lone = [], []
+        monkeypatch.setattr(
+            ia, "push_props",
+            lambda w, values, u, entry_datetime=None: (
+                batches.append(dict(values)) or len(values)
+            ),
+        )
+        monkeypatch.setattr(ia, "push_prop", lambda *a, **k: lone.append(a))
+        monkeypatch.setattr(ia, "resolve_entry_user", lambda: "scott")
+        monkeypatch.setattr(ia, "load_saved_ipr", lambda w: None)
+
+        n, _ = self._save(ken=0.05, kth=0.35, kdi=0.45)
+
+        assert lone == []
+        assert len(batches) == 1
+        assert n == len(batches[0]) == 9  # six curve rows + three friction
 
     def test_comment_is_bound_to_that_same_stamp(self, rig):
         pushes, comments = rig
@@ -217,6 +259,7 @@ class TestSaveBatchStampAndComment:
         than no note, so an empty batch drops the comment and says so."""
         comments = []
         monkeypatch.setattr(ia, "push_prop", lambda *a, **k: None)
+        monkeypatch.setattr(ia, "push_props", lambda *a, **k: 0)
         monkeypatch.setattr(
             ia, "push_eng_comment", lambda *a, **k: comments.append(a)
         )
@@ -374,11 +417,7 @@ class TestFrictionSave:
     @pytest.fixture
     def pushes(self, monkeypatch):
         captured = []
-        monkeypatch.setattr(
-            ia,
-            "push_prop",
-            lambda w, p, v, u, entry_datetime=None: captured.append((w, p, v, u)),
-        )
+        _capture_pushes(monkeypatch, captured)
         monkeypatch.setattr(ia, "resolve_entry_user", lambda: "scott")
         return captured
 
@@ -427,6 +466,49 @@ class TestFrictionSave:
         self._save(ken=0.12, kth=0.42, kdi=0.4)
         fric = {p: v for (_, p, v, _) in pushes if p.startswith("jpfric")}
         assert fric == {"jpfric_throat": 0.42}
+
+
+# ── characterization values a permutation can move (2026-08-08) ─────────────
+# The sensitivity study varies bubble point and formation temp; both prop ids
+# already exist (resvr_bubb / resvr_temp) but the Solver's save never reached
+# them, so a matched well lost those two on every reopen. They ride along ONLY
+# when the caller passes them - the client sends one only after the engineer
+# moved it off the seeded value, so a routine save never re-writes the
+# characterization it was handed.
+
+
+class TestCharacterizationSave:
+    @pytest.fixture
+    def pushes(self, monkeypatch):
+        captured = []
+        _capture_pushes(monkeypatch, captured)
+        monkeypatch.setattr(ia, "resolve_entry_user", lambda: "scott")
+        monkeypatch.setattr(ia, "load_saved_ipr", lambda w: None)
+        return captured
+
+    def _save(self, **kw):
+        return ia.save_ipr_values(
+            "MPB-28", qwf_liq=600.0, pwf=900.0, res_pres=1800.0,
+            form_wc=0.5, form_gor=250.0, surf_pres=210.0, **kw,
+        )
+
+    def test_omitted_means_no_row(self, pushes):
+        n, _ = self._save()
+        assert n == 6
+        assert not {"resvr_bubb", "resvr_temp"} & {p for (_, p, _, _) in pushes}
+
+    def test_supplied_values_land_on_the_canonical_ids(self, pushes):
+        n, _ = self._save(bubble_point=2100.0, form_temp=185.0)
+        vals = {p: v for (_, p, v, _) in pushes}
+        assert n == 8
+        assert vals["resvr_bubb"] == pytest.approx(2100.0)
+        assert vals["resvr_temp"] == pytest.approx(185.0)
+
+    def test_one_without_the_other(self, pushes):
+        n, _ = self._save(form_temp=185.0)
+        vals = {p: v for (_, p, v, _) in pushes}
+        assert n == 7
+        assert "resvr_bubb" not in vals and vals["resvr_temp"] == pytest.approx(185.0)
 
 
 class TestFrictionLoad:
@@ -559,11 +641,7 @@ class TestSetWcLock:
     @pytest.fixture
     def pushes(self, monkeypatch):
         captured = []
-        monkeypatch.setattr(
-            ia,
-            "push_prop",
-            lambda w, p, v, u, entry_datetime=None: captured.append((w, p, v, u)),
-        )
+        _capture_pushes(monkeypatch, captured)
         monkeypatch.setattr(ia, "resolve_entry_user", lambda: "scott")
         return captured
 
@@ -586,13 +664,10 @@ class TestSetWcLock:
         assert "MPB-28" not in ia._saved_ipr_cache
 
     def test_failure_reports_not_raises(self, monkeypatch):
-        monkeypatch.setattr(
-            ia,
-            "push_prop",
-            lambda w, p, v, u, entry_datetime=None: (_ for _ in ()).throw(
-                RuntimeError("gate")
-            ),
-        )
+        def boom(well, values, user, entry_datetime=None):
+            raise RuntimeError("gate")
+
+        monkeypatch.setattr(ia, "push_props", boom)
         monkeypatch.setattr(ia, "resolve_entry_user", lambda: "scott")
         ok, msg = ia.set_wc_lock("MPB-28", True, form_wc=0.45)
         assert not ok and "Could not update the WC lock" in msg
@@ -604,11 +679,7 @@ class TestPropLockRegistry:
     @pytest.fixture
     def pushes(self, monkeypatch):
         captured = []
-        monkeypatch.setattr(
-            ia,
-            "push_prop",
-            lambda w, p, v, u, entry_datetime=None: captured.append((w, p, v, u)),
-        )
+        _capture_pushes(monkeypatch, captured)
         monkeypatch.setattr(ia, "resolve_entry_user", lambda: "scott")
         return captured
 

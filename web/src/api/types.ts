@@ -184,6 +184,11 @@ export interface WellContext {
   pf: PfSeed | null;
   ipr_info: string | null;
   saved_ipr_info: string | null;
+  /** "saved" = engineer-reviewed values with a pinned well test behind them.
+   *  "manual" = the same, with NO test behind them: a point the engineer
+   *  chose. Both outrank the fit; only one is a measurement. */
+  ipr_source: "saved" | "manual" | "vogel" | "single_test" | null;
+  ipr_r2: number | null;
   test_count: number;
 }
 
@@ -240,7 +245,10 @@ export interface ApiErrorDetail {
 // IPR
 // ---------------------------------------------------------------------------
 
-export type AnchorMode = "recent" | "median" | "specific";
+/** IPR anchor selection. "manual" is not a test at all - the sidebar's own
+ *  qwf/pwf IS the anchor, which is what a joint match or a backmatched BHP
+ *  produces. It disables the test-derived fit rather than competing with it. */
+export type AnchorMode = "recent" | "median" | "specific" | "manual";
 
 /** One well's saved-fit readiness on the Optimization pad board. */
 export interface PadFitWell {
@@ -293,10 +301,11 @@ export interface PadRunRow {
   suction: number | null;
   marginal_oil: number | null;
   sonic: boolean | null;
-  /** Where this well's inflow curve came from: "saved" = an engineer-reviewed
-   *  fit, "vogel" = an automatic fit over recent tests, "single_test" = one
+  /** Where this well's inflow curve came from: "saved" = engineer-reviewed
+   *  with a pinned test, "manual" = engineer-chosen point with no test behind
+   *  it, "vogel" = an automatic fit over recent tests, "single_test" = one
    *  test, null = neither, so the run used generic defaults. */
-  ipr_source: "saved" | "vogel" | "single_test" | null;
+  ipr_source: "saved" | "manual" | "vogel" | "single_test" | null;
   /** Vogel fit quality when ipr_source is "vogel". */
   ipr_r2: number | null;
   /** ken/kth/kdi came from a BHP calibration rather than library defaults. */
@@ -719,6 +728,14 @@ export interface SaveIprRequest {
   ken: number | null;
   kth: number | null;
   kdi: number | null;
+  /** Canonical characterization (resvr_bubb / resvr_temp). Sent only when the
+   *  engineer moved it off the seeded value, so a save never re-writes the
+   *  characterization the server handed out. */
+  bubble_point: number | null;
+  form_temp: number | null;
+  /** Manual-point save: clear any pinned anchor test first, so the well does
+   *  not reopen claiming a test the curve was not derived from. */
+  unpin: boolean;
   comment: string | null;
   pin_wt_uid: number | null; // null = values-only save (no pinnable anchor)
   pin_date: string | null;

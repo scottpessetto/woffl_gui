@@ -69,18 +69,25 @@ function Workbench({ well }: { well: string }) {
   const [compareKey, setCompareKey] = useState<string | null>(null);
   const [showStrip, setShowStrip] = useState(true);
 
-  // Seed the anchor from the saved pin ONCE per mount (= once per well):
-  // an applied pin means "anchor on this specific test".
+  // Seed the anchor ONCE per mount (= once per well): an applied pin means
+  // "anchor on this specific test"; saved values with NO pin mean the anchor
+  // is not a test at all, so the selector opens on Manual point and the
+  // test-derived fit never runs against it.
   const pinSeeded = useRef(false);
   useEffect(() => {
     const pin = pinQ.data;
-    if (pinSeeded.current || !pin) return;
+    // BOTH inputs must have landed before latching: the pin usually resolves
+    // first, and latching on it alone left a manual-anchor well showing "Most
+    // recent" because ipr_source had not arrived yet.
+    if (pinSeeded.current || !pin || !context) return;
     pinSeeded.current = true;
     if (pin.status === "applied" && pin.date_token) {
       setAnchorMode("specific");
       setAnchorDate(pin.date_token);
+    } else if (context.ipr_source === "manual") {
+      setAnchorMode("manual");
     }
-  }, [pinQ.data]);
+  }, [pinQ.data, context]);
 
   const sortedTests = useMemo<WellTestRow[]>(() => {
     const rows = testsQ.data?.tests ?? [];
@@ -100,16 +107,24 @@ function Workbench({ well }: { well: string }) {
     if (decouple && compareKey !== null) {
       return sortedTests.find((t) => testKey(t) === compareKey) ?? sortedTests[0];
     }
-    // Synced (default): the comparison test follows the IPR anchor.
-    return resolveAnchorTest(sortedTests, anchorMode, anchorDate);
+    // Synced (default): the comparison test follows the IPR anchor. A manual
+    // anchor has no test, but the engineer still needs something to judge the
+    // match against, so the comparison falls back to the most recent test.
+    return resolveAnchorTest(sortedTests, anchorMode, anchorDate) ?? sortedTests[0];
   }, [sortedTests, decouple, compareKey, anchorMode, anchorDate]);
 
+  // A manual anchor IS the sidebar's qwf/pwf, so there is nothing to fit: the
+  // test-derived curve would only compete with the point the engineer chose.
   const fitEnabled =
-    simActive && well !== "Custom" && !params.model_as_water && sortedTests.length >= 2;
+    simActive &&
+    well !== "Custom" &&
+    !params.model_as_water &&
+    anchorMode !== "manual" &&
+    sortedTests.length >= 2;
   const iprFitQ = useIprFit(
     {
       well,
-      anchor_mode: anchorMode,
+      anchor_mode: anchorMode === "manual" ? "recent" : anchorMode,
       anchor_date: anchorMode === "specific" ? anchorDate : null,
       field_model: params.field_model,
       months: effectiveMonths,
@@ -123,9 +138,8 @@ function Workbench({ well }: { well: string }) {
   // Streamlit's open-time anchor sync (_sync_chosen_ipr_to_sidebar): the
   // chart curve and the solve then agree from the first settled paint
   // instead of waiting for a manual "Apply IPR to inputs" click. Locked
-  // WC/GOR/ResP survive (applyIprSeeds filters them). Also heals wells
-  // whose pre-2026-08-03 saved values carry the double-converted liquid
-  // rate. Ordering guards:
+  // WC/GOR/ResP survive, and so does anything the engineer set by hand
+  // (applyIprSeeds filters both). Ordering guards:
   //   - the pin must settle first, or the recent-anchor fit could land and
   //     latch before the pin switches the anchor to its specific test;
   //   - CONTEXT seeding must have applied first (seededFor === well), or
@@ -138,12 +152,20 @@ function Workbench({ well }: { well: string }) {
   // whatever the engineer had since set by hand (or applied from Match
   // Sensitivities). Cleared by selectWell and setWindow.
   const fitApplied = useParamsStore((s) => s.fitAppliedFor) === well;
+  // A reviewed save OUTRANKS the fit. When the server's saved-IPR overlay won
+  // (ipr_source "saved"), the seeds on screen ARE the engineer's numbers and
+  // the fit must not lay itself over them - 12 of the 31 wells carrying saved
+  // values have a fit that disagrees, and the worst of them differed by 2x on
+  // the anchor rate (MPB-35: saved 668 BLPD, fit 322). The latch is still set
+  // so the chart's settle gate closes.
+  const savedWins = context?.ipr_source === "saved" || context?.ipr_source === "manual";
   useEffect(() => {
     const f = iprFitQ.data;
     if (fitApplied || !pinSettled || !ctxSeeded || !f) return;
     useParamsStore.getState().markFitApplied(well);
+    if (savedWins) return;
     useParamsStore.getState().applyIprSeeds(f.seeds);
-  }, [iprFitQ.data, pinSettled, ctxSeeded, fitApplied, well]);
+  }, [iprFitQ.data, pinSettled, ctxSeeded, fitApplied, savedWins, well]);
 
   // First-load settle gate for the IPR chart: hold it greyed until every
   // input series has arrived ONCE (tests, installs/pump labels, pin, the
@@ -165,7 +187,11 @@ function Workbench({ well }: { well: string }) {
     if (settledNow) setIprReady(true);
   }, [settledNow]);
 
-  const fit = iprFitQ.data ?? null;
+  // Manual anchor: the fit is not just unused, it is absent from the UI. The
+  // query key maps manual to "recent", so react-query would still hand back a
+  // cached curve and re-offer "Apply IPR to inputs" - which contradicts the
+  // mode the engineer just chose.
+  const fit = anchorMode === "manual" ? null : (iprFitQ.data ?? null);
   const solve = solveQ.data ?? null;
   const installs = installsQ.data?.installs ?? [];
 
@@ -184,15 +210,13 @@ function Workbench({ well }: { well: string }) {
     };
   }, [installsQ.data, gauge]);
 
-  // Qmax for the rate calculator: same anchor precedence the chart uses
-  // (fit > comparison test > sidebar inflow), at the SIDEBAR ResP.
-  const qmax = useMemo<number | null>(() => {
-    if (fit) return vogelQmax(fit.coeffs.qwf, fit.coeffs.pwf, params.pres);
-    if (compareTest && compareTest.total_fluid !== null && compareTest.bhp !== null) {
-      return vogelQmax(compareTest.total_fluid, compareTest.bhp, params.pres);
-    }
-    return vogelQmax(params.qwf, params.pwf, params.pres);
-  }, [fit, compareTest, params.pres, params.qwf, params.pwf]);
+  // Qmax for the rate calculator: the SIDEBAR inflow, the same anchor the
+  // chart curve and the solve use. Preferring the fit here made the
+  // calculator quote rates off a curve that was not on screen.
+  const qmax = useMemo<number | null>(
+    () => vogelQmax(params.qwf, params.pwf, params.pres),
+    [params.pres, params.qwf, params.pwf],
+  );
 
   const solveError = solveQ.error;
   const suggestGor =
@@ -242,7 +266,6 @@ function Workbench({ well }: { well: string }) {
             fit={fit}
             params={params}
             solve={solve}
-            compareTest={compareTest}
             installs={installs}
             loading={!iprReady}
             gaugeSlot={<GaugePanel well={well} tests={sortedTests} />}

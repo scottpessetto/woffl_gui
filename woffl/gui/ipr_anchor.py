@@ -28,6 +28,7 @@ from woffl.assembly.prop_hist_client import (
     next_entry_datetime,
     push_eng_comment,
     push_prop,
+    push_props,
     resolve_entry_user,
 )
 from woffl.flow.inflow import InFlow
@@ -746,6 +747,8 @@ def save_ipr_values(
     ken: float | None = None,
     kth: float | None = None,
     kdi: float | None = None,
+    bubble_point: float | None = None,
+    form_temp: float | None = None,
     comment: str | None = None,
 ) -> tuple[int, str]:
     """Push the sidebar's CURRENT IPR + fluid values as the well's saved curve.
@@ -763,6 +766,11 @@ def save_ipr_values(
     ``resvr_press`` is pushed too so the whole curve travels together — note
     that updates the well's CANONICAL reservoir pressure via the pivots, which
     is the point: the reviewed value IS the characterization.
+    ``bubble_point`` and ``form_temp`` are the same kind of thing and the same
+    deal: canonical characterization (``resvr_bubb`` / ``resvr_temp``), pushed
+    ONLY when the caller passes them. The Solver sends one only after the
+    engineer moved it off the seeded value - a sensitivity permutation varies
+    both - so a routine save never re-writes the characterization it was given.
 
     Every property of one save shares a single ``entry_datetime``. That stamp
     is the save's only batch identity, and ``comment`` — the engineer's note on
@@ -782,6 +790,14 @@ def save_ipr_values(
             "form_gor": float(form_gor),
             "surf_press": float(surf_pres) if surf_pres is not None else None,
             "resvr_press": float(res_pres),
+            # Canonical characterization values, saved ONLY when the caller
+            # passes them. The web client sends one only after the engineer
+            # moved it off the seeded value (a sensitivity permutation can
+            # vary both), so an ordinary save never re-writes the
+            # characterization it was handed - the same discipline the
+            # friction coefficients follow below.
+            "resvr_bubb": float(bubble_point) if bubble_point is not None else None,
+            "resvr_temp": float(form_temp) if form_temp is not None else None,
         }
         # Friction rides along only when it carries information: skip when it
         # matches the stored latest (no history noise from an unchanged save)
@@ -808,12 +824,22 @@ def save_ipr_values(
         # second save inside the same 15.6 ms clock tick gets a strictly LATER
         # stamp instead of colliding with this one: see next_entry_datetime.
         batch_stamp = next_entry_datetime()
-        n = 0
-        for pid, val in payload.items():
-            if val is None or (isinstance(val, float) and np.isnan(val)):
-                continue
-            push_prop(well_name, pid, val, entry_user, entry_datetime=batch_stamp)
-            n += 1
+        # ONE statement for the whole save. It used to be one INSERT per
+        # property in a Python loop: 6-9 serialized Delta commits, which is
+        # what made the button hang for seconds (measured 2026-08-08: ~0.16 s
+        # of pure protocol per statement on a warm connection, before Delta's
+        # own commit cost). push_props validates every row before sending, so
+        # a rejected prop can no longer leave a half-written save behind.
+        n = push_props(
+            well_name,
+            {
+                pid: val
+                for pid, val in payload.items()
+                if val is not None and not (isinstance(val, float) and np.isnan(val))
+            },
+            entry_user,
+            entry_datetime=batch_stamp,
+        )
         clear_saved_ipr_cache(well_name)
 
         # Comment LAST and best-effort: the properties are already committed,
@@ -869,12 +895,17 @@ def set_prop_lock(
     try:
         entry_user = resolve_entry_user()
         if locked:
+            # Value and lock flag go in ONE statement, sharing one stamp: they
+            # are one click, and a lock row that landed without its value row
+            # would pin whatever was there before.
+            rows: dict[str, float | None] = {}
             if value is not None:
                 v = float(value)
                 if field == "form_wc":
                     v = min(max(v, 0.0), 0.99)
-                push_prop(well_name, value_id, v, entry_user)
-            push_prop(well_name, lock_id, 1.0, entry_user)
+                rows[value_id] = v
+            rows[lock_id] = 1.0
+            push_props(well_name, rows, entry_user)
             message = (
                 f"🔒 {label} locked for {well_name} — the saved value now "
                 "overrides every test-derived seed until unlocked."

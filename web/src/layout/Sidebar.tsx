@@ -426,15 +426,6 @@ export function Sidebar() {
                 <NumberField label="Water Specific Gravity" field="wat_sg" step={0.01} dp={2} />
               </div>
 
-              <div className="space-y-2">
-                <SubHeader text="Field" />
-                <NumberField
-                  label="Marginal Watercut"
-                  field="marginal_watercut"
-                  step={0.01}
-                  dp={2}
-                />
-              </div>
               {/* Batch Run and Power Fluid Range sweep selectors live on
                   their pages now - see BatchPage / PfRangePage. */}
 

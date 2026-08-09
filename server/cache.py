@@ -107,6 +107,15 @@ class _TtlCache:
             self._data.clear()
             self.version += 1
 
+    def evict(self, key: tuple) -> None:
+        """Drop ONE key. Bumps the version like clear(), so an in-flight fetch
+        that started before this call cannot store a pre-write result — the
+        same read-your-writes guarantee, without costing every other key its
+        entry (a one-well save used to cold-start the whole fleet)."""
+        with self._lock:
+            self._data.pop(key, None)
+            self.version += 1
+
 
 def ttl_cache(ttl: float, maxsize: int = 32) -> Callable[[F], F]:
     """Decorator. Per-key single-flight on COLD misses is deliberately NOT
@@ -147,6 +156,13 @@ def ttl_cache(ttl: float, maxsize: int = 32) -> Callable[[F], F]:
             cache.put(key, value, version)
             return value
 
+        def cache_evict(*args: Any, **kwargs: Any) -> None:
+            """Drop the entry for ONE call signature. Args must match the
+            decorated call exactly (same positional/keyword split), because the
+            key is built the same way as in `wrapper`."""
+            cache.evict((args, tuple(sorted(kwargs.items()))))
+
+        wrapper.cache_evict = cache_evict  # type: ignore[attr-defined]
         wrapper.cache_clear = cache.clear  # type: ignore[attr-defined]
         wrapper._cache = cache  # type: ignore[attr-defined] - test/ops introspection
         return wrapper  # type: ignore[return-value]

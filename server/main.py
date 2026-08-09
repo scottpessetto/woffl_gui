@@ -63,6 +63,10 @@ def _warm_caches() -> None:
         # Fleet-wide saved-IPR snapshot: one Databricks query that makes the
         # Optimization board and every saved-fit overlay read locally.
         ("saved_ipr", _warm_saved_ipr),
+        # prop_hist write metadata (prop_xref whitelist + the enthid map).
+        # Both are 1 h module caches inside prop_hist_client, and the FIRST
+        # save of a process pays them inline (~0.5 s) before its INSERT.
+        ("prop_write_meta", _warm_prop_write_meta),
     ]
     # Well Sort pulls (producers, catalog, shut-in log, 180-day tests) warm
     # in their own daemon threads; failures degrade to lazy loading too.
@@ -77,6 +81,13 @@ def _warm_saved_ipr() -> None:
     from woffl.gui import ipr_anchor
 
     ipr_anchor.warm_saved_ipr_cache()
+
+
+def _warm_prop_write_meta() -> None:
+    from woffl.assembly import prop_hist_client
+
+    prop_hist_client.fetch_prop_xref()
+    prop_hist_client._fetch_enthid_groups()
 
 
 @asynccontextmanager

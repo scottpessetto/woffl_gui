@@ -512,14 +512,25 @@ def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
                 ts = info.get("saved_at")
                 when = format_alaska(ts, "%Y-%m-%d") if ts is not None else str(ts)
                 who = str(info.get("saved_by") or "").split("@")[0]
+                # No live anchor pin behind the values means no WELL TEST
+                # behind them: the engineer chose the point (a joint match, a
+                # backmatched BHP, an applied permutation). Same precedence as
+                # a test-anchored save, different truth claim - so it is named
+                # differently everywhere it feeds a decision, because a pump
+                # recommendation is only as good as the inflow it was chosen
+                # against and nobody should read a chosen point as a measured
+                # one.
+                from_test = info.get("pin_at") is not None
+                kind = "saved IPR values" if from_test else "manual IPR point"
+                tail = "" if from_test else " - not tied to a well test"
                 saved_ipr_info = (
-                    f"Restored saved IPR values ({when} - {who})"
+                    f"Restored {kind} ({when} - {who}){tail}"
                     if who
-                    else f"Restored saved IPR values ({when})"
+                    else f"Restored {kind} ({when}){tail}"
                 )
                 # A reviewed save outranks whatever the tests fitted, and its
                 # R2 no longer describes the numbers in play.
-                ipr_source = "saved"
+                ipr_source = "saved" if from_test else "manual"
                 ipr_r2 = None
     except Exception:
         log.warning(

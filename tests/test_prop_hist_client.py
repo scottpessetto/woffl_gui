@@ -6,6 +6,7 @@ None/newest behavior, and resolve_entry_user's env-override precedence.
 """
 
 import os
+import re
 import threading
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -24,6 +25,7 @@ from woffl.assembly.prop_hist_client import (
     fetch_prop_xref,
     next_entry_datetime,
     push_prop,
+    push_props,
     resolve_entry_user,
     well_enthid_map,
 )
@@ -541,6 +543,131 @@ class TestPushPropInsertParameters(_CacheResetMixin):
             push_prop("MPB-01", "ipr_wt_uid", float("nan"), "scott")
 
         mock_write.assert_not_called()
+
+
+# ── push_props: the batched save (2026-08-08) ────────────────────────────────
+#
+# One click of "Save IPR as well default" used to be one INSERT per property.
+# Six to nine serialized Delta commits is what made the button hang, so the
+# save now leaves as a single multi-row statement. Every guard push_prop
+# applies has to survive that, and validation has to happen BEFORE the write
+# (prop_hist has no transaction — a rejected row four used to leave rows one
+# through three committed).
+
+
+class TestPushProps(_CacheResetMixin):
+    XREF = pd.DataFrame(
+        {"prop_id": ["ipr_qwf_liq", "ipr_pwf", "form_wc", "jpfric_entry"]}
+    )
+    ENTHID = pd.DataFrame({"enthid": [12345], "well_name": ["B-028"]})
+
+    @patch("woffl.assembly.prop_hist_client.execute_write")
+    @patch("woffl.assembly.prop_hist_client.execute_query")
+    def test_every_row_lands_in_one_statement(self, mock_query, mock_write):
+        mock_query.side_effect = _query_router(xref=self.XREF, enthid=self.ENTHID)
+        stamp = next_entry_datetime()
+
+        n = push_props(
+            "MPB-28",
+            {"ipr_qwf_liq": 600.0, "ipr_pwf": 900.0, "form_wc": 0.5},
+            "scott",
+            entry_datetime=stamp,
+        )
+
+        assert n == 3
+        assert mock_write.call_count == 1
+        sql, params = mock_write.call_args[0]
+        assert sql.strip().upper().startswith("INSERT")
+        assert "mpu.wells.prop_hist" in sql
+        assert sql.count("(:enthid_") == 3  # three VALUES tuples, one statement
+        # No marker is repeated: a name bound twice would be a bet on connector
+        # behaviour, and the write path cannot be smoke-tested live.
+        markers = re.findall(r":(\w+)", sql)
+        assert len(markers) == len(set(markers)) == len(params)
+        assert [params[f"prop_id_{i}"] for i in range(3)] == [
+            "ipr_qwf_liq", "ipr_pwf", "form_wc",
+        ]
+        assert [params[f"prop_value_{i}"] for i in range(3)] == [600.0, 900.0, 0.5]
+        assert {params[f"enthid_{i}"] for i in range(3)} == {12345}
+        assert {params[f"entry_user_{i}"] for i in range(3)} == {"scott"}
+        # The batch stamp is the save's only identity - shared, used verbatim.
+        assert {params[f"entry_datetime_{i}"] for i in range(3)} == {stamp}
+
+    @patch("woffl.assembly.prop_hist_client.execute_write")
+    @patch("woffl.assembly.prop_hist_client.execute_query")
+    def test_one_stamp_is_allocated_for_the_whole_batch(self, mock_query, mock_write):
+        mock_query.side_effect = _query_router(xref=self.XREF, enthid=self.ENTHID)
+
+        push_props("MPB-28", {"ipr_pwf": 900.0, "form_wc": 0.5}, "scott")
+
+        _, params = mock_write.call_args[0]
+        assert params["entry_datetime_0"] == params["entry_datetime_1"]
+        assert params["entry_datetime_0"].tzinfo is not None
+
+    @pytest.mark.parametrize(
+        "bad_row",
+        [
+            {"jpump_md": 6270.0},          # as-built: never authored by woffl
+            {"not_a_real_prop": 5.0},      # not in prop_xref
+            {"ipr_pwf": None},             # prop_value is NOT NULL
+            {"ipr_pwf": float("nan")},     # non-finite
+        ],
+    )
+    @patch("woffl.assembly.prop_hist_client.execute_write")
+    @patch("woffl.assembly.prop_hist_client.execute_query")
+    def test_one_bad_row_writes_nothing(self, mock_query, mock_write, bad_row):
+        """All-or-nothing validation. prop_hist has no transaction, so a row
+        rejected mid-batch must be caught before the statement is sent."""
+        mock_query.side_effect = _query_router(xref=self.XREF, enthid=self.ENTHID)
+
+        with pytest.raises(phc.PropHistError):
+            push_props("MPB-28", {"ipr_qwf_liq": 600.0, **bad_row}, "scott")
+
+        mock_write.assert_not_called()
+
+    @patch("woffl.assembly.prop_hist_client.execute_write")
+    @patch("woffl.assembly.prop_hist_client.execute_query")
+    def test_empty_batch_is_a_no_op(self, mock_query, mock_write):
+        mock_query.side_effect = _query_router(xref=self.XREF, enthid=self.ENTHID)
+
+        assert push_props("MPB-28", {}, "scott") == 0
+
+        mock_write.assert_not_called()
+
+    @patch("woffl.assembly.prop_hist_client.execute_write")
+    @patch("woffl.assembly.prop_hist_client.execute_query")
+    def test_unresolvable_well_writes_nothing(self, mock_query, mock_write):
+        mock_query.side_effect = _query_router(
+            xref=self.XREF,
+            enthid=pd.DataFrame({"enthid": [], "well_name": []}),
+        )
+
+        with pytest.raises(EnthidResolutionError):
+            push_props("MPB-28", {"ipr_pwf": 900.0}, "scott")
+
+        mock_write.assert_not_called()
+
+    @patch("woffl.assembly.prop_hist_client.execute_write")
+    @patch("woffl.assembly.prop_hist_client.execute_query")
+    def test_batch_size_is_capped(self, mock_query, mock_write):
+        mock_query.side_effect = _query_router(xref=self.XREF, enthid=self.ENTHID)
+        oversized = {f"prop_{i}": float(i) for i in range(phc._MAX_BATCH_ROWS + 1)}
+
+        with pytest.raises(phc.PropHistError, match="at most"):
+            push_props("MPB-28", oversized, "scott")
+
+        mock_write.assert_not_called()
+
+    @patch("woffl.assembly.databricks_client._new_connection")
+    def test_write_gate_blocks_the_batch(self, mock_new_conn, monkeypatch):
+        """Same door as push_prop: the gate closes before any connection."""
+        monkeypatch.delenv("ALLOW_DATABRICKS_WRITES", raising=False)
+        with patch("woffl.assembly.prop_hist_client.execute_query") as mock_query:
+            mock_query.side_effect = _query_router(xref=self.XREF, enthid=self.ENTHID)
+            with pytest.raises(WritesDisabledError):
+                push_props("MPB-28", {"ipr_pwf": 900.0}, "scott")
+
+        mock_new_conn.assert_not_called()
 
 
 # ── fetch_latest_prop ─────────────────────────────────────────────────────────

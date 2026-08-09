@@ -63,6 +63,27 @@ PROP_HIST_INSERT_SQL = (
     "VALUES (:enthid, :prop_id, :prop_value, :entry_datetime, :entry_user)"
 )
 
+# Batched form of the SAME insert (see `push_props`). One logical save used to
+# be one statement PER property: 6-9 serialized Delta commits at ~0.2-1 s each,
+# which is what made "Save IPR as well default" hang for seconds. Delta takes a
+# multi-row VALUES list happily, and `_validate_single_insert` already permits
+# it (it only forbids ';' chaining), so a save is now ONE statement.
+#
+# Every marker is numbered — including enthid/stamp/user, which are identical
+# on every row — so no parameter name is ever repeated in the statement. That
+# is deliberate: repeated named markers are a connector-behaviour bet, and the
+# write path is the one place in this app that cannot be smoke-tested against
+# the warehouse (AGENTS.md section 3).
+PROP_HIST_INSERT_HEAD = (
+    "INSERT INTO mpu.wells.prop_hist "
+    "(enthid, prop_id, prop_value, entry_datetime, entry_user) VALUES "
+)
+
+# A save is at most nine rows (six IPR values + three friction coefficients).
+# The cap keeps one statement's text bounded no matter what a future caller
+# hands in; anything larger wants a different design, not a longer string.
+_MAX_BATCH_ROWS = 32
+
 # Engineer comments live in their own table: prop_hist.prop_value is
 # DOUBLE NOT NULL, so free text physically cannot go on a prop row. A comment
 # is bound to the SAVE, not to any single property — one click of "Save IPR as
@@ -453,6 +474,27 @@ def push_prop(
         for INSERT rather than an affected-row count, so treat any non-raising
         return as success — do NOT assert ``== 1``.
     """
+    prop_value = _validated_prop_value(prop_id, value)
+    enthid = _resolve_enthid(well_name)
+
+    parameters = {
+        "enthid": enthid,
+        "prop_id": prop_id,
+        "prop_value": prop_value,
+        # An explicit stamp is a caller's BATCH identity — used verbatim, never
+        # re-allocated, or the save's rows would stop sharing a key.
+        "entry_datetime": entry_datetime or next_entry_datetime(),
+        "entry_user": entry_user,
+    }
+    return execute_write(PROP_HIST_INSERT_SQL, parameters)
+
+
+def _validated_prop_value(prop_id: str, value: Optional[float]) -> float:
+    """Whitelist `prop_id` and coerce `value`, or raise. Shared by both write
+    entry points so a batched save can never be validated more loosely than a
+    lone push. `fetch_prop_xref` is TTL-cached, so calling this per row costs
+    one dict lookup after the first; the as-built check stays ahead of it, so
+    a forbidden prop_id is refused without touching the warehouse."""
     if prop_id in AS_BUILT_PROP_IDS:
         raise AsBuiltPropError(
             f"prop_id '{prop_id}' is an as-built completion property — woffl "
@@ -460,16 +502,12 @@ def push_prop(
             "and UI defaults are not measurements; correct the well file "
             "instead."
         )
-
     valid_ids = fetch_prop_xref()
     if prop_id not in valid_ids:
         raise UnknownPropIdError(
             f"prop_id '{prop_id}' is not in mpu.wells.prop_xref. "
             f"Valid keys: {sorted(valid_ids)}"
         )
-
-    enthid = _resolve_enthid(well_name)
-
     if value is None:
         # prop_value is DOUBLE **NOT NULL**. A None here reaches Databricks and
         # comes back as DELTA_NOT_NULL_CONSTRAINT_VIOLATED after a full round
@@ -489,17 +527,66 @@ def push_prop(
         raise PropHistError(
             f"prop_value must be finite (got {prop_value!r})."
         )
+    return prop_value
 
-    parameters = {
-        "enthid": enthid,
-        "prop_id": prop_id,
-        "prop_value": prop_value,
-        # An explicit stamp is a caller's BATCH identity — used verbatim, never
-        # re-allocated, or the save's rows would stop sharing a key.
-        "entry_datetime": entry_datetime or next_entry_datetime(),
-        "entry_user": entry_user,
-    }
-    return execute_write(PROP_HIST_INSERT_SQL, parameters)
+
+def push_props(
+    well_name: str,
+    values: dict[str, Optional[float]],
+    entry_user: str,
+    entry_datetime: Optional[datetime] = None,
+) -> int:
+    """Insert SEVERAL prop_hist rows for one well in ONE statement.
+
+    Same guards as :func:`push_prop`, applied to every row BEFORE anything is
+    sent: as-built rejection, prop_xref whitelist, NOT-NULL refusal, finite
+    coercion, single-enthid resolution. Validation is all-or-nothing, which is
+    the point of batching — prop_hist has no transaction, so the old per-prop
+    loop could leave a save half-written when row four was rejected.
+
+    Args:
+        well_name: any spelling the app uses; normalized internally.
+        values: ``{prop_id: value}``. Insertion order is preserved (it only
+            affects the SQL text; readers resolve by ``entry_datetime``).
+        entry_user: identity to stamp on every row.
+        entry_datetime: the save's BATCH stamp, shared by every row and by the
+            engineer's comment. Defaults to one freshly allocated stamp for the
+            whole batch — never one per row.
+
+    Returns:
+        The number of rows sent (``execute_write`` reports ``-1`` for INSERT,
+        so the rowcount is useless to a caller that needs a count).
+    """
+    if not values:
+        return 0
+    if len(values) > _MAX_BATCH_ROWS:
+        raise PropHistError(
+            f"push_props takes at most {_MAX_BATCH_ROWS} rows per statement "
+            f"(got {len(values)})."
+        )
+
+    rows = [
+        (prop_id, _validated_prop_value(prop_id, value))
+        for prop_id, value in values.items()
+    ]
+    enthid = _resolve_enthid(well_name)
+    stamp = entry_datetime or next_entry_datetime()
+
+    tuples: list[str] = []
+    parameters: dict = {}
+    for i, (prop_id, prop_value) in enumerate(rows):
+        parameters[f"enthid_{i}"] = enthid
+        parameters[f"prop_id_{i}"] = prop_id
+        parameters[f"prop_value_{i}"] = prop_value
+        parameters[f"entry_datetime_{i}"] = stamp
+        parameters[f"entry_user_{i}"] = entry_user
+        tuples.append(
+            f"(:enthid_{i}, :prop_id_{i}, :prop_value_{i}, "
+            f":entry_datetime_{i}, :entry_user_{i})"
+        )
+
+    execute_write(PROP_HIST_INSERT_HEAD + ", ".join(tuples), parameters)
+    return len(rows)
 
 
 # ── deleting rows: the sanctioned escape hatch, approval-gated ──────────────

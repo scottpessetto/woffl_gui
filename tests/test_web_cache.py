@@ -129,6 +129,52 @@ def test_clear_version_guard_blocks_pre_clear_fetch():
     assert len(calls) == 0
 
 
+def test_evict_drops_one_key_and_keeps_the_rest():
+    """A save on ONE well must not cold-start the fleet: cache_evict takes the
+    saved well's entry and leaves every other well's cached read alone."""
+    calls = []
+
+    @ttl_cache(ttl=10, maxsize=8)
+    def fn(well):
+        calls.append(well)
+        return f"saved:{well}"
+
+    fn("MPB-28")
+    fn("MPC-45")
+    assert calls == ["MPB-28", "MPC-45"]
+
+    fn.cache_evict("MPB-28")
+
+    assert fn("MPC-45") == "saved:MPC-45"  # untouched, still a hit
+    assert calls == ["MPB-28", "MPC-45"]
+    assert fn("MPB-28") == "saved:MPB-28"  # evicted, recomputed
+    assert calls == ["MPB-28", "MPC-45", "MPB-28"]
+
+
+def test_evict_version_guard_blocks_a_pre_write_fetch():
+    """Same read-your-writes guarantee clear() gives: a fetch already in
+    flight when the write lands cannot store its stale result afterwards."""
+    started = threading.Event()
+    release = threading.Event()
+    results = []
+
+    @ttl_cache(ttl=10)
+    def fn(well):
+        started.set()
+        release.wait(2.0)
+        return "pre-write"
+
+    t = threading.Thread(target=lambda: results.append(fn("MPB-28")))
+    t.start()
+    assert started.wait(2.0)
+    fn.cache_evict("MPB-28")
+    release.set()
+    t.join(2.0)
+
+    assert results == ["pre-write"]
+    assert len(fn._cache._data) == 0
+
+
 def test_kwargs_participate_in_key():
     calls = []
 

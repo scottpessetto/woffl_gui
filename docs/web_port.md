@@ -130,18 +130,25 @@ full 37-field parameter sidebar with as-built and saved-prop locks, Solver
 (verdict, model-vs-actual with Auto-match BHP friction calibration +
 coefficient explainer, IPR chart with anchor modes; the fitted seeds
 auto-apply once per well on load - the web equivalent of Streamlit's
-open-time anchor sync, locked fields excluded - so the curve and the solve
-agree from the first paint; rate calculator sits directly under the IPR
-chart, comparison + anchor controls in the right column; tests table,
-WC-washout detection), Batch Run (sweep, performance chart, recommender,
-CSV; the submitted snapshot lives in a session store so results survive
-page detours without re-running, and the marginal-WC cutoff is editable on
-the run card), PF Range, Pressure Profile, Well Profile, Pump
-Equivalents, JP History (strip chart + installs), Well Database (chars,
-aging pumps, prop history audit), Well Sort (Wells / Triage / Marginal WC
-views, shared POPs config, bench xlsx + CSV exports; decision + marginal
-math single-sourced in `woffl/assembly/well_sort_engine.py`, shared with
-Streamlit), memory-gauge upload (Solver IPR card: gauge daily medians
+open-time anchor sync - so the curve and the solve agree from the first
+paint, EXCEPT over locked fields, over a reviewed save (`ipr_source` =
+"saved"), and over anything the engineer set by hand or applied from a
+sensitivity permutation, which the store tracks as `manualFields` and the
+IPR card offers to release; a Total liquid / Oil only toggle on the chart
+swaps the x axis between total fluid and oil - the curve scales by the
+sidebar water cut, the tests plot their MEASURED oil and the model point
+plots the solved `qoil_std`, and both rates stay in every tooltip; rate
+calculator sits directly under the IPR chart, comparison + anchor controls
+in the right column; tests table, WC-washout detection), Batch Run (sweep,
+performance chart, recommender, CSV; the submitted snapshot lives in a
+session store so results survive page detours without re-running, and the
+marginal-WC cutoff is editable on the run card), PF Range, Pressure
+Profile, Well Profile, Pump Equivalents, JP History (strip chart +
+installs), Well Database (chars, aging pumps, prop history audit), Well
+Sort (Wells / Triage / Marginal WC views, shared POPs config, bench xlsx +
+CSV exports; decision + marginal math single-sourced in
+`woffl/assembly/well_sort_engine.py`, shared with Streamlit),
+memory-gauge upload (Solver IPR card: gauge daily medians
 override test BHP for the chart, tests table, pump-history strip and the
 server-side Vogel fit via `bhp_overrides`; session-only like Streamlit;
 the divergence-based "disregard Databricks BHP" flag is NOT ported yet).

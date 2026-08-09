@@ -16,8 +16,8 @@
 import { useState } from "react";
 
 import { useClearIprPin, useMeta, useSaveIpr } from "../../api/hooks";
-import type { AnchorMode, IprFitResponse, IprPinResponse, JpInstallRow, WellTestRow } from "../../api/types";
-import { Badge, Button, Card, Section } from "../../components/ui";
+import type { AnchorMode, IprFitResponse, IprPinResponse, JpInstallRow, SimParams, WellTestRow } from "../../api/types";
+import { Badge, Button, Card, InfoNote, Section } from "../../components/ui";
 import { useParamsStore } from "../../state/params";
 
 import { pumpLabelAt, resolveAnchorTest, testKey, testLabel } from "./selection";
@@ -25,6 +25,26 @@ import { pumpLabelAt, resolveAnchorTest, testKey, testLabel } from "./selection"
 const SELECT_CLS =
   "mt-1 h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-sm " +
   "text-slate-800 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200";
+
+/**
+ * A characterization value to save, or null to leave it alone.
+ *
+ * `resvr_bubb` and `resvr_temp` are CANONICAL props - the pivots serve them
+ * back as the well's characteristics - so they are only worth a row when the
+ * engineer actually moved one off the value the server seeded. No seed means
+ * no baseline to judge against (a Custom bench), so nothing is written: the
+ * same discipline that keeps uncalibrated friction defaults out of prop_hist.
+ */
+function changedFromSeed(
+  key: "bubble_point" | "form_temp",
+  value: number | null,
+  seeds: Partial<SimParams> | undefined,
+): number | null {
+  if (value === null) return null;
+  const seeded = seeds?.[key];
+  if (typeof seeded !== "number") return null;
+  return Math.abs(seeded - value) < 1e-9 ? null : value;
+}
 
 export function IprControls({
   well,
@@ -55,8 +75,18 @@ export function IprControls({
 }) {
   const meta = useMeta();
   const writesOn = meta.data?.writes_enabled === true;
-  const [comment, setComment] = useState("");
+  // null = untouched, so a match note can prefill it and still be editable.
+  const [comment, setComment] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
+  const manualFields = useParamsStore((s) => s.manualFields);
+  const matchNote = useParamsStore((s) => s.matchNote);
+  const seeds = useParamsStore((s) => s.context?.seeds);
+  const commentText = comment ?? matchNote ?? "";
+  // Only ownership that actually blocks something is worth reporting: a
+  // hand-picked nozzle is "manual" too, but the fit never seeds it.
+  const heldFromFit = fit
+    ? (Object.keys(fit.seeds) as Array<keyof SimParams>).filter((k) => manualFields.has(k))
+    : [];
   const saveMut = useSaveIpr(well);
   const clearMut = useClearIprPin(well);
 
@@ -80,9 +110,19 @@ export function IprControls({
         ken: p.ken,
         kth: p.kth,
         kdi: p.kdi,
-        comment: comment.trim() || null,
+        // Characterization values ride along ONLY when the engineer moved
+        // them off the seed the server assembled. resvr_bubb / resvr_temp are
+        // canonical props: re-pushing the seed on every click would fill
+        // prop_hist with rows that say nothing.
+        bubble_point: changedFromSeed("bubble_point", p.bubble_point, seeds),
+        form_temp: changedFromSeed("form_temp", p.form_temp, seeds),
+        comment: commentText.trim() || null,
         pin_wt_uid: anchorTest?.wt_uid ?? null,
         pin_date: anchorTest?.date ?? null,
+        // A manual point must not leave a stale pin behind it: the pin is
+        // what makes the next open read the curve as test-anchored, and it
+        // would flip the selector back to that test.
+        unpin: anchorMode === "manual" && pin?.status !== "none",
       },
       {
         onSuccess: (r) => {
@@ -123,6 +163,7 @@ export function IprControls({
             <option value="recent">Most recent</option>
             <option value="median">Median test</option>
             <option value="specific">Specific test</option>
+            <option value="manual">Manual point (no test)</option>
           </select>
         </label>
 
@@ -143,6 +184,15 @@ export function IprControls({
           </label>
         )}
 
+        {anchorMode === "manual" && (
+          <InfoNote>
+            The anchor is the sidebar's own qwf / pwf, not a well test - what a
+            joint match, a backmatched BHP or an applied permutation produces.
+            No Vogel fit runs against it, and saving records it as a manual
+            point with no test pinned behind it.
+          </InfoNote>
+        )}
+
         {pin?.status === "applied" && (
           <Badge tone="info">
             Saved anchor: {pin.date_token ?? "?"} by {pin.entry_user ?? "unknown"}
@@ -155,7 +205,10 @@ export function IprControls({
           disabled={!fit}
           title="Lay the fitted qwf / pwf / ResP / WC / GOR seeds over the sidebar inputs"
           onClick={() => {
-            if (fit) useParamsStore.getState().applyIprSeeds(fit.seeds);
+            // `release`: an explicit click hands the seeded fields back to the
+            // fit, so this button still does what it says even after a
+            // permutation or a hand edit claimed them.
+            if (fit) useParamsStore.getState().applyIprSeeds(fit.seeds, true);
           }}
         >
           Apply IPR to inputs
@@ -190,11 +243,36 @@ export function IprControls({
           </label>
         )}
 
+        {(heldFromFit.length > 0 || matchNote !== null) && (
+          <p className="text-xs text-slate-500">
+            {matchNote !== null && <span className="font-medium text-slate-700">{matchNote}. </span>}
+            {heldFromFit.length > 0 && (
+              <>
+                <span title={heldFromFit.join(", ")}>
+                  {heldFromFit.length === 1
+                    ? "1 inflow input is set by hand, so the fit leaves it alone"
+                    : `${heldFromFit.length} inflow inputs are set by hand, so the fit leaves them alone`}
+                </span>
+                {" - "}
+                <button
+                  type="button"
+                  className="underline-offset-2 hover:text-slate-700 hover:underline"
+                  onClick={() => {
+                    if (fit) useParamsStore.getState().applyIprSeeds(fit.seeds, true);
+                  }}
+                >
+                  take the fit instead
+                </button>
+              </>
+            )}
+          </p>
+        )}
+
         {writesOn && (
           <div className="space-y-2 border-t border-slate-100 pt-3">
             <input
               type="text"
-              value={comment}
+              value={commentText}
               maxLength={500}
               onChange={(e) => setComment(e.target.value)}
               placeholder="Why these values? (optional)"

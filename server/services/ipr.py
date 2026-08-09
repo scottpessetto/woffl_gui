@@ -281,7 +281,13 @@ def save(well: str, req: schemas.SaveIprRequest) -> dict[str, Any]:
     pinned = False
     pin_skipped = False
     pin_message: Any = None
-    if req.pin_wt_uid is not None:
+    if req.unpin:
+        # Manual point: the values are about to say "this is the curve", and a
+        # surviving pin would make the next open read them as test-anchored.
+        # Cleared BEFORE the values so the values carry the later stamp and
+        # win the precedence (ipr_anchor.saved_wins).
+        _, pin_message = ipr_anchor.clear_ipr_pin(well)
+    elif req.pin_wt_uid is not None:
         anchor_row = {"wt_uid": req.pin_wt_uid, "WtDate": req.pin_date}
         pinned, pin_message = ipr_anchor.pin_ipr_anchor(well, anchor_row)
         pin_skipped = not pinned and str(pin_message).startswith(ipr_anchor.PIN_SKIP_PREFIX)
@@ -297,12 +303,17 @@ def save(well: str, req: schemas.SaveIprRequest) -> dict[str, Any]:
         ken=req.ken,
         kth=req.kth,
         kdi=req.kdi,
+        bubble_point=req.bubble_point,
+        form_temp=req.form_temp,
         comment=req.comment,
     )
 
     # save_ipr_values cleared the woffl memo; drop the server's own 5-min
-    # TTL layer too so the next pin/context read reflects this save.
-    _saved_ipr.cache_clear()
+    # TTL layer too so the next pin/context read reflects this save. Only
+    # THIS well's entry - a fleet-wide clear made one engineer's save cost
+    # every other well a cold prop_hist SELECT on its next pin read. The pad
+    # board stays a full clear: a donor well shows up on other pads' boards.
+    _saved_ipr.cache_evict(well)
     _pad_fit.cache_clear()
     return {
         "pinned": pinned,
@@ -318,7 +329,7 @@ def clear_pin(well: str) -> dict[str, Any]:
     cleared, message = ipr_anchor.clear_ipr_pin(well)
     if cleared:
         ipr_anchor.clear_saved_ipr_cache(well)
-        _saved_ipr.cache_clear()
+        _saved_ipr.cache_evict(well)
         _pad_fit.cache_clear()
     return {"cleared": cleared, "message": message}
 
@@ -334,7 +345,7 @@ def set_lock(well: str, req: schemas.PropLockRequest) -> dict[str, Any]:
     ok, message = ipr_anchor.set_prop_lock(well, req.field, req.locked, value=req.value)
     if ok:
         # set_prop_lock cleared the woffl memo; drop the server TTL layer too.
-        _saved_ipr.cache_clear()
+        _saved_ipr.cache_evict(well)
         _pad_fit.cache_clear()
     # Echo the value the way it was actually stored (set_prop_lock caps WC).
     value = req.value

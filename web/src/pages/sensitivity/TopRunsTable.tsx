@@ -53,6 +53,31 @@ function runPatch(run: CombineRun, knobs: SensitivityKnob[]): Partial<SimParams>
   return patch as Partial<SimParams>;
 }
 
+/**
+ * One line of provenance for an applied permutation, e.g.
+ * "Sensitivity permutation 2 of 27 (score 0.0571): PF surface pressure 3,910,
+ * Throat loss (kth) 0.525, IPR anchor rate 439".
+ *
+ * It lands in the Solver header and prefills the save comment, so a saved
+ * curve carries the study that produced it instead of arriving as bare
+ * numbers nobody can re-derive.
+ */
+function matchNote(
+  row: Row,
+  run: CombineRun,
+  total: number,
+  knobLabels: Record<string, string>,
+): string {
+  const rank = num(row.rank);
+  const score = num(row.score);
+  const settings = Object.entries(run.labels)
+    .map(([id, label]) => `${knobLabels[id] ?? id} ${label}`)
+    .join(", ");
+  const head = `Sensitivity permutation ${rank ?? "?"} of ${total}`;
+  const scored = score === null ? head : `${head} (score ${fmtNum(score, 4)})`;
+  return settings ? `${scored}: ${settings}` : scored;
+}
+
 export function TopRunsTable({
   runs,
   bestIndex,
@@ -71,6 +96,7 @@ export function TopRunsTable({
   knobs: SensitivityKnob[];
 }) {
   const setMany = useParamsStore((s) => s.setMany);
+  const setMatchNote = useParamsStore((s) => s.setMatchNote);
   const navigate = useNavigate();
   const rows = useMemo<Row[]>(() => {
     const solved = runs
@@ -154,9 +180,13 @@ export function TopRunsTable({
           <Button
             variant="secondary"
             size="sm"
-            title={`Write this permutation into the sidebar (${fields.join(", ")}) and open the Solver. Nothing is saved until you save the well default there.`}
+            title={`Write this permutation into the sidebar (${fields.join(", ")}) and open the Solver. The open-time IPR fit will leave these alone. Nothing is saved until you save the well default there.`}
             onClick={() => {
               setMany(patch);
+              // Provenance travels with the numbers: the Solver shows it and
+              // the save comment prefills with it, so prop_hist records WHY
+              // this curve rather than just what it was.
+              setMatchNote(matchNote(row, run, runs.length, knobLabels));
               navigate("/solver");
             }}
           >
@@ -166,7 +196,7 @@ export function TopRunsTable({
       },
     });
     return cols;
-  }, [knobIds, knobLabels, bestIndex, knobs, setMany, navigate]);
+  }, [knobIds, knobLabels, bestIndex, knobs, setMany, setMatchNote, navigate, runs.length]);
 
   if (rows.length === 0) return null;
 

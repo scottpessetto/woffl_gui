@@ -74,6 +74,11 @@ def recorder(monkeypatch):
         )
         return 1
 
+    def fake_push_many(well_name, values, entry_user, entry_datetime=None):
+        for prop_id, value in values.items():
+            fake_push(well_name, prop_id, value, entry_user, entry_datetime)
+        return len(values)
+
     def fake_comment(well_name, entry_datetime, entry_user, note):
         comments.append(
             {
@@ -86,6 +91,7 @@ def recorder(monkeypatch):
         return 1
 
     monkeypatch.setattr(ipr_anchor, "push_prop", fake_push)
+    monkeypatch.setattr(ipr_anchor, "push_props", fake_push_many)
     monkeypatch.setattr(ipr_anchor, "push_eng_comment", fake_comment)
     # "nothing stored yet" - the friction only-when-changed rule reads this
     monkeypatch.setattr(ipr_anchor, "load_saved_ipr", lambda well: None)
@@ -201,6 +207,78 @@ def test_values_only_save_without_pin(client, recorder, gate_on):
     assert body["pin_message"] is None
     pushes, _ = recorder
     assert "ipr_wt_uid" not in {p["prop_id"] for p in pushes}
+
+
+def test_characterization_rides_along_only_when_sent(client, recorder, gate_on):
+    """bubble_point / form_temp are canonical props (resvr_bubb / resvr_temp).
+    The Solver sends one only after the engineer moved it off the seeded
+    value - a sensitivity permutation varies both - so an ordinary save must
+    write neither, and a changed one must land under the same batch stamp."""
+    r = client.post(f"/api/wells/{WELL}/save-ipr", json=PAYLOAD, headers=HEADERS)
+    assert r.status_code == 200
+    pushes, _ = recorder
+    assert {"resvr_bubb", "resvr_temp"} & {p["prop_id"] for p in pushes} == set()
+
+    pushes.clear()
+    payload = dict(PAYLOAD, bubble_point=2100.0, form_temp=185.0, comment=None)
+    r = client.post(f"/api/wells/{WELL}/save-ipr", json=payload, headers=HEADERS)
+    assert r.status_code == 200
+    assert r.json()["n_values"] == 8  # the six curve rows plus these two
+    by_id = {p["prop_id"]: p for p in pushes}
+    assert by_id["resvr_bubb"]["value"] == 2100.0
+    assert by_id["resvr_temp"]["value"] == 185.0
+    stamps = {p["entry_datetime"] for p in pushes if p["prop_id"] != "ipr_wt_uid"}
+    assert len(stamps) == 1
+
+
+def test_characterization_bounds_are_enforced(client, recorder, gate_on):
+    """BlackOil only validates a bubble point in 1001-2999; the request must
+    refuse an out-of-range value rather than push it into the pivots."""
+    r = client.post(
+        f"/api/wells/{WELL}/save-ipr", json=dict(PAYLOAD, bubble_point=3500.0), headers=HEADERS
+    )
+    assert r.status_code == 422
+    pushes, _ = recorder
+    assert pushes == []
+
+
+def test_manual_point_save_clears_the_pin_instead_of_setting_one(client, recorder, gate_on):
+    """A manual anchor is NOT a well test. Saving one must drop any pinned
+    test - a surviving pin makes the next open read the curve as
+    test-anchored (server.services.wells labels it "saved" vs "manual") and
+    flips the anchor selector back to that test."""
+    payload = dict(PAYLOAD, unpin=True, pin_wt_uid=None, pin_date=None, comment=None)
+    r = client.post(f"/api/wells/{WELL}/save-ipr", json=payload, headers=HEADERS)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["pinned"] is False
+    assert body["n_values"] == 6
+
+    pushes, _ = recorder
+    pin_rows = [p for p in pushes if p["prop_id"] == "ipr_wt_uid"]
+    assert len(pin_rows) == 1
+    # The cleared marker, never a real wt_uid and never a negative sentinel.
+    assert pin_rows[0]["value"] == ipr_anchor.PIN_CLEARED_VALUE
+    # Cleared FIRST, so the values carry the later stamp and win
+    # ipr_anchor.saved_wins - otherwise the curve would read as test-anchored.
+    # Stamps are strictly increasing per process (next_entry_datetime, pinned
+    # by test_prop_hist_client), so push ORDER is the observable contract:
+    # clear_ipr_pin lets push_prop allocate its own stamp, which is why the
+    # recorder sees entry_datetime=None on that row.
+    assert pushes[0]["prop_id"] == "ipr_wt_uid"
+    assert len({p["entry_datetime"] for p in pushes if p["prop_id"] != "ipr_wt_uid"}) == 1
+
+
+def test_unpin_and_a_pin_request_cannot_both_happen(client, recorder, gate_on):
+    """unpin wins: the client only sets it for a manual point, where any
+    pin_wt_uid it still carries is a leftover from the anchor selector."""
+    payload = dict(PAYLOAD, unpin=True, comment=None)  # pin_wt_uid still 123456
+    r = client.post(f"/api/wells/{WELL}/save-ipr", json=payload, headers=HEADERS)
+    assert r.status_code == 200
+    assert r.json()["pinned"] is False
+    pushes, _ = recorder
+    pin_values = [p["value"] for p in pushes if p["prop_id"] == "ipr_wt_uid"]
+    assert pin_values == [ipr_anchor.PIN_CLEARED_VALUE]
 
 
 # ---------------------------------------------------------------------------

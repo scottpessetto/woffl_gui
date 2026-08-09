@@ -195,6 +195,15 @@ class WellContext(BaseModel):
     pf: Optional[PfSeed] = None
     ipr_info: Optional[str] = None  # human caption, e.g. "IPR values loaded from N tests"
     saved_ipr_info: Optional[str] = None  # "Restored saved IPR values (date - user)"
+    # Where the inflow seeds came from. Already computed for the optimizer's
+    # Fit column; the Solver needs it too, because a "saved" curve outranks
+    # the open-time Vogel fit and must not be overwritten by it.
+    # "manual" = saved values with NO pinned well test behind them: a point the
+    # engineer chose (a joint match, a backmatched BHP, a permutation), not a
+    # measured rate/pressure pair. Same precedence as "saved", different truth
+    # claim, so it is labelled differently everywhere it feeds a decision.
+    ipr_source: Optional[Literal["saved", "manual", "vogel", "single_test"]] = None
+    ipr_r2: Optional[float] = None  # only meaningful when ipr_source is "vogel"
     test_count: int = 0
 
 
@@ -724,11 +733,22 @@ class SaveIprRequest(BaseModel):
     ken: Optional[float] = None
     kth: Optional[float] = None
     kdi: Optional[float] = None
+    # Characterization values the sensitivity study can move. Both prop ids
+    # (resvr_bubb / resvr_temp) already exist; the client sends one only when
+    # the engineer changed it off the seeded value, so a save never re-writes
+    # the characterization it was handed. Bounds mirror PARAM_BOUNDS.
+    bubble_point: Optional[float] = Field(None, ge=1_001.0, le=2_999.0)
+    form_temp: Optional[float] = Field(None, ge=32.0, le=350.0)
     comment: Optional[str] = Field(None, max_length=500)
     # Anchor pin: the CLIENT-resolved anchor test. None = values-only save
     # (forced/manual IPR - nothing pinnable).
     pin_wt_uid: Optional[float] = None
     pin_date: Optional[str] = None  # YYYY-MM-DD, for the confirmation label
+    # A manual-point save: drop any pinned anchor test first, so the well
+    # reopens reading "manual" instead of claiming a test it was not derived
+    # from. Appends the cleared marker (prop_hist is append-only), never a
+    # DELETE.
+    unpin: bool = False
 
 
 class SaveIprResponse(BaseModel):

@@ -18,15 +18,23 @@ import { iprCurveFromAnchor, vogelQmax } from "../../lib/vogel";
 
 import { pumpLabelAt } from "./selection";
 
-/** [total_fluid, bhp, daysAgo, date, oil, pumpLabel] */
-type TestPoint = [number, number, number, string, number | null, string | null];
+/** [plotted rate, bhp, daysAgo, date, oil, pumpLabel, total_fluid] */
+type TestPoint = [number, number, number, string, number | null, string | null, number];
+
+/** X-axis quantity. Oil mode answers "what is this well actually making?"
+ *  without water-cut arithmetic in the engineer's head. */
+type RateMode = "liquid" | "oil";
+
+const RATE_MODES: { id: RateMode; label: string }[] = [
+  { id: "liquid", label: "Total liquid" },
+  { id: "oil", label: "Oil only" },
+];
 
 export function IprChart({
   tests,
   fit,
   params,
   solve,
-  compareTest,
   installs,
   loading = false,
   gaugeSlot,
@@ -35,7 +43,6 @@ export function IprChart({
   fit: IprFitResponse | null;
   params: SimParams;
   solve: SolveResult | null;
-  compareTest: WellTestRow | null;
   installs: JpInstallRow[];
   /** First-load settle gate: dim the chart until every input series arrived
    * once, so the plot never mutates under the engineer's eyes. */
@@ -46,26 +53,36 @@ export function IprChart({
   // Old GUI: checkbox "Show JP label inside each test point"
   // (mva_show_jp_labels_{well}); per-well because the workbench remounts.
   const [showJpLabels, setShowJpLabels] = useState(false);
+  // X-axis quantity: total liquid (the fitted curve's native rate) or oil.
+  const [rateMode, setRateMode] = useState<RateMode>("liquid");
+  // The curve IS the sidebar inflow, always. It used to prefer the server
+  // fit, which was invisible while the fit was auto-applied into the sidebar
+  // on every open - but the moment the engineer's numbers outrank the fit (a
+  // reviewed save, a hand edit, an applied permutation) the old precedence
+  // drew one curve and solved another: MPB-35 opened on its saved 668 BLPD
+  // @ 222 psi while the header read "Qmax 330". One anchor, one story.
+  const curveIsFit =
+    fit !== null &&
+    Math.abs(fit.coeffs.qwf - params.qwf) < 0.5 &&
+    Math.abs(fit.coeffs.pwf - params.pwf) < 0.5;
   const option = useMemo<EChartsOption>(() => {
-    // Anchor precedence: server fit > selected comparison test > raw sidebar
-    // inflow - always re-evaluated at the SIDEBAR reservoir pressure.
-    let anchorQwf = params.qwf;
-    let anchorPwf = params.pwf;
-    if (fit) {
-      anchorQwf = fit.coeffs.qwf;
-      anchorPwf = fit.coeffs.pwf;
-    } else if (compareTest && compareTest.total_fluid !== null && compareTest.bhp !== null) {
-      anchorQwf = compareTest.total_fluid;
-      anchorPwf = compareTest.bhp;
-    }
-    const curve = iprCurveFromAnchor(anchorQwf, anchorPwf, params.pres);
-    const qmax = vogelQmax(anchorQwf, anchorPwf, params.pres);
+    const curve = iprCurveFromAnchor(params.qwf, params.pwf, params.pres);
+    const qmax = vogelQmax(params.qwf, params.pwf, params.pres);
     const formWc = params.form_wc;
+    // Oil mode scales the CURVE by the sidebar water cut, but plots the
+    // MEASURED oil for each test and the solved qoil_std for the model point -
+    // never a derived number where the real one exists.
+    const oilMode = rateMode === "oil";
+    const oilCut = 1 - formWc;
+    const qmaxShown = qmax !== null && oilMode ? qmax * oilCut : qmax;
 
     const points: TestPoint[] = [];
     for (const t of tests) {
       if (t.total_fluid === null || t.bhp === null) continue;
-      points.push([t.total_fluid, t.bhp, daysAgo(t.date) ?? 0, t.date, t.oil, pumpLabelAt(installs, t.date)]);
+      // A test with no reported oil has nothing to plot in oil mode.
+      const x = oilMode ? t.oil : t.total_fluid;
+      if (x === null) continue;
+      points.push([x, t.bhp, daysAgo(t.date) ?? 0, t.date, t.oil, pumpLabelAt(installs, t.date), t.total_fluid]);
     }
     const maxDays = Math.max(1, ...points.map((p) => p[2]));
 
@@ -73,7 +90,7 @@ export function IprChart({
       tooltip: { ...baseTooltip, trigger: "item" },
       legend: { top: 4, right: 8, textStyle: { fontSize: 12 } },
       grid: { ...baseGrid, top: 48, right: 96 },
-      xAxis: { type: "value", ...axis("Total Fluid Rate (BPD)", { min: 0 }) },
+      xAxis: { type: "value", ...axis(oilMode ? "Oil Rate (BOPD)" : "Total Fluid Rate (BPD)", { min: 0 }) },
       yAxis: { type: "value", ...axis("Bottom Hole Pressure (psi)", { min: 0 }) },
       visualMap:
         points.length > 0
@@ -102,7 +119,7 @@ export function IprChart({
           left: 64,
           top: 8,
           style: {
-            text: `Res P: ${fmtNum(params.pres)} psi   Qmax: ${fmtNum(qmax)} BPD`,
+            text: `Res P: ${fmtNum(params.pres)} psi   Qmax: ${fmtNum(qmaxShown)} ${oilMode ? "BOPD" : "BPD"}`,
             fill: TEXT,
             fontSize: 12,
             fontWeight: 500,
@@ -116,15 +133,16 @@ export function IprChart({
           showSymbol: false,
           lineStyle: { color: ACCENT, width: 3 },
           itemStyle: { color: ACCENT },
-          data: curve ? curve.fluid.map((f, i) => [f, curve.bhp[i]]) : [],
+          data: curve ? curve.fluid.map((f, i) => [oilMode ? f * oilCut : f, curve.bhp[i], f]) : [],
           tooltip: {
             formatter: (raw: unknown): string => {
-              // ECharts item-tooltip param: value is this series' [fluid, bhp] pair.
-              const p = raw as { value: [number, number] };
+              // ECharts item-tooltip param: this series' [x, bhp, fluid] triple -
+              // dim 2 carries total fluid so both rates read in either mode.
+              const p = raw as { value: [number, number, number] };
               const v = p.value;
               return [
-                `Fluid: ${fmtNum(v[0])} BPD`,
-                `Oil: ${fmtNum(v[0] * (1 - formWc))} BOPD`,
+                `Fluid: ${fmtNum(v[2])} BPD`,
+                `Oil: ${fmtNum(v[2] * oilCut)} BOPD`,
                 `BHP: ${fmtNum(v[1])} psi`,
               ].join("<br/>");
             },
@@ -167,7 +185,7 @@ export function IprChart({
               const v = p.value;
               return [
                 `<b>${fmtDate(v[3])}</b>`,
-                `Fluid: ${fmtNum(v[0])} BPD`,
+                `Fluid: ${fmtNum(v[6])} BPD`,
                 `Oil: ${v[4] !== null ? `${fmtNum(v[4])} BOPD` : "-"}`,
                 `BHP: ${fmtNum(v[1])} psi`,
                 `Pump: ${v[5] ?? "-"}`,
@@ -182,19 +200,33 @@ export function IprChart({
           symbol: "diamond",
           symbolSize: 14,
           itemStyle: { color: CRIMSON, borderColor: "#0f172a", borderWidth: 1 },
-          data: solve ? [[solve.qoil_std + solve.fwat_bwpd, solve.psu]] : [],
+          data: solve
+            ? [
+                [
+                  oilMode ? solve.qoil_std : solve.qoil_std + solve.fwat_bwpd,
+                  solve.psu,
+                  solve.qoil_std + solve.fwat_bwpd,
+                  solve.qoil_std,
+                ],
+              ]
+            : [],
           tooltip: {
             formatter: (raw: unknown): string => {
-              // ECharts item-tooltip param: value is the single [fluid, psu] point.
-              const p = raw as { value: [number, number] };
+              // ECharts item-tooltip param: value is [x, psu, fluid, oil].
+              const p = raw as { value: [number, number, number, number] };
               const v = p.value;
-              return `<b>Modeled operating point</b><br/>Fluid: ${fmtNum(v[0])} BPD<br/>Suction: ${fmtNum(v[1])} psi`;
+              return [
+                "<b>Modeled operating point</b>",
+                `Fluid: ${fmtNum(v[2])} BPD`,
+                `Oil: ${fmtNum(v[3])} BOPD`,
+                `Suction: ${fmtNum(v[1])} psi`,
+              ].join("<br/>");
             },
           },
         },
       ],
     });
-  }, [tests, fit, params, solve, compareTest, installs, showJpLabels]);
+  }, [tests, params, solve, installs, showJpLabels, rateMode]);
 
 
   return (
@@ -207,20 +239,38 @@ export function IprChart({
               : "transition-opacity duration-300"
           }
         >
-          <div className="mb-1 flex items-center justify-between">
+          <div className="mb-1 flex items-center justify-between gap-3">
             <div>{gaugeSlot}</div>
-            <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-600">
-              <input
-                type="checkbox"
-                checked={showJpLabels}
-                onChange={(e) => setShowJpLabels(e.target.checked)}
-                className="h-4 w-4 rounded border-slate-300 accent-blue-600"
-              />
-              Show JP label inside each test point
-            </label>
+            <div className="flex items-center gap-3">
+              <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1">
+                {RATE_MODES.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => setRateMode(m.id)}
+                    className={
+                      rateMode === m.id
+                        ? "rounded-md bg-blue-600 px-2.5 py-0.5 text-xs font-medium text-white"
+                        : "rounded-md px-2.5 py-0.5 text-xs text-slate-600 hover:bg-slate-100"
+                    }
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={showJpLabels}
+                  onChange={(e) => setShowJpLabels(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 accent-blue-600"
+                />
+                Show JP label inside each test point
+              </label>
+            </div>
           </div>
           <ChartPanel option={option} height={520} zoom={{ xAxisIndex: [0], yAxisIndex: [0] }} />
-          {fit?.weak && (
+          {fit?.weak && curveIsFit && (
             <WarnNote className="mt-2">
               IPR fit is weak (R2 {fmtNum(fit.coeffs.r2, 2)}) - treat the curve as a sketch
             </WarnNote>

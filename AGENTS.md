@@ -94,6 +94,12 @@ write gate ON for the rest of the process.** Tests document this exact leak
 Write functions to treat as live: `ipr_anchor.pin_ipr_anchor` / `clear_ipr_pin` /
 `save_ipr_values` / `set_prop_lock`, `review_persistence.sync_pad` (runs on **every pad-page
 rerun**), `workflow_steps/step_review_wells._maybe_pin_saved_ipr`.
+A multi-prop save goes out as ONE statement through `prop_hist_client.push_props`, not a
+loop of `push_prop` (the loop cost 6-9 serialized Delta commits and hung the Save button
+for seconds; measured 2026-08-08). It shares `push_prop`'s validator, so every row is
+still whitelist- and as-built-checked BEFORE anything is sent. Do not reintroduce the
+per-prop loop, and keep every bind marker numbered - a repeated parameter name is a
+connector-behaviour bet on the one path that cannot be smoke-tested live.
 The FastAPI server (`server/`) rides the SAME gate through the same functions: a local
 `uvicorn` run with `.env` present writes REAL prop_hist rows via `POST
 /api/wells/{name}/save-ipr`, `DELETE .../ipr-pin`, and `POST .../prop-lock`

@@ -34,6 +34,21 @@ const NO_PROP_LOCKS: PropLocks = {
   res_pres: { locked: false, value: null },
 };
 
+/** Shared empty ownership set - a fresh bench has no hand-set inputs. */
+const NO_MANUAL: ReadonlySet<keyof SimParams> = new Set();
+
+/** Ownership set plus `keys`, or the same set when nothing is new (so a
+ *  no-op edit does not re-render every field that reads it). */
+function withManual(
+  current: ReadonlySet<keyof SimParams>,
+  keys: Array<keyof SimParams>,
+): ReadonlySet<keyof SimParams> {
+  if (keys.every((key) => current.has(key))) return current;
+  const next = new Set(current);
+  for (const key of keys) next.add(key);
+  return next;
+}
+
 export function clampToBounds<K extends keyof SimParams>(key: K, value: SimParams[K]): SimParams[K] {
   const bounds = PARAM_BOUNDS[key];
   if (!bounds || typeof value !== "number" || Number.isNaN(value)) return value;
@@ -76,6 +91,19 @@ interface ParamsState {
    *  applied from Match Sensitivities. */
   fitAppliedFor: string | null;
   markFitApplied: (well: string) => void;
+  /** Inputs the ENGINEER set on this well - by typing in the sidebar, by
+   *  applying a sensitivity permutation, or by Auto-match BHP. The open-time
+   *  fit and the "Apply IPR to inputs" button both skip these, the same way
+   *  they skip locked WC/GOR/ResP. Without this the fit landed on top of a
+   *  hand-matched well and the engineer saved the fit back over their own
+   *  numbers (observed on MPC-45, 2026-08-08). Cleared when the well or its
+   *  context changes, and released deliberately by "Apply IPR to inputs". */
+  manualFields: ReadonlySet<keyof SimParams>;
+  /** Where the current hand-set state came from, when it came from a study:
+   *  "permutation 2 of 27, score 0.0571". Rides into the save comment so the
+   *  next engineer sees WHY these numbers, not just the numbers. */
+  matchNote: string | null;
+  setMatchNote: (note: string | null) => void;
 
   set: <K extends keyof SimParams>(key: K, value: SimParams[K]) => void;
   setMany: (partial: Partial<SimParams>) => void;
@@ -86,8 +114,12 @@ interface ParamsState {
   setPropLock: (field: keyof PropLocks, lock: PropLock) => void;
   /** Lay IPR fit seeds over the params, skipping LOCKED fields - the
    * Streamlit contract: an anchor re-seed touches everything EXCEPT the
-   * locked WC/GOR/ResP (jetpump_solver.py's locked_fields filter). */
-  applyIprSeeds: (seeds: Partial<SimParams>) => void;
+   * locked WC/GOR/ResP (jetpump_solver.py's locked_fields filter) - and
+   * skipping fields the engineer set by hand. `release` is the explicit
+   * "take the fit anyway" of the Apply IPR button: it drops ownership of the
+   * seeded fields first, so the fit wins and keeps winning until the next
+   * hand edit. */
+  applyIprSeeds: (seeds: Partial<SimParams>, release?: boolean) => void;
   run: () => void;
 }
 
@@ -106,12 +138,30 @@ export const useParamsStore = create<ParamsState>((set) => ({
   seededFor: null,
   fitAppliedFor: null,
   markFitApplied: (name) => set({ fitAppliedFor: name }),
+  manualFields: NO_MANUAL,
+  matchNote: null,
+  setMatchNote: (note) => set({ matchNote: note }),
+
   set: (key, value) =>
-    set((s) => ({ params: { ...s.params, [key]: clampToBounds(key, value) } })),
+    set((s) => ({
+      params: { ...s.params, [key]: clampToBounds(key, value) },
+      manualFields: withManual(s.manualFields, [key]),
+    })),
 
-  setMany: (partial) => set((s) => ({ params: mergeClamped(s.params, partial) })),
+  setMany: (partial) =>
+    set((s) => ({
+      params: mergeClamped(s.params, partial),
+      manualFields: withManual(s.manualFields, Object.keys(partial) as Array<keyof SimParams>),
+    })),
 
-  setWindow: (months, cap) => set({ months, cap, seededFor: null, fitAppliedFor: null }),
+  // Window changes refetch the tests and re-run the fit; they are NOT a
+  // reason to rebuild the bench. Nulling seededFor used to re-open the
+  // Layout seeding gate, and applyContext then rebuilt params from
+  // DEFAULT_PARAMS - so widening the lookback silently discarded every
+  // hand-set input, including an applied permutation. Only the fit latch
+  // resets: the new window can legitimately produce a new fit, and that fit
+  // still skips locked and hand-set fields.
+  setWindow: (months, cap) => set({ months, cap, fitAppliedFor: null }),
 
   selectWell: (name) =>
     set(() => ({
@@ -124,6 +174,8 @@ export const useParamsStore = create<ParamsState>((set) => ({
       context: null,
       seededFor: null,
       fitAppliedFor: null,
+      manualFields: NO_MANUAL,
+      matchNote: null,
     })),
 
   applyContext: (ctx) =>
@@ -142,18 +194,37 @@ export const useParamsStore = create<ParamsState>((set) => ({
         simActive: true,
         asBuiltLocks: { ...NO_AS_BUILT, ...ctx.as_built_locks },
         propLocks: { ...NO_PROP_LOCKS, ...ctx.prop_locks },
+        // The seeds ARE the well's state as the server assembled it; nothing
+        // on the bench is hand-set any more.
+        manualFields: NO_MANUAL,
+        matchNote: null,
       };
     }),
 
   setPropLock: (field, lock) => set((s) => ({ propLocks: { ...s.propLocks, [field]: lock } })),
 
-  applyIprSeeds: (seeds) =>
+  applyIprSeeds: (seeds, release = false) =>
     set((s) => {
       const filtered: Partial<SimParams> = { ...seeds };
       if (s.propLocks.form_wc.locked) delete filtered.form_wc;
       if (s.propLocks.form_gor.locked) delete filtered.form_gor;
       if (s.propLocks.res_pres.locked) delete filtered.pres;
-      return { params: mergeClamped(s.params, filtered) };
+      const keys = Object.keys(filtered) as Array<keyof SimParams>;
+      if (!release) {
+        for (const key of keys) {
+          if (s.manualFields.has(key)) delete filtered[key];
+        }
+        return { params: mergeClamped(s.params, filtered) };
+      }
+      // Explicit "take the fit": ownership of exactly the seeded fields is
+      // handed back, and a study's provenance no longer describes the bench.
+      const manual = new Set(s.manualFields);
+      for (const key of keys) manual.delete(key);
+      return {
+        params: mergeClamped(s.params, filtered),
+        manualFields: manual,
+        matchNote: null,
+      };
     }),
 
   run: () => set({ simActive: true }),
