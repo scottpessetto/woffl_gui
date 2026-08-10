@@ -248,7 +248,7 @@ export interface ApiErrorDetail {
 /** IPR anchor selection. "manual" is not a test at all - the sidebar's own
  *  qwf/pwf IS the anchor, which is what a joint match or a backmatched BHP
  *  produces. It disables the test-derived fit rather than competing with it. */
-export type AnchorMode = "recent" | "median" | "specific" | "manual";
+export type AnchorMode = "recent" | "median" | "median_liq" | "specific" | "manual";
 
 /** One well's saved-fit readiness on the Optimization pad board. */
 export interface PadFitWell {
@@ -334,6 +334,21 @@ export interface ChokePlanRow {
   action: "full" | "choke" | "shut" | "hold" | "excluded";
   delivered_psi: number | null; // PF pressure at the wellhead after the choke
   choke_dp_psi: number | null; // pinched across the wellhead PF throttle
+  /** Full-open reference (raw, highest solvable ladder level <= header). */
+  delivered_full_psi: number | null;
+  oil_full: number | null;
+  pf_full: number | null;
+  /** IPR landing: suction pressure (pump flowing BHP) at the chosen and
+   *  full-open settings, plus reservoir pressure for drawdown. */
+  psu: number | null;
+  psu_full: number | null;
+  /** Cavitation floor (sonic throat entry) at the chosen / full-open point:
+   *  psu and oil are pinned there, only PF responds to delivered pressure. */
+  sonic: boolean | null;
+  sonic_full: boolean | null;
+  res_pres: number | null;
+  /** Vogel inflow curve samples [oil_bopd, pwf_psi], res_pres down to 0; null off model basis. */
+  ipr_curve: [number, number][] | null;
   pf: number | null;
   oil: number | null;
   d_oil_vs_full: number | null;
@@ -347,10 +362,35 @@ export interface ChokePlanRow {
   has_friction: boolean;
 }
 
+/** One action in a ladder rung's best response (full-open rows omitted). */
+export interface ChokeLadderAction {
+  well: string;
+  action: "choke" | "shut" | "hold";
+  set_psi: number | null; // delivered PF psi to pinch to; null for shut/hold
+}
+
+/** One rung of the header-drop decision ladder: if the PF bank degrades
+ *  until the all-run header settles drop_psi below the plan's winning
+ *  header, the best response and what it gains over doing nothing. */
+export interface ChokeLadderRung {
+  drop_psi: number; // below the plan's winning header
+  settles_psi: number; // where the all-run header would sag to
+  run_all_oil_bopd: number; // pad oil if no action is taken at that sag
+  best_header_psi: number; // header the best response holds instead
+  plan_oil_bopd: number; // pad oil under the best response
+  gain_bopd: number; // plan_oil - run_all_oil
+  /** Non-full rows only; empty = no change needed. */
+  actions: ChokeLadderAction[];
+}
+
 export interface ChokePlanResult {
   pad: string;
   plan: ChokePlanRow[];
-  meta: Record<string, unknown>; // run_choke_optimization meta contract
+  meta: Record<string, unknown> & {
+    /** Header-drop decision ladder, sorted by drop_psi ascending.
+     *  Absent on runs made before this feature. */
+    ladder?: ChokeLadderRung[];
+  }; // run_choke_optimization meta contract
   notes: string[];
   n_wells: number;
 }

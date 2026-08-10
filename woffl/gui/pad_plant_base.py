@@ -1011,9 +1011,11 @@ class MPadPlant(PadPlant):
 
     _PUMP_DIR = _JP_DATA_DIR / "M_Pad_Pumps"
     _HP_SUCTION_DEFAULT = 1400.0  # LP-held header (PIC-4221 setpoint)
-    # iso-speed lines the station panel draws; the datasheet freq_range_hz
-    # for B_HP_4230 is [51, 61]
-    _CURVE_SPEEDS_HZ = (51.0, 55.0, 58.0, 61.0)
+    # iso-speed lines the station panel draws. The B_HP_4230 datasheet
+    # freq_range_hz is [51, 61], but the bank is not operated above nominal
+    # speed - the model's max (and the top drawn line) is capped at 60 Hz.
+    _HZ_OPERATING_MAX = 60.0
+    _CURVE_SPEEDS_HZ = (51.0, 55.0, 58.0, 60.0)
 
     def _load_meta(self) -> dict:
         return self._load_meta_glob(self._PUMP_DIR, "Moose Pad")
@@ -1045,7 +1047,9 @@ class MPadPlant(PadPlant):
             "rec_hi": float(
                 hi
             ),  # per-pump max recommended (off-curve ceiling) at 60 Hz
-            "hz_max": float(p["freq_range_hz"][1]),
+            "hz_max": min(
+                self._HZ_OPERATING_MAX, float(p["freq_range_hz"][1])
+            ),
             "n_default": 3,
         }
 
@@ -1331,7 +1335,8 @@ class MPadPlant(PadPlant):
                 ),
                 "speed": (
                     f"{int(freq_lo)} to {int(freq_hi)} Hz (VFD), "
-                    f"nominal {nominal_hz} Hz"
+                    f"nominal {nominal_hz} Hz, "
+                    f"operated at <= {int(hp['hz_max'])} Hz"
                 ),
                 "source": str(meta.get("manufacturer", "")) + " data sheet"
                 " + Mod 42 HPS set-up sheets",

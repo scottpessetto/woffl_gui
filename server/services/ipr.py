@@ -2,8 +2,9 @@
 
 Fit path mirrors the Solver tab's _render_ipr_anchor_and_seed: "recent" uses
 the global least-squares library fit (estimate_reservoir_pressure +
-compute_vogel_coefficients); "median"/"specific" use the GUI-layer anchored
-fit (ipr_anchor.compute_anchored_vogel) with the field RP cap.
+compute_vogel_coefficients); "median"/"median_liq"/"specific" use the
+GUI-layer anchored fit (ipr_anchor.compute_anchored_vogel) with the field RP
+cap.
 
 Pin path reads prop_hist via ipr_anchor.load_saved_ipr (read-only; no write
 gate needed) and grades the pin against the current test window.
@@ -107,7 +108,7 @@ def fit(req: schemas.IprFitRequest) -> dict[str, Any]:
         raise ValueError(_FIT_ERROR)
 
     row: Optional[dict[str, Any]] = None
-    if req.anchor_mode in ("median", "specific"):
+    if req.anchor_mode in ("median", "median_liq", "specific"):
         # mirrors woffl/gui/tabs/jetpump_solver.py:_render_ipr_anchor_and_seed
         # (anchored branch): field RP cap 1800 Schrader / 3000 Kuparuk.
         field_max_rp = 3000 if req.field_model == "Kuparuk" else 1800
@@ -270,6 +271,33 @@ def pin(well: str) -> dict[str, Any]:
 # the write gate; push_prop enforces it again on the actual INSERT.
 
 
+def _invalidate_after_write(well: str) -> None:
+    """Drop every cache layer a successful prop_hist write just outdated, so
+    the NEXT poll reads the new rows instead of waiting out a 5-minute TTL
+    (two-client review sessions poll the pad board while the other client
+    saves - client-side cache invalidation can never cover that).
+
+    Call ONLY after the write reported success: a failed write changed
+    nothing, and evicting on failure cold-starts reads for no gain.
+
+    - woffl memo: save_ipr_values / set_prop_lock clear it themselves, but a
+      pin/un-pin push does not (its Streamlit caller owns that), so clear it
+      here too or a _pad_fit recompute after "pin landed, values failed"
+      would still read the pre-pin memo. Idempotent when already cleared.
+    - _saved_ipr: this well only - a fleet-wide clear made one engineer's
+      save cost every other well a cold prop_hist SELECT on its next read.
+    - _pad_fit: full clear - a donor well shows up on other pads' boards,
+      and a recompute is one warm_saved_ipr_cache snapshot.
+    - _prop_history (the audit page): this well's enthid entry.
+    """
+    ipr_anchor.clear_saved_ipr_cache(well)
+    _saved_ipr.cache_evict(well)
+    _pad_fit.cache_clear()
+    from server.services import database as database_service
+
+    database_service.evict_prop_history(well)
+
+
 def save(well: str, req: schemas.SaveIprRequest) -> dict[str, Any]:
     """Pin the anchor test (when given) and save the sidebar values.
 
@@ -280,13 +308,14 @@ def save(well: str, req: schemas.SaveIprRequest) -> dict[str, Any]:
     """
     pinned = False
     pin_skipped = False
+    unpinned = False
     pin_message: Any = None
     if req.unpin:
         # Manual point: the values are about to say "this is the curve", and a
         # surviving pin would make the next open read them as test-anchored.
         # Cleared BEFORE the values so the values carry the later stamp and
         # win the precedence (ipr_anchor.saved_wins).
-        _, pin_message = ipr_anchor.clear_ipr_pin(well)
+        unpinned, pin_message = ipr_anchor.clear_ipr_pin(well)
     elif req.pin_wt_uid is not None:
         anchor_row = {"wt_uid": req.pin_wt_uid, "WtDate": req.pin_date}
         pinned, pin_message = ipr_anchor.pin_ipr_anchor(well, anchor_row)
@@ -308,13 +337,12 @@ def save(well: str, req: schemas.SaveIprRequest) -> dict[str, Any]:
         comment=req.comment,
     )
 
-    # save_ipr_values cleared the woffl memo; drop the server's own 5-min
-    # TTL layer too so the next pin/context read reflects this save. Only
-    # THIS well's entry - a fleet-wide clear made one engineer's save cost
-    # every other well a cold prop_hist SELECT on its next pin read. The pad
-    # board stays a full clear: a donor well shows up on other pads' boards.
-    _saved_ipr.cache_evict(well)
-    _pad_fit.cache_clear()
+    # Invalidate ONLY when something landed: a failed write changed nothing,
+    # and evicting on failure would cold-start reads for no gain. Partial
+    # success (pin landed, values failed - or the reverse) still outdates
+    # every cached read of this well.
+    if pinned or unpinned or n_values:
+        _invalidate_after_write(well)
     return {
         "pinned": pinned,
         "pin_skipped": pin_skipped,
@@ -328,9 +356,7 @@ def clear_pin(well: str) -> dict[str, Any]:
     """Un-pin the saved IPR default (appends the cleared marker row)."""
     cleared, message = ipr_anchor.clear_ipr_pin(well)
     if cleared:
-        ipr_anchor.clear_saved_ipr_cache(well)
-        _saved_ipr.cache_evict(well)
-        _pad_fit.cache_clear()
+        _invalidate_after_write(well)
     return {"cleared": cleared, "message": message}
 
 
@@ -344,9 +370,7 @@ def set_lock(well: str, req: schemas.PropLockRequest) -> dict[str, Any]:
     """
     ok, message = ipr_anchor.set_prop_lock(well, req.field, req.locked, value=req.value)
     if ok:
-        # set_prop_lock cleared the woffl memo; drop the server TTL layer too.
-        _saved_ipr.cache_evict(well)
-        _pad_fit.cache_clear()
+        _invalidate_after_write(well)
     # Echo the value the way it was actually stored (set_prop_lock caps WC).
     value = req.value
     if value is not None and req.field == "form_wc":

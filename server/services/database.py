@@ -195,6 +195,28 @@ def _prop_history(enthid: int) -> pd.DataFrame:
     return execute_query(_PROP_HISTORY_QUERY.format(enthid=int(enthid)))
 
 
+def evict_prop_history(well: str) -> None:
+    """Drop one well's audit-trail entry after a prop_hist write, so the
+    prop-history page shows the new rows on its next poll instead of after
+    the 5-minute TTL. Called by server.services.ipr._invalidate_after_write.
+
+    The enthid map is process-cached and warm after any successful write
+    (the push resolved this same well through it), so the lookup is a dict
+    read. If it fails anyway, fall back to clearing the whole 64-entry
+    cache - a successful write must never fail on eviction, and correctness
+    beats one page's worth of re-SELECTs.
+    """
+    from woffl.assembly.prop_hist_client import well_enthid_map
+
+    try:
+        enthid = well_enthid_map().get(well)
+    except Exception:  # noqa: BLE001 - see docstring
+        _prop_history.cache_clear()
+        return
+    if enthid is not None:
+        _prop_history.cache_evict(int(enthid))
+
+
 # DataFrame column -> JSON key for prop-history rows (current + history).
 _PROP_COLUMNS: dict[str, str] = {
     "prop_id": "prop_id",

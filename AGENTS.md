@@ -109,9 +109,11 @@ Reads (`execute_query`, `fetch_*`, `load_saved_ipr`) are SELECT-only and need no
 `execute_query` has **no parameter binding** — any identifier spliced into read SQL must be
 `int()`-coerced or shape-validated (see `_PROP_ID_SHAPE_RE`, `prop_hist_client.py:69`).
 
-Other env vars: `WOFFL_MAX_WORKERS` (default 1, clamped to cpu count by
-`scotts_tools/_common.worker_ceiling()`; `app.yaml` pins **2** for the 2-vCPU tier — do not
-raise it unless the tier changes), `WOFFL_ENTRY_USER` (overrides attribution),
+Other env vars: `WOFFL_MAX_WORKERS` (unset: 1 when deployed, `min(cores, 8)` locally —
+spawn workers re-import the whole app stack, an uncapped default OOMs; explicit values
+always clamped to cpu count by `scotts_tools/_common.worker_ceiling()`; `app.yaml`
+pins **2** for the 2-vCPU tier — do not raise it unless the tier changes),
+`WOFFL_ENTRY_USER` (overrides attribution),
 `DATABRICKS_CLIENT_ID`/`_SECRET` (presence of both = "deployed"), local lowercase
 `bricks_host`/`bricks_token`/`bricks_http`.
 

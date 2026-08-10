@@ -418,14 +418,13 @@ def test_i_pad_machine_curves_are_lp_then_hp():
 def test_m_pad_family_is_iso_speed_lines_with_no_frontier():
     rep = report("M")
     curves = rep["station"]["curves"]
-    assert [c["hz"] for c in curves] == [51.0, 55.0, 58.0, 61.0]  # freq_range_hz
+    assert [c["hz"] for c in curves] == [51.0, 55.0, 58.0, 60.0]  # capped at nominal
     assert all(c["n_pumps"] == 3 for c in curves)
     assert active_curve(rep)["hz"] == m_pad.PLANT.hp()["hz_max"]
     # the max-speed line already IS the capability; header_cap carries the limit
     assert rep["station"]["frontier"] is None
-    assert curves[-1]["points"][-1][0] == pytest.approx(
-        m_pad.PLANT.hp()["rec_hi"] * (61.0 / 60.0) * 3
-    )
+    # top line rides the 60 Hz operating cap (datasheet allows 61; not run there)
+    assert curves[-1]["points"][-1][0] == pytest.approx(m_pad.PLANT.hp()["rec_hi"] * 3)
     assert len(rep["pumps"]) == 1
 
 
@@ -487,11 +486,12 @@ def test_i_pad_shut_off_pin():
 
 def test_m_pad_shut_off_pin():
     plant = m_pad.PLANT
-    # wear-derated, at hz_max - the family the optimizer actually rides
-    expected = plant.hp_suction_psi() + plant.pump_boost(0.0, 61.0)
+    # wear-derated, at hz_max (60 Hz operating cap) - the family the
+    # optimizer actually rides
+    expected = plant.hp_suction_psi() + plant.pump_boost(0.0, 60.0)
     point = active_curve(report("M"))["points"][0]
     assert point[0] == 0.0
-    assert point[1] == pytest.approx(expected, rel=1e-6)  # 4,140.772 psi today
+    assert point[1] == pytest.approx(expected, rel=1e-6)
 
 
 def test_s_pad_machine_midpoint_pin():

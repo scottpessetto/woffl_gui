@@ -186,3 +186,25 @@ def test_kwargs_participate_in_key():
     assert fn(1, b=2) == 3
     assert fn(1, b=3) == 4
     assert len(calls) == 2
+
+
+def test_clear_drops_every_entry_and_recomputes():
+    """cache_clear is the write-side invalidate-all (the pad board's path):
+    every key gone, the very next calls recompute - no TTL wait."""
+    calls = []
+
+    @ttl_cache(60.0)
+    def fn(well):
+        calls.append(well)
+        return f"saved:{well}"
+
+    fn("MPB-28")
+    fn("MPC-45")
+    fn("MPB-28")  # fresh hit
+    assert calls == ["MPB-28", "MPC-45"]
+
+    fn.cache_clear()
+
+    assert fn("MPB-28") == "saved:MPB-28"
+    assert fn("MPC-45") == "saved:MPC-45"
+    assert calls == ["MPB-28", "MPC-45", "MPB-28", "MPC-45"]

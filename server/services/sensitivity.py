@@ -46,7 +46,7 @@ STEPS_BOUNDS = (2, 15)
 
 # Hard ceiling on one combined-permutations study. The study runs as a
 # background job, so this is a resource-sanity bound, not a request-latency
-# one: 10,000 solves is about 2 minutes of serial solving and a few MB of
+# one: 10,000 solves is about 2 minutes of single-core solving and a few MB of
 # JSON held in memory until the caller polls it. Past the cap the request is
 # a mistake and the caller gets an error: quietly sampling a subset of a
 # factorial would be a lie about what was explored.
@@ -56,6 +56,14 @@ MAX_COMBINE_RUNS = 10000
 # that is roughly four ticks a second - enough for the count to look alive,
 # rare enough to cost nothing.
 _PROGRESS_EVERY = 25
+
+# Grids below this stay serial even on a many-core host: ProcessPool spawn
+# on Windows costs seconds per worker, which small factorials never win back.
+_PARALLEL_MIN_RUNS = 50
+
+# Test seam: swapped for ThreadPoolExecutor in tests so monkeypatched solves
+# stay visible (a real child process cannot see them). None = ProcessPool.
+_EXECUTOR_CLS: Optional[type] = None
 
 # A knob counts as inert when NO swept point moves a match quantity by more
 # than these. Set at the resolution an engineer would act on, comfortably
@@ -738,6 +746,100 @@ def _resolve_combine(knobs: list[schemas.CombineKnob]) -> tuple[list[_Knob], int
     return rows, requested
 
 
+def _solve_chunk(
+    well: str, sp: schemas.SimParams, updates: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """One slice of permutation solves, in order.
+
+    Runs inside a ProcessPool CHILD on multi-core hosts: only picklable
+    inputs, and every per-point failure comes back as an ``{"error": ...}``
+    row - an exception escaping here would poison the whole pool where the
+    serial loop would have kept going.
+    """
+    out: list[dict[str, Any]] = []
+    for update in updates:
+        try:
+            out.append(
+                _metrics(solve.solve_single(well, sp.model_copy(update=update)))
+            )
+        except solve.SolveFailure as exc:
+            out.append({"error": exc.error})
+        except ValueError as exc:
+            out.append({"error": _short(str(exc)) or "invalid"})
+    return out
+
+
+def _solve_parallel(
+    well: str,
+    sp: schemas.SimParams,
+    updates: list[dict[str, Any]],
+    workers: int,
+    progress: Optional[Callable[[int, int], None]],
+) -> Optional[list[dict[str, Any]]]:
+    """ProcessPool fan-out over chunked permutations; None = pool unusable.
+
+    Any pool-level failure (spawn refused, BrokenProcessPool, a child dying)
+    returns None and the caller reruns serially - the same fallback contract
+    as ``network_optimizer.run_all_batch_simulations``. A deterministic
+    solver bug costs one wasted parallel attempt and then raises with a
+    clean traceback from the serial rerun.
+    """
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    pool_cls = _EXECUTOR_CLS or ProcessPoolExecutor
+    # ~4 chunks per worker: big enough to amortize per-task IPC, small
+    # enough that one straggling chunk cannot idle the rest of the pool.
+    chunk = max(1, -(-len(updates) // (workers * 4)))
+    slices = [updates[i : i + chunk] for i in range(0, len(updates), chunk)]
+    results: list[Optional[list[dict[str, Any]]]] = [None] * len(slices)
+    done = 0
+    try:
+        with pool_cls(max_workers=workers) as pool:
+            futures = {
+                pool.submit(_solve_chunk, well, sp, part): i
+                for i, part in enumerate(slices)
+            }
+            for fut in as_completed(futures):
+                i = futures[fut]
+                results[i] = fut.result()
+                done += len(slices[i])
+                if progress is not None:
+                    progress(done, len(updates))
+    except Exception as exc:  # noqa: BLE001 - fall back, never fail the study
+        log.warning("combine ProcessPool failed (%r); rerunning serially", exc)
+        return None
+    return [point for part in results for point in part or []]
+
+
+def _solve_combos(
+    well: str,
+    sp: schemas.SimParams,
+    updates: list[dict[str, Any]],
+    progress: Optional[Callable[[int, int], None]],
+) -> list[dict[str, Any]]:
+    """Every permutation solve, in ``updates`` order.
+
+    Parallel when the host allows it: ``worker_ceiling()`` bounds the pool
+    (unset = every core locally; the deployed tier pins WOFFL_MAX_WORKERS).
+    Grids under ``_PARALLEL_MIN_RUNS`` stay serial, as does everything when
+    the ceiling is 1 - that branch is byte-identical to the old loop.
+    """
+    from woffl.gui.scotts_tools._common import worker_ceiling
+
+    total = len(updates)
+    workers = min(worker_ceiling(), total)
+    if workers > 1 and total >= _PARALLEL_MIN_RUNS:
+        solved = _solve_parallel(well, sp, updates, workers, progress)
+        if solved is not None:
+            return solved
+    out: list[dict[str, Any]] = []
+    for done, update in enumerate(updates, start=1):
+        out.extend(_solve_chunk(well, sp, [update]))
+        if progress is not None and (done % _PROGRESS_EVERY == 0 or done == total):
+            progress(done, total)
+    return out
+
+
 def run_combine(
     well: str,
     sp: schemas.SimParams,
@@ -754,9 +856,11 @@ def run_combine(
     can reach per match quantity, and says whether each supplied target is
     inside it. Read-only: nothing is persisted and no physics is touched.
 
-    Serial on purpose, same as the per-knob sweep. The caller runs it off the
-    request thread (see ``start_combine``) and reads ``progress`` instead of
-    holding a socket open for two minutes.
+    Solves fan out over a ProcessPool bounded by ``worker_ceiling()`` when
+    the host allows it (a local workstation gets its full core count; the
+    deployed 2-vCPU tier stays effectively serial). The caller still runs it
+    off the request thread (see ``start_combine``) and reads ``progress``
+    instead of holding a socket open for minutes.
 
     Args:
         well (str): Selected well name ("Custom" allowed).
@@ -818,9 +922,8 @@ def run_combine(
     for grid in grids:
         total *= len(grid)
 
-    runs: list[dict[str, Any]] = []
-    n_failed = 0
-    for done, combo in enumerate(itertools.product(*grids), start=1):
+    combos: list[tuple[dict[str, float], dict[str, str], dict[str, Any]]] = []
+    for combo in itertools.product(*grids):
         values: dict[str, float] = {}
         labels: dict[str, str] = {}
         update: dict[str, Any] = {}
@@ -828,16 +931,16 @@ def run_combine(
             values[knob.id] = float(value)
             labels[knob.id] = label
             update[knob.field] = _field_value(knob, value)
+        combos.append((values, labels, update))
 
+    solved = _solve_combos(well, sp, [c[2] for c in combos], progress)
+
+    runs: list[dict[str, Any]] = []
+    n_failed = 0
+    for (values, labels, _update), got in zip(combos, solved):
         run: dict[str, Any] = {"values": values, "labels": labels}
-        try:
-            got = _metrics(solve.solve_single(well, sp.model_copy(update=update)))
-        except solve.SolveFailure as exc:
-            # One dead permutation is itself a finding; keep it and move on.
-            run["error"] = exc.error
-            n_failed += 1
-        except ValueError as exc:
-            run["error"] = _short(str(exc)) or "invalid"
+        if "error" in got:
+            run["error"] = got["error"]
             n_failed += 1
         else:
             for metric in METRICS:
@@ -845,8 +948,6 @@ def run_combine(
             run["sonic"] = got["sonic"]
             run["score"] = _score(got, targets)
         runs.append(run)
-        if progress is not None and (done % _PROGRESS_EVERY == 0 or done == total):
-            progress(done, total)
 
     envelope: dict[str, list[float]] = {}
     for metric in METRICS:

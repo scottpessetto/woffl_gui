@@ -17,6 +17,8 @@ import { useOptimizeJob, usePumpCurve, useStartOptimizeRun, useWells } from "../
 import type {
   CfpMoveRow,
   CfpRunResult,
+  ChokeLadderAction,
+  ChokeLadderRung,
   ChokePlanResult,
   ChokePlanRow,
   OptimizeRunRequest,
@@ -29,6 +31,7 @@ import { DEFAULT_POPS_PADS } from "../../state/wellSort";
 import { useOptimizeStore } from "../../state/optimize";
 
 import { CfpResultCharts } from "./CfpCharts";
+import { ChokeDumbbell, IprLandingTable } from "./ChokeCharts";
 import { usePadOffline } from "./offline";
 import { PadCharts } from "./PadCharts";
 
@@ -334,30 +337,78 @@ function ChokePlanResults({ result }: { result: ChokePlanResult }) {
       )}
       {meta.over_capacity === true && <WarnNote>Plan exceeds plant capacity.</WarnNote>}
 
+      <ChokeDumbbell plan={result.plan} />
+
       <Card padded={false} className="overflow-x-auto">
         <table className="w-full border-collapse text-[13px]">
           <thead>
             <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
-              <th className="px-2 py-1.5 text-left font-semibold">Well</th>
-              <th className="px-2 py-1.5 text-left font-semibold">Fit</th>
-              <th className="px-2 py-1.5 text-left font-semibold">Pump</th>
-              <th className="px-2 py-1.5 text-left font-semibold">Action</th>
-              <th className={TH_CLS} title="PF pressure delivered at the wellhead after the choke">
-                Delivered
+              <th rowSpan={2} className="px-2 py-1 text-left font-semibold align-bottom">
+                Well
               </th>
-              <th className={TH_CLS}>PF</th>
-              <th className={TH_CLS} title="PF freed vs running full open at this header">
-                dPF
+              <th rowSpan={2} className="px-2 py-1 text-left font-semibold align-bottom">
+                Fit
               </th>
-              <th className={TH_CLS}>Oil</th>
-              <th className={TH_CLS} title="Oil given up vs full open">
-                dOil
+              <th
+                rowSpan={2}
+                className="px-2 py-1 text-left font-semibold align-bottom"
+                title="Installed pump - this plan never changes it"
+              >
+                Pump (held)
               </th>
-              <th className={TH_CLS} title="Measured test oil x model ratio">
-                Proj. oil
+              <th
+                colSpan={4}
+                className="border-l border-slate-200 px-2 py-1 text-center font-semibold"
+                title="What to DO at each wellhead: the PF setting this plan asks for"
+              >
+                Plan setting
               </th>
-              <th className={TH_CLS} title="Cost of trimming this well one more step (BOPD per MBPD PF)">
-                Next trim
+              <th
+                colSpan={2}
+                className="border-l border-slate-200 px-2 py-1 text-center font-semibold"
+                title="What that setting saves and costs vs running this well wide open at the plan header"
+              >
+                vs full open
+              </th>
+              <th
+                rowSpan={2}
+                className={clsx(TH_CLS, "border-l border-slate-200 align-bottom")}
+                title="Most trustworthy per-well number: measured test oil x the model's ratio between this setting and today (model bias cancels)"
+              >
+                Proj. oil (BOPD)
+              </th>
+              <th
+                rowSpan={2}
+                className={clsx(TH_CLS, "align-bottom")}
+                title="Oil lost per 1,000 BPD of PF freed if this well is trimmed ONE more step - who gives up the least next"
+              >
+                Next trim (BOPD/MBPD)
+              </th>
+            </tr>
+            <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
+              <th className="border-l border-slate-200 px-2 py-1 text-left font-semibold">
+                Action
+              </th>
+              <th
+                className={TH_CLS}
+                title="Pinch the wellhead PF throttle until the delivered gauge reads this. FULL = leave wide open at the header."
+              >
+                Set PF psi to
+              </th>
+              <th className={TH_CLS} title="Expected PF rate at that setting - the number to pinch to on the well's PF meter">
+                PF rate (BPD)
+              </th>
+              <th className={TH_CLS} title="Model oil at the plan setting">
+                Oil (BOPD)
+              </th>
+              <th
+                className={clsx(TH_CLS, "border-l border-slate-200")}
+                title="PF handed back to the bank by this setting (negative = freed)"
+              >
+                PF freed (BPD)
+              </th>
+              <th className={TH_CLS} title="Oil given up for that PF. 0 = a free choke (sonic-flat well); + = choking GAINS oil">
+                Oil cost (BOPD)
               </th>
             </tr>
           </thead>
@@ -376,20 +427,22 @@ function ChokePlanResults({ result }: { result: ChokePlanResult }) {
                       {a.label}
                     </span>
                   </td>
-                  <td className={clsx(TD_CLS, "text-slate-600")}>
+                  <td className={clsx(TD_CLS, "border-l border-slate-100 text-slate-600")}>
                     {r.action === "choke" || r.action === "full" ? fmtNum(r.delivered_psi) : "-"}
                   </td>
                   <td className={clsx(TD_CLS, "text-slate-700")}>{fmtNum(r.pf)}</td>
-                  <td className={clsx(TD_CLS, "text-slate-500")}>
+                  <td className={clsx(TD_CLS, "text-slate-700")}>{fmtNum(r.oil)}</td>
+                  <td className={clsx(TD_CLS, "border-l border-slate-100 text-slate-500")}>
                     {r.d_pf_vs_full !== null && r.d_pf_vs_full !== 0 ? fmtNum(r.d_pf_vs_full) : "-"}
                   </td>
-                  <td className={clsx(TD_CLS, "text-slate-700")}>{fmtNum(r.oil)}</td>
                   <td className={clsx(TD_CLS, "text-slate-500")}>
                     {r.d_oil_vs_full !== null && r.d_oil_vs_full !== 0
                       ? `${r.d_oil_vs_full > 0 ? "+" : ""}${fmtNum(r.d_oil_vs_full)}`
                       : "-"}
                   </td>
-                  <td className={clsx(TD_CLS, "text-slate-500")}>{fmtNum(r.projected_oil)}</td>
+                  <td className={clsx(TD_CLS, "border-l border-slate-100 text-slate-500")}>
+                    {fmtNum(r.projected_oil)}
+                  </td>
                   <td className={clsx(TD_CLS, "text-slate-400")}>
                     {r.next_trim_bopd_per_bpd === null ? "-" : fmtNum(r.next_trim_bopd_per_bpd * 1000)}
                   </td>
@@ -399,6 +452,9 @@ function ChokePlanResults({ result }: { result: ChokePlanResult }) {
           </tbody>
         </table>
       </Card>
+
+      <HeaderDropLadder rungs={meta.ladder} />
+      <IprLandingTable plan={result.plan} />
       {result.notes.length > 0 && (
         <div className="space-y-0.5 text-xs text-slate-500">
           {result.notes.map((n) => (
@@ -407,6 +463,83 @@ function ChokePlanResults({ result }: { result: ChokePlanResult }) {
         </div>
       )}
     </div>
+  );
+}
+
+/** "choke MPM-64 @ 1,700" / "shut MPM-22" / "hold MPM-31". */
+function ladderAction(a: ChokeLadderAction): string {
+  return a.action === "choke" ? `choke ${a.well} @ ${fmtNum(a.set_psi)}` : `${a.action} ${a.well}`;
+}
+
+/** Contingency ladder: if the PF bank sags below the plan header, what is
+ *  the best response and what does it gain over doing nothing. Collapsed by
+ *  default; renders nothing on runs made before the feature (no ladder). */
+function HeaderDropLadder({ rungs }: { rungs: ChokeLadderRung[] | undefined }) {
+  if (rungs == null || rungs.length === 0) return null;
+  return (
+    <Card padded={false} className="overflow-x-auto">
+      <details>
+        <summary className="cursor-pointer select-none px-2 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800">
+          Header-drop decision ladder
+        </summary>
+        <p className="px-2 pb-1 text-[11px] text-slate-500">
+          If the PF bank degrades until the all-run header settles this far below the plan
+          header: the best response, and what it gains over doing nothing.
+        </p>
+        <table className="w-full border-collapse text-[13px]">
+          <thead>
+            <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
+              <th className={TH_CLS} title="How far the all-run header settles below the plan header">
+                Drop (psi)
+              </th>
+              <th className={TH_CLS}>Settles at (psi)</th>
+              <th className={TH_CLS} title="Pad oil if every well just runs at the sagged header">
+                Do nothing (BOPD)
+              </th>
+              <th className={TH_CLS} title="Header the best response holds instead">
+                Hold header at (psi)
+              </th>
+              <th className="px-2 py-1.5 text-left font-semibold">Best response</th>
+              <th className={TH_CLS}>Pad oil (BOPD)</th>
+              <th className={TH_CLS} title="Best-response pad oil minus do-nothing pad oil">
+                Gain (BOPD)
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rungs.map((r) => {
+              const labels = r.actions.map(ladderAction);
+              const full = labels.join(", ");
+              const shown =
+                labels.length > 3
+                  ? `${labels.slice(0, 3).join(", ")} + ${labels.length - 3} more`
+                  : full;
+              return (
+                <tr key={r.drop_psi} className="border-b border-slate-100 last:border-b-0">
+                  <td className={clsx(TD_CLS, "font-medium text-slate-700")}>
+                    -{fmtNum(r.drop_psi)}
+                  </td>
+                  <td className={clsx(TD_CLS, "text-slate-600")}>{fmtNum(r.settles_psi)}</td>
+                  <td className={clsx(TD_CLS, "text-slate-500")}>{fmtNum(r.run_all_oil_bopd)}</td>
+                  <td className={clsx(TD_CLS, "text-slate-600")}>{fmtNum(r.best_header_psi)}</td>
+                  <td
+                    className="px-2 py-1 text-left text-slate-600"
+                    title={labels.length > 3 ? full : undefined}
+                  >
+                    {labels.length === 0 ? <span className="text-slate-400">no change</span> : shown}
+                  </td>
+                  <td className={clsx(TD_CLS, "text-slate-700")}>{fmtNum(r.plan_oil_bopd)}</td>
+                  <td className={clsx(TD_CLS, r.gain_bopd > 0 ? "text-emerald-700" : "text-slate-600")}>
+                    {r.gain_bopd > 0 ? "+" : ""}
+                    {fmtNum(r.gain_bopd)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </details>
+    </Card>
   );
 }
 

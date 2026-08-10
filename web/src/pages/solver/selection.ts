@@ -13,10 +13,17 @@ export function testKey(t: WellTestRow): string {
 }
 
 /**
- * The test row the IPR anchor currently points to. Mirrors the server's
- * anchor semantics: recent = newest, median = middle of the date-sorted
- * window, specific = exact date (falling back to newest when the date
- * left the window).
+ * The test row the IPR anchor currently points to.
+ *
+ * `fitAnchorDate` is the anchor date the FIT RESPONSE reported
+ * (coeffs.anchor_date) - the server's own resolution, preferred whenever it
+ * matches a row so the UI can never disagree with the fit it is displaying.
+ * Before the fit lands, the local mirror applies: recent = newest, median /
+ * median_liq = the test whose BHP / total fluid sits nearest the window's
+ * median of that value (the server's statistic in
+ * ipr_anchor._resolve_anchor_row - NOT the middle of the date-sorted list),
+ * specific = exact date (falling back to newest when the date left the
+ * window).
  *
  * "manual" resolves to NULL on purpose: the anchor is the sidebar's own
  * qwf/pwf, so there is no test to pin and the save must not claim one.
@@ -27,13 +34,48 @@ export function resolveAnchorTest(
   sorted: WellTestRow[],
   mode: AnchorMode,
   anchorDate: string | null,
+  fitAnchorDate?: string | null,
 ): WellTestRow | null {
   if (sorted.length === 0 || mode === "manual") return null;
-  if (mode === "median") return sorted[Math.floor((sorted.length - 1) / 2)];
+  if (fitAnchorDate != null) {
+    const d = fitAnchorDate.slice(0, 10);
+    const hit = sorted.find((t) => t.date.slice(0, 10) === d);
+    if (hit) return hit;
+  }
+  if (mode === "median") return medianTest(sorted, (t) => t.bhp as number);
+  if (mode === "median_liq") return medianTest(sorted, (t) => t.total_fluid as number);
   if (mode === "specific" && anchorDate) {
     return sorted.find((t) => t.date === anchorDate) ?? sorted[0];
   }
   return sorted[0];
+}
+
+/** The server's median-anchor statistic (ipr_anchor._resolve_anchor_row):
+ *  over the FIT-ELIGIBLE rows (BHP and total fluid both present - the fit
+ *  drops the rest), the test whose `value` is nearest the median value
+ *  (BHP for "median", total fluid for "median_liq"). Pandas median: an
+ *  even count averages the two middle values. Ties keep the first row in
+ *  newest-first order, matching the server frame. */
+function medianTest(
+  sorted: WellTestRow[],
+  value: (t: WellTestRow) => number,
+): WellTestRow | null {
+  const rows = sorted.filter((t) => t.bhp != null && t.total_fluid != null);
+  if (rows.length === 0) return null;
+  const values = rows.map(value).sort((a, b) => a - b);
+  const mid = Math.floor(values.length / 2);
+  const median =
+    values.length % 2 === 1 ? values[mid] : (values[mid - 1] + values[mid]) / 2;
+  let best = rows[0];
+  let bestD = Math.abs(value(rows[0]) - median);
+  for (const t of rows.slice(1)) {
+    const d = Math.abs(value(t) - median);
+    if (d < bestD) {
+      best = t;
+      bestD = d;
+    }
+  }
+  return best;
 }
 
 /**

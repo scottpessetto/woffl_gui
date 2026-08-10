@@ -426,6 +426,40 @@ def test_resolve_anchor_row_modes(picker_st):
     ] == pd.Timestamp("2026-04-01")
 
 
+def test_resolve_anchor_row_median_liq(picker_st):
+    """median_liq anchors on the median-LIQUID test - a different row than
+    the median-BHP pick when the fluid ordering disagrees with BHP."""
+    df = pd.DataFrame(
+        {
+            "WtDate": [
+                pd.Timestamp("2026-05-10"),
+                pd.Timestamp("2026-04-01"),
+                pd.Timestamp("2026-03-01"),
+            ],
+            # median BHP (1300) -> 04-01; median fluid (1000) -> 03-01
+            "BHP": [1200.0, 1300.0, 1400.0],
+            "WtOilVol": [500.0, 480.0, 460.0],
+            "WtTotalFluid": [1500.0, 900.0, 1000.0],
+            "lift_wat": [300.0, 290.0, 280.0],
+        }
+    ).sort_values("WtDate", ascending=False).reset_index(drop=True)
+    picker_st.session_state["sw_ipr_applied_sig_WELL"] = ("median_liq", None)
+    assert jetpump_solver._resolve_anchor_test_row("WELL", df)[
+        "WtDate"
+    ] == pd.Timestamp("2026-03-01")
+    picker_st.session_state["sw_ipr_applied_sig_WELL"] = ("median", None)
+    assert jetpump_solver._resolve_anchor_test_row("WELL", df)[
+        "WtDate"
+    ] == pd.Timestamp("2026-04-01")
+
+
+def test_anchor_restores_median_liq_after_detour(picker_st):
+    df = _make_test_df()
+    picker_st.session_state["sw_ipr_applied_sig_WELL"] = ("median_liq", None)
+    mode, _ = jetpump_solver._render_ipr_anchor_control("WELL", df)
+    assert mode == "median_liq"
+
+
 def test_compare_picker_synced_to_specific_anchor(picker_st, monkeypatch):
     """Synced (default): the comparison picker is slaved to the anchor's test."""
     monkeypatch.setattr("woffl.gui.memory_gauge.get_gauge", lambda w: None)

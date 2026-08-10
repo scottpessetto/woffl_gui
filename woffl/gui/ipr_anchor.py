@@ -3,9 +3,10 @@
 The library's :mod:`woffl.assembly.ipr_analyzer` always anchors the Vogel curve
 on the most-recent test and fits reservoir pressure to the *global* test cloud
 (it minimizes SSE over every candidate anchor). This GUI module lets the user
-anchor the fit on a **specific** or the **median** test instead, and re-fits
-reservoir pressure so the Vogel curve best passes through the rest of the cloud
-*given that fixed anchor*.
+anchor the fit on a **specific** test, the **median-BHP** test, or the
+**median-liquid-rate** test instead, and re-fits reservoir pressure so the
+Vogel curve best passes through the rest of the cloud *given that fixed
+anchor*.
 
 Kept in the GUI layer (not ``woffl/assembly``) so it carries no upstream-library
 obligation; it reuses :class:`woffl.flow.inflow.InFlow` and mirrors the Vogel
@@ -341,7 +342,13 @@ def _resolve_anchor_row(
         median_bhp = df["BHP"].median()
         pos = int((df["BHP"] - median_bhp).abs().values.argmin())
         row = df.iloc[pos]
-        return row, _label(row, "median test")
+        return row, _label(row, "median-BHP test")
+
+    if anchor_mode == "median_liq":
+        median_liq = df["WtTotalFluid"].median()
+        pos = int((df["WtTotalFluid"] - median_liq).abs().values.argmin())
+        row = df.iloc[pos]
+        return row, _label(row, "median-liquid test")
 
     if anchor_mode == "specific" and anchor_date is not None:
         target = pd.to_datetime(anchor_date, errors="coerce")
@@ -369,8 +376,9 @@ def compute_anchored_vogel(
         test_df: well-test rows (needs ``BHP``, ``WtTotalFluid``, ``WtDate``;
             optionally ``WtWaterVol``, ``fgor``, ``well``).
         well_name: well label for the output row; defaults to ``test_df['well']``.
-        anchor_mode: ``"median"``, ``"specific"`` (needs ``anchor_date``), or
-            ``"recent"``.
+        anchor_mode: ``"median"`` (median-BHP test), ``"median_liq"``
+            (median-liquid-rate test), ``"specific"`` (needs ``anchor_date``),
+            or ``"recent"``.
         anchor_date: the test date to anchor on when ``anchor_mode='specific'``.
         field_max_rp: upper bound for the RP sweep (Schrader ~1800, Kuparuk ~3000).
         resp_modifier: psi added to the fitted RP (parity with ipr_analyzer).

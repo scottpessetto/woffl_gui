@@ -102,17 +102,6 @@ function Workbench({ well }: { well: string }) {
     });
   }, [testsQ.data, gauge]);
 
-  const compareTest = useMemo<WellTestRow | null>(() => {
-    if (sortedTests.length === 0) return null;
-    if (decouple && compareKey !== null) {
-      return sortedTests.find((t) => testKey(t) === compareKey) ?? sortedTests[0];
-    }
-    // Synced (default): the comparison test follows the IPR anchor. A manual
-    // anchor has no test, but the engineer still needs something to judge the
-    // match against, so the comparison falls back to the most recent test.
-    return resolveAnchorTest(sortedTests, anchorMode, anchorDate) ?? sortedTests[0];
-  }, [sortedTests, decouple, compareKey, anchorMode, anchorDate]);
-
   // A manual anchor IS the sidebar's qwf/pwf, so there is nothing to fit: the
   // test-derived curve would only compete with the point the engineer chose.
   const fitEnabled =
@@ -133,6 +122,21 @@ function Workbench({ well }: { well: string }) {
     },
     fitEnabled,
   );
+
+  const compareTest = useMemo<WellTestRow | null>(() => {
+    if (sortedTests.length === 0) return null;
+    if (decouple && compareKey !== null) {
+      return sortedTests.find((t) => testKey(t) === compareKey) ?? sortedTests[0];
+    }
+    // Synced (default): the comparison test follows the IPR anchor - the
+    // FIT's own anchor_date when it has landed (the server resolves median/
+    // recent, so the UI can never disagree with the drawn curve), else the
+    // local mirror. A manual anchor has no test, but the engineer still
+    // needs something to judge the match against, so the comparison falls
+    // back to the most recent test.
+    const fitAnchor = anchorMode === "manual" ? null : (iprFitQ.data?.coeffs.anchor_date ?? null);
+    return resolveAnchorTest(sortedTests, anchorMode, anchorDate, fitAnchor) ?? sortedTests[0];
+  }, [sortedTests, decouple, compareKey, anchorMode, anchorDate, iprFitQ.data]);
 
   // Auto-apply the FIRST fit's seeds once per well - the web equivalent of
   // Streamlit's open-time anchor sync (_sync_chosen_ipr_to_sidebar): the

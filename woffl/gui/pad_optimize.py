@@ -65,6 +65,7 @@ from __future__ import annotations
 from typing import Callable, Iterable, Optional
 
 from woffl.gui.pad_plant_base import PadPlant
+from woffl.flow.inflow import InFlow
 
 # The scenario evaluators / match check never apply the marginal-WC economics
 # gate — see the module docstring.
@@ -967,8 +968,11 @@ def _model_at_forced_header(well_configs, header_psi: float, current_choices: di
     Same plumbing as ``match_check`` but the header is the caller's number,
     not the plant's derivation — this exists so the PF what-if can ask "what
     do these wells do at pressure X" directly. Returns
-    ``{well: (oil_bopd, pf_bpd) | None}`` (None = pump missing or unsolvable
-    at this header).
+    ``{well: (oil_bopd, pf_bpd, psu_psig, sonic) | None}`` (None = pump
+    missing or unsolvable at this header; psu/sonic are None when the batch
+    row lacks them). ``sonic`` True means the solver returned the cavitation
+    floor: throat entry at sonic velocity, so psu and oil are pinned there
+    and only PF responds to the delivered pressure.
     """
     from woffl.assembly.network_optimizer import NetworkOptimizer, PowerFluidConstraint
     from woffl.gui.scotts_tools._common import worker_ceiling
@@ -992,7 +996,24 @@ def _model_at_forced_header(well_configs, header_psi: float, current_choices: di
         cc = current_choices.get(w)
         perf = opt.get_pump_performance(w, cc[0], cc[1]) if cc else None
         out[w] = (
-            (float(perf["oil_rate"]), float(perf["lift_water"])) if perf else None
+            (
+                float(perf["oil_rate"]),
+                float(perf["lift_water"]),
+                # suction pressure rides along for IPR-landing reporting;
+                # .get() so a test fake without the key degrades to None
+                (
+                    float(perf["suction_pressure"])
+                    if perf.get("suction_pressure") is not None
+                    else None
+                ),
+                (
+                    bool(perf["sonic_status"])
+                    if perf.get("sonic_status") is not None
+                    else None
+                ),
+            )
+            if perf
+            else None
         )
     return out
 
@@ -1133,9 +1154,9 @@ def pf_pressure_what_if(
 
 
 def _choke_frontier(
-    points: list[tuple[Optional[float], float, float]],
-) -> list[tuple[Optional[float], float, float]]:
-    """Efficient staircase of ``(delivered_psi, oil_bopd, pf_bpd)`` options.
+    points: list[tuple[Optional[float], float, float, Optional[float]]],
+) -> list[tuple[Optional[float], float, float, Optional[float]]]:
+    """Efficient staircase of ``(delivered_psi, oil, pf, psu)`` options.
 
     Drops every dominated option (another option with <= PF and >= oil,
     solver noise included) and returns the survivors sorted by PF
@@ -1144,15 +1165,15 @@ def _choke_frontier(
     valid trim step with a positive, finite slope (BOPD given up per BPD
     of PF freed).
     """
-    kept: list[tuple[Optional[float], float, float]] = []
-    for psi, oil, pf in sorted(points, key=lambda t: (t[2], t[1])):
+    kept: list[tuple[Optional[float], float, float, Optional[float]]] = []
+    for psi, oil, pf, psu in sorted(points, key=lambda t: (t[2], t[1])):
         if kept and pf <= kept[-1][2] + 1e-9:
             if oil > kept[-1][1] + 1e-9:
-                kept[-1] = (psi, oil, pf)  # same PF, more oil: replaces
+                kept[-1] = (psi, oil, pf, psu)  # same PF, more oil: replaces
             continue
         if kept and oil <= kept[-1][1] + 1e-9:
             continue  # more PF for no more oil: dominated
-        kept.append((psi, oil, pf))
+        kept.append((psi, oil, pf, psu))
     kept.reverse()
     return kept
 
@@ -1177,21 +1198,72 @@ def _trim_to_budget(wells: list[dict], budget: float) -> tuple[float, float, Opt
             i = st["idx"]
             if i + 1 >= len(st["opts"]):
                 continue  # already shut in
-            _, oil_0, pf_0 = st["opts"][i]
-            _, oil_1, pf_1 = st["opts"][i + 1]
+            _, oil_0, pf_0, _ = st["opts"][i]
+            _, oil_1, pf_1, _ = st["opts"][i + 1]
             slope = (oil_0 - oil_1) / (pf_0 - pf_1)  # staircase: pf_0 > pf_1
             if best is None or slope < best[0]:
                 best = (slope, st)
         if best is None:
             break  # everything already shut in
         slope, st = best
-        _, oil_0, pf_0 = st["opts"][st["idx"]]
+        _, oil_0, pf_0, _ = st["opts"][st["idx"]]
         st["idx"] += 1
-        _, oil_1, pf_1 = st["opts"][st["idx"]]
+        _, oil_1, pf_1, _ = st["opts"][st["idx"]]
         total_pf -= pf_0 - pf_1
         total_oil -= oil_0 - oil_1
         lam = slope
     return total_pf, total_oil, lam
+
+
+def _vogel_ipr_curve(wc) -> Optional[list[list[float]]]:
+    """25-point Vogel IPR curve for the landing table's per-well chart.
+
+    Anchored exactly like the solver's inflow (oil-basis rate = total fluid
+    x (1 - water cut), see NetworkOptimizer._create_well_objects). Points are
+    ``[oil_bopd, pwf_psi]`` from pwf = res_pres (oil 0) down to pwf = 0
+    (oil = vogel qmax), rounded to 1 decimal. None when the config lacks a
+    usable qwf/pwf/res_pres or the anchor is unphysical (pwf >= res_pres).
+    """
+    qwf = getattr(wc, "qwf", None)
+    pwf = getattr(wc, "pwf", None)
+    pres = getattr(wc, "res_pres", None)
+    if qwf is None or pwf is None or pres is None:
+        return None
+    form_wc = getattr(wc, "form_wc", None) or 0.0
+    try:
+        inflow = InFlow(
+            qwf=float(qwf) * (1.0 - float(form_wc)),
+            pwf=float(pwf),
+            pres=float(pres),
+        )
+        n = 25
+        return [
+            [
+                round(inflow.oil_flow(float(pres) * (n - 1 - i) / (n - 1), method="vogel"), 1),
+                round(float(pres) * (n - 1 - i) / (n - 1), 1),
+            ]
+            for i in range(n)
+        ]
+    except (ValueError, TypeError):
+        return None
+
+
+def _classify_action(basis: str, psi, oil: float, pf: float, header_psi: float) -> str:
+    """Action label for one well's chosen option at a candidate header.
+
+    Anything delivered below the header is an operator action - including a
+    dominant lower-pressure point picked at idx 0 (the free choke to the
+    sonic knee).
+    """
+    if basis == "none":
+        return "excluded"
+    if pf <= 0.0 and oil <= 0.0:
+        return "shut"
+    if basis == "test":
+        return "hold"
+    if psi is not None and psi < header_psi - 1e-6:
+        return "choke"
+    return "full"
 
 
 _ACTION_RANK = {"shut": 0, "choke": 1, "hold": 2, "full": 3, "excluded": 4}
@@ -1246,7 +1318,11 @@ def run_choke_optimization(
         ``pf_what_if_rows``). ``meta`` keeps the uniform contract keys the
         charts read (header_psi, total_pf_bpd, total_oil_bopd, sweep, ...)
         plus ``lambda_bopd_per_bpd``, ``frontier_cap_bpd``,
-        ``header_today_psi``, ``projected_d_oil_bopd`` and the action counts.
+        ``header_today_psi``, ``projected_d_oil_bopd``, the action counts,
+        and ``ladder`` — the header-drop decision ladder: one rung per
+        ladder level below the winning header, answering "if the bank
+        degrades until the all-run header settles here, what is the best
+        response and what does it gain over doing nothing".
     """
     if plant.coupling != "free_pressure":
         raise ValueError(
@@ -1256,15 +1332,26 @@ def run_choke_optimization(
         )
 
     names = [wc.well_name for wc in well_configs]
+    # IPR context for the landing table: reservoir pressure per well
+    res_pres = {
+        wc.well_name: getattr(wc, "res_pres", None) for wc in well_configs
+    }
+    ipr_curves = {wc.well_name: _vogel_ipr_curve(wc) for wc in well_configs}
     p_lo, p_hi = plant.pressure_window(n_pumps)
     levels = [
         p_lo + (p_hi - p_lo) * i / (n_levels - 1) for i in range(n_levels)
     ]
 
     # -- price the grid: every well at its installed pump at every level ----
+    # sonic flag per (well, ladder level): the row assembly reports whether
+    # the chosen and full-open points sit at the cavitation floor
+    sonic_at: dict[tuple, bool] = {}
     grid: list[dict] = []
     for k, level in enumerate(levels):
         grid.append(_model_at_forced_header(well_configs, level, current_choices))
+        for w, v in grid[k].items():
+            if v is not None and len(v) > 3 and v[3] is not None:
+                sonic_at[(w, levels[k])] = bool(v[3])
         if progress:
             progress(k + 1, n_levels + 1, level, 0.0, 0.0)
 
@@ -1286,11 +1373,18 @@ def run_choke_optimization(
             for k in range(h + 1):
                 v = grid[k].get(w)
                 if v is not None:
-                    pts.append((levels[k], float(v[0]), float(v[1])))
+                    pts.append(
+                        (
+                            levels[k],
+                            float(v[0]),
+                            float(v[1]),
+                            float(v[2]) if len(v) > 2 and v[2] is not None else None,
+                        )
+                    )
             oil_t = float((test_rates.get(w) or (0, 0))[0] or 0.0)
             pf_t = float((test_rates.get(w) or (0, 0))[1] or 0.0)
             if pts:
-                opts = _choke_frontier(pts + [(None, 0.0, 0.0)])
+                opts = _choke_frontier(pts + [(None, 0.0, 0.0, None)])
                 # RAW full-open reference: the highest ladder level that
                 # solved. The staircase may start BELOW it when a lower
                 # pressure dominates (more oil, less PF - a pump past its
@@ -1300,11 +1394,11 @@ def run_choke_optimization(
                 basis = "model"
             elif oil_t > 0.0 or pf_t > 0.0:
                 # unmodelable: hold measured rates, or shut in
-                opts = [(None, oil_t, pf_t), (None, 0.0, 0.0)]
+                opts = [(None, oil_t, pf_t, None), (None, 0.0, 0.0, None)]
                 full_raw = opts[0]
                 basis = "test"
             else:
-                opts = [(None, 0.0, 0.0)]
+                opts = [(None, 0.0, 0.0, None)]
                 full_raw = opts[0]
                 basis = "none"
             states.append(
@@ -1346,20 +1440,9 @@ def run_choke_optimization(
     counts = {"full": 0, "choke": 0, "shut": 0, "hold": 0, "excluded": 0}
     for st in best["wells"]:
         w = st["well"]
-        psi, oil, pf = st["opts"][st["idx"]]
-        psi_f, oil_f, pf_f = st["full_raw"]
-        if st["basis"] == "none":
-            action = "excluded"
-        elif pf <= 0.0 and oil <= 0.0:
-            action = "shut"
-        elif st["basis"] == "test":
-            action = "hold"
-        elif psi is not None and psi < best["P"] - 1e-6:
-            # anything delivered below the header is an operator action -
-            # including a dominant lower-pressure point picked at idx 0
-            action = "choke"
-        else:
-            action = "full"
+        psi, oil, pf, psu = st["opts"][st["idx"]]
+        psi_f, oil_f, pf_f, psu_f = st["full_raw"]
+        action = _classify_action(st["basis"], psi, oil, pf, best["P"])
         counts[action] += 1
 
         # test-anchored projection: measured oil x model(chosen)/model(today)
@@ -1377,7 +1460,7 @@ def run_choke_optimization(
         # the cost of trimming this well one MORE step (who is next in line)
         nxt = None
         if st["idx"] + 1 < len(st["opts"]):
-            _, oil_1, pf_1 = st["opts"][st["idx"] + 1]
+            _, oil_1, pf_1, _ = st["opts"][st["idx"] + 1]
             nxt = (oil - oil_1) / (pf - pf_1) if pf > pf_1 else None
 
         cc = current_choices.get(w)
@@ -1389,6 +1472,20 @@ def run_choke_optimization(
                 "action": action,
                 "delivered_psi": psi,
                 "choke_dp_psi": (best["P"] - psi) if psi is not None else None,
+                # full-open reference point (raw, highest solvable level)
+                "delivered_full_psi": psi_f,
+                "oil_full": oil_f,
+                "pf_full": pf_f,
+                # IPR landing: suction pressure at the chosen and full-open
+                # settings, plus reservoir pressure for drawdown
+                "psu": psu,
+                "psu_full": psu_f,
+                # cavitation-floor flags at the chosen / full-open points
+                # (None for held/shut/test-basis points off the ladder)
+                "sonic": sonic_at.get((w, psi)),
+                "sonic_full": sonic_at.get((w, psi_f)),
+                "res_pres": res_pres.get(w),
+                "ipr_curve": ipr_curves.get(w) if st["basis"] == "model" else None,
                 "pf": pf,
                 "oil": oil,
                 "d_oil_vs_full": oil - oil_f,
@@ -1406,6 +1503,70 @@ def run_choke_optimization(
         for r in rows
         if r["projected_oil"] is not None and r["test_oil"] is not None
     )
+
+    # -- header-drop decision ladder ------------------------------------------
+    # Operator question: "the header is settling X psi below the plan - what
+    # do I do?" Each rung scales the bank's flow frontier by the factor s
+    # that makes the ALL-RUN header settle at that rung's level (demand at P
+    # over frontier at P: demand rises and the frontier falls with pressure,
+    # so the anchor is unique), then re-runs the same header sweep and
+    # equal-slope trim against the degraded frontier. Pure allocation over
+    # the already-priced grid - no extra solves.
+    modelable = {w: any(g.get(w) is not None for g in grid) for w in names}
+    ladder = []
+    for j, P in enumerate(levels):
+        if P >= best["P"] - 1e-6:
+            continue
+        run_all_oil = 0.0
+        demand = 0.0
+        for w in names:
+            v = grid[j].get(w)
+            if v is not None:
+                run_all_oil += float(v[0])
+                demand += float(v[1])
+            elif not modelable[w]:
+                # never modelable: held at measured rates (header-independent)
+                tr = test_rates.get(w) or (0, 0)
+                run_all_oil += float(tr[0] or 0.0)
+                demand += float(tr[1] or 0.0)
+            # modelable but no solution AT this level: cannot lift here -> 0
+        cap = plant.budget_at_pressure(P, n_pumps)
+        if not cap or cap <= 0 or demand <= 0:
+            continue
+        s = demand / cap
+        best_r = None
+        for h, level in enumerate(levels):
+            # + epsilon: s*cap reconstructs the rung's own budget as EXACTLY
+            # its all-run demand, and float dust in s*cap must never force a
+            # spurious trim at the rung's own level (1e-6 bpd is nothing)
+            budget_h = s * (plant.budget_at_pressure(level, n_pumps) or 0.0) + 1e-6
+            if budget_h <= 0:
+                continue
+            wells_h = _well_states(h)
+            _pf_h, oil_h, _lam_h = _trim_to_budget(wells_h, budget_h)
+            if best_r is None or oil_h > best_r[0]:
+                best_r = (oil_h, level, wells_h)
+        if best_r is None:
+            continue
+        oil_r, header_r, wells_r = best_r
+        actions = []
+        for st in wells_r:
+            psi_r, oil_w, pf_w, _psu = st["opts"][st["idx"]]
+            act = _classify_action(st["basis"], psi_r, oil_w, pf_w, header_r)
+            if act in ("choke", "shut"):
+                actions.append({"well": st["well"], "action": act, "set_psi": psi_r})
+        ladder.append(
+            {
+                "drop_psi": best["P"] - P,
+                "settles_psi": P,
+                "run_all_oil_bopd": run_all_oil,
+                "best_header_psi": header_r,
+                "plan_oil_bopd": oil_r,
+                "gain_bopd": oil_r - run_all_oil,
+                "actions": actions,
+            }
+        )
+    ladder.sort(key=lambda r: r["drop_psi"])
     meta = {
         "mode": "choke",
         "n_pumps": n_pumps,
@@ -1427,6 +1588,7 @@ def run_choke_optimization(
         "converged": True,  # a sweep has no fixed point to miss
         "history": [],
         "sweep": sweep,
+        "ladder": ladder,
         **plant.flags(best["total_pf"], n_pumps),
     }
     return rows, meta

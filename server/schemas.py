@@ -655,7 +655,7 @@ class GaugeDay(BaseModel):
 
 class IprFitRequest(BaseModel):
     well: str
-    anchor_mode: Literal["recent", "median", "specific"] = "recent"
+    anchor_mode: Literal["recent", "median", "median_liq", "specific"] = "recent"
     anchor_date: Optional[str] = None  # YYYY-MM-DD, required for "specific"
     field_model: Literal["Schrader", "Kuparuk"] = "Schrader"
     # le=60: a memory-gauge window can reach years back, past the sidebar's

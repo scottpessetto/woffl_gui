@@ -18,6 +18,7 @@ import { useState } from "react";
 import { useClearIprPin, useMeta, useSaveIpr } from "../../api/hooks";
 import type { AnchorMode, IprFitResponse, IprPinResponse, JpInstallRow, SimParams, WellTestRow } from "../../api/types";
 import { Badge, Button, Card, InfoNote, Section } from "../../components/ui";
+import { fmtDate, fmtNum } from "../../lib/format";
 import { useParamsStore } from "../../state/params";
 
 import { pumpLabelAt, resolveAnchorTest, testKey, testLabel } from "./selection";
@@ -90,7 +91,15 @@ export function IprControls({
   const saveMut = useSaveIpr(well);
   const clearMut = useClearIprPin(well);
 
-  const anchorTest = resolveAnchorTest(tests, anchorMode, anchorDate);
+  // Prefer the fit's own anchor resolution (server truth for median/recent);
+  // the local mirror covers the gap while the fit is loading. Manual mode
+  // must ignore a stale fit - there is no test behind a manual point.
+  const anchorTest = resolveAnchorTest(
+    tests,
+    anchorMode,
+    anchorDate,
+    anchorMode === "manual" ? null : (fit?.coeffs.anchor_date ?? null),
+  );
   const busy = saveMut.isPending || clearMut.isPending;
 
   const onSave = () => {
@@ -161,11 +170,20 @@ export function IprControls({
             className={SELECT_CLS}
           >
             <option value="recent">Most recent</option>
-            <option value="median">Median test</option>
+            <option value="median">Median - BHP</option>
+            <option value="median_liq">Median - Liquid rate</option>
             <option value="specific">Specific test</option>
             <option value="manual">Manual point (no test)</option>
           </select>
         </label>
+        {(anchorMode === "median" || anchorMode === "median_liq") && anchorTest && (
+          <p className="text-[11px] text-slate-500">
+            Anchored on the {fmtDate(anchorTest.date)} test - the one whose{" "}
+            {anchorMode === "median" ? "BHP" : "liquid rate"} sits nearest the window's
+            median: Liq {fmtNum(anchorTest.total_fluid)} BPD, Oil {fmtNum(anchorTest.oil)}{" "}
+            BOPD, BHP {fmtNum(anchorTest.bhp)} psi.
+          </p>
+        )}
 
         {anchorMode === "specific" && (
           <label className="block">

@@ -3233,10 +3233,11 @@ def _render_ipr_anchor_control(well_name: str, test_df):
 
     label_to_mode = {
         "Most recent": "recent",
-        "Median test": "median",
+        "Median test - BHP": "median",
+        "Median test - Liquid rate": "median_liq",
         "Specific test": "specific",
     }
-    mode_order = ["recent", "median", "specific"]
+    mode_order = ["recent", "median", "median_liq", "specific"]
 
     # The view switcher renders only the active view, so Streamlit garbage-
     # collects this selectbox's widget state whenever the user detours through
@@ -3528,7 +3529,8 @@ def _sync_chosen_ipr_to_sidebar(
 
     anchor_human = {
         "recent": "most-recent-test",
-        "median": "median-test",
+        "median": "median-BHP-test",
+        "median_liq": "median-liquid-test",
         "specific": "selected-test",
     }.get(anchor_mode, anchor_mode)
     st.session_state["_ipr_sync_msg"] = (
@@ -3639,7 +3641,7 @@ def _render_ipr_anchor_and_seed(params: SimulationParams, test_df):
     vogel_coeffs = None
     merged_with_rp = None
 
-    if anchor_mode in ("median", "specific"):
+    if anchor_mode in ("median", "median_liq", "specific"):
         # Anchored fit: hold the chosen test as the Vogel anchor and re-fit
         # reservoir pressure for the best fit through it (GUI-layer helper, no
         # upstream-library change).

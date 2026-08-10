@@ -288,23 +288,24 @@ def test_m_pad_live_scada_anchors():
 
 
 def test_m_pad_frontier_pins_3_pumps():
+    # 60 Hz operating cap (datasheet allows 61; the bank is not run there)
     assert m_pad.max_discharge_pressure(30000.0, 3) == pytest.approx(
-        3988.7679982488353, rel=1e-6
+        3901.6390075181816, rel=1e-6
     )
     assert m_pad.max_discharge_pressure(60000.0, 3) == pytest.approx(
-        3753.80488190112, rel=1e-6
+        3667.530653660606, rel=1e-6
     )
     assert m_pad.max_discharge_pressure(100000.0, 3) == pytest.approx(
-        3193.142196916884, rel=1e-6
+        3104.2605201234574, rel=1e-6
     )
 
 
 def test_m_pad_frontier_pins_2_pumps():
     assert m_pad.max_discharge_pressure(30000.0, 2) == pytest.approx(
-        3885.9352873221214, rel=1e-6
+        3799.4476235708335, rel=1e-6
     )
     assert m_pad.max_discharge_pressure(50000.0, 2) == pytest.approx(
-        3583.8189526139995, rel=1e-6
+        3497.187637926136, rel=1e-6
     )
 
 
@@ -337,13 +338,13 @@ def test_m_pad_off_curve_and_degenerate_inputs_current_behavior():
 
 def test_m_pad_max_flow_at_pressure_pins():
     assert m_pad.max_flow_at_pressure(3500.0, 3) == pytest.approx(
-        81234.71935707163, rel=1e-6
+        74780.41179739108, rel=1e-6
     )
-    assert m_pad.max_flow_at_pressure(4000.0, 3) == pytest.approx(
-        28123.019364247346, rel=1e-6
-    )
+    # at the 60 Hz cap the frontier tops out below 4,000 psi everywhere in
+    # the valid flow band (61 Hz used to hold it at 28,123 BPD)
+    assert m_pad.max_flow_at_pressure(4000.0, 3) == 0.0
     assert m_pad.max_flow_at_pressure(3500.0, 2) == pytest.approx(
-        54156.47957138106, rel=1e-6
+        49853.607864927384, rel=1e-6
     )
     # An easy pressure clamps at the off-curve ceiling (max_total_flow).
     assert m_pad.max_flow_at_pressure(3000.0, 3) == pytest.approx(

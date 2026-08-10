@@ -144,3 +144,39 @@ def test_fit_gauge_wins_inside_coverage(monkeypatch):
     )
     out = ipr_svc.fit(req)
     assert out["coeffs"]["pwf"] == 950.0  # gauge 950 beats feed 900
+
+
+# ---------------------------------------------------------------------------
+# Anchor modes (median-BHP vs median-liquid)
+# ---------------------------------------------------------------------------
+
+
+def test_fit_median_liq_anchors_on_median_liquid_test(monkeypatch):
+    """median_liq picks the test whose TOTAL FLUID is nearest the window's
+    median fluid; plain median keeps the BHP statistic. Same frame, two
+    different anchor rows."""
+    frame = pd.DataFrame(
+        {
+            "well": ["MPX-01"] * 3,
+            "wt_uid": [1.0, 2.0, 3.0],
+            "WtDate": pd.to_datetime(["2026-06-01", "2026-06-02", "2026-06-04"]),
+            # median fluid (1000) -> 06-04; median BHP (800) -> 06-02
+            "WtTotalFluid": [1500.0, 900.0, 1000.0],
+            "BHP": [700.0, 800.0, 900.0],
+            "form_wc": [0.8, 0.8, 0.8],
+            "fgor": [300.0, 300.0, 300.0],
+            "whp": [200.0, 200.0, 200.0],
+        }
+    )
+    monkeypatch.setattr(ipr_svc.tests, "tests_for_well", lambda well, months, cap: frame)
+
+    out = ipr_svc.fit(schemas.IprFitRequest(well="MPX-01", anchor_mode="median_liq"))
+    assert out["coeffs"]["qwf"] == 1000.0
+    assert out["coeffs"]["pwf"] == 900.0
+    assert out["coeffs"]["anchor_date"] == "2026-06-04"
+    assert "median-liquid" in out["coeffs"]["anchor_label"]
+
+    out_bhp = ipr_svc.fit(schemas.IprFitRequest(well="MPX-01", anchor_mode="median"))
+    assert out_bhp["coeffs"]["pwf"] == 800.0
+    assert out_bhp["coeffs"]["anchor_date"] == "2026-06-02"
+    assert "median-BHP" in out_bhp["coeffs"]["anchor_label"]
