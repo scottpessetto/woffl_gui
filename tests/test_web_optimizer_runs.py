@@ -129,6 +129,64 @@ def test_pad_run_lifecycle_and_hydration(client, monkeypatch):
     assert any("MPM-99" in n for n in result["notes"])  # future-well provenance note
 
 
+def test_choke_strategy_routes_to_the_choke_engine(client, monkeypatch):
+    """strategy="choke" must run run_choke_optimization (never the JPCO
+    engine), pass the reduced pump count through, and return a `plan`
+    payload (not `rows`) with fit provenance merged onto every well."""
+    import woffl.gui.pad_optimize as pad_optimize
+
+    captured: dict = {}
+
+    def fake_choke(configs, plant, n_pumps, current, test_rates, *, n_levels, progress=None):
+        captured["n_pumps"] = n_pumps
+        captured["n_levels"] = n_levels
+        captured["wells"] = sorted(c.well_name for c in configs)
+        rows = [
+            {
+                "well": c.well_name,
+                "pump": "12B",
+                "basis": "model",
+                "action": "full",
+                "delivered_psi": 3000.0,
+                "choke_dp_psi": 0.0,
+                "pf": 1000.0,
+                "oil": 100.0,
+                "d_oil_vs_full": 0.0,
+                "d_pf_vs_full": 0.0,
+                "test_oil": None,
+                "test_pf": None,
+                "projected_oil": None,
+                "next_trim_bopd_per_bpd": None,
+            }
+            for c in configs
+        ]
+        return rows, {"mode": "choke", "header_psi": 3000.0, "n_pumps": n_pumps}
+
+    def boom(*a, **k):
+        raise AssertionError("JPCO engine must not run for strategy=choke")
+
+    monkeypatch.setattr(pad_optimize, "run_choke_optimization", fake_choke)
+    monkeypatch.setattr(pad_optimize, "run_optimization", boom)
+
+    r = client.post(
+        "/api/optimize/run",
+        json={"kind": "pad", "pad": "M", "strategy": "choke", "n_pumps": 2},
+    )
+    assert r.status_code == 200
+    body = _wait_done(client, r.json()["job_id"])
+    assert body["status"] == "done"
+    result = body["result"]
+    assert "plan" in result and "rows" not in result
+    assert captured["n_pumps"] == 2
+    assert captured["n_levels"] == 10  # the choke default when n_steps is unset
+    assert captured["wells"] == ["MPM-01", "MPM-02"]
+    assert result["meta"]["mode"] == "choke"
+    # fit provenance rides on every plan row, like pad rows
+    assert all(
+        {"ipr_source", "ipr_r2", "has_friction"} <= set(row) for row in result["plan"]
+    )
+
+
 def test_run_failure_surfaces_as_error(client, monkeypatch):
     import woffl.gui.pad_optimize as pad_optimize
 

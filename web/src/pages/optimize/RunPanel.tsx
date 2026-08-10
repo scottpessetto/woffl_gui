@@ -13,10 +13,12 @@ import clsx from "clsx";
 import { Play } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { useOptimizeJob, useStartOptimizeRun, useWells } from "../../api/hooks";
+import { useOptimizeJob, usePumpCurve, useStartOptimizeRun, useWells } from "../../api/hooks";
 import type {
   CfpMoveRow,
   CfpRunResult,
+  ChokePlanResult,
+  ChokePlanRow,
   OptimizeRunRequest,
   PadRunResult,
   PadRunRow,
@@ -75,6 +77,39 @@ function ChipToggle({
   );
 }
 
+/** Single-select pump-count chips: how many booster pumps are online for
+ *  the run. null (untouched) = the plant's own default, its first option. */
+function PumpCountChips({
+  options,
+  selected,
+  onChange,
+}: {
+  options: number[];
+  selected: number | null;
+  onChange: (next: number) => void;
+}) {
+  const active = selected ?? options[0];
+  return (
+    <div className="flex flex-wrap gap-1">
+      {options.map((o) => (
+        <button
+          key={o}
+          type="button"
+          onClick={() => onChange(o)}
+          className={clsx(
+            "rounded px-1.5 py-0.5 text-xs font-medium transition-colors",
+            o === active
+              ? "bg-blue-600 text-white"
+              : "bg-white text-slate-500 ring-1 ring-slate-200 hover:bg-slate-50",
+          )}
+        >
+          {o}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function Metric({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
     <div title={title} className={title ? "cursor-help" : undefined}>
@@ -90,7 +125,7 @@ const TD_CLS = "px-2 py-1 text-right tabular-nums";
 /** Which inflow curve the well's pump was picked against. A reviewed save is
  *  the point of the whole save-fits workflow; a weak auto-fit or generic
  *  defaults mean the recommended pump is only as good as a sketch. */
-function FitSource({ row }: { row: PadRunRow }) {
+function FitSource({ row }: { row: Pick<PadRunRow, "ipr_source" | "ipr_r2" | "has_friction"> }) {
   const r2 = row.ipr_r2;
   // R2 <= 0 means the Vogel curve tracks the tests WORSE than a flat line -
   // the pump picked against it is noise, so it reads as loud as defaults.
@@ -132,6 +167,7 @@ function FitSource({ row }: { row: PadRunRow }) {
 
 function PadResults({ result }: { result: PadRunResult }) {
   const meta = result.meta;
+  const nPumpsUsed = metaNum(meta, "n_pumps");
   const swaps = Array.isArray(meta.parsimony_swaps) ? meta.parsimony_swaps.length : 0;
   const totalTestOil = result.rows.reduce((a, r) => a + (r.test_oil ?? 0), 0);
   return (
@@ -150,6 +186,11 @@ function PadResults({ result }: { result: PadRunResult }) {
           }
         />
       </div>
+      {nPumpsUsed !== null && (
+        <p className="text-xs text-slate-500">
+          Plant modeled with {nPumpsUsed} booster pump{nPumpsUsed === 1 ? "" : "s"} online.
+        </p>
+      )}
       {meta.converged === false && (
         <WarnNote>Plant coupling did not converge - treat the header and totals as approximate.</WarnNote>
       )}
@@ -215,6 +256,149 @@ function PadResults({ result }: { result: PadRunResult }) {
           near-zero oil given up.
         </p>
       )}
+      {result.notes.length > 0 && (
+        <div className="space-y-0.5 text-xs text-slate-500">
+          {result.notes.map((n) => (
+            <p key={n}>{n}</p>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ACTION_META: Record<
+  ChokePlanRow["action"],
+  { label: string; cls: string; hint: string }
+> = {
+  shut: { label: "SHUT IN", cls: "text-amber-700", hint: "Close the well in for the outage." },
+  choke: {
+    label: "CHOKE",
+    cls: "text-blue-700",
+    hint: "Pinch the wellhead PF throttle down to the delivered pressure / PF rate shown.",
+  },
+  hold: {
+    label: "HOLD",
+    cls: "text-slate-600",
+    hint: "Model would not solve this well - held at its measured test rates; only shut-in was considered.",
+  },
+  full: { label: "FULL", cls: "text-slate-600", hint: "Leave full open at the header." },
+  excluded: {
+    label: "n/a",
+    cls: "text-slate-400",
+    hint: "No model solution and no recent test - contributes nothing to the plan.",
+  },
+};
+
+/** strategy="choke" results: every installed pump HELD, the plan is per-well
+ *  PF settings. Rows arrive sorted action-first (shut, choke, hold, full). */
+function ChokePlanResults({ result }: { result: ChokePlanResult }) {
+  const meta = result.meta;
+  const lam = metaNum(meta, "lambda_bopd_per_bpd");
+  const projD = metaNum(meta, "projected_d_oil_bopd");
+  const headerToday = metaNum(meta, "header_today_psi");
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+        <Metric
+          label="Header"
+          value={`${fmtNum(metaNum(meta, "header_psi"))} psi`}
+          title={headerToday !== null ? `Today's settled header: ${fmtNum(headerToday)} psi` : undefined}
+        />
+        <Metric
+          label="PF / budget"
+          value={`${fmtNum(metaNum(meta, "total_pf_bpd"))} / ${fmtNum(metaNum(meta, "frontier_cap_bpd"))}`}
+          title="BPD - the budget is the bank's capability frontier at this header and pump count"
+        />
+        <Metric label="Model oil" value={`${fmtNum(metaNum(meta, "total_oil_bopd"))} BOPD`} />
+        <Metric
+          label="Proj. vs today"
+          value={projD === null ? "-" : `${projD >= 0 ? "+" : ""}${fmtNum(projD)} BOPD`}
+          title="Test-anchored: measured oil x the model ratio between the plan and today (model bias cancels)"
+        />
+        <Metric
+          label="Marginal PF value"
+          value={lam === null ? "no trims" : `${fmtNum(lam * 1000)} BOPD/MBPD`}
+          title="Oil given up per MBPD of PF freed by the last (most expensive) trim - the pad's marginal value of power fluid"
+        />
+      </div>
+      <p className="text-xs text-slate-500">
+        Installed pumps HELD - no changeouts. {fmtNum(metaNum(meta, "n_choked"))} choked,{" "}
+        {fmtNum(metaNum(meta, "n_shut"))} shut in, {fmtNum(metaNum(meta, "n_full"))} full open.
+      </p>
+      {meta.recirc === true && (
+        <WarnNote>
+          Total PF sits below the {fmtNum(metaNum(meta, "min_total_flow"))} BPD min-flow
+          (recirc) floor for this pump count - the HP bank will trip without recycle.
+        </WarnNote>
+      )}
+      {meta.over_capacity === true && <WarnNote>Plan exceeds plant capacity.</WarnNote>}
+
+      <Card padded={false} className="overflow-x-auto">
+        <table className="w-full border-collapse text-[13px]">
+          <thead>
+            <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
+              <th className="px-2 py-1.5 text-left font-semibold">Well</th>
+              <th className="px-2 py-1.5 text-left font-semibold">Fit</th>
+              <th className="px-2 py-1.5 text-left font-semibold">Pump</th>
+              <th className="px-2 py-1.5 text-left font-semibold">Action</th>
+              <th className={TH_CLS} title="PF pressure delivered at the wellhead after the choke">
+                Delivered
+              </th>
+              <th className={TH_CLS}>PF</th>
+              <th className={TH_CLS} title="PF freed vs running full open at this header">
+                dPF
+              </th>
+              <th className={TH_CLS}>Oil</th>
+              <th className={TH_CLS} title="Oil given up vs full open">
+                dOil
+              </th>
+              <th className={TH_CLS} title="Measured test oil x model ratio">
+                Proj. oil
+              </th>
+              <th className={TH_CLS} title="Cost of trimming this well one more step (BOPD per MBPD PF)">
+                Next trim
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {result.plan.map((r) => {
+              const a = ACTION_META[r.action];
+              return (
+                <tr key={r.well} className="border-b border-slate-100 last:border-b-0">
+                  <td className="px-2 py-1 text-left font-medium text-slate-700">{r.well}</td>
+                  <td className="px-2 py-1 text-left">
+                    <FitSource row={r} />
+                  </td>
+                  <td className="px-2 py-1 text-left text-slate-600">{r.pump ?? "-"}</td>
+                  <td className="px-2 py-1 text-left">
+                    <span className={clsx("font-medium", a.cls)} title={a.hint}>
+                      {a.label}
+                    </span>
+                  </td>
+                  <td className={clsx(TD_CLS, "text-slate-600")}>
+                    {r.action === "choke" || r.action === "full" ? fmtNum(r.delivered_psi) : "-"}
+                  </td>
+                  <td className={clsx(TD_CLS, "text-slate-700")}>{fmtNum(r.pf)}</td>
+                  <td className={clsx(TD_CLS, "text-slate-500")}>
+                    {r.d_pf_vs_full !== null && r.d_pf_vs_full !== 0 ? fmtNum(r.d_pf_vs_full) : "-"}
+                  </td>
+                  <td className={clsx(TD_CLS, "text-slate-700")}>{fmtNum(r.oil)}</td>
+                  <td className={clsx(TD_CLS, "text-slate-500")}>
+                    {r.d_oil_vs_full !== null && r.d_oil_vs_full !== 0
+                      ? `${r.d_oil_vs_full > 0 ? "+" : ""}${fmtNum(r.d_oil_vs_full)}`
+                      : "-"}
+                  </td>
+                  <td className={clsx(TD_CLS, "text-slate-500")}>{fmtNum(r.projected_oil)}</td>
+                  <td className={clsx(TD_CLS, "text-slate-400")}>
+                    {r.next_trim_bopd_per_bpd === null ? "-" : fmtNum(r.next_trim_bopd_per_bpd * 1000)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </Card>
       {result.notes.length > 0 && (
         <div className="space-y-0.5 text-xs text-slate-500">
           {result.notes.map((n) => (
@@ -434,9 +618,11 @@ export function RunPanel({
   const [nozzles, setNozzles] = useState(["9", "10", "11", "12", "13", "14"]);
   const [throats, setThroats] = useState(["A", "B", "C", "D"]);
   const [method, setMethod] = useState<"milp" | "mckp">("milp");
+  const [strategy, setStrategy] = useState<"jpco" | "choke">("jpco");
   const [autoWc, setAutoWc] = useState(true);
   const [manualWc, setManualWc] = useState(0.95);
   const [parsimony, setParsimony] = useState(20);
+  const [nPumps, setNPumps] = useState<number | null>(null);
   const [p0, setP0] = useState(2792);
   const [slope, setSlope] = useState(13.69);
   const [cPadPf, setCPadPf] = useState(3400);
@@ -471,6 +657,11 @@ export function RunPanel({
     return names.filter((n) => !offlineSet.has(n)).length;
   }, [wells.data, runPads, offlineSet]);
 
+  // The plant's selectable online-pump counts, off the (hard-cached) curve
+  // payload; [] = fixed train (I-Pad) or a CFP run - no control rendered.
+  const pumpCurve = usePumpCurve(kind === "pad" ? pad : null, null);
+  const pumpOptions = pumpCurve.data?.n_pump_options ?? [];
+
   const start = useStartOptimizeRun();
   const jobId = lastJob[runKey] ?? null;
   const job = useOptimizeJob(jobId);
@@ -491,9 +682,10 @@ export function RunPanel({
       nozzles,
       throats,
       method,
+      strategy,
       marginal_wc: autoWc ? null : manualWc,
       parsimony_bopd: parsimony,
-      n_pumps: null,
+      n_pumps: nPumps,
       n_steps: null,
       p0_psi: p0,
       psi_per_kbpd: slope,
@@ -505,20 +697,49 @@ export function RunPanel({
 
   const result = job.data?.status === "done" ? job.data.result : null;
   const padResult = result !== null && "rows" in result ? result : null;
+  const chokeResult = result !== null && "plan" in result ? result : null;
+  const chokeMode = kind === "pad" && strategy === "choke";
 
   return (
     <div className="space-y-3">
       <Card className="space-y-3">
         <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
-          <div>
-            <p className="mb-1 text-xs font-medium text-slate-500">Nozzles</p>
-            <ChipToggle options={NOZZLE_OPTIONS} selected={nozzles} onChange={setNozzles} />
-          </div>
-          <div>
-            <p className="mb-1 text-xs font-medium text-slate-500">Throats</p>
-            <ChipToggle options={THROAT_OPTIONS} selected={throats} onChange={setThroats} />
-          </div>
+          {kind === "pad" && (
+            <label
+              className="block"
+              title="Resize picks new nozzle/throat per well (a JPCO costs about a day per pump). Choke / shut in HOLDS every installed pump and only re-allocates power fluid - the short-term plan when a PF booster pump is down."
+            >
+              <span className="text-xs font-medium text-slate-500">Strategy</span>
+              <select
+                value={strategy}
+                onChange={(e) => setStrategy(e.target.value === "choke" ? "choke" : "jpco")}
+                className="mt-1 block h-8 rounded-md border border-slate-300 bg-white px-2 text-sm"
+              >
+                <option value="jpco">Resize pumps (JPCO)</option>
+                <option value="choke">Choke / shut in (hold pumps)</option>
+              </select>
+            </label>
+          )}
+          {!chokeMode && (
+            <>
+              <div>
+                <p className="mb-1 text-xs font-medium text-slate-500">Nozzles</p>
+                <ChipToggle options={NOZZLE_OPTIONS} selected={nozzles} onChange={setNozzles} />
+              </div>
+              <div>
+                <p className="mb-1 text-xs font-medium text-slate-500">Throats</p>
+                <ChipToggle options={THROAT_OPTIONS} selected={throats} onChange={setThroats} />
+              </div>
+            </>
+          )}
+          {kind === "pad" && pumpOptions.length > 0 && (
+            <div title="Booster pumps online for this run - drop it when a machine is down (e.g. one M-Pad HP pump out). The PF budget, capability frontier and min-flow floor all follow the selected count.">
+              <p className="mb-1 text-xs font-medium text-slate-500">Pumps online</p>
+              <PumpCountChips options={pumpOptions} selected={nPumps} onChange={setNPumps} />
+            </div>
+          )}
           {kind === "pad" ? (
+            strategy === "jpco" && (
             <>
               <label className="block">
                 <span className="text-xs font-medium text-slate-500">Solver</span>
@@ -568,6 +789,7 @@ export function RunPanel({
                 />
               </label>
             </>
+            )
           ) : (
             <>
               <div title="B/G/C/J are the CFP pads. L, R, ... also send their produced water through the CFP machines and may join; their PF is modeled at the C-Pad booster pressure. POPs pads separate water on-pad and are not offered.">
@@ -590,10 +812,20 @@ export function RunPanel({
           )}
         </div>
 
+        {kind === "pad" &&
+          nPumps !== null &&
+          pumpOptions.length > 0 &&
+          nPumps < Math.max(...pumpOptions) && (
+            <p className="text-xs text-amber-700">
+              Reduced bank: optimizing on the {nPumps}-pump frontier - the PF budget and
+              deliverable header drop, and the min-flow (recirc) floor drops with them.
+            </p>
+          )}
+
         <div className="flex items-center gap-3 border-t border-slate-100 pt-2.5">
           <button
             type="button"
-            disabled={running || nozzles.length === 0 || throats.length === 0 || (kind === "cfp" && cfpPads.length === 0)}
+            disabled={running || (!chokeMode && (nozzles.length === 0 || throats.length === 0)) || (kind === "cfp" && cfpPads.length === 0)}
             onClick={run}
             className="flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
@@ -626,12 +858,13 @@ export function RunPanel({
         // actually shrink; min-w-0 does the same for the flex-less children.
         <div className={clsx("grid gap-4", aside && "xl:grid-cols-2")}>
           <div className="min-w-0">
-            <PadCharts pad={pad} result={padResult} />
+            <PadCharts pad={pad} result={padResult ?? chokeResult} nPumps={nPumps} />
           </div>
           {aside && <div className="min-w-0">{aside}</div>}
         </div>
       )}
       {padResult !== null && <PadResults result={padResult} />}
+      {chokeResult !== null && <ChokePlanResults result={chokeResult} />}
       {result !== null && "summary" in result && <CfpResults result={result} />}
     </div>
   );

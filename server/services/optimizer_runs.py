@@ -267,7 +267,7 @@ def _pad_plant(pad: str):
 
 
 def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[str, Any]:
-    from woffl.gui.pad_optimize import run_optimization
+    from woffl.gui.pad_optimize import run_choke_optimization, run_optimization
 
     pad = req.pad or "S"
     defaults = _PAD_DEFAULTS[pad]
@@ -283,6 +283,37 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         job["progress"] = (
             f"trial {step}/{total} - header {header:,.0f} psi"
             + (f", oil {oil:,.0f} BOPD" if oil else "")
+        )
+
+    if req.strategy == "choke":
+        # Short-term plan: HOLD every installed pump (no JPCO), choke back /
+        # shut in wells to fit the (possibly reduced) bank's PF budget. Rows
+        # come sorted action-first; provenance rides along like pad rows.
+        job["progress"] = "reading current pumps + tests..."
+        current, test_rates = _current_and_tests([c.well_name for c in configs])
+        job["progress"] = f"pricing {len(configs)} wells at ladder pressures..."
+        plan, meta = run_choke_optimization(
+            configs,
+            _pad_plant(pad),
+            req.n_pumps if req.n_pumps is not None else defaults["n_pumps"],
+            current,
+            test_rates,
+            n_levels=req.n_steps if req.n_steps is not None else 10,
+            progress=cb,
+        )
+        for row in plan:
+            row.update(
+                prov.get(row["well"])
+                or {"ipr_source": None, "ipr_r2": None, "has_friction": False}
+            )
+        return _plain(
+            {
+                "pad": pad,
+                "plan": plan,
+                "meta": meta,
+                "notes": notes,
+                "n_wells": len(configs),
+            }
         )
 
     results, _optimizer, meta = run_optimization(

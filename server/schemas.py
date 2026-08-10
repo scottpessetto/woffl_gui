@@ -290,6 +290,11 @@ class OptimizeRunRequest(BaseModel):
     nozzles: list[str] = ["9", "10", "11", "12", "13", "14", "15"]
     throats: list[str] = ["A", "B", "C", "D"]
     # pad-run knobs (mirror pad_page Configure stage)
+    # strategy: "jpco" resizes pumps across nozzles x throats
+    # (run_optimization); "choke" HOLDS every installed pump and only chokes
+    # back / shuts in wells (run_choke_optimization) - the short-term plan
+    # when a PF booster pump is down and a changeout costs a day per pump.
+    strategy: Literal["jpco", "choke"] = "jpco"
     method: Literal["milp", "mckp"] = "milp"
     marginal_wc: Optional[float] = Field(None, ge=0.0, le=1.0)  # None = auto-derive
     parsimony_bopd: float = Field(20.0, ge=0.0, le=500.0)
@@ -407,6 +412,10 @@ class PumpCurveResponse(BaseModel):
     pad: str
     coupling: str
     n_pumps: Optional[int]
+    # Selectable online-pump counts (plant.n_pump_options, e.g. M = [3, 2, 1])
+    # so the client can offer a "pumps online" control without hardcoding
+    # pads. [] = fixed train (I-Pad) - nothing to choose.
+    n_pump_options: list[int] = []
     sg: float
     suction_psi: float
     max_header_psi: Optional[float]

@@ -32,6 +32,12 @@ pumps fixed by the engineer; they always construct their optimizer with
 main optimization run only (a fixed scenario must show what the chosen pumps
 DO, not silently shut wells in).
 
+``run_choke_optimization`` is the SHORT-TERM variant of the same problem:
+every well is HELD on its installed pump (no JPCOs) and the levers are
+per-well PF throttling (choke) and shut-in — the plan for a PF pump outage
+measured in days, where a changeout costs a day per pump. free_pressure
+plants only.
+
 Every meta dict carries the uniform contract ``{header_psi, total_pf_bpd,
 total_oil_bopd, n_pumps, converged, in_range, recirc, over_capacity,
 history, sweep, nozzles, throats, reconciliation}`` (P0-9: ``converged`` is
@@ -1119,3 +1125,308 @@ def pf_pressure_what_if(
     )
     rows = pf_what_if_rows(names, current_choices, base, scen, test_rates)
     return rows, pf_what_if_totals(rows)
+
+
+# ---------------------------------------------------------------------------
+# Choke / shut-in plan (installed pumps held — no JPCO)
+# ---------------------------------------------------------------------------
+
+
+def _choke_frontier(
+    points: list[tuple[Optional[float], float, float]],
+) -> list[tuple[Optional[float], float, float]]:
+    """Efficient staircase of ``(delivered_psi, oil_bopd, pf_bpd)`` options.
+
+    Drops every dominated option (another option with <= PF and >= oil,
+    solver noise included) and returns the survivors sorted by PF
+    DESCENDING — full open first, shut-in ``(None, 0, 0)`` last. Down the
+    list both oil and PF strictly decrease, so every adjacent pair is a
+    valid trim step with a positive, finite slope (BOPD given up per BPD
+    of PF freed).
+    """
+    kept: list[tuple[Optional[float], float, float]] = []
+    for psi, oil, pf in sorted(points, key=lambda t: (t[2], t[1])):
+        if kept and pf <= kept[-1][2] + 1e-9:
+            if oil > kept[-1][1] + 1e-9:
+                kept[-1] = (psi, oil, pf)  # same PF, more oil: replaces
+            continue
+        if kept and oil <= kept[-1][1] + 1e-9:
+            continue  # more PF for no more oil: dominated
+        kept.append((psi, oil, pf))
+    kept.reverse()
+    return kept
+
+
+def _trim_to_budget(wells: list[dict], budget: float) -> tuple[float, float, Optional[float]]:
+    """Equal-slope greedy walk: step the cheapest well down one option at a
+    time until total PF fits ``budget``.
+
+    ``wells`` entries are ``{"opts": staircase, "idx": current option}``;
+    ``idx`` is advanced in place. Returns ``(total_pf, total_oil, lam)`` —
+    ``lam`` is the slope of the LAST trim taken (the pad's marginal bbl oil
+    per bbl PF at the solution), None when no trim was needed. With concave
+    well curves the walk equalizes marginal oil per bbl PF across the pad
+    (the Kanu/Mach/Brown equal-slope optimum, at ladder resolution).
+    """
+    total_pf = sum(st["opts"][st["idx"]][2] for st in wells)
+    total_oil = sum(st["opts"][st["idx"]][1] for st in wells)
+    lam: Optional[float] = None
+    while total_pf > budget:
+        best: Optional[tuple[float, dict]] = None
+        for st in wells:
+            i = st["idx"]
+            if i + 1 >= len(st["opts"]):
+                continue  # already shut in
+            _, oil_0, pf_0 = st["opts"][i]
+            _, oil_1, pf_1 = st["opts"][i + 1]
+            slope = (oil_0 - oil_1) / (pf_0 - pf_1)  # staircase: pf_0 > pf_1
+            if best is None or slope < best[0]:
+                best = (slope, st)
+        if best is None:
+            break  # everything already shut in
+        slope, st = best
+        _, oil_0, pf_0 = st["opts"][st["idx"]]
+        st["idx"] += 1
+        _, oil_1, pf_1 = st["opts"][st["idx"]]
+        total_pf -= pf_0 - pf_1
+        total_oil -= oil_0 - oil_1
+        lam = slope
+    return total_pf, total_oil, lam
+
+
+_ACTION_RANK = {"shut": 0, "choke": 1, "hold": 2, "full": 3, "excluded": 4}
+
+
+def run_choke_optimization(
+    well_configs: list,
+    plant: PadPlant,
+    n_pumps: int | None,
+    current_choices: dict,
+    test_rates: dict,
+    *,
+    n_levels: int = 10,
+    progress: Optional[Callable] = None,
+):
+    """Short-term PF plan with every well HELD on its installed pump: no
+    jet-pump changeouts, only per-well PF throttling (choke back) or shut-in.
+
+    The decision problem: sweep candidate delivered headers across
+    ``plant.pressure_window(n_pumps)``; at each header the bank's PF budget
+    is ``plant.budget_at_pressure`` (the capability frontier — with a pump
+    down, pass the reduced ``n_pumps``); every well may run FULL OPEN
+    (delivered = header), CHOKED to any lower ladder pressure (its wellhead
+    PF throttle burns the difference, so a choked well is exactly a well at
+    a lower delivered pressure), or SHUT IN. Wells start full open and
+    ``_trim_to_budget`` walks the cheapest trims until the budget fits; the
+    header with the most total oil wins.
+
+    One ``_model_at_forced_header`` batch pass per ladder level prices every
+    well at every level; a well with no model solution at ANY level is HELD
+    at its measured test rates (only shut-in offered — you cannot price a
+    choke you cannot model), and a well with neither model nor test is
+    excluded with a zero contribution.
+
+    Args:
+        well_configs (list): WellConfig list (active wells with saved fits).
+        plant (PadPlant): booster plant; must be ``coupling="free_pressure"``
+            (I/M). fixed_curve raises ValueError — its header is not a
+            decision variable.
+        n_pumps (int | None): booster pumps online (the reduced count during
+            the outage).
+        current_choices (dict): well_name -> (nozzle, throat) installed pump.
+        test_rates (dict): well_name -> (oil_bopd, pf_bpd) measured median.
+        n_levels (int): ladder size across the pressure window (default 10).
+        progress (Callable): ``(step, total, pressure, pf, oil)`` per pass.
+
+    Returns:
+        tuple: ``(rows, meta)``. Rows are sorted action-first (shut, choke,
+        hold, full, excluded; biggest PF freed first) and carry per-well
+        deltas vs full-open plus ``projected_oil`` (measured test oil x the
+        model ratio chosen/today — model bias cancels, same anchoring as
+        ``pf_what_if_rows``). ``meta`` keeps the uniform contract keys the
+        charts read (header_psi, total_pf_bpd, total_oil_bopd, sweep, ...)
+        plus ``lambda_bopd_per_bpd``, ``frontier_cap_bpd``,
+        ``header_today_psi``, ``projected_d_oil_bopd`` and the action counts.
+    """
+    if plant.coupling != "free_pressure":
+        raise ValueError(
+            "choke/shut-in plan needs a free-pressure plant (I/M-Pad): "
+            "a fixed-curve station's header follows flow and is not a "
+            "decision variable"
+        )
+
+    names = [wc.well_name for wc in well_configs]
+    p_lo, p_hi = plant.pressure_window(n_pumps)
+    levels = [
+        p_lo + (p_hi - p_lo) * i / (n_levels - 1) for i in range(n_levels)
+    ]
+
+    # -- price the grid: every well at its installed pump at every level ----
+    grid: list[dict] = []
+    for k, level in enumerate(levels):
+        grid.append(_model_at_forced_header(well_configs, level, current_choices))
+        if progress:
+            progress(k + 1, n_levels + 1, level, 0.0, 0.0)
+
+    # -- today anchor: the header the plant settles to for the measured PF
+    #    draw; per-well model-at-today is the bias reference for projections
+    pf_today = sum(float((test_rates.get(w) or (0, 0))[1] or 0.0) for w in names)
+    header_today, _ = settled_header(
+        plant, pf_today, plant.warm_start_psi(n_pumps), n_pumps
+    )
+    today = _model_at_forced_header(well_configs, header_today, current_choices)
+    if progress:
+        progress(n_levels + 1, n_levels + 1, header_today, pf_today, 0.0)
+
+    # -- per-well option sets at a candidate header index h ------------------
+    def _well_states(h: int) -> list[dict]:
+        states = []
+        for w in names:
+            pts = []
+            for k in range(h + 1):
+                v = grid[k].get(w)
+                if v is not None:
+                    pts.append((levels[k], float(v[0]), float(v[1])))
+            oil_t = float((test_rates.get(w) or (0, 0))[0] or 0.0)
+            pf_t = float((test_rates.get(w) or (0, 0))[1] or 0.0)
+            if pts:
+                opts = _choke_frontier(pts + [(None, 0.0, 0.0)])
+                # RAW full-open reference: the highest ladder level that
+                # solved. The staircase may start BELOW it when a lower
+                # pressure dominates (more oil, less PF - a pump past its
+                # sonic knee); row deltas are vs this raw point so that
+                # "free oil" chokes read as gains, not zeros.
+                full_raw = pts[-1]
+                basis = "model"
+            elif oil_t > 0.0 or pf_t > 0.0:
+                # unmodelable: hold measured rates, or shut in
+                opts = [(None, oil_t, pf_t), (None, 0.0, 0.0)]
+                full_raw = opts[0]
+                basis = "test"
+            else:
+                opts = [(None, 0.0, 0.0)]
+                full_raw = opts[0]
+                basis = "none"
+            states.append(
+                {"well": w, "opts": opts, "idx": 0, "basis": basis, "full_raw": full_raw}
+            )
+        return states
+
+    # -- sweep candidate headers, keep the most-oil one ----------------------
+    best = None
+    sweep = []
+    for h, level in enumerate(levels):
+        budget = plant.budget_at_pressure(level, n_pumps)
+        if not budget or budget <= 0:
+            continue
+        wells = _well_states(h)
+        total_pf, total_oil, lam = _trim_to_budget(wells, budget)
+        sweep.append(
+            {
+                "header_psi": level,
+                "total_pf_bpd": total_pf,
+                "total_oil_bopd": total_oil,
+            }
+        )
+        if best is None or total_oil > best["total_oil"]:
+            best = {
+                "P": level,
+                "budget": budget,
+                "total_pf": total_pf,
+                "total_oil": total_oil,
+                "lam": lam,
+                "wells": wells,
+            }
+
+    if best is None:
+        raise RuntimeError(plant.infeasible_sweep_msg)
+
+    # -- rows at the winning header ------------------------------------------
+    rows = []
+    counts = {"full": 0, "choke": 0, "shut": 0, "hold": 0, "excluded": 0}
+    for st in best["wells"]:
+        w = st["well"]
+        psi, oil, pf = st["opts"][st["idx"]]
+        psi_f, oil_f, pf_f = st["full_raw"]
+        if st["basis"] == "none":
+            action = "excluded"
+        elif pf <= 0.0 and oil <= 0.0:
+            action = "shut"
+        elif st["basis"] == "test":
+            action = "hold"
+        elif psi is not None and psi < best["P"] - 1e-6:
+            # anything delivered below the header is an operator action -
+            # including a dominant lower-pressure point picked at idx 0
+            action = "choke"
+        else:
+            action = "full"
+        counts[action] += 1
+
+        # test-anchored projection: measured oil x model(chosen)/model(today)
+        oil_t = float((test_rates.get(w) or (0, 0))[0] or 0.0)
+        t = today.get(w)
+        if action == "shut":
+            projected = 0.0 if (oil_t > 0.0 or st["basis"] == "model") else None
+        elif st["basis"] == "test":
+            projected = oil_t or None
+        elif oil_t > 0.0 and t is not None and float(t[0]) > 0.0:
+            projected = oil_t * oil / float(t[0])
+        else:
+            projected = None
+
+        # the cost of trimming this well one MORE step (who is next in line)
+        nxt = None
+        if st["idx"] + 1 < len(st["opts"]):
+            _, oil_1, pf_1 = st["opts"][st["idx"] + 1]
+            nxt = (oil - oil_1) / (pf - pf_1) if pf > pf_1 else None
+
+        cc = current_choices.get(w)
+        rows.append(
+            {
+                "well": w,
+                "pump": f"{cc[0]}{cc[1]}" if cc else None,
+                "basis": st["basis"],
+                "action": action,
+                "delivered_psi": psi,
+                "choke_dp_psi": (best["P"] - psi) if psi is not None else None,
+                "pf": pf,
+                "oil": oil,
+                "d_oil_vs_full": oil - oil_f,
+                "d_pf_vs_full": pf - pf_f,
+                "test_oil": oil_t or None,
+                "test_pf": float((test_rates.get(w) or (0, 0))[1] or 0.0) or None,
+                "projected_oil": projected,
+                "next_trim_bopd_per_bpd": nxt,
+            }
+        )
+    rows.sort(key=lambda r: (_ACTION_RANK[r["action"]], r["d_pf_vs_full"]))
+
+    projected_d = sum(
+        r["projected_oil"] - r["test_oil"]
+        for r in rows
+        if r["projected_oil"] is not None and r["test_oil"] is not None
+    )
+    meta = {
+        "mode": "choke",
+        "n_pumps": n_pumps,
+        "header_psi": best["P"],
+        "total_pf_bpd": best["total_pf"],
+        "total_oil_bopd": best["total_oil"],
+        "frontier_cap_bpd": best["budget"],
+        "pf_slack": best["total_pf"] < best["budget"] - 1e-6,
+        "lambda_bopd_per_bpd": best["lam"],
+        "header_today_psi": header_today,
+        "projected_d_oil_bopd": projected_d,
+        "suction_psi": plant.suction_psi(),
+        "min_total_flow": plant.flow_window(n_pumps)[0],
+        "n_full": counts["full"],
+        "n_choked": counts["choke"],
+        "n_shut": counts["shut"],
+        "n_held": counts["hold"],
+        "n_excluded": counts["excluded"],
+        "converged": True,  # a sweep has no fixed point to miss
+        "history": [],
+        "sweep": sweep,
+        **plant.flags(best["total_pf"], n_pumps),
+    }
+    return rows, meta

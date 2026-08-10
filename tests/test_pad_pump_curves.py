@@ -566,5 +566,17 @@ def test_pump_curve_endpoint_honors_n_pumps(client):
     assert body["station"]["bep"] == pytest.approx(27708.0 * 2)
 
 
+def test_pump_curve_endpoint_carries_the_pump_count_options(client):
+    # Drives the client's "pumps online" control: a pad run with a machine
+    # down (e.g. one M-Pad HP pump out) is started at a reduced count. The
+    # options ride OUTSIDE curve_report - its key set is contract-pinned by
+    # test_report_carries_every_contract_key above.
+    for pad, expected in (("M", [3, 2, 1]), ("S", [3, 2]), ("I", [])):
+        r = client.get(f"/api/optimize/pump-curve?pad={pad}")
+        assert r.status_code == 200
+        body = schemas.PumpCurveResponse.model_validate(r.json())
+        assert body.n_pump_options == expected
+
+
 def test_pump_curve_endpoint_rejects_an_unmodelled_pad(client):
     assert client.get("/api/optimize/pump-curve?pad=Q").status_code == 422

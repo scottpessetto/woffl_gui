@@ -25,7 +25,7 @@ import clsx from "clsx";
 import { useMemo } from "react";
 
 import { usePumpCurve } from "../../api/hooks";
-import type { PadRunResult, PumpCurveResponse, PumpMachineCurve } from "../../api/types";
+import type { PumpCurveResponse, PumpMachineCurve } from "../../api/types";
 import type { EChartsOption } from "../../charts/echarts";
 import {
   ACCENT,
@@ -699,9 +699,20 @@ const MACHINE_HELP =
   "allowable and preferred operating regions as the vendor states them; the solid " +
   "crimson line is the optimized duty flow.";
 
-export function PadCharts({ pad, result }: { pad: string; result: PadRunResult | null }) {
+/** ``nPumps`` is the run form's pumps-online selection: it drives the
+ *  pre-run curves so the frontier shown is the bank the run will assume.
+ *  Once a result exists its meta n_pumps wins - that is what actually ran. */
+export function PadCharts({
+  pad,
+  result,
+  nPumps: nPumpsSelected = null,
+}: {
+  pad: string;
+  result: { meta: Record<string, unknown> } | null;
+  nPumps?: number | null;
+}) {
   const meta = result !== null ? result.meta : null;
-  const nPumps = meta !== null ? metaNum(meta, "n_pumps") : null;
+  const nPumps = meta !== null ? metaNum(meta, "n_pumps") : nPumpsSelected;
   const curve = usePumpCurve(pad, nPumps).data ?? null;
 
   const duty = useMemo(() => readDuty(meta, nPumps), [meta, nPumps]);

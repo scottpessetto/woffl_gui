@@ -278,6 +278,9 @@ export interface OptimizeRunRequest {
   future: { name: string; match: string }[];
   nozzles: string[];
   throats: string[];
+  /** "jpco" resizes pumps; "choke" holds every installed pump and only
+   *  chokes back / shuts in wells (short-term plan for a PF pump outage). */
+  strategy: "jpco" | "choke";
   method: "milp" | "mckp";
   marginal_wc: number | null; // null = auto-derive from the plant budget
   parsimony_bopd: number;
@@ -316,6 +319,38 @@ export interface PadRunResult {
   pad: string;
   rows: PadRunRow[];
   meta: Record<string, unknown>; // pad_optimize meta contract, JSON-flattened
+  notes: string[];
+  n_wells: number;
+}
+
+/** One well in a choke/shut-in plan (strategy="choke"): the installed pump
+ *  is never changed - the action is the PF setting. */
+export interface ChokePlanRow {
+  well: string;
+  pump: string | null; // installed pump, unchanged
+  /** "model" = saved-fit solve; "test" = held at measured rates (model
+   *  would not solve, so only shut-in was offered); "none" = excluded. */
+  basis: "model" | "test" | "none";
+  action: "full" | "choke" | "shut" | "hold" | "excluded";
+  delivered_psi: number | null; // PF pressure at the wellhead after the choke
+  choke_dp_psi: number | null; // pinched across the wellhead PF throttle
+  pf: number | null;
+  oil: number | null;
+  d_oil_vs_full: number | null;
+  d_pf_vs_full: number | null;
+  test_oil: number | null;
+  test_pf: number | null;
+  projected_oil: number | null; // test oil x model ratio (bias cancels)
+  next_trim_bopd_per_bpd: number | null; // cost of one more trim step
+  ipr_source: "saved" | "manual" | "vogel" | "single_test" | null;
+  ipr_r2: number | null;
+  has_friction: boolean;
+}
+
+export interface ChokePlanResult {
+  pad: string;
+  plan: ChokePlanRow[];
+  meta: Record<string, unknown>; // run_choke_optimization meta contract
   notes: string[];
   n_wells: number;
 }
@@ -401,7 +436,7 @@ export interface OptimizeJobStatus {
   kind: "pad" | "cfp";
   status: "running" | "done" | "error";
   progress: string | null;
-  result: PadRunResult | CfpRunResult | null;
+  result: PadRunResult | ChokePlanResult | CfpRunResult | null;
   error: string | null;
   started_at: string;
   seconds: number;
@@ -457,6 +492,8 @@ export interface PumpCurveResponse {
   pad: string;
   coupling: string;
   n_pumps: number | null;
+  /** Selectable online-pump counts (e.g. M = [3, 2, 1]); [] = fixed train. */
+  n_pump_options: number[];
   sg: number;
   suction_psi: number;
   max_header_psi: number | null;

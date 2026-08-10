@@ -40,4 +40,9 @@ def pump_curve(pad: str, n_pumps: Optional[int]) -> dict[str, Any]:
     from server.services.optimizer_runs import _pad_plant
 
     plant = _pad_plant(pad)
-    return plant.curve_report(n_pumps)
+    report = plant.curve_report(n_pumps)
+    # Ride the plant's selectable online-pump counts along (outside
+    # curve_report - its key set is contract-pinned by the plant tests) so
+    # the client can offer a "pumps online" control; [] = fixed train.
+    report["n_pump_options"] = [int(n) for n in plant.n_pump_options]
+    return report
