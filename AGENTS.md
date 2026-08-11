@@ -3,6 +3,15 @@
 Operating rules for coding agents in this repo. Read this before touching anything.
 Prose lives in `docs/`; this file is only the rules you will otherwise violate.
 
+The evidence/calibration subsystem (suction-response evidence layer, multi-point
+event calibration, `mach_crit`/`nozzle_area_factor`, match-health scorecard,
+response diagnostic) is documented in `docs/model_trust_2026-08-10.md` - read it
+before touching `server/services/evidence.py`, `calibration_points.py`,
+`event_calibration.py`, `fric_calibration.py`'s multipoint block, or the
+choke-plan evidence gates in `pad_optimize.py`. Tuning knobs and the live
+validation harnesses (`scripts/*_validation.py`, `scripts/*_probe.py`) are
+inventoried there.
+
 ---
 
 ## 1. What this repo is
