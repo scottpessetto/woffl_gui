@@ -38,6 +38,7 @@ class BatchPump:
         prop_pf: FormWater,
         jpump_direction: str = "reverse",
         wellname: str = "na",
+        mach_crit: float = 1.0,
     ) -> None:
         """Batch Pump Solver
 
@@ -54,6 +55,10 @@ class BatchPump:
             prop_pf (FormWater): Powerfluid Properties
             jpump_direction (str): Jet Pump Direction, "reverse" or "forward"
             wellname (str): A unique identifier of the wellname
+            mach_crit (float): Critical Mach number where the throat entry
+                chokes, unitless. Default 1.0 (historic behavior).
+                [LIBRARY change -> upstream PR to kwellis/woffl] calibratable
+                choking threshold, forwarded to every jetpump_solver call.
         """
         self.pwh = pwh
         self.tsu = tsu
@@ -65,6 +70,7 @@ class BatchPump:
         self.prop_pf = prop_pf
         self.direction = jpump_direction
         self.wellname = wellname
+        self.mach_crit = mach_crit
 
     def update_press(self, kind: str, psig: float) -> None:
         """Update Pressure
@@ -165,6 +171,7 @@ class BatchPump:
                         self.prop_su,
                         self.prop_pf,
                         self.direction,
+                        mach_crit=self.mach_crit,
                     )
                 )
                 result = {
@@ -276,6 +283,7 @@ class BatchPump:
                     self.prop_su,
                     self.prop_pf,
                     self.direction,
+                    mach_crit=self.mach_crit,
                 )
                 return -(qoil - lift_cost * lwat)
             except Exception:

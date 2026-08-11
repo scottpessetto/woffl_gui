@@ -186,6 +186,111 @@ class TestSimulateSingleWellDirection:
         assert captured["ppf_surf"] == 3400.0
 
 
+class TestSimulateSingleWellEventCalibration:
+    """mach_crit_well / fnz_well must reach the batch path: mach_crit lands in
+    the BatchPump constructor, fnz_well is applied to every pump handed to
+    batch_run as dnz_eff = dnz_catalog * sqrt(fnz) (anz/ate are derived
+    JetPump properties, so they follow). Defaults (None) must leave both at
+    library behavior."""
+
+    @staticmethod
+    def _run(monkeypatch, nozzles=("12",), throats=("B",), **well_kwargs):
+        from woffl.assembly import network_optimizer as no
+        from woffl.geometry.jetpump import JetPump
+
+        captured = {}
+
+        class _StubBatchPump:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            @staticmethod
+            def jetpump_list(nozzles, throats, **kw):
+                return [JetPump(n, t) for n in nozzles for t in throats]
+
+            def batch_run(self, jp_list, debug=False):
+                captured["jp_list"] = jp_list
+                return pd.DataFrame()
+
+            def process_results(self):
+                pass
+
+        monkeypatch.setattr(no, "BatchPump", _StubBatchPump)
+        monkeypatch.setattr(
+            no.NetworkOptimizer,
+            "_create_well_objects",
+            staticmethod(lambda well: (None, None, None, None, None)),
+        )
+
+        wc = WellConfig(
+            well_name="MPM-64",
+            res_pres=1500,
+            form_temp=70,
+            jpump_tvd=4000,
+            **well_kwargs,
+        )
+        no._simulate_single_well(wc, 3400.0, list(nozzles), list(throats))
+        return captured
+
+    def test_overrides_reach_batch_path(self, monkeypatch):
+        from woffl.geometry.jetpump import JetPump
+
+        captured = self._run(monkeypatch, mach_crit_well=1.7, fnz_well=1.2)
+        assert captured["mach_crit"] == 1.7
+        catalog_dnz = JetPump("12", "B").dnz
+        assert captured["jp_list"][0].dnz == pytest.approx(
+            catalog_dnz * 1.2 ** 0.5
+        )
+
+    def test_defaults_leave_library_behavior(self, monkeypatch):
+        from woffl.geometry.jetpump import JetPump
+
+        captured = self._run(monkeypatch)
+        assert captured["mach_crit"] == 1.0
+        assert captured["jp_list"][0].dnz == JetPump("12", "B").dnz
+
+    def test_fnz_scales_only_the_installed_pump(self, monkeypatch):
+        """Wear travels with the INSTALLED pump, never with JPCO candidates:
+        with installed_nozzle/installed_throat set, only the matching
+        (noz_no, rat_ar) candidate gets dnz_eff = dnz_catalog * sqrt(fnz)."""
+        from woffl.geometry.jetpump import JetPump
+
+        captured = self._run(
+            monkeypatch,
+            nozzles=("11", "12"),
+            throats=("A", "B"),
+            fnz_well=1.2,
+            installed_nozzle="12",
+            installed_throat="B",
+        )
+        by_id = {jp.noz_no + jp.rat_ar: jp for jp in captured["jp_list"]}
+        assert by_id["12B"].dnz == pytest.approx(
+            JetPump("12", "B").dnz * 1.2 ** 0.5
+        )
+        for pump_id in ("11A", "11B", "12A"):
+            noz, thr = pump_id[:2], pump_id[2]
+            assert by_id[pump_id].dnz == JetPump(noz, thr).dnz  # exact
+
+    def test_fnz_applies_to_all_when_installed_unknown(self, monkeypatch):
+        """No installed identity (legacy configs) -> today's behavior: every
+        candidate is scaled."""
+        from woffl.geometry.jetpump import JetPump
+
+        captured = self._run(
+            monkeypatch, nozzles=("11", "12"), throats=("B",), fnz_well=1.2
+        )
+        for jp in captured["jp_list"]:
+            assert jp.dnz == pytest.approx(
+                JetPump(jp.noz_no, jp.rat_ar).dnz * 1.2 ** 0.5
+            )
+
+    def test_installed_fields_default_none(self):
+        wc = WellConfig(
+            well_name="X", res_pres=1500, form_temp=70, jpump_tvd=4000
+        )
+        assert wc.installed_nozzle is None and wc.installed_throat is None
+
+
 class TestPowerFluidConstraint:
     def test_valid(self):
         pf = PowerFluidConstraint(total_rate=5000, pressure=3000)

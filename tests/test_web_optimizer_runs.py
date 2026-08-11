@@ -137,10 +137,13 @@ def test_choke_strategy_routes_to_the_choke_engine(client, monkeypatch):
 
     captured: dict = {}
 
-    def fake_choke(configs, plant, n_pumps, current, test_rates, *, n_levels, progress=None):
+    def fake_choke(
+        configs, plant, n_pumps, current, test_rates, *, n_levels, progress=None, evidence=None
+    ):
         captured["n_pumps"] = n_pumps
         captured["n_levels"] = n_levels
         captured["wells"] = sorted(c.well_name for c in configs)
+        captured["evidence"] = evidence
         rows = [
             {
                 "well": c.well_name,
@@ -165,6 +168,9 @@ def test_choke_strategy_routes_to_the_choke_engine(client, monkeypatch):
     def boom(*a, **k):
         raise AssertionError("JPCO engine must not run for strategy=choke")
 
+    # keep the suction-evidence pull off the network - {} means "no wells
+    # with usable data", which the wiring passes through as evidence=None
+    monkeypatch.setattr(runs.evidence_svc, "pad_evidence", lambda names, res_pres=None: {})
     monkeypatch.setattr(pad_optimize, "run_choke_optimization", fake_choke)
     monkeypatch.setattr(pad_optimize, "run_optimization", boom)
 
@@ -180,11 +186,98 @@ def test_choke_strategy_routes_to_the_choke_engine(client, monkeypatch):
     assert captured["n_pumps"] == 2
     assert captured["n_levels"] == 10  # the choke default when n_steps is unset
     assert captured["wells"] == ["MPM-01", "MPM-02"]
+    assert captured["evidence"] is None  # empty evidence collapses to None
     assert result["meta"]["mode"] == "choke"
     # fit provenance rides on every plan row, like pad rows
     assert all(
         {"ipr_source", "ipr_r2", "has_friction"} <= set(row) for row in result["plan"]
     )
+
+def test_build_configs_plumbs_event_calibration_fields(monkeypatch):
+    """The saved event-cal fit reaches the engine: mach_crit /
+    nozzle_area_factor seeds land on mach_crit_well / fnz_well, and the
+    context's current-pump seed (JP history) lands on installed_nozzle /
+    installed_throat so fnz wear stays with the installed pump."""
+    universe = {"wells": [{"name": "MPM-01", "pad": "M"}], "source": "databricks"}
+    seeds = {
+        "pres": 1700.0, "qwf": 900.0, "pwf": 600.0, "form_wc": 0.7,
+        "ken": 0.05, "mach_crit": 1.6, "nozzle_area_factor": 1.12,
+        "nozzle_no": "12", "area_ratio": "B",
+    }
+    monkeypatch.setattr(wells_svc, "list_wells", lambda: universe)
+    monkeypatch.setattr(
+        wells_svc, "well_context", lambda well, months, cap: {"seeds": dict(seeds)}
+    )
+    (cfg,) = runs._build_configs(["M"], set(), [], [])
+    assert cfg.mach_crit_well == 1.6
+    assert cfg.fnz_well == 1.12
+    assert cfg.installed_nozzle == "12"
+    assert cfg.installed_throat == "B"
+
+
+def test_build_configs_event_cal_fields_fail_soft_none(monkeypatch):
+    """No saved event-cal fit and no current pump -> all four fields None
+    (byte-identical legacy behavior downstream)."""
+    universe = {"wells": [{"name": "MPM-01", "pad": "M"}], "source": "databricks"}
+    seeds = {"pres": 1700.0, "qwf": 900.0, "pwf": 600.0, "form_wc": 0.7}
+    monkeypatch.setattr(wells_svc, "list_wells", lambda: universe)
+    monkeypatch.setattr(
+        wells_svc, "well_context", lambda well, months, cap: {"seeds": dict(seeds)}
+    )
+    (cfg,) = runs._build_configs(["M"], set(), [], [])
+    assert cfg.mach_crit_well is None
+    assert cfg.fnz_well is None
+    assert cfg.installed_nozzle is None
+    assert cfg.installed_throat is None
+
+
+def test_choke_run_survives_evidence_fetch_failure(client, monkeypatch):
+    """A dead warehouse during the evidence pull must degrade to the
+    uncorrected model-only run (fail-soft note), never fail the job."""
+    import woffl.gui.pad_optimize as pad_optimize
+
+    captured: dict = {}
+
+    def fake_choke(
+        configs, plant, n_pumps, current, test_rates, *, n_levels, progress=None, evidence=None
+    ):
+        captured["evidence"] = evidence
+        rows = [
+            {
+                "well": c.well_name,
+                "pump": "12B",
+                "basis": "model",
+                "action": "full",
+                "delivered_psi": 3000.0,
+                "choke_dp_psi": 0.0,
+                "pf": 1000.0,
+                "oil": 100.0,
+            }
+            for c in configs
+        ]
+        return rows, {"mode": "choke", "header_psi": 3000.0, "n_pumps": n_pumps}
+
+    def dead_warehouse(names, res_pres=None):
+        raise RuntimeError("warehouse unreachable")
+
+    monkeypatch.setattr(pad_optimize, "run_choke_optimization", fake_choke)
+    monkeypatch.setattr(runs.evidence_svc, "pad_evidence", dead_warehouse)
+
+    r = client.post(
+        "/api/optimize/run",
+        json={"kind": "pad", "pad": "M", "strategy": "choke"},
+    )
+    assert r.status_code == 200
+    body = _wait_done(client, r.json()["job_id"])
+    assert body["status"] == "done"
+    result = body["result"]
+    assert "plan" in result and len(result["plan"]) == 2
+    assert captured["evidence"] is None  # the engine ran model-only
+    assert any(
+        "suction evidence unavailable" in n and "model-only run" in n
+        for n in result["notes"]
+    )
+
 
 
 def test_run_failure_surfaces_as_error(client, monkeypatch):

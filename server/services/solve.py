@@ -70,6 +70,7 @@ def _run_solver(
     inflow: Any,
     res_mix: Any,
     wp: Any,
+    mach_crit: float = 1.0,
 ) -> tuple[float, bool, float, float, float, float]:
     """Run the assembly jetpump solver, mapping errors to SolveFailure.
 
@@ -93,6 +94,7 @@ def _run_solver(
             prop_su=res_mix,
             prop_pf=prop_pf,
             jpump_direction=p.jpump_direction,
+            mach_crit=mach_crit,
         )
     except (ThroatEntryNoSolution, IndexError) as exc:
         # ThroatEntryNoSolution subclasses IndexError too; both mean no valid
@@ -125,7 +127,7 @@ def solve_single(well: str, sp: schemas.SimParams) -> dict[str, Any]:
     p = sp.to_simulation_params(well)
     jetpump, wellbore, inflow, res_mix, wp = factories.build_sim_objects(sp, well)
     psu, sonic_status, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = _run_solver(
-        p, jetpump, wellbore, inflow, res_mix, wp
+        p, jetpump, wellbore, inflow, res_mix, wp, mach_crit=sp.mach_crit
     )
     return {
         "psu": float(psu),
@@ -343,6 +345,8 @@ def run_batch(well: str, sp: schemas.SimParams) -> dict[str, Any]:
         kth=p.kth,
         kdi=p.kdi,
     )
+    for jp in jp_list:
+        factories.apply_nozzle_area_factor(jp, sp.nozzle_area_factor)
     batch = BatchPump(
         pwh=p.surf_pres,
         tsu=p.form_temp,
@@ -354,6 +358,7 @@ def run_batch(well: str, sp: schemas.SimParams) -> dict[str, Any]:
         prop_pf=prop_pf,
         jpump_direction=p.jpump_direction,
         wellname=f"{p.field_model} Well",
+        mach_crit=sp.mach_crit,
     )
     batch.batch_run(jp_list)
 
@@ -450,6 +455,8 @@ def run_pf_range(well: str, sp: schemas.SimParams) -> dict[str, Any]:
         kth=p.kth,
         kdi=p.kdi,
     )
+    for jp in jp_list:
+        factories.apply_nozzle_area_factor(jp, sp.nozzle_area_factor)
 
     # mirrors woffl/gui/utils.py:run_power_fluid_range_batch, with per-point
     # isolation added: the Streamlit loop let one bad pressure kill the whole
@@ -468,6 +475,7 @@ def run_pf_range(well: str, sp: schemas.SimParams) -> dict[str, Any]:
                 prop_pf=prop_pf,
                 jpump_direction=p.jpump_direction,
                 wellname=f"{p.field_model} Well",
+                mach_crit=sp.mach_crit,
             )
             batch.batch_run(jp_list, debug=False)
             df = batch.df
@@ -571,7 +579,7 @@ def pressure_profile(well: str, sp: schemas.SimParams) -> dict[str, Any]:
     p = sp.to_simulation_params(well)
     jetpump, wellbore, inflow, res_mix, wp = factories.build_sim_objects(sp, well)
     psu, _sonic_status, qoil_std, _fwat_bwpd, qnz_bwpd, _mach_te = _run_solver(
-        p, jetpump, wellbore, inflow, res_mix, wp
+        p, jetpump, wellbore, inflow, res_mix, wp, mach_crit=sp.mach_crit
     )
 
     # Flow-path direction handling (reverse: produce up tubing, PF down the
@@ -671,4 +679,5 @@ def calibrate(req: schemas.CalibrateRequest) -> dict[str, Any]:
         "bhp_error": frames.opt_float(result.bhp_error),
         "iterations": int(result.iterations),
         "starts_tried": int(result.starts_tried),
+        "message": result.message,
     }

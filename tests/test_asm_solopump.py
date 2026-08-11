@@ -605,3 +605,74 @@ class TestFallbackWalksPastBareJetPumpError:
         assert qoil == 111.0  # rates from the converged final probe
         assert fwat == 222.0
         assert qnz == 333.0
+
+
+
+class TestMachCritAndNozzleAreaFactor:
+    """Multi-point event calibration knobs (Pillar 1b slice A).
+
+    mach_crit=1.0 must reproduce the historic solve bit-identically (the
+    threshold generalization is default-inert); mach_crit > 1 frees the
+    cavitation floor, so psu_minimize drops monotonically; a nozzle area
+    factor above one (washout, dnz_eff = dnz_catalog * sqrt(fnz)) raises the
+    modeled PF rate at fixed conditions; BatchPump forwards mach_crit to
+    every jetpump_solver call in its core loop.
+    """
+
+    def _solve_full(self, jpump, mach_crit=None):
+        kwargs = {} if mach_crit is None else {"mach_crit": mach_crit}
+        return so.jetpump_solver(
+            pwh, tsu, ppf_surf, jpump, wbore, profile, ipr, res, mpu_wat,
+            "reverse", **kwargs,
+        )
+
+    def test_mach_crit_default_bit_identical(self):
+        base = self._solve_full(JetPump("12", "C"))
+        expl = self._solve_full(JetPump("12", "C"), mach_crit=1.0)
+        assert expl == base
+
+    def test_fnz_unity_bit_identical(self):
+        import math
+
+        base = self._solve_full(JetPump("12", "C"))
+        unity = JetPump("12", "C")
+        unity.dnz = unity.dnz * math.sqrt(1.0)
+        assert self._solve_full(unity) == base
+
+    def test_mach_crit_lowers_psu_min_monotonically(self):
+        jp = JetPump("12", "B")
+        floors = [
+            _jf.psu_minimize(
+                tsu=tsu, ken=jp.ken, ate=jp.ate, ipr_su=ipr, prop_su=res,
+                mach_crit=mc,
+            )[0]
+            for mc in (1.0, 1.5, 2.0)
+        ]
+        print(f"\npsu_min floors at mach_crit 1.0/1.5/2.0: {floors}")
+        assert floors[0] > floors[1] > floors[2]
+
+    def test_fnz_above_one_raises_qnz(self):
+        import math
+
+        base = self._solve_full(JetPump("12", "C"))
+        washed = JetPump("12", "C")
+        washed.dnz = washed.dnz * math.sqrt(1.2)
+        worn = self._solve_full(washed)
+        assert worn[4] > base[4]  # qnz_bwpd rises with nozzle flow area
+
+    def test_batchpump_forwards_mach_crit(self, monkeypatch):
+        import woffl.assembly.batchpump as bp
+
+        seen = {}
+
+        def fake_solver(*args, **kwargs):
+            seen.update(kwargs)
+            return (1000.0, False, 1.0, 2.0, 3.0, 0.5)
+
+        monkeypatch.setattr(bp.so, "jetpump_solver", fake_solver)
+        batch = bp.BatchPump(
+            pwh, tsu, ppf_surf, wbore, profile, ipr, res, mpu_wat,
+            mach_crit=1.6,
+        )
+        batch.batch_run([JetPump("12", "B")])
+        assert seen["mach_crit"] == 1.6

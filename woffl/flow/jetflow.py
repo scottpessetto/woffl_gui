@@ -111,9 +111,15 @@ def throat_entry_zero_tde(
     return qoil_std, te_book
 
 
-# this goes until the mach number equals one
+# this goes until the mach number reaches the critical threshold (1 by default)
 def throat_entry_mach_one(
-    psu: float, tsu: float, ken: float, ate: float, ipr_su: InFlow, prop_su: ResMix
+    psu: float,
+    tsu: float,
+    ken: float,
+    ate: float,
+    ipr_su: InFlow,
+    prop_su: ResMix,
+    mach_crit: float = 1.0,
 ) -> tuple[float, float, jp.JetBook]:
     """Throat Entry Differential Energy at Mach One
 
@@ -123,6 +129,23 @@ def throat_entry_mach_one(
     detailed derivation that shows the difference relationship to dEte and Ma value can
     be produced by Kaelin Ellis upon request
 
+    [LIBRARY change -> upstream PR to kwellis/woffl] The choking threshold is
+    generalized to a calibratable critical Mach number ``mach_crit``: the
+    kinetic differential energy inside THIS throat-entry walk is scaled by
+    1/mach_crit^2, which moves the tde minimum (d(tde)/dp = 0, the choke)
+    from homogeneous Ma = 1 to homogeneous Ma = mach_crit. Physical
+    interpretation: effective choking at homogeneous-computed Mach =
+    mach_crit, i.e. an effective sonic velocity of mach_crit x the
+    homogeneous (Wood/Wallis) speed - a calibratable slip closure for
+    gas-liquid throat-entry flow, whose homogeneous sound speed
+    underestimates the true choking velocity and pins modeled suction
+    pressures on an artificially high cavitation floor. The scaling is
+    confined to this walk's JetBook kde/tde columns: the stored velocities,
+    densities and sound speeds stay unscaled, so downstream momentum/mixing
+    consume homogeneous values and reported mach_te stays on the homogeneous
+    scale. The default (1.0) reproduces the historical behavior
+    bit-identically; the function name is kept for API stability.
+
     Args:
         psu (float): Suction Pressure, psig
         tsu (float): Suction Temp, deg F
@@ -130,9 +153,11 @@ def throat_entry_mach_one(
         ate (float): Throat Entry Area, ft2
         ipr_su (InFlow): IPR of Reservoir
         prop_su (ResMix): Properties of Suction Fluid
+        mach_crit (float): Critical Mach number (homogeneous scale) where the
+            throat entry chokes, unitless. Default 1.0 (historic behavior).
 
     Returns:
-        tde_fin (float): Total Differential Energy at Mach 1, ft2/s2
+        tde_fin (float): Total Differential Energy at Mach mach_crit, ft2/s2
         qoil_std (float): Oil Produced at psu with set IPR, bopd
         te_book (JetBook): Book of values for inside the throat entry
     """
@@ -145,15 +170,18 @@ def throat_entry_mach_one(
     qtot = sum(prop_su.insitu_volm_flow(qoil_std))
     vte = sp.velocity(qtot, ate)
 
+    # kinetic term scaled by 1/mach_crit^2 (slip closure, see docstring);
+    # exact no-op at the 1.0 default (IEEE754 division by 1.0 is identity)
+    ke_scale = 1.0 / (mach_crit * mach_crit)
     te_book = jp.JetBook(
-        psu, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte)
+        psu, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte) * ke_scale
     )
 
     pdec = 25  # pressure decrease
     pmin = 50  # minimum pressure
 
-    # keep mach under one, and pte above pmin, so it doesn't go negative
-    while (te_book.mach_ray[-1] <= 1) and (te_book.prs_ray[-1] > pmin):
+    # keep mach under the critical threshold, and pte above pmin, so it doesn't go negative
+    while (te_book.mach_ray[-1] <= mach_crit) and (te_book.prs_ray[-1] > pmin):
         pte = te_book.prs_ray[-1] - pdec
 
         prop_su = prop_su.condition(pte, tsu)
@@ -161,12 +189,12 @@ def throat_entry_mach_one(
         vte = sp.velocity(qtot, ate)
 
         te_book.append(
-            pte, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte)
+            pte, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte) * ke_scale
         )
 
     # the length clause was added because some throats were too small and the jp was mach'in out on the first run
     if (
-        te_book.mach_ray[-1] >= 1 and len(te_book.mach_ray) > 1
+        te_book.mach_ray[-1] >= mach_crit and len(te_book.mach_ray) > 1
     ):  # return nearest value instead of interpolating
         tde_fin = te_book.tde_ray[-2]
     else:
@@ -176,13 +204,22 @@ def throat_entry_mach_one(
 
 
 def psu_minimize(
-    tsu: float, ken: float, ate: float, ipr_su: InFlow, prop_su: ResMix
+    tsu: float,
+    ken: float,
+    ate: float,
+    ipr_su: InFlow,
+    prop_su: ResMix,
+    mach_crit: float = 1.0,
 ) -> tuple[float, float, jp.JetBook]:
     """Minimize psu
 
-    Find the smallest psu possible where the throat is choked. (Ma = 1)
+    Find the smallest psu possible where the throat is choked. (Ma = mach_crit)
     This psu is the theoretically smallest psu possible for a set jetpump and ipr combo.
     Even with an infinite amount of power fluid, you could not get below this psu.
+
+    [LIBRARY change -> upstream PR to kwellis/woffl] ``mach_crit`` (default 1.0,
+    historic behavior) generalizes the choking threshold - see
+    ``throat_entry_mach_one``.
 
     Args:
         tsu (float): Suction Temp, deg F
@@ -190,6 +227,8 @@ def psu_minimize(
         ate (float): Throat Entry Area, ft2
         ipr_su (InFlow): IPR of Reservoir
         prop_su (ResMix): Properties of Suction Fluid
+        mach_crit (float): Critical Mach number where the throat entry chokes,
+            unitless. Default 1.0 (historic behavior).
 
     Returns:
         psu_min (float): Suction Pressure Minimized, psig
@@ -200,10 +239,10 @@ def psu_minimize(
     """
     # seeds floored so low-pressure reservoirs can't produce negative psu guesses
     psu_list = [max(ipr_su.pres - 200, 60.0), max(ipr_su.pres - 300, 50.0)]
-    # store values of tee near mach=1 pressure
+    # store values of tee near the mach=mach_crit pressure
     tee_list = [
-        throat_entry_mach_one(psu_list[0], tsu, ken, ate, ipr_su, prop_su)[0],
-        throat_entry_mach_one(psu_list[1], tsu, ken, ate, ipr_su, prop_su)[0],
+        throat_entry_mach_one(psu_list[0], tsu, ken, ate, ipr_su, prop_su, mach_crit)[0],
+        throat_entry_mach_one(psu_list[1], tsu, ken, ate, ipr_su, prop_su, mach_crit)[0],
     ]
 
     psu_diff = 5  # criteria for when you've converged to an answer
@@ -216,7 +255,7 @@ def psu_minimize(
             ipr_su.pres - 10,
         )
         tee_nxt, qoil_std, te_book = throat_entry_mach_one(
-            psu_nxt, tsu, ken, ate, ipr_su, prop_su
+            psu_nxt, tsu, ken, ate, ipr_su, prop_su, mach_crit
         )
         psu_list.append(psu_nxt)
         tee_list.append(tee_nxt)

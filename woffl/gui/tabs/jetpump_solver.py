@@ -1645,6 +1645,18 @@ def _execute_fric_cal(
     cal_state = st.session_state.setdefault("sw_fric_calibration", {})
     cal_state[params.selected_well] = result
 
+    if result.match_quality == "pinned":
+        # Sonic-pinned well: the target BHP sits on the cavitation floor, so
+        # the single-point match is degenerate and the result carries the
+        # SEED coefficients (nothing was fitted). Leave the sidebar coefs
+        # untouched and surface the explanation as a warning, not a success.
+        st.session_state["_pushed_fric_warn"] = (
+            result.message
+            or "Target BHP sits on the cavitation floor at these inputs - "
+            "coefficients left at their seeds."
+        )
+        return True, None
+
     # Auto-push to sidebar so a successful calibration takes effect on the
     # next rerun without a second click. Widget keys (ken_input/…) are
     # popped — the sidebar's _number_input helper re-initializes them from
@@ -1694,6 +1706,9 @@ def _render_fric_cal_action_bar(
     pushed_msg = st.session_state.pop("_pushed_fric_msg", None)
     if pushed_msg:
         st.success(pushed_msg)
+    pushed_warn = st.session_state.pop("_pushed_fric_warn", None)
+    if pushed_warn:
+        st.warning(pushed_warn)
 
     cal_state = st.session_state.get("sw_fric_calibration", {})
     result = cal_state.get(params.selected_well)
@@ -1739,6 +1754,11 @@ def _render_fric_cal_action_bar(
             )
         elif pf_blocked:
             st.caption("⚠️ Calibration blocked — fix the PF rate mismatch above first.")
+        elif has_result and getattr(result, "match_quality", "") == "pinned":
+            st.warning(
+                getattr(result, "message", None)
+                or "Sonic-pinned - coefficients left at their seeds."
+            )
         elif has_result:
             quality = getattr(result, "match_quality", "unknown")
             color = {"good": "green", "fair": "orange", "poor": "red"}.get(
@@ -2285,12 +2305,22 @@ def _render_fric_cal_detail(params: SimulationParams, result, *, bhp_missing) ->
         )
         return
 
-    st.caption(
-        "Nelder-Mead swept ken, kth and kdi to drive modeled BHP toward the "
-        f"measured value. knz stays fixed at 0.01; ken started from the "
-        f"sidebar value ({params.ken:.3f}). The fitted coefficients were "
-        "applied to the sidebar automatically, so every view now uses them."
-    )
+    pinned = getattr(result, "match_quality", "") == "pinned"
+    if pinned:
+        st.caption(
+            "Sonic-pinned run: the target BHP sits on the cavitation floor, "
+            "so a single BHP point cannot identify friction (ken would only "
+            "move the floor; kth/kdi cannot move it at all). The coefficients "
+            "below are the SEEDS the search started from - nothing was fitted "
+            "and the sidebar was NOT changed."
+        )
+    else:
+        st.caption(
+            "Nelder-Mead swept ken, kth and kdi to drive modeled BHP toward the "
+            f"measured value. knz stays fixed at 0.01; ken started from the "
+            f"sidebar value ({params.ken:.3f}). The fitted coefficients were "
+            "applied to the sidebar automatically, so every view now uses them."
+        )
 
     # Three metrics fit a half-width column; five clip ("Modeled BHP 121…").
     # Coefficients get the cards, outcomes get a text line.
@@ -2313,7 +2343,7 @@ def _render_fric_cal_detail(params: SimulationParams, result, *, bhp_missing) ->
         bits.append(f"{starts} seed" + ("s" if starts != 1 else ""))
     if getattr(result, "bounded", False):
         bits.append("**bounded** — the optimum sat at the search edge, try varying ken")
-    if getattr(result, "sonic", False):
+    if getattr(result, "sonic", False) and not pinned:
         bits.append("**sonic** — BHP is choke-pinned by throat geometry")
     if bits:
         st.caption(" · ".join(bits))

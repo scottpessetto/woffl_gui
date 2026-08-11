@@ -14,7 +14,7 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from server import schemas
-from server.services import ipr, optimizer_runs, pad_curves
+from server.services import event_calibration, ipr, match_health, optimizer_runs, pad_curves
 
 router = APIRouter(prefix="/optimize", tags=["optimize"])
 
@@ -45,10 +45,32 @@ def start_run(req: schemas.OptimizeRunRequest) -> Any:
     return {"job_id": optimizer_runs.start_run(req)}
 
 
+@router.post("/match-health", response_model=schemas.OptimizeRunStarted)
+def start_match_health(req: schemas.MatchHealthRequest) -> Any:
+    """Start a match-health scorecard job for one pad: every active well
+    modeled at its CURRENT pump vs its recent tests, plus fit provenance,
+    field-evidence floors/betas and friction-rail flags, one verdict chip
+    per well. Read-only compute; poll GET /optimize/run/{job_id}."""
+    return {"job_id": match_health.start_match_health(req.pad)}
+
+
+@router.post("/event-calibration", response_model=schemas.OptimizeRunStarted)
+def start_event_calibration(req: schemas.EventCalibrationRequest) -> Any:
+    """Start a multi-point event-calibration job for one well: hydrate its
+    saved fit, gather every measured operating point in the current pump
+    era and fit (ken, kth, kdi, fnz, mach_crit) against all of them at
+    once. Read-only compute; poll GET /optimize/run/{job_id}."""
+    return {"job_id": event_calibration.start_event_calibration(req.well)}
+
+
 @router.get("/run/{job_id}", response_model=schemas.OptimizeJobStatus)
 def run_status(job_id: str) -> Any:
     """Job status; `result` populates when status becomes done."""
-    job = optimizer_runs.get_job(job_id)
+    job = (
+        optimizer_runs.get_job(job_id)
+        or match_health.get_job(job_id)
+        or event_calibration.get_job(job_id)
+    )
     if job is None:
         raise HTTPException(
             status_code=404,

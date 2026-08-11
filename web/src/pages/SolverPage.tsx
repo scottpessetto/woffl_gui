@@ -28,6 +28,7 @@ import { GaugePanel } from "./solver/GaugePanel";
 import { IprChart } from "./solver/IprChart";
 import { IprControls } from "./solver/IprControls";
 import { RateCalculator } from "./solver/RateCalculator";
+import { ResponseDiagnostic } from "./solver/ResponseDiagnostic";
 import { resolveAnchorTest, testKey } from "./solver/selection";
 import { TestsTable } from "./solver/TestsTable";
 import { VerdictBar } from "./solver/VerdictBar";
@@ -287,7 +288,7 @@ function Workbench({ well }: { well: string }) {
             compareTest={compareTest}
             formWc={params.form_wc}
             ppfSurf={params.ppf_surf}
-            footer={<CalibrateBar well={well} compareTest={compareTest} installs={installs} />}
+            footer={<CalibrateBar well={well} />}
           />
           <IprControls
             anchorMode={anchorMode}
@@ -361,6 +362,11 @@ function Workbench({ well }: { well: string }) {
           setDecouple(true);
         }}
       />
+
+      {/* Advanced: daily field (Ppf, BHP) vs the current model's response
+          curve. Sits below the test history - it is a fit-quality post-check,
+          not part of the day-to-day solve loop. Hides itself on old servers. */}
+      <ResponseDiagnostic well={well} />
     </div>
   );
 }

@@ -38,7 +38,7 @@ import numpy as np
 import pandas as pd
 
 from server import jobs, schemas
-from server.services import datasources, tests as tests_svc, wells as wells_svc
+from server.services import datasources, evidence as evidence_svc, tests as tests_svc, wells as wells_svc
 
 # ---------------------------------------------------------------------------
 # Job registry
@@ -110,6 +110,10 @@ def _config_from_seeds(name: str, pad: str, seeds: dict[str, Any]):
             return default
         return v if math.isfinite(v) else default
 
+    def s(key: str) -> Optional[str]:
+        v = seeds.get(key)
+        return str(v) if v else None
+
     return WellConfig(
         well_name=name,
         res_pres=f("pres", 1700.0),
@@ -133,6 +137,14 @@ def _config_from_seeds(name: str, pad: str, seeds: dict[str, Any]):
         ken_well=f("ken"),
         kth_well=f("kth"),
         kdi_well=f("kdi"),
+        mach_crit_well=f("mach_crit"),
+        fnz_well=f("nozzle_area_factor"),
+        # Installed pump identity from the context's JP-history seed (the
+        # cheapest source already in this flow; fail-soft None). fnz_well is
+        # wear on THIS pump - _simulate_single_well scales only the matching
+        # candidate, never the whole JPCO catalog.
+        installed_nozzle=s("nozzle_no"),
+        installed_throat=s("area_ratio"),
         jpump_direction=str(seeds.get("jpump_direction") or "reverse"),
         pad=pad,
     )
@@ -291,6 +303,22 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         # come sorted action-first; provenance rides along like pad rows.
         job["progress"] = "reading current pumps + tests..."
         current, test_rates = _current_and_tests([c.well_name for c in configs])
+        # Field-measured suction response (floor/psu_ref/beta per well) -
+        # corrects the model's cavitation floor where the gauges contradict
+        # it. Strictly fail-soft: an unreachable warehouse degrades to the
+        # uncorrected (model-only) run, never to a failed job.
+        job["progress"] = "reading pressure history..."
+        names = [c.well_name for c in configs]
+        res_pres_map = {
+            c.well_name: float(c.res_pres)
+            for c in configs
+            if getattr(c, "res_pres", None) is not None
+        }
+        try:
+            ev = evidence_svc.pad_evidence(names, res_pres_map)
+        except Exception as exc:
+            ev = None
+            notes.append(f"suction evidence unavailable ({exc}); model-only run")
         job["progress"] = f"pricing {len(configs)} wells at ladder pressures..."
         plan, meta = run_choke_optimization(
             configs,
@@ -300,11 +328,26 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
             test_rates,
             n_levels=req.n_steps if req.n_steps is not None else 10,
             progress=cb,
+            evidence=ev or None,
         )
         for row in plan:
             row.update(
                 prov.get(row["well"])
                 or {"ipr_source": None, "ipr_r2": None, "has_friction": False}
+            )
+        for row in plan:
+            if row.get("suction_basis") != "evidence":
+                continue
+            w = row.get("well")
+            beta = row.get("response_beta")
+            source = row.get("beta_source") or "default"
+            n_pairs = (ev or {}).get(w, {}).get("n_pairs", 0)
+            floor = row.get("evidence_floor_psi")
+            notes.append(
+                f"{w}: suction from field data (beta {beta:.2f} {source}, "
+                f"{n_pairs} events; floor {floor:.0f} measured vs model)"
+                if beta is not None and floor is not None
+                else f"{w}: suction from field data"
             )
         return _plain(
             {

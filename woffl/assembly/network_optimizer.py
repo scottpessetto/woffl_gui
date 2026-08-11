@@ -77,6 +77,23 @@ class WellConfig:
             When set, override the library defaults baked into BatchPump.jetpump_list
             for this well only. All four default to None so existing CSV-loaded
             configs and the manual-config path keep working unchanged.
+        mach_crit_well, fnz_well (Optional[float]): Per-well multi-point event
+            calibration overrides. ``mach_crit_well`` is the calibratable
+            critical Mach number where the throat entry chokes (frees the
+            cavitation floor; solver default 1.0). ``fnz_well`` is the nozzle
+            area factor (washout): the pump list is rebuilt with
+            ``dnz_eff = dnz_catalog * sqrt(fnz_well)`` - the pf_calibration
+            wear mechanics; anz/ate are derived JetPump properties so they
+            follow the scaled dnz automatically. Both default to None so
+            existing configs behave byte-identically.
+        installed_nozzle, installed_throat (Optional[str]): Identity of the
+            pump CURRENTLY installed in the well (JP tracker), e.g. "12"/"B".
+            ``fnz_well`` is wear measured on that physical pump, so when both
+            are set the dnz scaling is applied ONLY to the candidate matching
+            this (nozzle, throat) pair - wear travels with the installed
+            pump, never with JPCO candidates. When either is None, fnz_well
+            applies to every pump (legacy behavior; the choke plan passes
+            only the installed pump anyway).
         pad (str): Pad letter this well belongs to ("B", "G", "C", "J", ...).
             Needed by the CFP joint optimizer, where wells from FOUR pads are
             optimized together against one plant and each pad receives a
@@ -114,6 +131,10 @@ class WellConfig:
     ken_well: Optional[float] = None
     kth_well: Optional[float] = None
     kdi_well: Optional[float] = None
+    mach_crit_well: Optional[float] = None
+    fnz_well: Optional[float] = None
+    installed_nozzle: Optional[str] = None
+    installed_throat: Optional[str] = None
     jpump_direction: str = "reverse"
     pad: str = ""
 
@@ -606,6 +627,25 @@ def _simulate_single_well(
     # Create jet pump list with (possibly overridden) friction coefs
     jp_list = BatchPump.jetpump_list(nozzle_options, throat_options, **jp_kwargs)
 
+    # Nozzle area factor (washout) override: scale the nozzle diameter so the
+    # effective flow area is fnz_well x catalog. Same mechanics as
+    # pf_calibration's wear factor (dnz_eff = dnz*sqrt(f)); JetPump.anz/ate
+    # are derived properties, so they track the new dnz. Wear travels with
+    # the INSTALLED pump, never with JPCO candidates: when the installed
+    # (nozzle, throat) pair is known, only the matching candidate is scaled;
+    # with no installed identity (legacy configs) every pump is scaled.
+    if well.fnz_well is not None:
+        dnz_scale = float(np.sqrt(well.fnz_well))
+        match_installed = (
+            well.installed_nozzle is not None and well.installed_throat is not None
+        )
+        for jp in jp_list:
+            if not match_installed or (
+                jp.noz_no == well.installed_nozzle
+                and jp.rat_ar == well.installed_throat
+            ):
+                jp.dnz = jp.dnz * dnz_scale
+
     batch_pump = BatchPump(
         pwh=well.surf_pres,
         tsu=well.form_temp,
@@ -617,6 +657,7 @@ def _simulate_single_well(
         prop_pf=prop_pf,
         jpump_direction=well.jpump_direction,
         wellname=well.well_name,
+        mach_crit=well.mach_crit_well if well.mach_crit_well is not None else 1.0,
     )
 
     # Run batch simulation (don't raise errors, capture them)

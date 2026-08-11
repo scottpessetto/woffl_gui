@@ -503,3 +503,304 @@ def test_short_grid_tuples_leave_sonic_none(monkeypatch):
     )
     assert rows[0]["sonic"] is None
     assert rows[0]["sonic_full"] is None
+
+
+# ---------------------------------------------------------------------------
+# evidence-corrected suction response
+# ---------------------------------------------------------------------------
+
+
+def _vogel_ratio(psu, psu_ref, res):
+    """Expected corrected-oil ratio: vogel factor at psu over psu_ref."""
+
+    def f(p):
+        return 1.0 - 0.2 * (p / res) - 0.8 * (p / res) ** 2
+
+    return f(psu) / f(psu_ref)
+
+
+def _ev_row(**over):
+    row = {
+        "floor": 350.0,
+        "psu_ref": 400.0,
+        "beta": 0.1,
+        "beta_source": "well",
+        "n_days": 30,
+        "n_pairs": 8,
+        "window": ["2026-01-01", "2026-08-01"],
+    }
+    row.update(over)
+    return row
+
+
+# A is cavitation-pinned in the model: flat oil, frozen psu, sonic True at
+# every level. B rises normally (pulls the winning header to 3000) and has
+# no evidence.
+GRID_SONIC_FLAT = {
+    "A": {
+        2000.0: (100.0, 800.0, 500.0, True),
+        2500.0: (100.0, 900.0, 500.0, True),
+        3000.0: (100.0, 1000.0, 500.0, True),
+    },
+    "B": {2000.0: (50.0, 800.0), 2500.0: (75.0, 900.0), 3000.0: (100.0, 1000.0)},
+}
+
+
+def _anchored_config(name="A", res_pres=1000.0):
+    # oil-basis Vogel anchor: qwf*(1-form_wc)=200 at pwf=300
+    return _ipr_config(name, qwf=250.0, pwf=300.0, res_pres=res_pres, form_wc=0.2)
+
+
+def _strip_evidence_provenance(rows):
+    """Pop the two always-populated provenance fields for deep-compares."""
+    return [
+        (
+            {k: v for k, v in r.items() if k not in ("evidence_floor_psi", "floor_violation_psi")},
+            r["evidence_floor_psi"],
+            r["floor_violation_psi"],
+        )
+        for r in rows
+    ]
+
+
+def test_evidence_correction_declines_the_staircase_and_charges_chokes(monkeypatch):
+    # Model floor 500 psi vs measured floor 350 (violation 150 > 25) on a
+    # sonic well: the suction response is replaced by the field data. The
+    # staircase now DECLINES (Vogel oil at psu_e = psu_ref + beta*dP), psu
+    # rises with choke depth, PF stays the model's, and the binding budget
+    # (1900 vs 2000 full-open) chokes A one step at a real oil cost.
+    _patch_grid(monkeypatch, GRID_SONIC_FLAT)
+    configs = [_anchored_config("A"), _ipr_config("B")]
+    rows, meta = pad_optimize.run_choke_optimization(
+        configs, StubPlant(1900.0), 2, CHOICES, {}, n_levels=3,
+        evidence={"A": _ev_row()},
+    )
+    assert meta["header_psi"] == 3000.0
+    assert meta["n_evidence_corrected"] == 1
+    assert meta["n_choked"] == 1
+    a = next(r for r in rows if r["well"] == "A")
+    b = next(r for r in rows if r["well"] == "B")
+    # A: choked to 2500; oil now costs (staircase declines)
+    assert a["action"] == "choke" and a["delivered_psi"] == 2500.0
+    assert a["oil"] == pytest.approx(100.0 * _vogel_ratio(450.0, 400.0, 1000.0))
+    assert a["oil_full"] == pytest.approx(100.0)  # anchored at k*
+    assert a["d_oil_vs_full"] < 0.0  # chokes cost oil now
+    # psu rises with choke depth (beta * dP off the psu_ref anchor)
+    assert a["psu_full"] == pytest.approx(400.0)
+    assert a["psu"] == pytest.approx(450.0)
+    # PF hydraulics untouched (validated model)
+    assert a["pf"] == pytest.approx(900.0)
+    assert a["pf_full"] == pytest.approx(1000.0)
+    # corrected points are not cavitation-pinned
+    assert a["sonic"] is None and a["sonic_full"] is None
+    # provenance
+    assert a["suction_basis"] == "evidence"
+    assert a["evidence_floor_psi"] == pytest.approx(350.0)
+    assert a["floor_violation_psi"] == pytest.approx(150.0)  # ORIGINAL model floor
+    assert a["response_beta"] == pytest.approx(0.1)
+    assert a["beta_source"] == "well"
+    assert a["evidence_gate"] == "floor"  # violation is the stronger claim
+    # a further trim now has a real, positive marginal cost
+    assert a["next_trim_bopd_per_bpd"] is not None and a["next_trim_bopd_per_bpd"] > 0.0
+    # B untouched: no evidence, model suction basis, no provenance
+    assert b["action"] == "full" and b["suction_basis"] == "model"
+    assert b["evidence_floor_psi"] is None and b["floor_violation_psi"] is None
+    assert b["response_beta"] is None and b["beta_source"] is None
+    assert b["evidence_gate"] is None
+
+
+def test_evidence_confirming_the_model_changes_nothing_but_provenance(monkeypatch):
+    # Floor within 25 psi of the model floor (500 - 490 = 10) AND a measured
+    # beta below _EVIDENCE_BETA_MIN: the evidence CONFIRMS the model on both
+    # counts and the run is identical to an evidence=None run, except the
+    # row now carries the floor and its (small) violation.
+    _patch_grid(monkeypatch, {"A": GRID_SONIC_FLAT["A"]})
+    configs = [_anchored_config("A")]
+    rows_ev, meta_ev = pad_optimize.run_choke_optimization(
+        configs, StubPlant(100000.0), 2, CHOICES, {}, n_levels=3,
+        evidence={"A": _ev_row(floor=490.0, beta=0.02)},
+    )
+    rows_none, meta_none = pad_optimize.run_choke_optimization(
+        configs, StubPlant(100000.0), 2, CHOICES, {}, n_levels=3, evidence=None,
+    )
+    assert meta_ev == meta_none
+    assert meta_ev["n_evidence_corrected"] == 0
+    stripped_ev = _strip_evidence_provenance(rows_ev)
+    stripped_none = _strip_evidence_provenance(rows_none)
+    assert [s[0] for s in stripped_ev] == [s[0] for s in stripped_none]
+    assert stripped_ev[0][1] == pytest.approx(490.0)
+    assert stripped_ev[0][2] == pytest.approx(10.0)  # full_raw psu 500 - 490
+    assert stripped_none[0][1] is None and stripped_none[0][2] is None
+    assert rows_ev[0]["evidence_gate"] is None
+
+
+def test_measured_response_falsifies_a_confirmed_floor(monkeypatch):
+    # MPM-28 shape: the model floor is CONFIRMED (violation 10 <= 25) but a
+    # well-measured beta of 0.08 demonstrates the suction response the
+    # pinned model denies -> corrected via the RESPONSE gate, and the flat
+    # staircase now declines with choke depth.
+    _patch_grid(monkeypatch, {"A": GRID_SONIC_FLAT["A"]})
+    configs = [_anchored_config("A")]
+    rows, meta = pad_optimize.run_choke_optimization(
+        configs, StubPlant(100000.0), 2, CHOICES, {}, n_levels=3,
+        evidence={"A": _ev_row(floor=490.0, beta=0.08)},
+    )
+    assert meta["n_evidence_corrected"] == 1
+    a = rows[0]
+    assert a["suction_basis"] == "evidence"
+    assert a["evidence_gate"] == "response"
+    assert a["response_beta"] == pytest.approx(0.08)
+    assert a["beta_source"] == "well"
+    assert a["evidence_floor_psi"] == pytest.approx(490.0)
+    assert a["floor_violation_psi"] == pytest.approx(10.0)
+    # the corrected staircase declines: choking costs real oil now
+    oil_by_header = {s["header_psi"]: s["total_oil_bopd"] for s in meta["sweep"]}
+    assert oil_by_header[3000.0] == pytest.approx(100.0)
+    assert (
+        oil_by_header[2000.0]
+        == pytest.approx(100.0 * _vogel_ratio(400.0 + 0.08 * 1000.0, 400.0, 1000.0))
+    )
+    assert oil_by_header[2000.0] < oil_by_header[2500.0] < oil_by_header[3000.0]
+
+
+def test_insensitive_beta_leaves_a_confirmed_floor_alone(monkeypatch):
+    # Same confirmed floor but the measured beta (0.02) sits in the
+    # insensitive group: no gate fires, the run matches evidence=None.
+    _patch_grid(monkeypatch, {"A": GRID_SONIC_FLAT["A"]})
+    configs = [_anchored_config("A")]
+    rows_ev, meta_ev = pad_optimize.run_choke_optimization(
+        configs, StubPlant(100000.0), 2, CHOICES, {}, n_levels=3,
+        evidence={"A": _ev_row(floor=490.0, beta=0.02)},
+    )
+    rows_none, meta_none = pad_optimize.run_choke_optimization(
+        configs, StubPlant(100000.0), 2, CHOICES, {}, n_levels=3, evidence=None,
+    )
+    assert meta_ev == meta_none
+    assert meta_ev["n_evidence_corrected"] == 0
+    assert rows_ev[0]["suction_basis"] == "model"
+    assert rows_ev[0]["evidence_gate"] is None
+    assert [s[0] for s in _strip_evidence_provenance(rows_ev)] == [
+        s[0] for s in _strip_evidence_provenance(rows_none)
+    ]
+
+
+def test_pad_sourced_beta_never_triggers_the_response_gate(monkeypatch):
+    # A responsive-looking beta (0.08) that is only a PAD prior is not
+    # measurement: with the floor confirmed the well stays uncorrected.
+    _patch_grid(monkeypatch, {"A": GRID_SONIC_FLAT["A"]})
+    configs = [_anchored_config("A")]
+    rows_ev, meta_ev = pad_optimize.run_choke_optimization(
+        configs, StubPlant(100000.0), 2, CHOICES, {}, n_levels=3,
+        evidence={"A": _ev_row(floor=490.0, beta=0.08, beta_source="pad")},
+    )
+    rows_none, meta_none = pad_optimize.run_choke_optimization(
+        configs, StubPlant(100000.0), 2, CHOICES, {}, n_levels=3, evidence=None,
+    )
+    assert meta_ev == meta_none
+    assert meta_ev["n_evidence_corrected"] == 0
+    assert rows_ev[0]["suction_basis"] == "model"
+    assert rows_ev[0]["evidence_gate"] is None
+    assert rows_ev[0]["response_beta"] is None and rows_ev[0]["beta_source"] is None
+    assert [s[0] for s in _strip_evidence_provenance(rows_ev)] == [
+        s[0] for s in _strip_evidence_provenance(rows_none)
+    ]
+
+
+def test_subsonic_well_is_never_corrected(monkeypatch):
+    # sonic False at the top solvable level: the model suction is already
+    # responsive, so even a huge floor violation leaves the grid untouched
+    # (only the floor/violation provenance rides through).
+    grid = {
+        "A": {
+            2000.0: (90.0, 800.0, 500.0, False),
+            2500.0: (95.0, 900.0, 500.0, False),
+            3000.0: (100.0, 1000.0, 500.0, False),
+        }
+    }
+    _patch_grid(monkeypatch, grid)
+    configs = [_anchored_config("A")]
+    rows_ev, meta_ev = pad_optimize.run_choke_optimization(
+        configs, StubPlant(100000.0), 2, CHOICES, {}, n_levels=3,
+        evidence={"A": _ev_row()},
+    )
+    rows_none, meta_none = pad_optimize.run_choke_optimization(
+        configs, StubPlant(100000.0), 2, CHOICES, {}, n_levels=3,
+    )
+    assert meta_ev == meta_none
+    assert meta_ev["n_evidence_corrected"] == 0
+    a = rows_ev[0]
+    assert a["suction_basis"] == "model"
+    assert a["response_beta"] is None and a["beta_source"] is None
+    assert a["evidence_floor_psi"] == pytest.approx(350.0)
+    assert a["floor_violation_psi"] == pytest.approx(150.0)
+    assert [s[0] for s in _strip_evidence_provenance(rows_ev)] == [
+        s[0] for s in _strip_evidence_provenance(rows_none)
+    ]
+
+
+def test_evidence_none_deep_equals_a_no_kwarg_run(monkeypatch):
+    _patch_grid(monkeypatch, GRID_SONIC_FLAT)
+    configs = [_anchored_config("A"), _ipr_config("B")]
+    rows_none, meta_none = pad_optimize.run_choke_optimization(
+        configs, StubPlant(1900.0), 2, CHOICES, {"B": (80.0, 950.0)}, n_levels=3,
+        evidence=None,
+    )
+    rows_bare, meta_bare = pad_optimize.run_choke_optimization(
+        configs, StubPlant(1900.0), 2, CHOICES, {"B": (80.0, 950.0)}, n_levels=3,
+    )
+    assert rows_none == rows_bare
+    assert meta_none == meta_bare
+
+
+def test_psu_e_at_or_above_res_pres_zeroes_deep_levels(monkeypatch):
+    # Steep beta against a low res_pres: psu_e = 400 + 0.5*dP crosses the
+    # 600 psi reservoir at both deeper chokes -> the corrected oil is 0
+    # there (the well cannot flow), visible in the header sweep totals.
+    _patch_grid(monkeypatch, {"A": GRID_SONIC_FLAT["A"]})
+    configs = [_anchored_config("A", res_pres=600.0)]
+    rows, meta = pad_optimize.run_choke_optimization(
+        configs, StubPlant(100000.0), 2, CHOICES, {}, n_levels=3,
+        evidence={"A": _ev_row(floor=300.0, beta=0.5)},
+    )
+    assert meta["n_evidence_corrected"] == 1
+    oil_by_header = {s["header_psi"]: s["total_oil_bopd"] for s in meta["sweep"]}
+    assert oil_by_header[2000.0] == pytest.approx(0.0)
+    assert oil_by_header[2500.0] == pytest.approx(0.0)
+    assert oil_by_header[3000.0] == pytest.approx(100.0)
+    assert rows[0]["oil"] == pytest.approx(100.0)  # full open at the anchor
+
+
+def test_psu_ref_at_or_above_res_pres_is_unusable(monkeypatch):
+    # InFlow cannot anchor a Vogel ratio above res_pres: skip, no correction.
+    _patch_grid(monkeypatch, {"A": GRID_SONIC_FLAT["A"]})
+    configs = [_anchored_config("A", res_pres=600.0)]
+    rows, meta = pad_optimize.run_choke_optimization(
+        configs, StubPlant(100000.0), 2, CHOICES, {}, n_levels=3,
+        evidence={"A": _ev_row(psu_ref=650.0)},
+    )
+    assert meta["n_evidence_corrected"] == 0
+    assert rows[0]["suction_basis"] == "model"
+    assert rows[0]["response_beta"] is None
+
+
+def test_decision_ladder_charges_oil_for_chokes_on_a_corrected_well(monkeypatch):
+    # Pre-correction A's flat staircase collapsed to the knee and chokes
+    # were free. Corrected, the 500-psi rung's best response chokes A to
+    # 2000 at a real oil cost: plan oil sits BELOW the winning-header total.
+    _patch_grid(monkeypatch, GRID_SONIC_FLAT)
+    configs = [_anchored_config("A"), _ipr_config("B")]
+    _rows, meta = pad_optimize.run_choke_optimization(
+        configs, StubPlant(1900.0), 2, CHOICES, {}, n_levels=3,
+        evidence={"A": _ev_row()},
+    )
+    rung = next(r for r in meta["ladder"] if r["drop_psi"] == pytest.approx(500.0))
+    oil_2000 = 100.0 * _vogel_ratio(500.0, 400.0, 1000.0)
+    oil_2500 = 100.0 * _vogel_ratio(450.0, 400.0, 1000.0)
+    # run-all at the rung: A + B priced from the corrected grid at 2500
+    assert rung["run_all_oil_bopd"] == pytest.approx(oil_2500 + 75.0)
+    # best response holds 3000 and chokes A to 2000 - and PAYS for it
+    assert rung["best_header_psi"] == 3000.0
+    assert rung["actions"] == [{"well": "A", "action": "choke", "set_psi": 2000.0}]
+    assert rung["plan_oil_bopd"] == pytest.approx(oil_2000 + 100.0)
+    assert rung["plan_oil_bopd"] < meta["total_oil_bopd"]
+    assert rung["gain_bopd"] == pytest.approx((oil_2000 + 100.0) - (oil_2500 + 75.0))

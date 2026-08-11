@@ -39,6 +39,11 @@ class SimParams(BaseModel):
     ken: float = Field(0.03, ge=0.001, le=0.40)
     kth: float = Field(0.3, ge=0.05, le=1.0)
     kdi: float = Field(0.4, ge=0.05, le=1.0)
+    # Multi-point event calibration knobs (defaults reproduce historic solves
+    # byte-identically): critical Mach choking threshold and nozzle area
+    # factor (washout; applied as dnz_eff = dnz_catalog * sqrt(factor)).
+    mach_crit: float = Field(1.0, ge=1.0, le=2.5)
+    nozzle_area_factor: float = Field(1.0, ge=0.8, le=1.3)
     jpump_direction: Literal["forward", "reverse"] = "reverse"
 
     # Pipe (inches)
@@ -215,6 +220,39 @@ class WellTestsResponse(BaseModel):
     # fgor (scf/bbl), lift_wat (BWPD), whp (psi), pf_press, pf_source
 
 
+class ResponseHistoryDay(BaseModel):
+    """One flowing day of the suction-response scatter (advanced panel)."""
+
+    date: str  # YYYY-MM-DD
+    ppf: float  # resolved PF surface pressure, psi
+    bhp: float  # daily bottomhole pressure, psi
+    era: Literal["current", "prior"]  # vs the current pump's Date Set
+    buildup: bool  # BHP >= res_pres: shut-in buildup, not a flowing point
+
+
+class ResponseHistoryEvidence(BaseModel):
+    """Mined field-evidence summary shown beside the scatter (evidence.py)."""
+
+    floor: Optional[float] = None  # P5 flowing BHP, psi
+    psu_ref: Optional[float] = None  # recent flowing BHP median, psi
+    beta: Optional[float] = None  # -dBHP/dPpf response slope
+    beta_source: str = "default"  # "well" | "pad" | "default"
+    n_pairs: int = 0
+
+
+class ResponseHistoryResponse(BaseModel):
+    """Daily (PF, BHP) scatter vs the current pump era, for the response
+    panel. The model overlay comes from POST /api/compute/pf-range
+    client-side - this payload is measured data + mined evidence only.
+    """
+
+    days: list[ResponseHistoryDay]
+    era_start: Optional[str] = None  # current pump Date Set, YYYY-MM-DD
+    pump: Optional[str] = None  # "14B"-style current pump label
+    evidence: Optional[ResponseHistoryEvidence] = None
+    res_pres: Optional[float] = None  # buildup threshold used, psi
+
+
 # ---------------------------------------------------------------------------
 # Solve
 # ---------------------------------------------------------------------------
@@ -329,12 +367,24 @@ class OptimizeRunStarted(BaseModel):
     job_id: str
 
 
+class MatchHealthRequest(BaseModel):
+    """Start a match-health scorecard job for one pad's active wells."""
+
+    pad: Literal["S", "I", "M"]
+
+
+class EventCalibrationRequest(BaseModel):
+    """Start a multi-point event-calibration job for one well."""
+
+    well: str = Field(..., min_length=1, max_length=16)
+
+
 class OptimizeJobStatus(BaseModel):
     """Poll envelope. `result` is the run-type-specific payload (pad: rows +
     meta from pad_optimize; cfp: the moves_summary), JSON-flattened."""
 
     job_id: str
-    kind: Literal["pad", "cfp"]
+    kind: Literal["pad", "cfp", "match_health", "event_cal"]
     status: Literal["running", "done", "error"]
     progress: Optional[str] = None
     result: Optional[dict[str, Any]] = None
@@ -442,7 +492,10 @@ class CalibrateRequest(BaseModel):
 
 class CalibrateResponse(BaseModel):
     converged: bool
-    match_quality: Literal["good", "fair", "poor", "failed"]
+    # "pinned": the final solve was sonic (target BHP on the cavitation
+    # floor) - a single BHP point cannot identify friction there, so the
+    # coefficients come back at their SEEDS and `message` explains why.
+    match_quality: Literal["good", "fair", "poor", "failed", "pinned"]
     bounded: bool  # a coef sits on its search bound
     sonic: bool  # throat-choked: friction cannot lower BHP further
     ken: float
@@ -453,6 +506,8 @@ class CalibrateResponse(BaseModel):
     bhp_error: Optional[float] = None  # modeled - target (psi)
     iterations: int
     starts_tried: int
+    # Explanation for special outcomes (set on "pinned" runs); None otherwise.
+    message: Optional[str] = None
 
 
 class SensitivityPoint(BaseModel):
@@ -742,6 +797,10 @@ class SaveIprRequest(BaseModel):
     ken: Optional[float] = None
     kth: Optional[float] = None
     kdi: Optional[float] = None
+    # Event-calibration knobs ride the same discipline (skip-at-1.0 unless a
+    # saved override exists). Bounds mirror SimParams.
+    nozzle_area_factor: Optional[float] = Field(None, ge=0.8, le=1.3)
+    mach_crit: Optional[float] = Field(None, ge=1.0, le=2.5)
     # Characterization values the sensitivity study can move. Both prop ids
     # (resvr_bubb / resvr_temp) already exist; the client sends one only when
     # the engineer changed it off the seeded value, so a save never re-writes

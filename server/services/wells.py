@@ -41,6 +41,9 @@ _SEED_BOUNDS: dict[str, tuple[float, float]] = {
     "ken": (0.001, 0.40),
     "kth": (0.05, 1.0),
     "kdi": (0.05, 1.0),
+    # Event-calibration knobs (bounds mirror schemas.SimParams).
+    "nozzle_area_factor": (0.8, 1.3),
+    "mach_crit": (1.0, 2.5),
     "jpump_tvd": (2500, 8000),
     "oil_api": (11.0, 39.0),
     "bubble_point": (1001.0, 2999.0),
@@ -464,9 +467,13 @@ def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
         if info:
             # BHP-calibrated friction seeds INDEPENDENTLY of the pin-vs-values
             # precedence, at FULL precision (rounding broke reload exactness).
+            # The event-calibration knobs (nozzle_area_factor / mach_crit)
+            # ride the same channel: a saved fit IS the well's characterization.
             for key, val in (info.get("friction") or {}).items():
                 num = frames.opt_float(val)
-                if num is not None and key in ("ken", "kth", "kdi"):
+                if num is not None and key in (
+                    "ken", "kth", "kdi", "nozzle_area_factor", "mach_crit"
+                ):
                     seeds[key] = _clamp(key, num)
 
             # Field locks sit OUTSIDE the precedence: a locked WC/GOR/ResP

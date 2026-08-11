@@ -19,6 +19,11 @@ export interface SimParams {
   ken: number;
   kth: number;
   kdi: number;
+  // Multi-point event-calibration knobs (1.0/1.0 = classic behavior):
+  // critical Mach choking threshold and nozzle flow-area multiplier
+  // (washout wear; server applies dnz_eff = dnz_catalog * sqrt(factor)).
+  mach_crit: number;
+  nozzle_area_factor: number;
   jpump_direction: JpumpDirection;
   // Pipe (inches)
   tubing_od: number;
@@ -69,6 +74,8 @@ export const PARAM_BOUNDS: Partial<Record<keyof SimParams, [number, number]>> = 
   ken: [0.001, 0.4],
   kth: [0.05, 1.0],
   kdi: [0.05, 1.0],
+  mach_crit: [1.0, 2.5],
+  nozzle_area_factor: [0.8, 1.3],
   jpump_tvd: [2500, 8000],
   rho_pf: [50.0, 70.0],
   oil_api: [11.0, 39.0],
@@ -91,6 +98,8 @@ export const DEFAULT_PARAMS: SimParams = {
   ken: 0.03,
   kth: 0.3,
   kdi: 0.4,
+  mach_crit: 1.0,
+  nozzle_area_factor: 1.0,
   jpump_direction: "reverse",
   tubing_od: 4.5,
   tubing_thickness: 0.5,
@@ -346,6 +355,15 @@ export interface ChokePlanRow {
    *  psu and oil are pinned there, only PF responds to delivered pressure. */
   sonic: boolean | null;
   sonic_full: boolean | null;
+  /** Field-data suction response for wells whose modeled cavitation floor is
+   *  contradicted by measured BHP history; absent on old payloads. floor and
+   *  violation populate whenever evidence exists for a model-basis well;
+   *  beta/beta_source only when the response was corrected. */
+  evidence_floor_psi: number | null;
+  floor_violation_psi: number | null;
+  response_beta: number | null;
+  beta_source: string | null;
+  suction_basis: "model" | "evidence" | null;
   res_pres: number | null;
   /** Vogel inflow curve samples [oil_bopd, pwf_psi], res_pres down to 0; null off model basis. */
   ipr_curve: [number, number][] | null;
@@ -473,10 +491,16 @@ export interface CfpRunResult {
 
 export interface OptimizeJobStatus {
   job_id: string;
-  kind: "pad" | "cfp";
+  kind: "pad" | "cfp" | "match_health" | "event_cal";
   status: "running" | "done" | "error";
   progress: string | null;
-  result: PadRunResult | ChokePlanResult | CfpRunResult | null;
+  result:
+    | PadRunResult
+    | ChokePlanResult
+    | CfpRunResult
+    | MatchHealthResult
+    | EventCalibrationResult
+    | null;
   error: string | null;
   started_at: string;
   seconds: number;
@@ -484,6 +508,123 @@ export interface OptimizeJobStatus {
 
 export interface OptimizeRunStarted {
   job_id: string;
+}
+
+/** POST /optimize/match-health - start a scorecard job for one pad. */
+export interface MatchHealthRequest {
+  pad: "S" | "I" | "M";
+}
+
+export type MatchHealthVerdict = "contradicted" | "railed-cal" | "weak-fit" | "ok";
+
+/** One well on the match-health scorecard. Every column is null-safe:
+ * evidence columns are null when the warehouse was unreachable, model
+ * columns when the well had no current pump or did not solve. */
+export interface MatchHealthRow {
+  well: string;
+  pump: string | null;
+  ipr_source: string | null;
+  ipr_r2: number | null;
+  test_oil: number | null;
+  model_oil: number | null;
+  model_test_oil_ratio: number | null;
+  oil_flag: string | null;
+  test_pf: number | null;
+  model_pf: number | null;
+  model_test_pf_ratio: number | null;
+  pf_flag: string | null;
+  model_psu: number | null;
+  sonic: boolean | null;
+  evidence_floor: number | null;
+  floor_violation: number | null;
+  beta: number | null;
+  beta_source: string | null;
+  n_pairs: number | null;
+  ken: number | null;
+  kth: number | null;
+  kdi: number | null;
+  ken_railed: boolean;
+  kth_railed: boolean;
+  kdi_railed: boolean;
+  last_test_date: string | null;
+  verdict: MatchHealthVerdict;
+}
+
+export interface MatchHealthResult {
+  pad: string;
+  rows: MatchHealthRow[];
+  header_psi: number | null;
+  notes: string[];
+  n_wells: number;
+}
+
+/** POST /optimize/event-calibration - start a multi-point era-history
+ * calibration job for one well; poll via /optimize/run/{job_id}. */
+export interface EventCalibrationRequest {
+  well: string;
+}
+
+/** The fitted knobs and fit quality. Null when the job refused to fit
+ * (see EventCalibrationResult.refusal). */
+export interface EventCalFit {
+  ken: number;
+  kth: number;
+  kdi: number;
+  /** nozzle_area_factor: nozzle flow-area multiplier (>1 = washout). */
+  fnz: number;
+  mach_crit: number;
+  rms_bhp_psi: number;
+  rms_pf_pct: number;
+  rms_dbhp_psi: number | null;
+  n_used: number;
+  n_dropped: number;
+  /** Params fitted onto a search bound - treat as low confidence. */
+  railed: string[];
+  /** Model's suction response -dBHP/dPpf at the fitted point. */
+  implied_beta: number | null;
+  message: string;
+}
+
+/** The single-point fallback leg's result - the old Auto-match BHP
+ * mechanics run server-side when the era fit is impossible (young era).
+ * Only ken/kth/kdi are fitted; fnz/mach_crit are untouched. */
+export interface SinglePointMatch {
+  ken: number;
+  kth: number;
+  kdi: number;
+  modeled_bhp: number | null;
+  target_bhp: number | null;
+  // "pinned": sonic well - target BHP sits on the cavitation floor, so a
+  // single BHP point cannot identify friction; coefs come back at their
+  // seeds. "failed": no valid operating point at any friction setting.
+  match_quality: "good" | "fair" | "poor" | "failed" | "pinned";
+  /** Explanation for special outcomes (set on "pinned" runs). */
+  message: string | null;
+}
+
+export interface EventCalibrationResult {
+  well: string;
+  pump: string | null;
+  era_start: string | null;
+  n_daily: number;
+  n_test: number;
+  /** PF-pressure spread across the era's points, psi. */
+  ppf_spread: number;
+  /** Non-null when the job declined to fit (thin/degenerate history). */
+  refusal: string | null;
+  /** "event" = multi-point era fit; "single_point" = young-era fallback
+   * that matched the latest test's BHP instead. */
+  method: "event" | "single_point";
+  /** The builder's refusal that triggered the fallback (single_point only). */
+  fallback_reason: string | null;
+  /** The fallback match (single_point only); null on the event method. */
+  single: SinglePointMatch | null;
+  fit: EventCalFit | null;
+  /** Measured suction response mined from event pairs, for cross-check. */
+  mined_beta: number | null;
+  mined_beta_source: string | null;
+  /** The coefficients currently saved on the well, for comparison. */
+  current: { ken: number | null; kth: number | null; kdi: number | null };
 }
 
 /** GET /optimize/pump-curve - mirror of server.schemas.PumpCurveResponse.
@@ -542,29 +683,6 @@ export interface PumpCurveResponse {
   pumps: PumpMachineCurve[];
 }
 
-/** POST /calibrate - mirror of server.schemas.CalibrateRequest. Only
- * ken/kth/kdi are searched; as-built geometry is never varied. */
-export interface CalibrateRequest {
-  well: string;
-  params: SimParams;
-  target_bhp: number;
-  test_whp: number | null;
-}
-
-export interface CalibrateResponse {
-  converged: boolean;
-  match_quality: "good" | "fair" | "poor" | "failed";
-  bounded: boolean;
-  sonic: boolean;
-  ken: number;
-  kth: number;
-  kdi: number;
-  target_bhp: number;
-  modeled_bhp: number | null;
-  bhp_error: number | null;
-  iterations: number;
-  starts_tried: number;
-}
 
 // ---------------------------------------------------------------------------
 // Sensitivity
@@ -805,6 +923,10 @@ export interface SaveIprRequest {
   ken: number | null;
   kth: number | null;
   kdi: number | null;
+  /** Event-calibration knobs; server skips values at the 1.0 no-op default
+   *  unless a saved override already exists (the friction discipline). */
+  nozzle_area_factor: number | null;
+  mach_crit: number | null;
   /** Canonical characterization (resvr_bubb / resvr_temp). Sent only when the
    *  engineer moved it off the seeded value, so a save never re-writes the
    *  characterization the server handed out. */
@@ -1213,4 +1335,35 @@ export interface TriageResponse {
   xv_available: boolean;
   online: TriageOnlineRow[];
   shut: TriageShutRow[];
+}
+
+// ---------------------------------------------------------------------------
+// Suction response history (Solver advanced diagnostic)
+// ---------------------------------------------------------------------------
+
+/** One daily (PF pressure, BHP) pair from the field historian. */
+export interface ResponseHistoryDay {
+  date: string; // YYYY-MM-DD
+  ppf: number; // delivered PF pressure (psi)
+  bhp: number; // measured suction/BHP (psi)
+  era: "current" | "prior"; // relative to the current pump's date_set
+  buildup: boolean; // bhp >= reservoir pressure (shut-in/buildup day)
+}
+
+/** Measured-response evidence backing the diagnostic, when the server has
+ * enough pairs to compute it. */
+export interface ResponseHistoryEvidence {
+  floor: number | null; // measured suction floor (psi)
+  psu_ref: number | null;
+  beta: number | null; // dBHP/dPpf slope
+  beta_source: string;
+  n_pairs: number;
+}
+
+export interface ResponseHistoryResponse {
+  days: ResponseHistoryDay[];
+  era_start: string | null; // ISO date the current pump was set
+  pump: string | null; // "14B"
+  evidence: ResponseHistoryEvidence | null;
+  res_pres: number | null;
 }

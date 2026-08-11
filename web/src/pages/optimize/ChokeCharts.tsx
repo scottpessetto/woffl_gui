@@ -268,6 +268,8 @@ export function IprLandingTable({ plan }: { plan: ChokePlanRow[] }) {
         Choking backs the well up its IPR: suction rises, drawdown and oil drop. An asterisk
         marks a suction pinned at the cavitation floor (sonic throat entry) - there the choke
         only sheds power fluid, and suction and oil hold until the well leaves sonic.
+        Wells marked field use measured suction response mined from PF-pressure history -
+        their modeled floors were contradicted by measured BHPs.
       </p>
       <table className="w-full border-collapse text-[13px]">
         <thead>
@@ -306,16 +308,34 @@ export function IprLandingTable({ plan }: { plan: ChokePlanRow[] }) {
             const shut = r.action === "shut";
             const rise =
               r.psu != null && r.psu_full != null && !shut ? r.psu - r.psu_full : null;
+            const fieldBasis = r.suction_basis === "evidence";
+            const fieldTitle = fieldBasis
+              ? `Suction response from field data: beta ${
+                  r.response_beta != null ? r.response_beta.toFixed(2) : "?"
+                } (${r.beta_source ?? "?"}), floor ${fmtNum(
+                  r.evidence_floor_psi,
+                )} psi measured vs model (violation +${fmtNum(r.floor_violation_psi)} psi)`
+              : undefined;
             return (
               <tr key={r.well} className="border-b border-slate-100 last:border-b-0">
                 <td className="px-2 py-1 text-left font-medium text-slate-700">{r.well}</td>
                 <td className={clsx(TD, "text-slate-500")}>{fmtNum(r.res_pres)}</td>
                 <td
                   className={clsx(TD, "border-l border-slate-100 text-slate-700")}
-                  title={r.sonic_full ? "Pinned at the cavitation floor (sonic throat entry)" : undefined}
+                  title={
+                    fieldBasis
+                      ? fieldTitle
+                      : r.sonic_full
+                        ? "Pinned at the cavitation floor (sonic throat entry)"
+                        : undefined
+                  }
                 >
                   {fmtNum(r.psu_full)}
-                  {r.sonic_full ? <span className="text-slate-400"> *</span> : null}
+                  {fieldBasis ? (
+                    <span className="text-[10px] text-slate-400"> field</span>
+                  ) : r.sonic_full ? (
+                    <span className="text-slate-400"> *</span>
+                  ) : null}
                 </td>
                 <td className={clsx(TD, "text-slate-600")}>
                   {fmtNum(r.res_pres != null && r.psu_full != null ? r.res_pres - r.psu_full : null)}
@@ -329,10 +349,20 @@ export function IprLandingTable({ plan }: { plan: ChokePlanRow[] }) {
                   <>
                     <td
                       className={clsx(TD, "border-l border-slate-100 text-slate-700")}
-                      title={r.sonic ? "Pinned at the cavitation floor (sonic throat entry)" : undefined}
+                      title={
+                        fieldBasis
+                          ? fieldTitle
+                          : r.sonic
+                            ? "Pinned at the cavitation floor (sonic throat entry)"
+                            : undefined
+                      }
                     >
                       {fmtNum(r.psu)}
-                      {r.sonic ? <span className="text-slate-400"> *</span> : null}
+                      {fieldBasis ? (
+                        <span className="text-[10px] text-slate-400"> field</span>
+                      ) : r.sonic ? (
+                        <span className="text-slate-400"> *</span>
+                      ) : null}
                     </td>
                     <td className={clsx(TD, "text-slate-600")}>
                       {fmtNum(r.res_pres != null && r.psu != null ? r.res_pres - r.psu : null)}

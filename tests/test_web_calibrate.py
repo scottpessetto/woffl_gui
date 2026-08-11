@@ -130,3 +130,87 @@ def test_calibrate_nan_serializes_null(client, monkeypatch):
     assert body["converged"] is False
     assert body["modeled_bhp"] is None
     assert body["bhp_error"] is None
+
+
+def test_calibrate_pinned_passes_quality_and_message(client, monkeypatch):
+    """Sonic-pinned results reach the client with the seed coefs, the new
+    "pinned" quality value, and the explanatory message intact."""
+
+    msg = (
+        "target BHP sits on the cavitation floor at these inputs - a single "
+        "BHP point cannot identify friction on a sonic well (ken would only "
+        "move the floor; kth/kdi cannot move it at all). Left coefficients "
+        "at their seeds. Floor gap: +283 psi."
+    )
+
+    def pinned(**kwargs):
+        return FricCalibrationResult(
+            well_name=kwargs["well_name"],
+            target_bhp=kwargs["target_bhp"],
+            knz=kwargs["knz"],
+            seed_ken=kwargs["ken"],
+            best_ken=kwargs["ken"],  # seeds, not railed optimizer values
+            best_kth=0.30,
+            best_kdi=0.30,
+            best_modeled_bhp=1458.0,
+            best_oil=180.0,
+            best_pf_rate=2600.0,
+            bhp_error=283.0,
+            converged=True,
+            iterations=42,
+            match_quality="pinned",
+            bounded=False,
+            sonic=True,
+            starts_tried=5,
+            message=msg,
+        )
+
+    monkeypatch.setattr(fc, "calibrate_friction_coefs", pinned)
+    r = client.post(
+        "/api/calibrate",
+        json={"well": WELL, "params": _params(), "target_bhp": 1175.0, "test_whp": None},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["converged"] is True
+    assert body["match_quality"] == "pinned"
+    assert "cavitation floor" in body["message"]
+    assert (body["ken"], body["kth"], body["kdi"]) == (0.08, 0.30, 0.30)
+    assert body["sonic"] is True
+
+
+def test_calibrate_bounded_flag_reaches_response(client, monkeypatch):
+    """A subsonic fit that ends on a search bound must say so - the web bar
+    renders its low-confidence caution off this flag."""
+
+    def bounded(**kwargs):
+        return FricCalibrationResult(
+            well_name=kwargs["well_name"],
+            target_bhp=kwargs["target_bhp"],
+            knz=kwargs["knz"],
+            seed_ken=kwargs["ken"],
+            best_ken=0.40,  # railed on KEN_BOUNDS[1]
+            best_kth=0.45,
+            best_kdi=0.62,
+            best_modeled_bhp=1210.0,
+            best_oil=300.0,
+            best_pf_rate=3000.0,
+            bhp_error=35.0,
+            converged=True,
+            iterations=42,
+            match_quality="fair",
+            bounded=True,
+            sonic=False,
+            starts_tried=5,
+        )
+
+    monkeypatch.setattr(fc, "calibrate_friction_coefs", bounded)
+    r = client.post(
+        "/api/calibrate",
+        json={"well": WELL, "params": _params(), "target_bhp": 1175.0, "test_whp": None},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["bounded"] is True
+    assert body["match_quality"] == "fair"
+    assert body["message"] is None  # only pinned runs carry a message

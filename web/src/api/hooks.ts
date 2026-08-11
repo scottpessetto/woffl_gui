@@ -4,19 +4,19 @@ import { api, get, post, stableStringify } from "./client";
 import type {
   AgingPumpsResponse,
   BatchResponse,
-  CalibrateRequest,
-  CalibrateResponse,
   ClearIprPinResponse,
   CombineJobStatus,
   CombineRequest,
   CombineStarted,
   EquivalentsResponse,
+  EventCalibrationRequest,
   IprFitRequest,
   IprFitResponse,
   IprPinResponse,
   JpHistoryResponse,
   KnobBounds,
   MarginalWcResponse,
+  MatchHealthRequest,
   MetaResponse,
   OptimizeJobStatus,
   OptimizeRunRequest,
@@ -29,6 +29,7 @@ import type {
   PropLockRequest,
   PropLockResponse,
   PumpCurveResponse,
+  ResponseHistoryResponse,
   SaveIprRequest,
   SaveIprResponse,
   SensitivityRequest,
@@ -162,14 +163,6 @@ export const usePropLock = (well: string) => {
   });
 };
 
-/** BHP friction calibration - read-only compute, can take tens of seconds
- * (Nelder-Mead multi-start over full solves). The caller applies the
- * returned ken/kth/kdi to the sidebar on success. */
-export const useCalibrate = () =>
-  useMutation({
-    mutationFn: (req: CalibrateRequest) => post<CalibrateResponse>("/calibrate", req),
-  });
-
 /**
  * Expensive sweeps run on explicit submit: pages snapshot the params into
  * local state and pass the snapshot here (null = not requested yet).
@@ -293,6 +286,22 @@ export const useJpHistory = (well: string) =>
     staleTime: MIN_30,
   });
 
+/** Daily (PF pressure, BHP) history for the Solver's advanced suction-
+ * response diagnostic. Older servers lack the endpoint - retry: false so
+ * the 404 settles immediately and the panel can hide itself. */
+export const useResponseHistory = (well: string) =>
+  useQuery({
+    queryKey: ["response-history", well],
+    queryFn: ({ signal }) =>
+      get<ResponseHistoryResponse>(
+        `/wells/${encodeURIComponent(well)}/response-history`,
+        signal,
+      ),
+    enabled: well !== "Custom",
+    staleTime: MIN_30,
+    retry: false,
+  });
+
 export const useWellDatabase = () =>
   useQuery({
     queryKey: ["well-database"],
@@ -344,6 +353,22 @@ export const useStartOptimizeRun = () =>
   useMutation({
     mutationFn: (req: OptimizeRunRequest) =>
       post<OptimizeRunStarted>("/optimize/run", req),
+  });
+
+/** Start a match-health scorecard job (background job server-side);
+ * poll it with useOptimizeJob like any optimization run. */
+export const useStartMatchHealth = () =>
+  useMutation({
+    mutationFn: (req: MatchHealthRequest) =>
+      post<OptimizeRunStarted>("/optimize/match-health", req),
+  });
+
+/** Start an event-calibration job for one well (background job server-side);
+ * poll it with useOptimizeJob like any optimization run. */
+export const useStartEventCalibration = () =>
+  useMutation({
+    mutationFn: (req: EventCalibrationRequest) =>
+      post<OptimizeRunStarted>("/optimize/event-calibration", req),
   });
 
 /** Poll one run job every 2.5 s while it's running; stops when settled.

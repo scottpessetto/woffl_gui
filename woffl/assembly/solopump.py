@@ -347,6 +347,8 @@ def jetpump_solver(
     prop_su: ResMix,
     prop_pf: FormWater,
     jpump_direction: str = "reverse",
+    *,
+    mach_crit: float = 1.0,
 ) -> tuple[float, bool, float, float, float, float]:
     """JetPump Solver
 
@@ -365,6 +367,10 @@ def jetpump_solver(
         prop_su (ResMix): Reservoir Mixture Conditions
         prop_pf (FormWater): Power Fluid Properties, assumed to be the same as formation water
         jpump_direction (str): Jet Pump Direction, "forward" or "reverse" Circulating
+        mach_crit (float): Critical Mach number where the throat entry chokes,
+            unitless. Default 1.0 (historic behavior).
+            [LIBRARY change -> upstream PR to kwellis/woffl] calibratable
+            choking threshold, keyword-only; forwarded to jf.psu_minimize.
 
     Returns:
         psu (float): Suction Pressure, psig
@@ -375,7 +381,12 @@ def jetpump_solver(
         mach_te (float): Throat Entry Mach, unitless
     """
     psu_min, qoil_std, te_book = jf.psu_minimize(
-        tsu=tsu, ken=jpump.ken, ate=jpump.ate, ipr_su=ipr_su, prop_su=prop_su
+        tsu=tsu,
+        ken=jpump.ken,
+        ate=jpump.ate,
+        ipr_su=ipr_su,
+        prop_su=prop_su,
+        mach_crit=mach_crit,
     )
     psu_max = ipr_su.pres - 10  # max suction pressure that can be used
 

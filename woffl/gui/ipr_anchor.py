@@ -505,13 +505,28 @@ FRICTION_PROPS = {
     "jpfric_entry": "ken",
     "jpfric_throat": "kth",
     "jpfric_diffuser": "kdi",
+    # Multi-point event calibration knobs (pillar 1b). Both ride the same
+    # save/skip/read discipline as ken/kth/kdi: canon prop_xref ids, pushed
+    # only when calibrated off the no-op default, restored on every open.
+    "jpfric_nozzle_area": "nozzle_area_factor",
+    "jp_mach_crit": "mach_crit",
 }
 
 # The sidebar's uncalibrated defaults (params.py / _render_loss_coefs). A save
 # where friction still sits at these AND nothing is stored pushes nothing —
 # otherwise every 📌 click would materialize explicit default rows well by
 # well, turning "never calibrated" (NULL → library default) into fake data.
-SIDEBAR_FRIC_DEFAULTS = {"ken": 0.03, "kth": 0.3, "kdi": 0.4}
+# nozzle_area_factor / mach_crit share the rule: 1.0 is the exact no-op for
+# both (dnz untouched / historic sonic cutoff), so an uncalibrated 1.0 is
+# "never calibrated", not data — unless a saved override already exists, in
+# which case a deliberate revert-to-1.0 is a real recalibration and pushes.
+SIDEBAR_FRIC_DEFAULTS = {
+    "ken": 0.03,
+    "kth": 0.3,
+    "kdi": 0.4,
+    "nozzle_area_factor": 1.0,
+    "mach_crit": 1.0,
+}
 
 _saved_ipr_cache: dict = {}
 
@@ -755,6 +770,8 @@ def save_ipr_values(
     ken: float | None = None,
     kth: float | None = None,
     kdi: float | None = None,
+    nozzle_area_factor: float | None = None,
+    mach_crit: float | None = None,
     bubble_point: float | None = None,
     form_temp: float | None = None,
     comment: str | None = None,
@@ -814,7 +831,16 @@ def save_ipr_values(
         # the BHP-calibration survival fix, Scott 2026-07-30).
         stored = load_saved_ipr(well_name)
         stored_fric = (stored or {}).get("friction", {})
-        for key, val in (("ken", ken), ("kth", kth), ("kdi", kdi)):
+        for key, val in (
+            ("ken", ken),
+            ("kth", kth),
+            ("kdi", kdi),
+            # Event-calibration knobs share the friction discipline exactly:
+            # 1.0 is the no-op default for both, so an uncalibrated 1.0 is
+            # skipped; a revert-to-1.0 over a stored override still pushes.
+            ("nozzle_area_factor", nozzle_area_factor),
+            ("mach_crit", mach_crit),
+        ):
             if val is None or (isinstance(val, float) and np.isnan(val)):
                 continue
             val = float(val)

@@ -31,6 +31,19 @@ def create_jetpump(nozzle_no: str, area_ratio: str, ken: float, kth: float, kdi:
     return JetPump(nozzle_no=nozzle_no, area_ratio=area_ratio, ken=ken, kth=kth, kdi=kdi)
 
 
+def apply_nozzle_area_factor(jetpump: JetPump, factor: float) -> JetPump:
+    """Scale a pump's nozzle diameter so its flow area is ``factor`` x catalog.
+
+    ``dnz_eff = dnz_catalog * sqrt(factor)`` - the pf_calibration wear
+    mechanics. JetPump.anz/ate are derived properties, so they track the
+    scaled dnz automatically. ``factor=1.0`` is a no-op (byte-identical
+    solves). Mutates and returns the pump.
+    """
+    if factor != 1.0:
+        jetpump.dnz = jetpump.dnz * float(np.sqrt(factor))
+    return jetpump
+
+
 # mirrors woffl/gui/utils.py:create_pipes
 def create_pipes(
     tubing_od: float = 4.5,
@@ -229,6 +242,7 @@ def build_sim_objects(
     """
     p = sp.to_simulation_params(well)
     jetpump = create_jetpump(p.nozzle_no, p.area_ratio, p.ken, p.kth, p.kdi)
+    apply_nozzle_area_factor(jetpump, sp.nozzle_area_factor)
     _tube, _case, wellbore = create_pipes(
         tubing_od=p.tubing_od,
         tubing_thickness=p.tubing_thickness,

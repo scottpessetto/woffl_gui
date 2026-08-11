@@ -119,6 +119,10 @@ export function IprControls({
         ken: p.ken,
         kth: p.kth,
         kdi: p.kdi,
+        // Event-calibration knobs share the friction skip discipline
+        // (1.0 no-op skipped unless a saved override exists).
+        nozzle_area_factor: p.nozzle_area_factor,
+        mach_crit: p.mach_crit,
         // Characterization values ride along ONLY when the engineer moved
         // them off the seed the server assembled. resvr_bubb / resvr_temp are
         // canonical props: re-pushing the seed on every click would fill

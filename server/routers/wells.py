@@ -7,11 +7,13 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from server.schemas import (
+    ResponseHistoryResponse,
     WellContext,
     WellProfileResponse,
     WellsResponse,
     WellTestsResponse,
 )
+from server.services import response_history as response_history_svc
 from server.services import tests as tests_svc
 from server.services import wells as wells_svc
 
@@ -58,3 +60,13 @@ def get_well_profile(
 ) -> dict[str, Any]:
     """Survey-based well profile; field-model preset fallback when no survey."""
     return wells_svc.well_profile_payload(name, jpump_tvd, field_model)
+
+
+
+@router.get("/wells/{name}/response-history", response_model=ResponseHistoryResponse)
+def get_well_response_history(name: str) -> dict[str, Any]:
+    """Daily (PF pressure, BHP) scatter vs the current pump era, plus the
+    mined field-evidence summary - the advanced suction-response panel. The
+    model curve overlay comes from POST /api/compute/pf-range client-side.
+    """
+    return response_history_svc.response_history(name)

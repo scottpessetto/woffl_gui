@@ -22,6 +22,7 @@ import { Card, ErrorNote, Spinner } from "../components/ui";
 import { useOptimizeStore } from "../state/optimize";
 import { useParamsStore } from "../state/params";
 
+import { MatchHealthPanel } from "./optimize/MatchHealthPanel";
 import { usePadOffline, type ShutInfo } from "./optimize/offline";
 import { RunPanel } from "./optimize/RunPanel";
 
@@ -349,6 +350,12 @@ export default function OptimizePage() {
             )
           }
         />
+      )}
+
+      {view !== "board" && view !== "CFP" && (
+        // Sibling section below the run panel: the per-well model-vs-field
+        // scorecard for the pad this tab runs. CFP has no single pad plant.
+        <MatchHealthPanel pad={view} />
       )}
 
       {view === "board" && (

@@ -829,7 +829,8 @@ export function RunPanel({
   };
 
   const result = job.data?.status === "done" ? job.data.result : null;
-  const padResult = result !== null && "rows" in result ? result : null;
+  // "meta" too: the match-health scorecard payload also carries "rows".
+  const padResult = result !== null && "rows" in result && "meta" in result ? result : null;
   const chokeResult = result !== null && "plan" in result ? result : null;
   const chokeMode = kind === "pad" && strategy === "choke";
 

@@ -952,6 +952,19 @@ def match_check(
                 "model_pf": mp,
                 "pf_ratio": pf_ratio,
                 "pf_flag": match_flag(pf_ratio),
+                # Suction pressure + sonic status ride along for the
+                # match-health scorecard; .get() so a test fake without the
+                # keys degrades to None instead of raising.
+                "model_psu": (
+                    float(perf["suction_pressure"])
+                    if perf and perf.get("suction_pressure") is not None
+                    else None
+                ),
+                "sonic": (
+                    bool(perf["sonic_status"])
+                    if perf and perf.get("sonic_status") is not None
+                    else None
+                ),
             }
         )
     return rows, header
@@ -1215,13 +1228,10 @@ def _trim_to_budget(wells: list[dict], budget: float) -> tuple[float, float, Opt
     return total_pf, total_oil, lam
 
 
-def _vogel_ipr_curve(wc) -> Optional[list[list[float]]]:
-    """25-point Vogel IPR curve for the landing table's per-well chart.
-
-    Anchored exactly like the solver's inflow (oil-basis rate = total fluid
-    x (1 - water cut), see NetworkOptimizer._create_well_objects). Points are
-    ``[oil_bopd, pwf_psi]`` from pwf = res_pres (oil 0) down to pwf = 0
-    (oil = vogel qmax), rounded to 1 decimal. None when the config lacks a
+def _oil_vogel(wc) -> Optional[InFlow]:
+    """Oil-basis Vogel inflow anchored exactly like the solver's inflow
+    (oil rate = total fluid x (1 - water cut), see
+    NetworkOptimizer._create_well_objects). None when the config lacks a
     usable qwf/pwf/res_pres or the anchor is unphysical (pwf >= res_pres).
     """
     qwf = getattr(wc, "qwf", None)
@@ -1231,21 +1241,154 @@ def _vogel_ipr_curve(wc) -> Optional[list[list[float]]]:
         return None
     form_wc = getattr(wc, "form_wc", None) or 0.0
     try:
-        inflow = InFlow(
+        return InFlow(
             qwf=float(qwf) * (1.0 - float(form_wc)),
             pwf=float(pwf),
             pres=float(pres),
         )
-        n = 25
-        return [
-            [
-                round(inflow.oil_flow(float(pres) * (n - 1 - i) / (n - 1), method="vogel"), 1),
-                round(float(pres) * (n - 1 - i) / (n - 1), 1),
-            ]
-            for i in range(n)
-        ]
     except (ValueError, TypeError):
         return None
+
+
+def _vogel_ipr_curve(wc) -> Optional[list[list[float]]]:
+    """25-point Vogel IPR curve for the landing table's per-well chart.
+
+    Anchored via ``_oil_vogel`` (shared with the evidence suction
+    correction). Points are ``[oil_bopd, pwf_psi]`` from pwf = res_pres
+    (oil 0) down to pwf = 0 (oil = vogel qmax), rounded to 1 decimal. None
+    when the config lacks a usable anchor.
+    """
+    inflow = _oil_vogel(wc)
+    if inflow is None:
+        return None
+    pres = inflow.pres
+    n = 25
+    return [
+        [
+            round(inflow.oil_flow(pres * (n - 1 - i) / (n - 1), method="vogel"), 1),
+            round(pres * (n - 1 - i) / (n - 1), 1),
+        ]
+        for i in range(n)
+    ]
+
+
+# Evidence gate: a model cavitation floor is only "contradicted" when it sits
+# more than this far ABOVE the measured flowing-BHP floor (below that the
+# field data CONFIRMS the model and the suction response is left alone).
+_EVIDENCE_VIOLATION_MIN_PSI = 25.0
+
+# A well-measured response slope (beta = -dBHP/dPpf) this steep falsifies a
+# cavitation-pinned (zero-response) model even when the floor itself is
+# confirmed. Field separation on M-Pad: insensitive wells measure
+# beta <= 0.022, responsive wells >= 0.04, so 0.03 splits the groups cleanly.
+_EVIDENCE_BETA_MIN = 0.03
+
+
+def _apply_suction_evidence(
+    grid: list[dict],
+    levels: list[float],
+    names: list[str],
+    evidence: dict[str, dict],
+    configs_by_name: dict,
+) -> dict[str, dict]:
+    """Overwrite the priced grid's suction response with field evidence on
+    wells where measurement contradicts the model's cavitation floor.
+
+    Per well with an evidence row (plain dict: floor/psu_ref/beta/
+    beta_source/...): find the top solvable ladder level k*; if the model is
+    cavitation-pinned there (sonic True), the evidence falsifies it - the
+    model's suction floor sits more than ``_EVIDENCE_VIOLATION_MIN_PSI``
+    above the measured floor, OR a well-measured beta of at least
+    ``_EVIDENCE_BETA_MIN`` demonstrates a suction response the pinned model
+    denies - and the evidence + Vogel anchor are usable, replace every
+    solvable level k <= k* with the field response::
+
+        psu_e = psu_ref + beta * (levels[k*] - levels[k])
+        oil_e = 0 if psu_e >= res_pres else oil_full * q(psu_e) / q(psu_ref)
+
+    PF stays the model's (validated hydraulics); the sonic flag is cleared
+    (corrected points are not cavitation-pinned). At k* the point anchors to
+    (oil_full, psu_ref) exactly. A psu_ref at or above the fit's res_pres is
+    unusable (InFlow rejects it) -> skip, no correction.
+
+    Mutates ``grid`` in place and returns bookkeeping for row assembly:
+    ``{well: {"floor", "violation", "beta", "beta_source", "gate"}}`` where
+    ``gate`` is "floor" (violation, the stronger claim, wins when both
+    trigger) or "response", and ``violation`` is measured against the
+    ORIGINAL model floor at k* (the grid's psu there is psu_ref after the
+    overwrite).
+    """
+    corrected: dict[str, dict] = {}
+    for w in names:
+        ev = evidence.get(w)
+        if not ev:
+            continue
+        k_star = None
+        for k in range(len(levels) - 1, -1, -1):
+            if grid[k].get(w) is not None:
+                k_star = k
+                break
+        if k_star is None:
+            continue  # never solvable: nothing to correct
+        v = grid[k_star][w]
+        oil_full = float(v[0])
+        psu_model = float(v[2]) if len(v) > 2 and v[2] is not None else None
+        sonic = v[3] if len(v) > 3 else None
+        if sonic is not True:
+            continue  # model suction already responsive
+        floor = ev.get("floor")
+        floor_violated = (
+            floor is not None
+            and psu_model is not None
+            and psu_model - float(floor) > _EVIDENCE_VIOLATION_MIN_PSI
+        )
+        beta = ev.get("beta")
+        # only a MEASURED response can falsify the pinned model: pad- and
+        # default-sourced betas are fleet priors, never grounds to correct
+        response_shown = (
+            ev.get("beta_source") == "well"
+            and beta is not None
+            and float(beta) >= _EVIDENCE_BETA_MIN
+        )
+        if not (floor_violated or response_shown):
+            continue  # evidence CONFIRMS the model (floor and response)
+        psu_ref = ev.get("psu_ref")
+        if psu_ref is None or beta is None:
+            continue
+        inflow = _oil_vogel(configs_by_name.get(w))
+        if inflow is None:
+            continue
+        psu_ref = float(psu_ref)
+        beta = float(beta)
+        if psu_ref >= inflow.pres:
+            continue  # measured suction above the fit's res_pres: unusable
+        q_ref = inflow.oil_flow(psu_ref)
+        if q_ref <= 0.0:
+            continue
+        for k in range(k_star + 1):
+            vk = grid[k].get(w)
+            if vk is None:
+                continue
+            pf_k = float(vk[1])
+            psu_e = psu_ref + beta * (levels[k_star] - levels[k])
+            oil_e = (
+                0.0
+                if psu_e >= inflow.pres
+                else oil_full * inflow.oil_flow(psu_e) / q_ref
+            )
+            grid[k][w] = (oil_e, pf_k, psu_e, None)
+        corrected[w] = {
+            "floor": float(floor) if floor is not None else None,
+            "violation": (
+                max(0.0, psu_model - float(floor))
+                if floor is not None and psu_model is not None
+                else None
+            ),
+            "beta": beta,
+            "beta_source": ev.get("beta_source"),
+            "gate": "floor" if floor_violated else "response",
+        }
+    return corrected
 
 
 def _classify_action(basis: str, psi, oil: float, pf: float, header_psi: float) -> str:
@@ -1278,6 +1421,7 @@ def run_choke_optimization(
     *,
     n_levels: int = 10,
     progress: Optional[Callable] = None,
+    evidence: dict[str, dict] | None = None,
 ):
     """Short-term PF plan with every well HELD on its installed pump: no
     jet-pump changeouts, only per-well PF throttling (choke back) or shut-in.
@@ -1309,18 +1453,30 @@ def run_choke_optimization(
         test_rates (dict): well_name -> (oil_bopd, pf_bpd) measured median.
         n_levels (int): ladder size across the pressure window (default 10).
         progress (Callable): ``(step, total, pressure, pf, oil)`` per pass.
+        evidence (dict | None): well_name -> evidence row (plain dict with
+            floor/psu_ref/beta/beta_source/...) from field pressure history;
+            None (default) leaves the run byte-identical to today.
 
     Returns:
         tuple: ``(rows, meta)``. Rows are sorted action-first (shut, choke,
         hold, full, excluded; biggest PF freed first) and carry per-well
         deltas vs full-open plus ``projected_oil`` (measured test oil x the
-        model ratio chosen/today — model bias cancels, same anchoring as
-        ``pf_what_if_rows``). ``meta`` keeps the uniform contract keys the
-        charts read (header_psi, total_pf_bpd, total_oil_bopd, sweep, ...)
-        plus ``lambda_bopd_per_bpd``, ``frontier_cap_bpd``,
-        ``header_today_psi``, ``projected_d_oil_bopd``, the action counts,
-        and ``ladder`` — the header-drop decision ladder: one rung per
-        ladder level below the winning header, answering "if the bank
+        model ratio chosen/today - model bias cancels, same anchoring as
+        ``pf_what_if_rows``). When ``evidence`` falsifies a well's
+        cavitation-pinned model suction - the model floor is violated or a
+        well-measured response beta shows sensitivity the model denies -
+        its suction response is replaced by the field data
+        (``_apply_suction_evidence``) and the row says so via
+        ``suction_basis``/``evidence_gate`` ("floor" | "response" | None;
+        "floor" wins when both trigger)/``evidence_floor_psi``/
+        ``floor_violation_psi``/``response_beta``/``beta_source``. ``meta``
+        keeps the uniform
+        contract keys the charts read (header_psi, total_pf_bpd,
+        total_oil_bopd, sweep, ...) plus ``lambda_bopd_per_bpd``,
+        ``frontier_cap_bpd``, ``header_today_psi``,
+        ``projected_d_oil_bopd``, ``n_evidence_corrected``, the action
+        counts, and ``ladder`` - the header-drop decision ladder: one rung
+        per ladder level below the winning header, answering "if the bank
         degrades until the all-run header settles here, what is the best
         response and what does it gain over doing nothing".
     """
@@ -1354,6 +1510,20 @@ def run_choke_optimization(
                 sonic_at[(w, levels[k])] = bool(v[3])
         if progress:
             progress(k + 1, n_levels + 1, level, 0.0, 0.0)
+
+    # -- evidence-corrected suction response: overwrite the grid where field
+    #    data contradicts the model's cavitation floor (PF stays model). The
+    #    frontier/trim/ladder/charts all inherit the corrected grid.
+    corrected: dict[str, dict] = {}
+    if evidence:
+        configs_by_name = {wc.well_name: wc for wc in well_configs}
+        corrected = _apply_suction_evidence(
+            grid, levels, names, evidence, configs_by_name
+        )
+        for w in corrected:
+            # corrected points are not cavitation-pinned
+            for level in levels:
+                sonic_at.pop((w, level), None)
 
     # -- today anchor: the header the plant settles to for the measured PF
     #    draw; per-well model-at-today is the bias reference for projections
@@ -1463,6 +1633,22 @@ def run_choke_optimization(
             _, oil_1, pf_1, _ = st["opts"][st["idx"] + 1]
             nxt = (oil - oil_1) / (pf - pf_1) if pf > pf_1 else None
 
+        # evidence provenance: floor/violation for ANY model-basis well with
+        # an evidence row; beta/beta_source only when the suction response
+        # was actually corrected. For corrected wells full_raw's psu is
+        # psu_ref (post-overwrite), so the violation comes from the
+        # bookkeeping captured against the ORIGINAL model floor.
+        ev = (evidence or {}).get(w)
+        corr = corrected.get(w)
+        ev_floor = None
+        ev_violation = None
+        if st["basis"] == "model" and ev is not None:
+            ev_floor = ev.get("floor")
+            if corr is not None:
+                ev_violation = corr["violation"]
+            elif ev_floor is not None and psu_f is not None:
+                ev_violation = max(0.0, float(psu_f) - float(ev_floor))
+
         cc = current_choices.get(w)
         rows.append(
             {
@@ -1494,6 +1680,13 @@ def run_choke_optimization(
                 "test_pf": float((test_rates.get(w) or (0, 0))[1] or 0.0) or None,
                 "projected_oil": projected,
                 "next_trim_bopd_per_bpd": nxt,
+                # evidence-corrected suction response provenance
+                "evidence_floor_psi": ev_floor,
+                "floor_violation_psi": ev_violation,
+                "response_beta": corr["beta"] if corr else None,
+                "beta_source": corr["beta_source"] if corr else None,
+                "suction_basis": "evidence" if corr else "model",
+                "evidence_gate": corr["gate"] if corr else None,
             }
         )
     rows.sort(key=lambda r: (_ACTION_RANK[r["action"]], r["d_pf_vs_full"]))
@@ -1585,6 +1778,7 @@ def run_choke_optimization(
         "n_shut": counts["shut"],
         "n_held": counts["hold"],
         "n_excluded": counts["excluded"],
+        "n_evidence_corrected": len(corrected),
         "converged": True,  # a sweep has no fixed point to miss
         "history": [],
         "sweep": sweep,

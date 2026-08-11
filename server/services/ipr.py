@@ -332,6 +332,8 @@ def save(well: str, req: schemas.SaveIprRequest) -> dict[str, Any]:
         ken=req.ken,
         kth=req.kth,
         kdi=req.kdi,
+        nozzle_area_factor=req.nozzle_area_factor,
+        mach_crit=req.mach_crit,
         bubble_point=req.bubble_point,
         form_temp=req.form_temp,
         comment=req.comment,

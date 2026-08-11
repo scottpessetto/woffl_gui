@@ -467,6 +467,65 @@ class TestFrictionSave:
         fric = {p: v for (_, p, v, _) in pushes if p.startswith("jpfric")}
         assert fric == {"jpfric_throat": 0.42}
 
+    # -- event-calibration knobs (pillar 1b): same discipline, 1.0 default --
+
+    def test_event_cal_defaults_at_unity_are_never_materialized(
+        self, pushes, monkeypatch
+    ):
+        """Nothing stored + knobs at the 1.0 no-op → no rows. An uncalibrated
+        1.0 is "never calibrated", not data (the ken/kth/kdi convention)."""
+        monkeypatch.setattr(ia, "load_saved_ipr", lambda w: None)
+        n, msg = self._save(nozzle_area_factor=1.0, mach_crit=1.0)
+        assert n == 6
+        assert not any(
+            p in ("jpfric_nozzle_area", "jp_mach_crit") for (_, p, _, _) in pushes
+        )
+        assert "friction" not in msg
+
+    def test_event_cal_knobs_push_when_calibrated(self, pushes, monkeypatch):
+        monkeypatch.setattr(ia, "load_saved_ipr", lambda w: None)
+        n, msg = self._save(nozzle_area_factor=1.12, mach_crit=1.6)
+        fric = {
+            p: v for (_, p, v, _) in pushes
+            if p in ("jpfric_nozzle_area", "jp_mach_crit")
+        }
+        assert fric == {"jpfric_nozzle_area": 1.12, "jp_mach_crit": 1.6}
+        assert n == 8
+        assert "BHP-calibrated friction" in msg
+
+    def test_event_cal_unchanged_stored_writes_no_history_noise(
+        self, pushes, monkeypatch
+    ):
+        stored = {
+            "values": {},
+            "friction": {"nozzle_area_factor": 1.12, "mach_crit": 1.6},
+            "saved_at": None, "saved_by": "scott", "pin_at": None,
+        }
+        monkeypatch.setattr(ia, "load_saved_ipr", lambda w: stored)
+        self._save(nozzle_area_factor=1.12, mach_crit=1.6)
+        assert not any(
+            p in ("jpfric_nozzle_area", "jp_mach_crit") for (_, p, _, _) in pushes
+        )
+
+    def test_event_cal_revert_to_unity_pushes_over_a_stored_override(
+        self, pushes, monkeypatch
+    ):
+        """A saved override exists → a deliberate revert to the 1.0 default is
+        a real recalibration and must land (mirrors the ken convention: the
+        default-skip only applies when nothing is stored)."""
+        stored = {
+            "values": {},
+            "friction": {"nozzle_area_factor": 1.12, "mach_crit": 1.6},
+            "saved_at": None, "saved_by": "scott", "pin_at": None,
+        }
+        monkeypatch.setattr(ia, "load_saved_ipr", lambda w: stored)
+        self._save(nozzle_area_factor=1.0, mach_crit=1.0)
+        fric = {
+            p: v for (_, p, v, _) in pushes
+            if p in ("jpfric_nozzle_area", "jp_mach_crit")
+        }
+        assert fric == {"jpfric_nozzle_area": 1.0, "jp_mach_crit": 1.0}
+
 
 # ── characterization values a permutation can move (2026-08-08) ─────────────
 # The sensitivity study varies bubble point and formation temp; both prop ids
@@ -551,6 +610,24 @@ class TestFrictionLoad:
         info = ia.load_saved_ipr("MPB-28")
         assert info["values"]["qwf_liq"] == 600.0
         assert info["friction"] == {"kdi": 0.55}
+
+    def test_event_cal_knobs_restore_like_friction(self, monkeypatch):
+        """jpfric_nozzle_area / jp_mach_crit rows come back on the friction
+        map (the read path is generic over FRICTION_PROPS) - with or without
+        a saved curve."""
+        self._wire(
+            monkeypatch,
+            _hist_df(
+                [
+                    ("jpfric_nozzle_area", 1.12, _ts("2026-08-10"), "scott"),
+                    ("jp_mach_crit", 1.6, _ts("2026-08-10"), "scott"),
+                ]
+            ),
+        )
+        info = ia.load_saved_ipr("MPB-28")
+        assert info is not None
+        assert info["values"] == {}
+        assert info["friction"] == {"nozzle_area_factor": 1.12, "mach_crit": 1.6}
 
     def test_friction_survives_even_when_the_pin_is_newer(self, monkeypatch):
         """The pin outranking the VALUES must not discard the calibration —
