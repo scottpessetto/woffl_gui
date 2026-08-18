@@ -11,7 +11,7 @@ import os
 
 import pytest
 
-from woffl.gui.scotts_tools._common import _LOCAL_DEFAULT_CAP, worker_ceiling
+from woffl.assembly.parallelism import _LOCAL_DEFAULT_CAP, worker_ceiling
 
 CPUS = os.cpu_count() or 1
 LOCAL_DEFAULT = min(CPUS, _LOCAL_DEFAULT_CAP)

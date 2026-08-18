@@ -68,16 +68,6 @@ class TestSavedWins:
         assert ia.saved_wins(None, None) is False
 
 
-class TestDefaultSigShared:
-    def test_solver_aliases_the_same_object(self):
-        """The sidebar seeds saved values UNDER the Solver's default anchor
-        sig (the manual-edit affordance) — the two must be the same constant
-        or the Solver's sync would clobber restored values on first render."""
-        from woffl.gui.tabs.jetpump_solver import _IPR_SIDEBAR_DEFAULT_SIG
-
-        assert _IPR_SIDEBAR_DEFAULT_SIG is ia.IPR_SIDEBAR_DEFAULT_SIG
-
-
 # ── save: the sidebar's measured liquid rate → prop_hist ────────────────────
 
 

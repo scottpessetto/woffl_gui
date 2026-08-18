@@ -17,11 +17,12 @@ inventoried there.
 ## 1. What this repo is
 
 `woffl` — *Water Optimization For Fluid Lift* — a numerical solver for liquid-powered
-jet-pump oil wells (Milne Point Unit), plus a Streamlit GUI on top of it.
+jet-pump oil wells (Milne Point Unit), plus a React SPA + FastAPI web app on top of it.
 
 - `origin` = `github.com/scottpessetto/woffl_gui`, a **fork** of `github.com/kwellis/woffl`.
   There is currently **no `upstream` remote configured** (`git remote -v` shows only `origin`).
-- Deployed as a **Databricks App**: `app.yaml` → `streamlit run woffl/gui/app.py`.
+- Deployed as a **Databricks App**: `app.yaml` → `uvicorn server.main:app` (React SPA
+  served from `web/dist`). The Streamlit app it replaced was deleted 2026-08-18.
   Service principal `2013fc45-c30e-40ac-bef0-df0a758faa3c`; SQL warehouse `698745db7da46ba3`.
 - `README.md` is the **upstream library README** and is stale for this fork. It documents no
   GUI, no Databricks, no pads — and it references `from woffl.geometry import Annulus`, which
@@ -36,7 +37,7 @@ black, or isort on push. You must verify locally.
 
 ## 2. Commands
 
-The venv is Python 3.13.7 / streamlit 1.57 / pytest 9.0.3 (the package floor is `>=3.10`).
+The venv is Python 3.13.7 / pytest 9.0.3 (the package floor is `>=3.10`).
 
 ```bash
 # Full suite — this exact invocation. PYTHONPATH=. is mandatory: tests/ is a package
@@ -47,7 +48,8 @@ WOFFL_MAX_WORKERS=1 PYTHONPATH=. ./venv/Scripts/python.exe -m pytest tests/ -q
 ... -m pytest tests/ -q --run-live
 
 # Run the app
-streamlit run woffl/gui/app.py
+uvicorn server.main:app --port 8000        # API + the built SPA
+cd web && npm run dev                       # Vite dev server, proxies /api to :8000
 ```
 
 Formatting is **black + isort** (`pyproject.toml:36`), by convention only — nothing enforces it.
@@ -181,7 +183,7 @@ flow/       physics: IPR, Beggs-Brill, jet-pump internals -> pvt, geometry
 assembly/   whole-well orchestration + (fork-only) Databricks clients
    |            jetpump_solver(), BatchPump, network_optimizer, *_client
    v
-gui/        Streamlit. Nothing below may import this.
+gui/        Fork-only pad/CFP plants + optimizers. No UI code (Streamlit deleted).
 ```
 
 **Never** import `woffl.gui` from `geometry`/`pvt`/`flow`/`assembly`. `geometry` and `pvt` may
@@ -220,112 +222,26 @@ Snapshots convert `qwf/(1-wc)`; the optimizer converts back.
 
 ## 6. GUI conventions
 
-Entrypoint `woffl/gui/app.py`. Routing is a **manual `st.radio`** with `key="app_mode_radio"`
-(`app.py:334`) plus an if/elif dispatch with lazy per-branch imports. There is no
-`st.navigation`, no `st.Page`, no `pages/` dir. Renaming a mode requires a pre-render
-session_state migration or live sessions silently reset (two already exist, `app.py:303-323`).
+The Streamlit app was **DELETED 2026-08-18**. `woffl/gui/` no longer holds any
+page, tab, sidebar or session-state code, `streamlit` is not a dependency, and
+nothing in the tree may import it. What survives under `woffl/gui/` is 14
+Streamlit-free modules the FastAPI server depends on: the pad/CFP plants and
+optimizers (`pad_plant_base`, `{s,i,m}_pad_plant`, `cfp_pad_plant`,
+`pad_optimize`, `cfp_moves`, `cfp_optimize`), `params` (the RATE CONVENTION),
+`ipr_anchor`, `fric_calibration`, `pump_identity`, and `memory_gauge` (parse +
+apply only). They are fork-only and keep the `gui` package name purely to avoid
+churn; new server-facing helpers belong in `server/` or `woffl/assembly/`.
 
-Import-time side effects in `app.py` you must preserve: the `sys.path` insert,
-`set_entry_user_provider(_streamlit_forwarded_user)` (`app.py:53-55` — hosted attribution comes
-from the `X-Forwarded-Email` header; without it every write is stamped with the service
-principal), and the module-level `@st.cache_data` jp-history fetcher.
+Construction helpers live in `woffl/assembly/sim_factories.py` (Streamlit-free,
+fork-only) — `create_pvt_components`, `create_jetpump`, `create_pipes`,
+`create_inflow`, `create_reservoir_mix`, `run_jetpump_solver`. That module is
+the ONE copy: `network_optimizer` and the server's `services/factories.py` both
+use it, replacing the old "faithful copy minus Streamlit" duplication.
+`woffl/assembly/parallelism.py` holds `worker_ceiling`/`usable_cpus` for the
+same reason — importing it must never drag in a UI framework.
 
-### Pads: two layers, do not conflate
-
-- **Physics** — `PadPlant` (`pad_plant_base.py:66`) with 9 `NotImplementedError` overrides and
-  class attrs `coupling` / `n_pump_options` / `max_header_psi`. Subclasses `SPadPlant`,
-  `IPadPlant`, `MPadPlant`, `FixedHeaderPlant` all live **in that same file**.
-  `s_/i_/m_pad_plant.py` are delegation shims exposing `PLANT` — put physics in the class.
-  Every pressure handed to the optimizer must be clamped into **[1000, 5000] psi**.
-- **Page** — frozen `PadSpec` dataclass (`pad_page.py:70`) consumed by the single
-  `run_pad_page(spec)` render path (`pad_page.py:1590`). A `*_pad_page.py` owns only its `SPEC`,
-  a no-arg `run_*_pad_page()`, and pad-specific plot/warning hooks. Never fork `run_pad_page`.
-
-To add a pad: new `x_pad_page.py` with `SPEC` + no-arg entry function, unique `pad` and
-`prefix`, a plant (`FixedHeaderPlant(3200.0)` is a complete working pad), then register in
-**both** `pad_hub._SPEC_PADS` and `pad_hub._spec_for`. Nothing in `app.py` changes — the note at
-`pad_page.py:35-36` saying otherwise is stale. Add a spec test to `tests/test_pad_page_specs.py`.
-
-CFP (`cfp_pad_page.py`) is deliberately **not** a `PadSpec` — four pads share one plant with
-different delivered PF. Don't force it through `run_pad_page`.
-
-### The Solver renders two different layouts
-
-`tabs/jetpump_solver.render_tab` serves both the Single-Well page and the pad-review step, and
-they look nothing alike. The switch is one line:
-
-```python
-_standalone = hero_container is None   # True  = Single-Well page
-                                       # False = embedded in pad review
-```
-
-- **Standalone** is the workbench: verdict line → rate/pump trend → IPR curve `|` control panel
-  (50/50) → well tests. `app.py` also drops the `WOFFL Haus` header on this view, keyed off
-  `app_mode_radio` + `sw_active_view` from the *previous* run's widget state.
-- **Embedded** keeps the original stacked ordering, because the pad page injects
-  `hero_container` / `anchor_container` / `jp_strip_container` and positions them itself.
-
-Both branches are live — a change to one is not a change to the other. Zone containers are all
-declared up front (Streamlit paints in declaration order) and existing blocks are filled into
-the slots, so reordering never means moving code.
-
-Layout facts learned the hard way; don't re-derive them:
-- A column row is as tall as its tallest cell, so **columns only compress when cells balance**.
-  A 2/5 action panel (422px) wrapped its text into a 1,942px column and made the page *taller*;
-  a 350px table beside the ~1,100px IPR group was pure white space. 50/50 at ~600px works.
-- `st.metric` needs ~180px per card for a 5-digit value. Four across a half-width column clip to
-  `1,665 …`. Use text or fewer cards below full width.
-- `st.dataframe` already caps height and scrolls internally — capping it yourself buys nothing.
-- Streamlit's grid renders a float column's nulls as a literal `None` and **ignores a Styler's
-  `na_rep`** (the Styler is fine; its HTML has the em dash). Pre-format to strings and let the
-  Styler carry only colour. It also ignores `text-align` from a Styler.
-
-### Streamlit rules that break live sessions when violated
-
-- `@st.cache_data` only. There is zero `@st.cache_resource` and zero `@st.fragment` in the repo.
-- **Cached fetcher raises; uncached wrapper soft-fails.** Failures must never be cached
-  (`utils.py:1773` vs `utils.py:284`).
-- Pass cache-key args **explicitly** — `st.cache_data` keys on args as passed, so a no-arg call
-  caches under a different key and reruns the query.
-- Streamlit **forbids writing a widget's session_state key after that widget renders**. All
-  programmatic seeds run first — this is why `sync_pad` is called before any widget
-  (`pad_page.py:1599`).
-- A seed outside a widget's min/max is silently reset to the **minimum**. Adding a seeded
-  number input means adding its bounds to `sidebar.SEED_BOUNDS`.
-- `st.checkbox(value=...)` must read `st.session_state.get(key, default)`, never a literal.
-- Widget state is GC'd when its view isn't rendered — mirror persisted selections in a
-  **non-widget shadow key** (`pad_hub.py:29`).
-- Session key naming: `sw_*` single-well; `_leading_underscore` internal flags; pad pages use
-  `f"{spec.prefix}_..."` (`sp_`/`ip_`/`mp_`) — changing a prefix strands live sessions and is
-  test-pinned. Sidebar uses two tiers: logical `k` + widget `f"{k}_input"`.
-- Background cache warming = daemon `threading.Thread` + `add_script_run_ctx(thread)`, guarded
-  by a once-per-session flag, with per-fetch exceptions swallowed.
-- Downloads use `components/download.py:autodownload(...)`. **Never** a two-step
-  Generate-then-Download.
-- Never `print()` for warnings — invisible on Databricks Apps and useless inside `@st.cache_data`.
-- Never `d.get(k) or default` on numeric Databricks fields — NaN is truthy and reaches the solver.
-- Wrap every per-well batch loop iteration in `try/except`. One bad well must never blank a page.
-
-### Reuse, don't reinvent
-
-`utils.get_well_tests_for_well()` is the single source of truth for per-well tests (applies the
-memory-gauge BHP override, extended windows, manual tests, count cap). `utils.create_*` are the
-object factories. `tab_helpers.py` and `pad_helpers.py` are deliberately Streamlit-free and
-unit-tested. `params.SimulationParams` is the one container threaded sidebar → page → tabs.
-`explainers.render_kcoef_explainer()` is the one help block.
-
-### Add-here-too registries
-
-| Adding | Touch |
-|---|---|
-| App mode | `app.py:294-301` list **and** `app.py:348-379` dispatch (+ migration if renaming) |
-| Pad | `pad_hub._SPEC_PADS` **and** `pad_hub._spec_for` |
-| Single-well tab | `single_well_page._VIEWS` **and** `_render_view` **and** the import block |
-| Scott's Tools tab | `scotts_tools/page.py` import block, `tab_labels`, **and** the `with tabs[i]` body |
-| A `SimulationParams` field affecting sweep physics | `tab_helpers.physical_sweep_signature` — **or caches silently serve results computed under the old value** |
-| A seeded number input | `sidebar.SEED_BOUNDS` |
-| A stored per-well review field | the right tuple in `workflow_steps/well_review_store.py:46-121` (lands in the CSV schema) |
-| A GUI module | `tests/test_gui_smoke.py` `PAGE_MODULES` |
+The user-facing app is the React SPA in `web/` on the FastAPI server in
+`server/`; prose in `docs/web_port.md`.
 
 ### Web app (web/ + server/) charts - one stack, no exceptions
 
@@ -355,35 +271,16 @@ fixtures are file-local. Do **not** add a `python_files` setting to `pyproject.t
 Do not move or rename `tests/harness_cases.py` — the **deployed app** imports it via
 `woffl/gui/scotts_tools/test_harness.py`.
 
-### Writing a GUI test
+### Writing a server/API test
 
-There is no `streamlit.testing.AppTest` here. Three hand-rolled patterns, in preference order:
+`fastapi.testclient.TestClient` against `server.main:app`, with the data layer
+monkeypatched — no Databricks, no network. Cache-bearing services must be
+cleared between tests (`server.cache.clear_all_caches()`), and anything that
+touches the process pool patches `woffl.assembly.parallelism.worker_ceiling`
+plus `server.pool._EXECUTOR_CLS` (see `tests/test_pf_range_parallel.py`).
 
-1. **Function doesn't touch `st`** → mock nothing streamlit-related; monkeypatch only the data
-   functions. Reference: `tests/test_batch_automatch_inputs.py`.
-2. **Real streamlit available** → `monkeypatch.setattr(<module>, "st", fake)` where `fake` is a
-   small class with a dict `session_state`. Reference: `tests/test_well_chars_loading.py`.
-   If the real `st.cache_data` is live, clear the cache around the test.
-3. **Module must import before streamlit exists** → `MagicMock` + a passthrough `cache_data` +
-   `sys.modules.setdefault("streamlit", mock)`, then import the page module.
-   Reference: `tests/test_solver_ipr_sync.py:19-34`.
-
-⚠ Pattern 3 **poisons the process**: a later `import streamlit.components.v1` fails against a
-mock, making `test_gui_smoke` order-dependently flaky. Prefer 1 or 2.
-
-Always patch the **module's** `st` attribute, not the `streamlit` package.
-
-A plain-dict `session_state` cannot reproduce Streamlit's real widget-state GC or a full
-tab-switch. Fixes in that area must additionally be click-tested in the running app.
-
-Databricks in tests: monkeypatch/`patch` `execute_query`, `_new_connection`,
-`fetch_well_props_enriched`, `push_prop`, `resolve_entry_user`, and — critically —
-`load_saved_ipr`, or you hit the real client and trip the `.env` gate leak (§3).
-No test may reach the network unless marked `@pytest.mark.live`.
-
-Zero coverage today, per `docs/code_review_2026-07-01.md:445-450`: pad plant models, pad pages,
-all `workflow_steps`, `well_review_store`, Triage logic, and the `pf_scenario` / `jp_calibration`
-/ `jp_fric_trend` / `jp_washout` compute cores.
+The old hand-rolled Streamlit patterns (MagicMock `st`, `sys.modules.setdefault`,
+plain-dict `session_state`) are gone with the app — do not reintroduce them.
 
 ---
 

@@ -1,12 +1,12 @@
 # Databricks Apps config - WOFFL web app (React SPA + FastAPI).
 #
-# CUTOVER 2026-08-06: this app.yaml replaced the Streamlit config (preserved
-# in app-streamlit.yaml). Deploy = pull this repo in the workspace Git folder,
-# then Deploy from the app page. web/dist is committed - Databricks never runs
-# npm, so rebuild + commit dist whenever web/src changes (npm run build).
+# Deploy = pull this repo in the workspace Git folder, then Deploy from the
+# app page. web/dist is committed - Databricks never runs npm, so rebuild +
+# commit dist whenever web/src changes (npm run build).
 #
-# Rollback = copy app-streamlit.yaml over app.yaml (or git revert the cutover
-# commit), pull, Deploy.
+# The Streamlit app this replaced (cutover 2026-08-06) was DELETED 2026-08-18
+# along with app-streamlit.yaml, so rollback is git history, not a config
+# swap. streamlit/plotly/reportlab are no longer dependencies.
 #
 # uvicorn binds automatically: the Apps runtime sets UVICORN_HOST=0.0.0.0 and
 # UVICORN_PORT=DATABRICKS_APP_PORT for uvicorn/FastAPI apps.

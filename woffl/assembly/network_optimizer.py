@@ -324,7 +324,7 @@ class NetworkOptimizer:
         Returns:
             tuple: (wellbore, wellprofile, inflow, res_mix, prop_pf)
         """
-        from woffl.gui.utils import create_pvt_components
+        from woffl.assembly.sim_factories import create_pvt_components
 
         # Create tubing and casing, then combine into PipeInPipe
         tube = Pipe(out_dia=well.tubing_od, thick=well.tubing_thickness)

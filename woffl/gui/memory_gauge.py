@@ -23,7 +23,6 @@ from datetime import datetime
 from typing import Optional
 
 import pandas as pd
-import streamlit as st
 
 
 # ---------------------------------------------------------------------------
@@ -231,66 +230,6 @@ def parse_xlsx(file_bytes: bytes, source_filename: str) -> MemoryGaugeFile:
 # Session-state CRUD
 # ---------------------------------------------------------------------------
 
-_STATE_KEY = "_memory_gauge"
-
-
-def get_gauge(well_name: str) -> Optional[MemoryGaugeData]:
-    """Return the memory gauge for the given well, or None."""
-    return st.session_state.get(_STATE_KEY, {}).get(well_name)
-
-
-def store_gauge(data: MemoryGaugeData) -> None:
-    """Persist gauge data for a well in session state, replacing any prior upload."""
-    st.session_state.setdefault(_STATE_KEY, {})[data.well_name] = data
-
-
-def clear_gauge(well_name: str) -> None:
-    """Remove the gauge override for a well, if present."""
-    state = st.session_state.get(_STATE_KEY)
-    if state is not None:
-        state.pop(well_name, None)
-
-
-def has_gauge(well_name: str) -> bool:
-    return get_gauge(well_name) is not None
-
-
-def add_file_to_gauge(
-    well_name: str, new_file: MemoryGaugeFile
-) -> MemoryGaugeData:
-    """Append a parsed file to the well's gauge (creating one if needed).
-
-    Returns the new combined ``MemoryGaugeData`` and stores it under the
-    well's key — overwriting any prior instance — so subsequent
-    ``get_gauge`` calls see the wider window.
-    """
-    existing = get_gauge(well_name)
-    files = (existing.files if existing is not None else []) + [new_file]
-    new_gauge = MemoryGaugeData(well_name=well_name, files=files)
-    store_gauge(new_gauge)
-    return new_gauge
-
-
-def remove_file_from_gauge(well_name: str, source_filename: str) -> bool:
-    """Remove a file from a well's gauge by filename. Returns True if removed.
-
-    If the removed file was the last one, the gauge is cleared entirely
-    (no empty-files MemoryGaugeData is left in session state).
-    """
-    existing = get_gauge(well_name)
-    if existing is None:
-        return False
-    remaining = [
-        f for f in existing.files if f.source_filename != source_filename
-    ]
-    if len(remaining) == len(existing.files):
-        return False
-    if not remaining:
-        clear_gauge(well_name)
-    else:
-        store_gauge(MemoryGaugeData(well_name=well_name, files=remaining))
-    return True
-
 
 # ---------------------------------------------------------------------------
 # Pending uploads — parsed but not yet applied
@@ -302,22 +241,6 @@ def remove_file_from_gauge(well_name: str, source_filename: str) -> bool:
 # view), so files living only in the uploader were silently dropped by a
 # Solver → Batch Run → Solver detour. The stash survives the detour.
 
-_PENDING_KEY = "_memory_gauge_pending"
-
-
-def get_pending_files(well_name: str) -> list[MemoryGaugeFile]:
-    """Parsed-but-unapplied uploads for a well (empty list when none)."""
-    return st.session_state.get(_PENDING_KEY, {}).get(well_name, [])
-
-
-def set_pending_files(well_name: str, files: list[MemoryGaugeFile]) -> None:
-    """Replace the well's pending uploads. An empty list removes the entry."""
-    state = st.session_state.setdefault(_PENDING_KEY, {})
-    if files:
-        state[well_name] = files
-    else:
-        state.pop(well_name, None)
-
 
 # ---------------------------------------------------------------------------
 # "Disregard Databricks BHP" per-well flag
@@ -328,21 +251,6 @@ def set_pending_files(well_name: str, files: list[MemoryGaugeFile]) -> None:
 # gauge, the gauge fills in covered dates; without one, the well simply has
 # no BHP data (and downstream code already handles missing BHP gracefully).
 
-_DISREGARD_KEY = "_disregard_databricks_bhp"
-
-
-def is_disregarding_databricks_bhp(well_name: str) -> bool:
-    return bool(st.session_state.get(_DISREGARD_KEY, {}).get(well_name, False))
-
-
-def set_disregard_databricks_bhp(well_name: str, value: bool) -> None:
-    """Persist the disregard flag for a well. Setting False removes the entry."""
-    state = st.session_state.setdefault(_DISREGARD_KEY, {})
-    if value:
-        state[well_name] = True
-    else:
-        state.pop(well_name, None)
-
 
 # ---------------------------------------------------------------------------
 # Divergence detection: Databricks BHP vs memory-gauge daily medians
@@ -352,97 +260,12 @@ def set_disregard_databricks_bhp(well_name: str, value: bool) -> None:
 # flag on Apply — the assumption is that if the user took the trouble to
 # upload a memory gauge, they trust it over the Databricks feed.
 
-_DIVERGENCE_MEAN_ABS_PSI = 100  # avg |delta| over the overlap window
-_DIVERGENCE_MEAN_PCT = 20.0     # avg |delta| as % of gauge median
-
-
-def compute_databricks_vs_gauge_delta(
-    databricks_bhp_df: pd.DataFrame | None, gauge: MemoryGaugeData,
-) -> dict | None:
-    """Compare Databricks daily BHP to gauge daily medians on overlapping dates.
-
-    Returns a dict with diagnostics + a ``divergent`` boolean, or None when
-    there's no overlap to compare (one source is empty / their windows
-    don't intersect).
-
-    The Databricks daily feed is expected in the same shape as
-    ``_cached_bhp_daily``: columns ``tag_date`` (datetime, midnight) and
-    ``bhp`` (psi).
-    """
-    if databricks_bhp_df is None or databricks_bhp_df.empty:
-        return None
-    if "tag_date" not in databricks_bhp_df.columns or "bhp" not in databricks_bhp_df.columns:
-        return None
-
-    db = databricks_bhp_df[["tag_date", "bhp"]].copy()
-    db["tag_date"] = pd.to_datetime(db["tag_date"]).dt.normalize()
-    db = db.dropna().drop_duplicates(subset=["tag_date"])
-
-    merged = db.merge(
-        gauge.daily_df.rename(columns={"bhp": "gauge_bhp"}),
-        on="tag_date", how="inner",
-    )
-    if merged.empty:
-        return None
-
-    merged["delta"] = merged["bhp"] - merged["gauge_bhp"]
-    abs_delta = merged["delta"].abs()
-    gauge_mean = merged["gauge_bhp"].mean()
-    pct_delta = (abs_delta / gauge_mean * 100) if gauge_mean > 0 else pd.Series([0.0])
-
-    mean_abs = float(abs_delta.mean())
-    mean_pct = float(pct_delta.mean())
-    max_abs = float(abs_delta.max())
-
-    divergent = (
-        mean_abs >= _DIVERGENCE_MEAN_ABS_PSI
-        or mean_pct >= _DIVERGENCE_MEAN_PCT
-    )
-
-    return {
-        "n_overlap": int(len(merged)),
-        "mean_abs_delta": mean_abs,
-        "mean_pct_delta": mean_pct,
-        "max_abs_delta": max_abs,
-        "gauge_mean": float(gauge_mean),
-        "databricks_mean": float(merged["bhp"].mean()),
-        "divergent": divergent,
-    }
-
-
-def fetch_databricks_bhp_daily(
-    well_name: str, start_date: pd.Timestamp, end_date: pd.Timestamp,
-) -> pd.DataFrame | None:
-    """Fetch Databricks daily BHP for one well over a date range.
-
-    Returns None on failure or empty result. Used for both the divergence
-    check on Apply and the JP history overlay when disregard is active.
-    The underlying query is the same one ``_cached_bhp_daily`` uses on the
-    JP history tab — refactoring it into a shared helper would be churn
-    for one extra call site, so we just route through the existing cache.
-    """
-    from woffl.assembly.well_test_client import _denormalize_well_name
-    from woffl.gui.tabs.jp_history_tab import _cached_bhp_daily
-
-    db_name = _denormalize_well_name(well_name)
-    start = start_date.strftime("%Y-%m-%d")
-    end = end_date.strftime("%Y-%m-%d")
-    try:
-        df = _cached_bhp_daily(db_name, start, end)
-    except Exception:
-        return None
-    if df is None or df.empty:
-        return None
-    return df
-
 
 # ---------------------------------------------------------------------------
 # Extended well-tests fetch — covers the gauge's window which is typically
 # wider than the app-wide 3-month cache (e.g., a gauge dropped in October
 # that's pulled in January falls outside a May 3-month window entirely).
 # ---------------------------------------------------------------------------
-
-_EXT_TESTS_KEY = "_extended_well_tests"
 
 
 # max_entries: keyed on (well, start_date, end_date), so one well holds several
@@ -451,57 +274,6 @@ _EXT_TESTS_KEY = "_extended_well_tests"
 # ~130-well fleet 64 was far too small — walking the fleet's gauges evicted the
 # earlier wells and re-paid the query for each one. 512 gives ~4 windows per
 # well; each entry is one well's test rows, not a fleet frame.
-@st.cache_data(ttl=86400, show_spinner=False, max_entries=512)
-def _cached_extended_tests_for_well(
-    db_well_name: str, start_date: str, end_date: str
-) -> pd.DataFrame:
-    """Fetch well tests for one well over an arbitrary date range. Cached 24h.
-
-    Args are the Databricks-format well name (e.g. 'B-035') and ISO date
-    strings. Returned columns match ``fetch_milne_well_tests`` output
-    (well, WtDate, BHP, WtOilVol, WtWaterVol, etc.).
-    """
-    from woffl.assembly.well_test_client import fetch_milne_well_tests
-
-    df, _ = fetch_milne_well_tests(start_date, end_date, well_names=[db_well_name])
-    return df if df is not None else pd.DataFrame()
-
-
-def fetch_extended_tests(
-    well_name: str, start_date: pd.Timestamp
-) -> pd.DataFrame | None:
-    """Fetch tests for one well from ``start_date`` to today.
-
-    Returns None on Databricks failure or empty result; callers fall back
-    to the shared 3-month ``all_well_tests_df`` cache.
-    """
-    from woffl.assembly.well_test_client import _denormalize_well_name
-
-    db_name = _denormalize_well_name(well_name)
-    start = start_date.strftime("%Y-%m-%d")
-    end = datetime.now().strftime("%Y-%m-%d")
-    try:
-        df = _cached_extended_tests_for_well(db_name, start, end)
-    except Exception:
-        return None
-    if df is None or df.empty:
-        return None
-    return df
-
-
-def store_extended_tests(well_name: str, df: pd.DataFrame) -> None:
-    """Persist the extended-window test DataFrame in session state."""
-    st.session_state.setdefault(_EXT_TESTS_KEY, {})[well_name] = df
-
-
-def get_extended_tests(well_name: str) -> pd.DataFrame | None:
-    return st.session_state.get(_EXT_TESTS_KEY, {}).get(well_name)
-
-
-def clear_extended_tests(well_name: str) -> None:
-    state = st.session_state.get(_EXT_TESTS_KEY)
-    if state is not None:
-        state.pop(well_name, None)
 
 
 # ---------------------------------------------------------------------------
@@ -546,33 +318,3 @@ def apply_to_well_tests(well_df: pd.DataFrame, gauge: MemoryGaugeData) -> pd.Dat
     return out
 
 
-def daily_bhp_from_gauge(gauge: MemoryGaugeData) -> pd.DataFrame:
-    """Return the gauge's daily BHP in ``_cached_bhp_daily`` format.
-
-    Drop-in replacement for the Databricks daily BHP fetch used by the
-    JP history tab. Columns: ``tag_date`` (datetime, midnight), ``bhp``.
-    """
-    return gauge.daily_df.copy()
-
-
-def coverage_summary(well_df: pd.DataFrame, gauge: MemoryGaugeData) -> dict:
-    """Return diagnostics for the UI status banner.
-
-    Keys: ``tests_total``, ``tests_in_window`` (count of WtDates inside the
-    gauge's [start, end] window), ``tests_matched`` (count whose date has
-    a same-day median in the daily_df — should equal tests_in_window in
-    practice, but kept distinct for defensive UI messaging).
-    """
-    if well_df is None or well_df.empty:
-        return {"tests_total": 0, "tests_in_window": 0, "tests_matched": 0}
-
-    dates = pd.to_datetime(well_df["WtDate"]).dt.normalize()
-    in_window = dates.between(
-        gauge.start_date.normalize(), gauge.end_date.normalize()
-    ).sum()
-    matched = dates.isin(gauge.daily_df["tag_date"]).sum()
-    return {
-        "tests_total": int(len(well_df)),
-        "tests_in_window": int(in_window),
-        "tests_matched": int(matched),
-    }

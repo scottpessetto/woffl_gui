@@ -17,7 +17,6 @@ import pytest
 
 import woffl.gui.pad_optimize as po
 from woffl.assembly.network_optimizer import WellConfig
-from woffl.gui.workflow_steps import well_review_store as wrs
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +102,7 @@ class FakeOptimizer:
 @pytest.fixture
 def fake_opt(monkeypatch):
     import woffl.assembly.network_optimizer as no_mod
-    import woffl.gui.scotts_tools._common as common_mod
+    import woffl.assembly.parallelism as common_mod
 
     FakeOptimizer.instances = []
     monkeypatch.setattr(no_mod, "NetworkOptimizer", FakeOptimizer)
@@ -148,158 +147,8 @@ def test_pf_pressure_what_if_end_to_end(fake_opt):
 # ---------------------------------------------------------------------------
 
 
-def _entry(name="MPS-17"):
-    return {
-        "well_name": name,
-        "res_pres": 1500.0,
-        "form_temp": 160.0,
-        "jpump_tvd": 4200.0,
-        "tubing_od": 4.5,
-        "tubing_thickness": 0.5,
-        "casing_od": 6.875,
-        "casing_thickness": 0.5,
-        "form_wc": 0.6,
-        "form_gor": 250.0,
-        "surf_pres": 210.0,
-        "qwf": 1000.0,
-        "pwf": 900.0,
-        wrs.OIL_RATE_FIELD: 400.0,
-        "jpump_md": 4200.0,
-        "field_model": "Schrader",
-        "jpump_direction": "forward",
-        "review_nozzle": "12",
-        "review_throat": "B",
-        "ipr_source": "vogel",
-        "bhp_source": "gauged",
-        "gauge_note": "gauge through 07-17",
-        "is_hypothetical": False,
-        "offline": False,
-        "reviewed": True,
-        "notes": "the real well",
-    }
-
-
-def test_clone_entry_copies_physics_and_flags_hypothetical():
-    src = _entry()
-    out = wrs.clone_entry(src, "MPS-17-PH1", source_well="MPS-17")
-
-    assert out["well_name"] == "MPS-17-PH1"
-    assert out["is_hypothetical"] is True
-    assert out["ipr_source"] == "hypothetical"
-    assert out["bhp_source"] == "assumed"
-    assert out["reviewed"] is True
-    assert out["offline"] is False
-    assert "MPS-17" in out["notes"]
-    # Physics + calibration + review pump copied verbatim.
-    for f in (
-        "res_pres", "form_wc", "form_gor", "qwf", "pwf", "jpump_tvd",
-        "jpump_direction", "field_model", "review_nozzle", "review_throat",
-    ):
-        assert out[f] == src[f]
-    # Source untouched.
-    assert src["is_hypothetical"] is False
-    assert src["well_name"] == "MPS-17"
-    # The clone must build a valid WellConfig (feeds the optimizer directly).
-    wc = wrs.to_well_config(out)
-    assert wc.well_name == "MPS-17-PH1"
-    assert wc.jpump_direction == "forward"
-
-
-def test_next_placeholder_name_skips_taken_names():
-    from woffl.gui.pad_page import _next_free_name, _next_placeholder_name
-
-    store = {"MPS-17": {}, "MPS-17-PH1": {}, "MPS-17-PH2": {}}
-    assert _next_placeholder_name(store, "MPS-17") == "MPS-17-PH3"
-    assert _next_placeholder_name({}, "MPS-04") == "MPS-04-PH1"
-    assert _next_free_name({"MPS-FUT1": {}}, "MPS-FUT") == "MPS-FUT2"
-
-
-def test_hypothetical_entry_from_scratch_future_well():
-    """No-analog future well: engineer-supplied IPR + pump, offline by
-    default, must build a valid WellConfig and carry the pump so Base vs
-    Future can use it."""
-    e = wrs.hypothetical_entry(
-        "MPS-FUT1",
-        field_model="Schrader",
-        res_pres=1800.0,
-        oil_bopd=400.0,
-        pwf=900.0,
-        form_wc=0.5,
-        form_gor=250.0,
-        form_temp=160.0,
-        jpump_tvd=4200.0,
-        nozzle="12",
-        throat="B",
-        offline=True,
-        notes="hypothetical — future well (no analog)",
-    )
-    assert e["is_hypothetical"] is True
-    assert e["offline"] is True
-    assert e["review_nozzle"] == "12"
-    assert e["review_throat"] == "B"
-    assert e["ipr_source"] == "hypothetical"
-    assert e["bhp_source"] == "assumed"
-    # Sidebar-style oil → store total-liquid conversion (the S-Pad gotcha).
-    assert e["qwf"] == pytest.approx(800.0)
-    assert e[wrs.OIL_RATE_FIELD] == pytest.approx(400.0)
-    wc = wrs.to_well_config(e)
-    assert wc.well_name == "MPS-FUT1"
-
-
-def test_hypothetical_entry_caps_wc_and_normalizes_direction():
-    e = wrs.hypothetical_entry(
-        "MPS-FUT9",
-        field_model="Kuparuk",
-        res_pres=1800.0,
-        oil_bopd=100.0,
-        pwf=900.0,
-        form_wc=1.0,  # would divide by zero un-capped
-        form_gor=250.0,
-        form_temp=160.0,
-        jpump_tvd=4200.0,
-        jpump_direction="Forward",
-    )
-    assert e["form_wc"] == pytest.approx(wrs.MAX_MODELABLE_WC)
-    assert e["qwf"] > 0
-    assert e["jpump_direction"] == "forward"
-    # No pump supplied → not usable in fixed-pump tools, but a valid entry.
-    assert e["review_nozzle"] == ""
-
-
 # ---------------------------------------------------------------------------
 # Base vs Future comparison math
 # ---------------------------------------------------------------------------
 
 
-def test_base_vs_future_rows_and_totals():
-    """Existing wells lose a little oil to the header droop; future wells
-    only exist in the future case — the totals split the two effects."""
-    per_base = [
-        {"well": "MPS-17", "pump": "9B", "oil": 200.0, "pf": 2000.0, "note": ""},
-        {"well": "MPS-204", "pump": "12B", "oil": 300.0, "pf": 2500.0, "note": ""},
-    ]
-    per_fut = [
-        {"well": "MPS-17", "pump": "9B", "oil": 190.0, "pf": 1900.0, "note": ""},
-        {"well": "MPS-204", "pump": "12B", "oil": 285.0, "pf": 2400.0, "note": ""},
-        {"well": "MPS-17-PH1", "pump": "9B", "oil": 180.0, "pf": 1800.0, "note": ""},
-    ]
-    rows = po.base_vs_future_rows(per_base, per_fut, {"MPS-17-PH1"})
-
-    by = {r["well"]: r for r in rows}
-    assert by["MPS-17"]["d_oil"] == pytest.approx(-10.0)
-    assert by["MPS-204"]["d_oil"] == pytest.approx(-15.0)
-    ph = by["MPS-17-PH1"]
-    assert ph["future"] is True
-    assert ph["oil_base"] is None
-    assert ph["d_oil"] is None
-    assert ph["oil_future"] == pytest.approx(180.0)
-
-    meta_base = {"total_oil_bopd": 500.0, "total_pf_bpd": 4500.0, "header_psi": 3300.0}
-    meta_fut = {"total_oil_bopd": 655.0, "total_pf_bpd": 6100.0, "header_psi": 3180.0}
-    t = po.base_vs_future_totals(rows, meta_base, meta_fut)
-    assert t["d_oil"] == pytest.approx(155.0)
-    assert t["future_oil"] == pytest.approx(180.0)
-    assert t["existing_d_oil"] == pytest.approx(-25.0)
-    assert t["n_future"] == 1
-    assert t["header_base"] == pytest.approx(3300.0)
-    assert t["header_future"] == pytest.approx(3180.0)

@@ -306,7 +306,7 @@ class FakeOptimizer:
 class TestBuilder:
     def _run(self, monkeypatch):
         import woffl.assembly.network_optimizer as no_mod
-        import woffl.gui.scotts_tools._common as common_mod
+        import woffl.assembly.parallelism as common_mod
 
         from woffl.assembly.network_optimizer import WellConfig
         from woffl.gui.cfp_pad_plant import PLANT
@@ -366,63 +366,3 @@ class TestBuilder:
         assert surf.baseline_choices()["MPJ-29"] == OFF
 
 
-class TestFleetSignature:
-    """The response-surface memo key (cfp_pad_page._fleet_signature).
-
-    C-Pad PF was missing from it: editing the "C-Pad booster PF" input left
-    the key identical, so the memo served surfaces built at the OLD pressure.
-    """
-
-    def _sig(self, **over):
-        from woffl.gui.cfp_pad_page import _fleet_signature
-
-        kw = dict(
-            pad_configs={},  # empty: keeps store_for out of the test
-            online={"MPB-28": True, "MPJ-29": False},
-            current={"MPB-28": ("13", "E")},
-            nozzles=["12", "13"],
-            throats=["A", "B"],
-            p0=2792.0,
-            c_pad_pf=3400.0,
-            measured_pf={"B": 3120.0, "J": 3050.0},
-        )
-        kw.update(over)
-        return _fleet_signature(**kw)
-
-    def test_stable_for_identical_inputs(self):
-        assert self._sig() == self._sig()
-
-    def test_c_pad_pf_changes_the_signature(self):
-        assert self._sig(c_pad_pf=3425.0) != self._sig()
-
-    def test_measured_pad_pf_changes_the_signature(self):
-        """It sets delivered PF per pad (cfp_optimize.delivered_by_pad) and its
-        ttl=3600 memo can refresh mid-session."""
-        assert self._sig(measured_pf={"B": 3130.0, "J": 3050.0}) != self._sig()
-        assert self._sig(measured_pf={"B": 3120.0}) != self._sig()
-
-    def test_insensitive_to_input_ordering(self):
-        assert self._sig(
-            nozzles=["13", "12"],
-            throats=["B", "A"],
-            measured_pf={"J": 3050.0, "B": 3120.0},
-        ) == self._sig()
-
-    def test_float_noise_does_not_thrash_the_memo(self):
-        assert self._sig(c_pad_pf=3400.0 + 1e-9, p0=2792.0 + 1e-9) == self._sig()
-
-    def test_other_physics_inputs_still_key_the_memo(self):
-        assert self._sig(p0=2800.0) != self._sig()
-        assert self._sig(nozzles=["12"]) != self._sig()
-        assert self._sig(throats=["A"]) != self._sig()
-        assert self._sig(online={"MPB-28": False, "MPJ-29": False}) != self._sig()
-        assert self._sig(current={"MPB-28": ("12", "B")}) != self._sig()
-
-    def test_slope_is_not_an_argument(self):
-        """slope only reaches cmv.anchor, which re-runs outside the memo, so it
-        must NOT be a parameter here — pinned so it is never added by reflex."""
-        import inspect
-
-        from woffl.gui.cfp_pad_page import _fleet_signature
-
-        assert "slope" not in inspect.signature(_fleet_signature).parameters

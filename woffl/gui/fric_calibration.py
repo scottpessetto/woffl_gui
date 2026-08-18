@@ -541,7 +541,7 @@ def _build_well_objects(well_config):
 
 def _point_pvt_components(well_config):
     """PVT (oil, water, gas) via the same factory _create_well_objects uses."""
-    from woffl.gui.utils import create_pvt_components
+    from woffl.assembly.sim_factories import create_pvt_components
 
     return create_pvt_components(
         field_model=well_config.field_model,

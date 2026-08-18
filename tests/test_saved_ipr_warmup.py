@@ -12,18 +12,12 @@ produce EXACTLY what the per-well read would, must never clobber fresher data,
 and must fail soft.
 """
 
-import sys
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
 
-_st = MagicMock()
-_st.cache_data = lambda *a, **k: (a[0] if a and callable(a[0]) else lambda fn: fn)
-sys.modules.setdefault("streamlit", _st)
-
-from woffl.gui import ipr_anchor as ia  # noqa: E402
+from woffl.gui import ipr_anchor as ia
 
 T1 = datetime(2026, 8, 3, 21, 25, tzinfo=timezone.utc)
 T0 = datetime(2026, 4, 16, tzinfo=timezone.utc)

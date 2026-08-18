@@ -195,7 +195,7 @@ def fake_core(monkeypatch):
     test configures (``optimize_fn`` shapes the run results per pressure)."""
     import woffl.assembly.network_optimizer as no_mod
     import woffl.assembly.optimization_algorithms as oa_mod
-    import woffl.gui.scotts_tools._common as common_mod
+    import woffl.assembly.parallelism as common_mod
 
     class Optimizer(FakeOptimizer):
         perf_table = {}
