@@ -45,6 +45,14 @@ import type {
   WellSortTablesResponse,
   WellTestsResponse,
   WellsResponse,
+  // Scott's Tools
+  DateWindow,
+  HarnessCasesResponse,
+  PadWatercutResponse,
+  ToolCatalogResponse,
+  ToolJobStarted,
+  ToolJobStatus,
+  ToolRowsResponse,
 } from "./types";
 
 const MIN_5 = 5 * 60 * 1000;
@@ -510,4 +518,83 @@ export const useTriage = (
     staleTime: MIN_30,
     gcTime: HOUR_1,
     placeholderData: keepPreviousData,
+  });
+
+// ── Scott's Tools ──────────────────────────────────────────────────────────
+
+/** Which tools this build serves. Rendered as the secret menu, so a tool that
+ *  is not ported yet can never appear as a dead link. */
+export const useToolCatalog = (enabled: boolean) =>
+  useQuery({
+    queryKey: ["tool-catalog"],
+    queryFn: ({ signal }) => get<ToolCatalogResponse>("/tools/catalog", signal),
+    enabled,
+    staleTime: Infinity,
+  });
+
+export const usePadWatercutWindow = (enabled: boolean) =>
+  useQuery({
+    queryKey: ["pad-watercut-window"],
+    queryFn: ({ signal }) => get<DateWindow>("/tools/pad-watercut/default-window", signal),
+    enabled,
+    staleTime: HOUR_1,
+  });
+
+export const usePadWatercut = (start: string, end: string, enabled: boolean) =>
+  useQuery({
+    queryKey: ["pad-watercut", start, end],
+    queryFn: ({ signal }) =>
+      get<PadWatercutResponse>(
+        `/tools/pad-watercut?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
+        signal,
+      ),
+    enabled: enabled && Boolean(start && end),
+    staleTime: MIN_30,
+    retry: false,
+  });
+
+/** Poll one tool job. Stops as soon as it settles. */
+export const useToolJob = (jobId: string | null) =>
+  useQuery({
+    queryKey: ["tool-job", jobId],
+    queryFn: ({ signal }) => get<ToolJobStatus>(`/tools/job/${jobId}`, signal),
+    enabled: Boolean(jobId),
+    refetchInterval: (q) =>
+      q.state.data && q.state.data.status !== "running" ? false : 1500,
+    staleTime: 0,
+    retry: false,
+  });
+
+/** Start a tool run. Returns the job id for useToolJob to poll. */
+export const useStartToolJob = <Req,>(path: string) =>
+  useMutation({
+    mutationFn: (req: Req) => post<ToolJobStarted>(path, req ?? {}),
+  });
+
+export const useHarnessCases = () =>
+  useQuery({
+    queryKey: ["harness-cases"],
+    queryFn: ({ signal }) => get<HarnessCasesResponse>("/tools/harness/cases", signal),
+    staleTime: HOUR_1,
+  });
+
+export const useCalibrationInputs = (monthsBack: number, enabled: boolean) =>
+  useQuery({
+    queryKey: ["calibration-inputs", monthsBack],
+    queryFn: ({ signal }) =>
+      get<ToolRowsResponse>(`/tools/calibration/inputs?months_back=${monthsBack}`, signal),
+    enabled,
+    staleTime: MIN_30,
+  });
+
+export const useHeaderImpactInputs = (pads: string[], monthsBack: number, enabled: boolean) =>
+  useQuery({
+    queryKey: ["header-impact-inputs", pads.join(","), monthsBack],
+    queryFn: ({ signal }) =>
+      get<ToolRowsResponse>(
+        `/tools/header-impact/inputs?${pads.map((p) => `pads=${encodeURIComponent(p)}`).join("&")}&months_back=${monthsBack}`,
+        signal,
+      ),
+    enabled: enabled && pads.length > 0,
+    staleTime: MIN_30,
   });

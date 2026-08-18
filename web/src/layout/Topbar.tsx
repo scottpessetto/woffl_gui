@@ -9,6 +9,7 @@ import { NavLink, useLocation } from "react-router-dom";
 
 import { useMeta, useWells } from "../api/hooks";
 import { Badge, Button } from "../components/ui";
+import { useToolsUnlocked } from "../lib/secretMenu";
 
 /** Every route served by the Single Well workspace (shared sidebar params). */
 const SINGLE_WELL_PATHS = [
@@ -36,6 +37,7 @@ export function Topbar({
   const meta = useMeta();
   const wells = useWells();
   const location = useLocation();
+  const toolsUnlocked = useToolsUnlocked();
 
   const singleWellActive = SINGLE_WELL_PATHS.some((p) => location.pathname.startsWith(p));
 
@@ -79,6 +81,15 @@ export function Topbar({
         >
           Optimization
         </NavLink>
+        {toolsUnlocked && (
+          <NavLink
+            to="/tools"
+            className={({ isActive }) => clsx(NAV_BASE, isActive ? NAV_ACTIVE : NAV_INACTIVE)}
+            title="Scott's Tools"
+          >
+            Tools
+          </NavLink>
+        )}
       </nav>
 
       <div className="ml-auto flex items-center gap-2">

@@ -1367,3 +1367,90 @@ export interface ResponseHistoryResponse {
   evidence: ResponseHistoryEvidence | null;
   res_pres: number | null;
 }
+
+// ── Scott's Tools (the secret menu) ────────────────────────────────────────
+
+export interface ToolInfo {
+  id: string;
+  label: string;
+  caption: string;
+  path: string;
+}
+
+export interface ToolCatalogResponse {
+  tools: ToolInfo[];
+}
+
+export interface DateWindow {
+  start: string;
+  end: string;
+}
+
+export interface PadWatercutPoint {
+  date: string | null;
+  wc: number | null;
+  oil: number | null;
+  water: number | null;
+}
+
+export interface PadWatercutSeries {
+  pad: string;
+  points: PadWatercutPoint[];
+}
+
+export interface PadWatercutResponse {
+  start: string;
+  end: string;
+  series: PadWatercutSeries[];
+}
+
+/** Every tool job shares one envelope. `result` shape is per-tool. */
+export interface ToolJobStatus {
+  job_id: string;
+  kind: string;
+  status: "running" | "done" | "error";
+  progress: string | null;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  started_at: string | null;
+  seconds: number | null;
+}
+
+export interface ToolJobStarted {
+  job_id: string;
+}
+
+/** Tools return tabular results; columns differ per tool, so rows stay loose. */
+export type ToolRow = Record<string, unknown>;
+
+export interface ToolRowsResponse {
+  rows: ToolRow[];
+  [key: string]: unknown;
+}
+
+export interface HarnessCase {
+  name: string;
+  description: string;
+}
+
+export interface HarnessCasesResponse {
+  cases: HarnessCase[];
+}
+
+export interface HarnessResult {
+  name: string;
+  description: string;
+  passed: boolean;
+  summary: string;
+  details: Record<string, unknown>;
+  error: string | null;
+  seconds: number;
+}
+
+export interface HarnessRunResult {
+  results: HarnessResult[];
+  passed: number;
+  failed: number;
+  total: number;
+  seconds: number;
+}

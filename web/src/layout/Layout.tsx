@@ -18,7 +18,7 @@ import { Topbar } from "./Topbar";
 import { useSidebarPref } from "./useSidebarPref";
 import { ViewTabs } from "./ViewTabs";
 
-const NO_SIDEBAR_PATHS = ["/well-database", "/well-sort", "/optimize"];
+const NO_SIDEBAR_PATHS = ["/well-database", "/well-sort", "/optimize", "/tools"];
 
 export function Layout() {
   // Well Database and Well Sort are cross-well browsers: the single-well

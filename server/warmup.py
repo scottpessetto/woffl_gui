@@ -177,6 +177,20 @@ def _warm_saved_ipr() -> None:
     refresher(ipr_svc._saved_ipr_snapshot)()
 
 
+def _warm_pad_watercut() -> None:
+    """Pre-pay the Pad Water Cut tool's default window.
+
+    Only the DEFAULT range: a custom range an engineer types is their own
+    cold query, and warming guessed windows would fill entries nobody reads
+    (the same reason the well profile payload is not warmed).
+    """
+    from server.cache import refresher
+    from server.services.tools import pad_watercut as pad_wc
+
+    start, end = pad_wc.default_window()
+    refresher(pad_wc._series, start, end)()
+
+
 def _warm_prop_write_meta() -> None:
     from woffl.assembly import prop_hist_client
 
@@ -247,6 +261,12 @@ def fleet_targets() -> list[tuple[str, Callable[[], Any]]]:
         # prop_hist write metadata: the first save of a process pays it inline
         # (~0.5 s) before its INSERT.
         ("prop_write_meta", _warm_prop_write_meta),
+        # Scott's Tools: the pad water-cut series over its DEFAULT window is a
+        # 3-year multi-table aggregate - 11.3 s measured cold. The default is
+        # deterministic (three years back to today), so the loop can pre-pay
+        # exactly the window the page opens on. Like the per-well keys it
+        # re-keys at midnight, which `_next_wait` already lands a pass after.
+        ("tools_pad_watercut", _warm_pad_watercut),
     ]
     targets.extend(well_sort_svc.warm_targets())
     return targets

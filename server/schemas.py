@@ -1077,3 +1077,159 @@ class TriageResponse(BaseModel):
 
 class WellSortRefreshResponse(BaseModel):
     cleared: int
+
+
+# ---------------------------------------------------------------------------
+# Scott's Tools (the secret menu)
+# ---------------------------------------------------------------------------
+
+
+class ToolInfo(BaseModel):
+    """One entry in the secret menu."""
+
+    id: str
+    label: str
+    caption: str
+    path: str
+
+
+# The menu, in the order the Streamlit page listed its tabs. Well Sort is
+# absent on purpose: it was never on the secret menu (it was a top-level mode)
+# and it is already a first-class page in this app.
+TOOL_CATALOG: list[dict[str, str]] = [
+    {
+        "id": "pf-scenario",
+        "label": "PF Scenario",
+        "caption": "Oil and BHP at two power-fluid pressures, well by well.",
+        "path": "/tools/pf-scenario",
+    },
+    {
+        "id": "header-impact",
+        "label": "Header Pressure Impact",
+        "caption": "What moving a pad header does to BHP and oil, all lift types.",
+        "path": "/tools/header-impact",
+    },
+    {
+        "id": "jp-calibration",
+        "label": "JP Friction Calibration",
+        "caption": "Fit ken/kth/kdi per well against measured BHP.",
+        "path": "/tools/jp-calibration",
+    },
+    {
+        "id": "fric-trend",
+        "label": "JP Fric Trend",
+        "caption": "Fitted friction coefficients across a well's test history.",
+        "path": "/tools/fric-trend",
+    },
+    {
+        "id": "jp-washout",
+        "label": "JP Wash-Out",
+        "caption": "Pumps needing more PF pressure than the surface can deliver.",
+        "path": "/tools/jp-washout",
+    },
+    {
+        "id": "pad-watercut",
+        "label": "Pad Water Cut",
+        "caption": "Daily pad-level water cut for G, H, I and J.",
+        "path": "/tools/pad-watercut",
+    },
+    {
+        "id": "test-harness",
+        "label": "Test Harness",
+        "caption": "Curated sanity cases run against today's live data.",
+        "path": "/tools/test-harness",
+    },
+]
+
+
+class ToolJobStarted(BaseModel):
+    job_id: str
+
+
+class ToolJobStatus(BaseModel):
+    job_id: str
+    kind: str
+    status: str
+    progress: Optional[str] = None
+    result: Optional[dict[str, Any]] = None
+    error: Optional[str] = None
+    started_at: Optional[str] = None
+    seconds: Optional[float] = None
+
+
+class ToolRowsResponse(BaseModel):
+    """Generic table payload - the tools all return rows plus their inputs."""
+
+    model_config = {"extra": "allow"}
+
+    rows: list[dict[str, Any]] = []
+
+
+class HarnessCase(BaseModel):
+    name: str
+    description: str
+
+
+class HarnessCasesResponse(BaseModel):
+    cases: list[HarnessCase]
+
+
+class WashoutRequest(BaseModel):
+    months_back: int = Field(6, ge=1, le=60)
+    # Surface PF infrastructure cap: above it the pump, not the pressure,
+    # is the problem.
+    ppf_limit: float = Field(3400.0, ge=1000.0, le=6000.0)
+
+
+class FricTrendRequest(BaseModel):
+    wells: list[str]
+    months_back: int = Field(12, ge=1, le=60)
+
+
+class CalibrationRequest(BaseModel):
+    wells: Optional[list[str]] = None
+    months_back: int = Field(6, ge=1, le=60)
+
+
+class HeaderImpactRequest(BaseModel):
+    pads: list[str]
+    # Negative = drawing the header down, which is the usual direction.
+    delta_p: float = Field(-50.0, ge=-300.0, le=300.0)
+    months_back: int = Field(6, ge=1, le=60)
+    # PF-PRESSURE-DEPENDENCY: per-pad PF overrides, since there is still no
+    # per-well PF pressure in Databricks.
+    pad_pf: Optional[dict[str, int]] = None
+
+
+class PfScenarioRequest(BaseModel):
+    wells: list[str]
+    pf_a: float = Field(..., ge=1000.0, le=5000.0)
+    pf_b: float = Field(..., ge=1000.0, le=5000.0)
+    months_back: int = Field(6, ge=1, le=60)
+
+
+class ToolCatalogResponse(BaseModel):
+    tools: list[ToolInfo]
+
+
+class DateWindow(BaseModel):
+    start: str
+    end: str
+
+
+class PadWatercutPoint(BaseModel):
+    date: Optional[str] = None
+    wc: Optional[float] = None
+    oil: Optional[float] = None
+    water: Optional[float] = None
+
+
+class PadWatercutSeries(BaseModel):
+    pad: str
+    points: list[PadWatercutPoint]
+
+
+class PadWatercutResponse(BaseModel):
+    start: str
+    end: str
+    series: list[PadWatercutSeries]
