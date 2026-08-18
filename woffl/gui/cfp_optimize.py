@@ -146,7 +146,7 @@ def run_joint_optimization(
         derive_pad_marginal_wc,
         optimize,
     )
-    from woffl.gui.scotts_tools._common import worker_ceiling
+    from woffl.assembly.parallelism import worker_ceiling
 
     # Raises for an unvalidated subset BEFORE any compute — fail loudly, early.
     machines = plant.machines_for(n_machines)
@@ -413,7 +413,7 @@ def cfp_match_check(
         PowerFluidConstraint,
     )
     from woffl.gui.pad_optimize import match_flag
-    from woffl.gui.scotts_tools._common import worker_ceiling
+    from woffl.assembly.parallelism import worker_ceiling
 
     pads = sorted(pad_configs)
     wells = [wc for pad in pads for wc in pad_configs[pad]]

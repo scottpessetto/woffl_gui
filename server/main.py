@@ -39,18 +39,25 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start the fleet cache warmup, stop it on shutdown.
+    """Start the CPU pool and the fleet cache warmup, stop both on shutdown.
 
     Everything about what gets warmed, on what cadence, and with how many
     warehouse connections lives in ``server.warmup`` - see its module docstring.
-    """
-    from server import warmup
 
+    ORDER MATTERS: the pool starts FIRST, before the warm loop's threads
+    exist. Its workers re-import the app stack, and doing that from a
+    still-quiet process is both faster and safer than doing it once the
+    server is holding warehouse sockets - see ``server.pool``.
+    """
+    from server import pool, warmup
+
+    pool.start()
     warmup.start()
     try:
         yield
     finally:
         warmup.stop()
+        pool.stop()
 
 
 def _version() -> str:
@@ -63,7 +70,11 @@ def _version() -> str:
 
 
 app = FastAPI(title="WOFFL", version=_version(), lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
-app.add_middleware(GZipMiddleware, minimum_size=1500)
+# compresslevel: starlette defaults to 9, which recompresses the 720 KB
+# echarts chunk at maximum effort on the event loop for every cold fetch.
+# Level 6 is roughly a third of the CPU for ~2% more bytes - a trade worth
+# taking on a 2-vCPU tier, where that CPU is competing with real work.
+app.add_middleware(GZipMiddleware, minimum_size=1500, compresslevel=6)
 
 app.include_router(meta.router, prefix="/api")
 app.include_router(wells.router, prefix="/api")

@@ -239,7 +239,7 @@ def _run_fixed_point(
         derive_pad_marginal_wc,
         optimize,
     )
-    from woffl.gui.scotts_tools._common import worker_ceiling
+    from woffl.assembly.parallelism import worker_ceiling
 
     cap = plant.flow_window(n_pumps)[1]  # hydraulic (thrust) ceiling
     ppf = plant.warm_start_psi(n_pumps)  # on the curve at 0.6 x capacity
@@ -351,7 +351,7 @@ def _run_pressure_sweep(
         derive_pad_marginal_wc,
         optimize,
     )
-    from woffl.gui.scotts_tools._common import worker_ceiling
+    from woffl.assembly.parallelism import worker_ceiling
 
     p_floor, p_ceiling = plant.pressure_window(n_pumps)
     pressures = [
@@ -634,7 +634,7 @@ def evaluate_fixed_scenario(
     Returns ``(per_well rows, meta)``.
     """
     from woffl.assembly.network_optimizer import NetworkOptimizer, PowerFluidConstraint
-    from woffl.gui.scotts_tools._common import worker_ceiling
+    from woffl.assembly.parallelism import worker_ceiling
 
     # Batch must compute every chosen pump AND every fallback pump (used when
     # a chosen pump is infeasible), so union both.
@@ -802,7 +802,7 @@ def evaluate_existing_scenario(
     solving wells' average ripple. Returns ``(per_well, scn_meta)``.
     """
     from woffl.assembly.network_optimizer import NetworkOptimizer, PowerFluidConstraint
-    from woffl.gui.scotts_tools._common import worker_ceiling
+    from woffl.assembly.parallelism import worker_ceiling
 
     names = [wc.well_name for wc in well_configs]
     cur_oil = {w: float((test_rates.get(w) or (0, 0))[0] or 0.0) for w in names}
@@ -909,7 +909,7 @@ def match_check(
     including I-Pad's operational cap, P0-7). Returns ``(rows, header_psi)``.
     """
     from woffl.assembly.network_optimizer import NetworkOptimizer, PowerFluidConstraint
-    from woffl.gui.scotts_tools._common import worker_ceiling
+    from woffl.assembly.parallelism import worker_ceiling
 
     names = [wc.well_name for wc in well_configs]
     cur_oil = {w: float((test_rates.get(w) or (0, 0))[0] or 0.0) for w in names}
@@ -988,7 +988,7 @@ def _model_at_forced_header(well_configs, header_psi: float, current_choices: di
     and only PF responds to the delivered pressure.
     """
     from woffl.assembly.network_optimizer import NetworkOptimizer, PowerFluidConstraint
-    from woffl.gui.scotts_tools._common import worker_ceiling
+    from woffl.assembly.parallelism import worker_ceiling
 
     pumps = [c for c in current_choices.values() if c]
     nozzles = sorted({c[0] for c in pumps}) or ["12"]

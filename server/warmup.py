@@ -42,9 +42,11 @@ Design notes:
   serialize the warmup behind ordinary traffic and vice versa.
 * **Small, long-lived pool.** ``databricks_client._CONN_LOCAL`` is a
   THREAD-LOCAL warehouse connection, so a thread per well would pay ~90
-  handshakes. ``WOFFL_WARM_WORKERS`` is a warehouse-concurrency knob (default 3),
+  handshakes. ``WOFFL_WARM_WORKERS`` is a warehouse-concurrency knob (default 6),
   deliberately separate from ``WOFFL_MAX_WORKERS`` (a CPU/ProcessPool cap) -
-  this work is pure I/O wait.
+  this work is pure I/O wait, so it is NOT bounded by the 2 vCPU tier. It was
+  3, which put a full pass at ~5.5 min (90 wells x ~11 s each): a window after
+  every deploy where an engineer still hits an 8-22 s cold read. 6 halves it.
 * **Never raises.** A warmer that propagated would kill the loop and leave the
   process permanently cold. Every failure is logged and counted.
 * **One process.** ``app.yaml`` runs a single bare ``uvicorn server.main:app``,
@@ -55,7 +57,7 @@ Env knobs:
 
 * ``WOFFL_WARM_INTERVAL_SEC`` - seconds between passes (default 21600 = 6 h;
   ``0`` means a single pass and no loop).
-* ``WOFFL_WARM_WORKERS`` - concurrent warehouse connections (default 3, 1..8).
+* ``WOFFL_WARM_WORKERS`` - concurrent warehouse connections (default 6, 1..8).
 * ``WOFFL_WARM_WELLS`` - falsy skips the per-well pass (fleet frames only);
   useful for local ``uvicorn --reload``, where every restart would otherwise
   re-walk the fleet.
@@ -83,7 +85,7 @@ _DEFAULT_INTERVAL_SEC = 21_600
 _RETENTION_INTERVALS = 2
 # A pass lands this long after local midnight, re-keying the per-well caches.
 _DAY_ROLL_GRACE_SEC = 120.0
-_DEFAULT_WORKERS = 3
+_DEFAULT_WORKERS = 6
 _MAX_WORKERS = 8
 # Enough to diagnose a bad pass without dumping the whole fleet into a log line.
 _FAILURE_SAMPLE = 10
@@ -161,9 +163,18 @@ def wells_enabled() -> bool:
 
 
 def _warm_saved_ipr() -> None:
-    from woffl.gui import ipr_anchor
+    """Force the server's fleet-wide saved-IPR snapshot to re-read.
 
-    ipr_anchor.warm_saved_ipr_cache()
+    Warming ``ipr_anchor.warm_saved_ipr_cache`` directly is not enough: the
+    server holds its OWN 5-minute ttl_cache in front of it
+    (``ipr._saved_ipr_snapshot``), and only a cache_refresh on that entry
+    gets the warm retention floor. Going through it also means the warm and
+    the request path share one snapshot instead of two clocks.
+    """
+    from server.cache import refresher
+    from server.services import ipr as ipr_svc
+
+    refresher(ipr_svc._saved_ipr_snapshot)()
 
 
 def _warm_prop_write_meta() -> None:
@@ -203,21 +214,29 @@ def fleet_targets() -> list[tuple[str, Callable[[], Any]]]:
     service modules drag in pandas plus the Databricks client.
     """
     from server.cache import refresher
-    from server.config import DEFAULT_TEST_MONTHS
+    from server.config import WARM_TEST_MONTHS
     from server.services import calibration_points, datasources, evidence
     from server.services import tests as tests_svc
     from server.services import well_sort as well_sort_svc
+    from server.services import wells as wells_svc
 
     targets: list[tuple[str, Callable[[], Any]]] = [
         ("well_characteristics", refresher(datasources.well_chars)),
+        # The /api/wells payload itself, not just the frame behind it: it is
+        # cached now, and a plain call would leave it on the 2 x TTL grace
+        # instead of the warm retention floor.
+        ("well_list", refresher(wells_svc.list_wells)),
+        ("surveyed_wells", refresher(datasources.surveyed_wells)),
         ("pf_latest", refresher(datasources.pf_latest)),
         # Also the input the per-well pass needs to find each well's installs.
         ("jp_history", _warm_jp_history),
-        # Two lookback windows are live in-tree: the router/sidebar default and
-        # the 12 months evidence._min_test_bhp asks for. Warming only the first
-        # left every /response-history request paying a fleet query.
-        ("well_tests_6mo", refresher(tests_svc.fetch_all_well_tests, DEFAULT_TEST_MONTHS)),
-        ("well_tests_12mo", refresher(tests_svc.fetch_all_well_tests, 12)),
+        # Every lookback window live in-tree, from the ONE list in config.
+        # Enumerating them here by hand is what let 24 months go unwarmed
+        # while calibration_points was asking for it.
+        *(
+            (f"well_tests_{m}mo", refresher(tests_svc.fetch_all_well_tests, m))
+            for m in WARM_TEST_MONTHS
+        ),
         # 365 days of fleet pressure - the single biggest query in the app, and
         # every /response-history call blocks on it.
         ("fleet_pressure_daily", refresher(evidence._fleet_pressure_daily)),

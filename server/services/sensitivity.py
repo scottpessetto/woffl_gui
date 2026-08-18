@@ -14,8 +14,12 @@ The finding this exists for: on a choked well ``jetpump_solver`` returns
 wellhead pressure produce bit-identical results across their whole range.
 Those knobs come back ``inert=True`` instead of looking like live handles.
 
-Cost: one solve is about 20 ms and the table is about 90 solves, so the
-sweep is serial on purpose - a pool would cost more than it saves.
+Cost: one solve is about 20 ms and the table is about 90 solves. Those
+solves are independent, so the table fans out over the shared persistent
+process pool (``server.pool``) in ONE flat batch across all knobs - keeping
+the pool busy and letting the request thread wait on futures instead of
+holding the GIL. It falls back to the identical serial loop whenever the
+pool is unavailable.
 
 The engineer can override any knob's range (``bounds`` on the request) when
 they know which inputs are shaky on a given well, and can vary several knobs
@@ -30,7 +34,7 @@ import logging
 from math import isfinite, sqrt
 from typing import Any, Callable, NamedTuple, Optional
 
-from server import jobs, schemas
+from server import jobs, pool, schemas
 from server.services import factories, solve
 
 log = logging.getLogger("woffl.web.sensitivity")
@@ -622,7 +626,12 @@ def run_sensitivity(
     for unknown in sorted(set(bounds) - set(_BY_ID)):
         notes.append(f"Range override for unknown knob '{unknown}' was ignored.")
 
-    knobs: list[dict[str, Any]] = []
+    # Pass 1: build every knob's sweep, and with it ONE flat job list.
+    # Solving per knob inside the loop would leave the pool idle between
+    # knobs and load-balance badly (knob sweeps differ in length); flattening
+    # first lets the whole table's solves fan out together.
+    sweeps: list[tuple[_Knob, _Sweep, Optional[schemas.KnobBounds]]] = []
+    jobs: list[tuple] = []
     for knob in KNOBS:
         override = bounds.get(knob.id)
         try:
@@ -634,11 +643,31 @@ def run_sensitivity(
             sweep = _Sweep(float("nan"), [], 0.0, 0.0, 0.0, 0.0, None)
         if sweep.note is not None:
             notes.append(sweep.note)
-
-        points = [
-            _solve_point(well, _params_for(knob, sp, value), value, label)
+        sweeps.append((knob, sweep, override))
+        # _params_for uses model_copy(update=...), which SKIPS validation on
+        # purpose - the values were already clamped by _knob_sweep. So the
+        # params travel as the model itself, never as JSON: round-tripping
+        # through model_validate_json would re-impose the very validation
+        # _params_for deliberately bypassed.
+        jobs.extend(
+            (well, _params_for(knob, sp, value), value, label)
             for value, label in sweep.pairs
-        ]
+        )
+
+    # Pass 2: every swept solve at once. Independent and pure, so they fan
+    # out over the shared pool; the request thread waits on futures and
+    # releases the GIL. Failures are already per-point (_solve_point returns
+    # an "error" entry), so nothing here can lose a knob.
+    solved = pool.submit_all(_solve_point, jobs)
+    if solved is None:  # no pool, or it broke - identical work, serially
+        solved = [_solve_point(*job) for job in jobs]
+
+    # Pass 3: hand each knob its own slice back, in table order.
+    knobs: list[dict[str, Any]] = []
+    cursor = 0
+    for knob, sweep, override in sweeps:
+        points = solved[cursor : cursor + len(sweep.pairs)]
+        cursor += len(sweep.pairs)
         low, high, inert = _excursions(points, baseline, sweep.base)
         lo_clamp, hi_clamp = _clamp_bounds(knob)
         knobs.append(
@@ -824,7 +853,7 @@ def _solve_combos(
     Grids under ``_PARALLEL_MIN_RUNS`` stay serial, as does everything when
     the ceiling is 1 - that branch is byte-identical to the old loop.
     """
-    from woffl.gui.scotts_tools._common import worker_ceiling
+    from woffl.assembly.parallelism import worker_ceiling
 
     total = len(updates)
     workers = min(worker_ceiling(), total)

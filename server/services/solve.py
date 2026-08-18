@@ -417,11 +417,77 @@ def pressure_sweep_range(
     return pressure_range[pressure_range <= power_fluid_max + 1e-9]
 
 
+def _pf_point(well: str, sp_json: str, pressure: float) -> Optional[pd.DataFrame]:
+    """One PF-sweep point: the full pump grid at ONE surface pressure.
+
+    Runs in a process-pool CHILD, so the signature is picklable only (the
+    SimParams travels as JSON, never as built physics objects) and every
+    object is rebuilt here. That rebuild is not overhead to optimize away:
+    ``ResMix.condition()`` mutates IN PLACE and shares its child oil/wat/gas
+    objects, so a single res_mix cannot be shared across concurrent points.
+    Processes get a private copy; THREADS WOULD RACE AND CORRUPT RESULTS.
+    That is why this fans out over ``server.pool`` and not a ThreadPool.
+
+    Returns None on a failed point, matching the serial loop's per-point
+    isolation - one bad pressure drops out, the sweep survives. The catch is
+    deliberately around the WHOLE body, including the rebuild: the original
+    serial loop swallowed any per-point exception, and the parallel and
+    serial paths must not disagree about which failures are fatal. Input
+    errors stay fatal because ``run_pf_range`` validates them ONCE up front,
+    before any point runs.
+    """
+    from woffl.assembly.batchpump import BatchPump
+
+    try:
+        sp = schemas.SimParams.model_validate_json(sp_json)
+        p = sp.to_simulation_params(well)
+        _jetpump, wellbore, inflow, res_mix, wp = factories.build_sim_objects(sp, well)
+        prop_pf = factories.power_fluid(p.field_model)
+        jp_list = BatchPump.jetpump_list(
+            list(sp.nozzle_batch_options),
+            list(sp.throat_batch_options),
+            knz=0.01,
+            ken=p.ken,
+            kth=p.kth,
+            kdi=p.kdi,
+        )
+        for jp in jp_list:
+            factories.apply_nozzle_area_factor(jp, sp.nozzle_area_factor)
+        batch = BatchPump(
+            pwh=p.surf_pres,
+            tsu=p.form_temp,
+            ppf_surf=float(pressure),
+            wellbore=wellbore,
+            wellprof=wp,
+            ipr_su=inflow,
+            prop_su=res_mix,
+            prop_pf=prop_pf,
+            jpump_direction=p.jpump_direction,
+            wellname=f"{p.field_model} Well",
+            mach_crit=sp.mach_crit,
+        )
+        batch.batch_run(jp_list, debug=False)
+        df = batch.df
+        df["power_fluid_pressure"] = float(pressure)
+        return df
+    except Exception as exc:  # noqa: BLE001 - per-point isolation
+        log.warning("PF sweep point %s psi failed on %s: %s", pressure, well, exc)
+        return None
+
+
 def run_pf_range(well: str, sp: schemas.SimParams) -> dict[str, Any]:
     """Batch sweep across a range of PF surface pressures (PfRangeResponse).
 
-    Per-pressure isolation: one failing pressure logs and drops out; the
-    rest of the sweep survives.
+    The points are independent, so they fan out over the shared persistent
+    process pool (``server.pool``) and the request thread only waits on the
+    futures - which releases the GIL, so a sweep no longer freezes every
+    other request. Measured, WOFFL_MAX_WORKERS=2: 4.03 s serial -> 2.01 s,
+    and a concurrent /context read stays at ~33 ms instead of 1,252 ms.
+
+    Per-pressure isolation is unchanged: one failing pressure logs and drops
+    out; the rest of the sweep survives. When the pool is unavailable or
+    breaks, this reruns the identical serial loop - the same fallback
+    contract as ``network_optimizer.run_all_batch_simulations``.
 
     Args:
         well: Selected well name.
@@ -433,7 +499,7 @@ def run_pf_range(well: str, sp: schemas.SimParams) -> dict[str, Any]:
     Raises:
         ValueError: empty nozzle/throat grid (router maps to 422 "invalid").
     """
-    from woffl.assembly.batchpump import BatchPump
+    from server import pool
 
     if not sp.nozzle_batch_options or not sp.throat_batch_options:
         raise ValueError(
@@ -441,52 +507,29 @@ def run_pf_range(well: str, sp: schemas.SimParams) -> dict[str, Any]:
         )
 
     p = sp.to_simulation_params(well)
-    _jetpump, wellbore, inflow, res_mix, wp = factories.build_sim_objects(sp, well)
-    prop_pf = factories.power_fluid(p.field_model)
-
     pressures = pressure_sweep_range(
         p.power_fluid_min, p.power_fluid_max, p.power_fluid_step
     )
-    jp_list = BatchPump.jetpump_list(
-        list(sp.nozzle_batch_options),
-        list(sp.throat_batch_options),
-        knz=0.01,
-        ken=p.ken,
-        kth=p.kth,
-        kdi=p.kdi,
-    )
-    for jp in jp_list:
-        factories.apply_nozzle_area_factor(jp, sp.nozzle_area_factor)
+    # Build the physics objects ONCE here purely to validate the inputs, and
+    # throw them away: _pf_point rebuilds its own (ResMix.condition mutates in
+    # place, so points cannot share one). Without this, a bad geometry/PVT
+    # input would be swallowed by every point's isolation handler and return
+    # an empty 200 instead of the 422 the serial version raised.
+    factories.build_sim_objects(sp, well)
 
     # mirrors woffl/gui/utils.py:run_power_fluid_range_batch, with per-point
     # isolation added: the Streamlit loop let one bad pressure kill the whole
     # sweep; the API drops only that point.
-    parts: list[pd.DataFrame] = []
-    for pressure in pressures:
-        try:
-            batch = BatchPump(
-                pwh=p.surf_pres,
-                tsu=p.form_temp,
-                ppf_surf=float(pressure),
-                wellbore=wellbore,
-                wellprof=wp,
-                ipr_su=inflow,
-                prop_su=res_mix,
-                prop_pf=prop_pf,
-                jpump_direction=p.jpump_direction,
-                wellname=f"{p.field_model} Well",
-                mach_crit=sp.mach_crit,
-            )
-            batch.batch_run(jp_list, debug=False)
-            df = batch.df
-            df["power_fluid_pressure"] = float(pressure)
-            parts.append(df)
-        except Exception as exc:
-            log.warning("PF sweep point %s psi failed on %s: %s", pressure, well, exc)
+    sp_json = sp.model_dump_json()
+    jobs = [(well, sp_json, float(pressure)) for pressure in pressures]
+    parts = pool.submit_all(_pf_point, jobs)
+    if parts is None:  # no pool, or it broke - identical work, serially
+        parts = [_pf_point(*job) for job in jobs]
 
     rows: list[dict[str, Any]] = []
-    if parts:
-        comprehensive = pd.concat(parts, ignore_index=True)
+    usable = [df for df in parts if df is not None]
+    if usable:
+        comprehensive = pd.concat(usable, ignore_index=True)
         comprehensive["pump"] = comprehensive["nozzle"].astype(str) + comprehensive[
             "throat"
         ].astype(str)

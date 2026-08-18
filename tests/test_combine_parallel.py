@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 import server.services.sensitivity as sens
-import woffl.gui.scotts_tools._common as common_mod
+import woffl.assembly.parallelism as common_mod
 
 
 class _FakeParams:

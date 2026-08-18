@@ -169,6 +169,26 @@ def has_survey(well: str) -> bool:
     return (config.SURVEY_DIR / f"{well} Deviation Survey.csv").is_file()
 
 
+@ttl_cache(config.TTL_PROFILES, maxsize=1)
+def surveyed_wells() -> frozenset[str]:
+    """Every well name with a local deviation survey, from ONE listing.
+
+    ``has_survey`` per well is a filesystem stat per well; the fleet is ~90,
+    and /api/wells asked for all of them on every request. The CSVs only
+    change on deploy, so one cached listing answers all of it.
+    """
+    suffix = " Deviation Survey.csv"
+    try:
+        return frozenset(
+            p.name[: -len(suffix)]
+            for p in config.SURVEY_DIR.iterdir()
+            if p.name.endswith(suffix)
+        )
+    except OSError as exc:
+        log.warning("could not list survey directory %s: %s", config.SURVEY_DIR, exc)
+        return frozenset()
+
+
 @ttl_cache(config.TTL_PROFILES, maxsize=256)
 def survey(well: str) -> Optional[pd.DataFrame]:
     """Deviation survey frame (meas_depth, tvd_depth [, inclination]) or None.

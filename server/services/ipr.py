@@ -12,6 +12,7 @@ gate needed) and grades the pin against the current test window.
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any, Optional
 
@@ -22,6 +23,8 @@ from server.cache import ttl_cache
 from server.services import frames, tests
 
 from woffl.gui import ipr_anchor
+
+log = logging.getLogger("woffl.web.ipr")
 
 # mirrors woffl/gui/tabs/jetpump_solver.py:_WEAK_IPR_R2 - below this the test
 # cloud cannot constrain reservoir pressure (negative = worse than a flat
@@ -187,12 +190,40 @@ def fit(req: schemas.IprFitRequest) -> dict[str, Any]:
     }
 
 
-# load_saved_ipr memoizes per-well FOREVER (a Streamlit session cache); on a
-# long-lived server that would pin stale forever, so clear its entry and
-# re-read under our own 5-minute TTL (config.TTL_SAVED_IPR).
+@ttl_cache(config.TTL_SAVED_IPR, maxsize=1)
+def _saved_ipr_snapshot() -> int:
+    """Re-read the saved-IPR record for EVERY well in one query.
+
+    ``load_saved_ipr`` memoizes per-well forever (it was written against a
+    Streamlit session), which on a long-lived server would pin a stale value
+    for good - so the snapshot has to be dropped and re-read on some clock.
+    Doing that PER WELL is what this replaces: ``_saved_ipr`` used to clear
+    the well from the fleet snapshot and re-read just that one, which cost a
+    Databricks round trip per well every TTL. Measured on /wells/{name}/ipr-pin,
+    the endpoint gating the Solver's IPR chart: 711-2,168 ms cold against
+    2-27 ms warm, recurring every 5 minutes per well. It also quietly
+    cancelled the warm loop's own fleet snapshot, one well at a time.
+
+    This is the fleet-wide read the codebase's cardinal rule asks for: one
+    query answers all ~90 wells for the price of the slowest single one.
+    """
+    ipr_anchor.clear_saved_ipr_cache()
+    return ipr_anchor.warm_saved_ipr_cache(force=True)
+
+
+# maxsize 256 covers the fleet: keyed per well so ONE save evicts only its own
+# well (a fleet-wide clear made one engineer's save cost every other well a
+# cold read - see _evict_after_write).
 @ttl_cache(config.TTL_SAVED_IPR, maxsize=256)
 def _saved_ipr(well: str) -> Optional[dict[str, Any]]:
-    ipr_anchor.clear_saved_ipr_cache(well)
+    # Refresh the whole snapshot on its own TTL, then read this well OUT of
+    # it - in memory, no round trip. A well the write path just cleared is
+    # absent from the snapshot, so load_saved_ipr falls through to its
+    # per-well read and the saver still sees their own write immediately.
+    try:
+        _saved_ipr_snapshot()
+    except Exception:  # noqa: BLE001 - fail soft; the per-well read still works
+        log.warning("saved-IPR fleet snapshot failed; falling back per well", exc_info=True)
     return ipr_anchor.load_saved_ipr(well)
 
 

@@ -485,7 +485,7 @@ def build_response_surfaces(
         PowerFluidConstraint,
     )
     from woffl.gui.cfp_optimize import _assign_well_pressures, delivered_by_pad
-    from woffl.gui.scotts_tools._common import worker_ceiling
+    from woffl.assembly.parallelism import worker_ceiling
 
     pads = sorted(pad_configs)
     wells = [wc for pad in pads for wc in pad_configs[pad]]

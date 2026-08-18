@@ -4,7 +4,6 @@ Name normalization, well-test fetchers, jp_chars helpers, and well-config
 builders used by the PF Scenario and JP Friction Calibration tabs.
 """
 
-import os
 import re
 
 import pandas as pd
@@ -13,42 +12,15 @@ import streamlit as st
 
 # ── parallelism budget ─────────────────────────────────────────────────────
 
-# Unset-default cap for LOCAL runs. Each spawned worker re-imports the full
-# app stack (streamlit/plotly/pandas) on Windows spawn; 14 workers OOM'd a
-# 32 GB workstation on a real M-Pad batch, 8 ran clean with the same
-# wall-clock benefit. An explicit WOFFL_MAX_WORKERS may exceed this (still
-# clamped to the core count).
-_LOCAL_DEFAULT_CAP = 8
-
-
-def worker_ceiling() -> int:
-    """Max ProcessPool workers permitted in the current environment.
-
-    Reads the ``WOFFL_MAX_WORKERS`` env var, parses defensively, and clamps
-    by ``os.cpu_count()``. Returns at least 1.
-
-    UNSET defaults are environment-aware: a deployed Databricks App (both
-    service-principal cred vars present - the same check as
-    ``databricks_client._is_deployed`` and ``server.config.is_deployed``)
-    stays at 1, because the compute tier is tiny and app.yaml pins the real
-    number anyway; a LOCAL run gets ``min(cores, _LOCAL_DEFAULT_CAP)`` -
-    spawn workers carry the whole import stack, so an uncapped many-core
-    default exhausts memory before it wins wall-clock. Tabs that expose a
-    worker slider use this as the upper bound.
-    """
-    raw = os.environ.get("WOFFL_MAX_WORKERS")
-    cpus = os.cpu_count() or 1
-    if raw is None:
-        deployed = bool(
-            os.environ.get("DATABRICKS_CLIENT_ID")
-            and os.environ.get("DATABRICKS_CLIENT_SECRET")
-        )
-        return 1 if deployed else max(1, min(cpus, _LOCAL_DEFAULT_CAP))
-    try:
-        env_max = max(1, int(raw))
-    except (TypeError, ValueError):
-        env_max = 1
-    return max(1, min(env_max, cpus))
+# Moved to woffl/assembly/parallelism.py, which imports no Streamlit: the
+# FastAPI server needs worker_ceiling and was paying a 1.31 s Streamlit
+# import to reach it through this module. Re-exported so the existing
+# scotts_tools / pad / cfp call sites keep working unchanged.
+from woffl.assembly.parallelism import (  # noqa: F401
+    _LOCAL_DEFAULT_CAP,
+    usable_cpus,
+    worker_ceiling,
+)
 
 from woffl.assembly.network_optimizer import WellConfig
 from woffl.gui.utils import load_well_characteristics

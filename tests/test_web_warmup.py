@@ -19,6 +19,7 @@ No Databricks: every target and fetcher is monkeypatched.
 
 from __future__ import annotations
 
+import pathlib
 import threading
 import time
 
@@ -65,7 +66,10 @@ def test_a_warmed_entry_outlives_the_gap_between_passes():
     assert warmup.interval_sec() == 21_600  # 6 h
     assert warmup.retention_sec() > warmup.interval_sec()
     assert warmup.retention_sec() > 2 * config.TTL_CHARS
-    assert warmup.workers() == 3
+    # The default itself, not a literal: it is a tuning knob (raised 3 -> 6
+    # to halve the post-deploy cold window) and this test is about the
+    # retention invariant, not the number.
+    assert warmup.workers() == warmup._DEFAULT_WORKERS
     assert warmup.wells_enabled() is True
 
 
@@ -97,7 +101,10 @@ def test_interval_env_is_clamped_not_trusted(monkeypatch, raw, expected):
     assert warmup.interval_sec() == expected
 
 
-@pytest.mark.parametrize("raw,expected", [("1", 1), ("8", 8), ("50", 8), ("0", 1), ("x", 3)])
+@pytest.mark.parametrize(
+    "raw,expected",
+    [("1", 1), ("8", 8), ("50", 8), ("0", 1), ("x", warmup._DEFAULT_WORKERS)],
+)
 def test_worker_env_is_clamped_to_the_warehouse_ceiling(monkeypatch, raw, expected):
     monkeypatch.setenv("WOFFL_WARM_WORKERS", raw)
     assert warmup.workers() == expected
@@ -308,6 +315,14 @@ def test_fleet_targets_cover_the_frames_every_cold_request_blocks_on():
         # evidence._min_test_bhp asks for 12 months; warming only 6 left every
         # /response-history request paying a fleet query.
         "well_tests_12mo",
+        # calibration_points.points_for_well asks for 24. This one WAS missing:
+        # the list was hand-written here and drifted from the call sites, so
+        # the first request touching calibration points paid a cold fleet
+        # query. See test_every_live_lookback_window_is_warmed below.
+        "well_tests_24mo",
+        # /api/wells is cached now, so it needs the retention floor too.
+        "well_list",
+        "surveyed_wells",
         "fleet_pressure_daily",
         "fleet_pf_volume",
         "saved_ipr",
@@ -321,6 +336,39 @@ def test_fleet_targets_cover_the_frames_every_cold_request_blocks_on():
     ):
         assert required in labels, required
     assert len(labels) == len(set(labels)), "duplicate warm label"
+
+
+def test_every_live_lookback_window_is_warmed():
+    """The warm list must cover every months value the code actually asks for.
+
+    fetch_all_well_tests caches PER WINDOW and each miss is a full-fleet
+    query. The list used to be hand-maintained in fleet_targets and silently
+    fell behind the call sites (24 months went unwarmed). It is now generated
+    from config.WARM_TEST_MONTHS, so this test guards the remaining risk: a
+    new call site picking a window nobody added to that tuple.
+    """
+    import re
+
+    from server import config
+
+    labels = {label for label, _ in warmup.fleet_targets()}
+    for months in config.WARM_TEST_MONTHS:
+        assert f"well_tests_{months}mo" in labels, months
+
+    # Every months literal handed to the test fetchers anywhere under server/.
+    sources = (pathlib.Path(__file__).resolve().parent.parent / "server").rglob("*.py")
+    asked: set[int] = set()
+    call = re.compile(r"tests_for_well\(\s*[^,]+,\s*(\d+)|fetch_all_well_tests\(\s*(\d+)")
+    for path in sources:
+        for lit in call.findall(path.read_text(encoding="utf-8")):
+            asked.add(int(lit[0] or lit[1]))
+
+    missing = asked - set(config.WARM_TEST_MONTHS)
+    assert not missing, (
+        f"lookback window(s) {sorted(missing)} are requested in server/ but not in "
+        "config.WARM_TEST_MONTHS, so the first request that needs one pays a "
+        "cold full-fleet query"
+    )
 
 
 def test_well_universe_reads_the_characteristics_list(monkeypatch):

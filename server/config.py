@@ -20,6 +20,22 @@ JP_CHARS_CSV = JP_DATA_DIR / "jp_chars.csv"
 
 DEFAULT_TEST_MONTHS = 6
 
+# Every well-test lookback window live in-tree. `fetch_all_well_tests` caches
+# PER WINDOW and each miss is a full-fleet query - the biggest in the app - so
+# the warm loop must cover all of them.
+#
+# Declared here, next to the default, because the list drifted once already:
+# the warmup warmed 6 and 12 while `calibration_points` had started asking for
+# 24, so the first request touching calibration points paid a cold fleet
+# query. Anything that adds a new window adds it HERE, and the warm loop picks
+# it up without being edited.
+#
+#   6  - the router/sidebar default (DEFAULT_TEST_MONTHS), ipr, match_health,
+#        optimizer_runs, event_calibration
+#   12 - evidence._min_test_bhp
+#   24 - calibration_points.points_for_well
+WARM_TEST_MONTHS = (DEFAULT_TEST_MONTHS, 12, 24)
+
 # Cache TTLs (seconds) - mirror the Streamlit @st.cache_data sites.
 TTL_WELL_TESTS = 86_400
 TTL_JP_HISTORY = 86_400

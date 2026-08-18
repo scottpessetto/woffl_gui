@@ -246,8 +246,16 @@ def _live_pf_seed(well: str, tests_df: Optional[pd.DataFrame]) -> Optional[dict[
 # ---------------------------------------------------------------------------
 
 
+@ttl_cache(config.TTL_CHARS, maxsize=2)
 def list_wells() -> dict[str, Any]:
     """All known wells from the characteristics frame (WellsResponse shape).
+
+    Cached: this is on every page load, and it re-walked the ~90-row chars
+    frame and stat'd the survey directory once PER WELL to answer
+    ``has_survey``. Both inputs (the chars frame, the survey CSVs on disk)
+    change no more often than TTL_CHARS, so rebuilding the payload per
+    request bought nothing. maxsize 2 covers the Databricks and
+    csv_fallback shapes.
 
     Returns:
         {"wells": [WellListItem...], "source": "databricks"|"csv_fallback"}.
@@ -256,6 +264,8 @@ def list_wells() -> dict[str, Any]:
         RuntimeError: when both Databricks and the CSV fallback fail.
     """
     df, source = datasources.well_chars_safe()
+    # One directory listing instead of a stat per well.
+    surveyed = datasources.surveyed_wells()
     wells: list[dict[str, Any]] = []
     for _, row in df.iterrows():
         name = _clean_str(row.get("Well"))
@@ -269,7 +279,7 @@ def list_wells() -> dict[str, Any]:
                 "is_sch": _opt_bool(row.get("is_sch")),
                 "jp_tvd": frames.opt_float(row.get("JP_TVD")),
                 "tvd_estimated": bool(tvd_est) if tvd_est is not None else False,
-                "has_survey": datasources.has_survey(name),
+                "has_survey": name in surveyed,
             }
         )
     return {"wells": wells, "source": source}

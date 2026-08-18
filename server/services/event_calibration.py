@@ -174,7 +174,7 @@ def _single_point_fallback(
 
 def _run_event_calibration_job(job: dict[str, Any], well: str) -> dict[str, Any]:
     from woffl.gui import fric_calibration
-    from woffl.gui.utils import pad_from_mp_name
+    from server.services.wells import _pad_from_mp_name as pad_from_mp_name
 
     pad = pad_from_mp_name(well)
     notes: list[str] = []
