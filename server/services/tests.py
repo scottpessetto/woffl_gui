@@ -17,9 +17,13 @@ from server.cache import ttl_cache
 from server.services import frames
 
 
-# max 4 windows cached - each entry is the FULL fleet's history for one
-# lookback window. mirrors woffl/gui/utils.py:fetch_all_well_tests
-@ttl_cache(config.TTL_WELL_TESTS, maxsize=4)
+# 8 windows cached - each entry is the FULL fleet's history for one lookback
+# window (small: ~90 wells x tens of tests). Two windows are live in-tree (the
+# 6-month default and evidence._min_test_bhp's 12), and /wells/{name}/tests
+# accepts months 1..60, so a maxsize of 4 let a handful of ad-hoc requests
+# evict a 24 h fleet query and force a full refetch.
+# mirrors woffl/gui/utils.py:fetch_all_well_tests
+@ttl_cache(config.TTL_WELL_TESTS, maxsize=8)
 def fetch_all_well_tests(months: int) -> pd.DataFrame:
     """Fleet-wide well tests for the trailing ``months`` window.
 

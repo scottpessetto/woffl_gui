@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from server import config, identity
-from server.schemas import MetaResponse
+from server.schemas import MetaResponse, WarmupStatus
 
 router = APIRouter(tags=["meta"])
 
@@ -29,3 +29,12 @@ def get_meta(request: Request) -> MetaResponse:
         warehouse_id=databricks_client.DEFAULT_WAREHOUSE_ID,
         deployed=config.is_deployed(),
     )
+
+
+@router.get("/meta/warmup", response_model=WarmupStatus)
+def get_warmup_status() -> WarmupStatus:
+    """Fleet cache warmup progress. `wells_ok == wells_total` after the first
+    pass means no user will pay a cold per-well Databricks query."""
+    from server import warmup
+
+    return WarmupStatus(**warmup.status())

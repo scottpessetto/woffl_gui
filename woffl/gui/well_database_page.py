@@ -20,10 +20,20 @@ def _render_unavailable(detail: str) -> None:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _latest_test_dates() -> dict:
-    """{well: latest ALLOCATED test date} — the recency proxy for "online".
+def _latest_test_dates() -> tuple[dict, dict]:
+    """({well: latest test}, {well: latest ALLOCATED test}) — the online proxy.
 
-    Fail-soft to {}: the aging filter then disables itself rather than
+    The FIRST map decides "online recently", and it counts EVERY well test,
+    allocated or info-only. Allocation is a monthly accounting pass, so a
+    well that is plainly producing routinely has no allocated test for ~30
+    days; an allocated-only proxy then called it offline and the aging list
+    dropped it. Measured 2026-08-18: MPS-05 tested 2026-08-16 (info-only)
+    with its last allocated test on 2026-07-17.
+
+    The second map is display-only — the table shows both dates so "online,
+    just not allocated yet" reads straight off the row.
+
+    Fail-soft to ({}, {}): the aging filter then disables itself rather than
     silently dropping every well.
     """
     from woffl.assembly.databricks_client import execute_query
@@ -32,18 +42,23 @@ def _latest_test_dates() -> dict:
     try:
         df = execute_query(
             """
-            SELECT well_name, max(wt_date) AS last_test
+            SELECT well_name,
+                   max(wt_date) AS last_test,
+                   max(CASE WHEN allocated THEN wt_date END) AS last_allocated
             FROM mpu.wells.vw_well_test
-            WHERE allocated = True
             GROUP BY well_name
             """
         )
-        return {
-            _normalize_well_name(str(r["well_name"]).strip()): r["last_test"]
-            for _, r in df.iterrows()
-        }
+        any_test: dict = {}
+        allocated: dict = {}
+        for _, r in df.iterrows():
+            well = _normalize_well_name(str(r["well_name"]).strip())
+            any_test[well] = r["last_test"]
+            if pd.notna(r["last_allocated"]):
+                allocated[well] = r["last_allocated"]
+        return any_test, allocated
     except Exception:
-        return {}
+        return {}, {}
 
 
 def run_well_database_page():
@@ -177,8 +192,9 @@ def run_well_database_page():
 
         # "Online recently" filter (Scott 2026-07-31): a well SI'd for years
         # shows a very old pump — true but not actionable the same way.
-        # Evidence = latest allocated well test within the window (the same
-        # recency proxy Well Sort's stale-days logic uses).
+        # Evidence = the latest well test inside the window, allocated OR
+        # info-only. Allocation is a monthly accounting pass, so requiring an
+        # allocated test hid plainly-online wells (see _latest_test_dates).
         fc1, fc2 = st.columns([1, 1])
         with fc1:
             online_only = st.checkbox(
@@ -186,8 +202,9 @@ def run_well_database_page():
                 value=True,
                 key="wdb_age_online_only",
                 help=(
-                    "Keeps wells with an ALLOCATED well test inside the "
-                    "window — the app's standard recency proxy for online."
+                    "Keeps wells with a well test inside the window — "
+                    "allocated or info-only. Allocation lags roughly a month, "
+                    "so requiring an allocated test hides online wells."
                 ),
             )
         with fc2:
@@ -200,10 +217,18 @@ def run_well_database_page():
                 key="wdb_age_online_days",
                 disabled=not online_only,
             )
+        # Both dates ride along whether or not the filter is on, so the table
+        # can show "tested 2 days ago, allocated a month ago".
+        last_tests, last_allocated = _latest_test_dates()
+        if not ages.empty and (last_tests or last_allocated):
+            ages = ages.copy()
+            for column, source in (("Last Test", last_tests), ("Last Alloc", last_allocated)):
+                ages[column] = pd.to_datetime(
+                    ages["Well Name"].map(source), utc=True, errors="coerce"
+                ).dt.tz_localize(None)
         if online_only and not ages.empty:
             from woffl.assembly.jp_history import filter_recently_online
 
-            last_tests = _latest_test_dates()
             if last_tests:
                 ages = filter_recently_online(ages, last_tests, int(online_days))
             else:
@@ -241,7 +266,7 @@ def run_well_database_page():
             show_cols = [
                 c
                 for c in ("Well Name", "Pump", "Date Set", "Days In Hole",
-                          "Years", "Installs", "Last Test", "Over")
+                          "Years", "Installs", "Last Test", "Last Alloc", "Over")
                 if c in view.columns
             ]
             export = view[show_cols].rename(
@@ -262,7 +287,11 @@ def run_well_database_page():
                     ),
                     "Last Test": st.column_config.DatetimeColumn(
                         format="YYYY-MM-DD",
-                        help="Latest allocated well test (the online proxy)",
+                        help="Latest well test, allocated or info-only (the online proxy)",
+                    ),
+                    "Last Alloc": st.column_config.DatetimeColumn(
+                        format="YYYY-MM-DD",
+                        help="Latest ALLOCATED test — lags the well test by up to a month",
                     ),
                     "Over": st.column_config.CheckboxColumn(
                         f"> {threshold:,} d"
@@ -279,7 +308,7 @@ def run_well_database_page():
 
                 buf = io.BytesIO()
                 xdf = export.copy()
-                for col in ("Date Set", "Last Test"):
+                for col in ("Date Set", "Last Test", "Last Alloc"):
                     if col in xdf.columns:  # excel-safe: drop timezones
                         xdf[col] = pd.to_datetime(
                             xdf[col], utc=True, errors="coerce"

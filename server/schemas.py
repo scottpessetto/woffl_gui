@@ -146,6 +146,27 @@ class MetaResponse(BaseModel):
     deployed: bool
 
 
+class WarmupStatus(BaseModel):
+    """server.warmup progress - the ops answer to "is the fleet warm yet?"."""
+
+    running: bool
+    passes: int  # completed warm passes since process start
+    interval_sec: Optional[int] = None  # 0 = single pass, no loop
+    retention_sec: Optional[float] = None  # how long a warmed entry stays servable
+    workers: Optional[int] = None  # concurrent warehouse connections
+    wells_enabled: Optional[bool] = None
+    started_at: Optional[str] = None  # UTC ISO-8601
+    last_pass_at: Optional[str] = None
+    last_pass_sec: Optional[float] = None
+    fleet_total: int = 0
+    fleet_ok: int = 0
+    fleet_failed: list[str] = []  # target labels that raised
+    wells_total: int = 0
+    wells_ok: int = 0
+    wells_failed: int = 0
+    wells_failed_sample: list[str] = []  # first few failures, not the fleet
+
+
 class WellListItem(BaseModel):
     name: str  # canonical GUI name, e.g. "MPB-28"
     pad: str  # letter prefix, e.g. "B"

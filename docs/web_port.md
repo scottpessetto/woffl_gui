@@ -67,6 +67,7 @@ mirrored by `web/src/api/types.ts`.
 | GET /well-sort/triage | keep / SI / BOL decisions vs the marginal line |
 | GET /well-sort/bench.xlsx | 3-sheet MPU_Well_Bench workbook |
 | POST /well-sort/refresh | clears the Well Sort fetch caches (read-only op) |
+| GET /meta/warmup | fleet cache warmup progress (passes, per-well counts, failures) |
 | POST /gauge/parse | memory-gauge XLSX parse + multi-file combine (stateless; client holds gauge state per session, math in woffl.gui.memory_gauge) |
 
 Server caching mirrors the old `@st.cache_data` TTLs (`server/config.py`):
@@ -77,8 +78,43 @@ thread refreshes it (single-flight per key, stale grace = one extra TTL),
 so TTL expiry never lands on a user request - only the first-ever read per
 process blocks. `clear()` bumps a version so a fetch that started before a
 write's cache-clear can never store pre-write data (read-your-writes).
-Startup warms chars/PF/jp-history/tests/well-sort/saved-IPR in daemon
-threads. Static assets: /assets/* are content-hashed and served
+`server/warmup.py` owns ONE warm loop for the whole process, started from the
+app's `lifespan`. Each pass warms (a) every fleet-wide frame - chars, PF,
+jp-history, the 6- AND 12-month test windows, 365-day fleet pressure, 365-day
+fleet PF volume, the saved-IPR snapshot, prop-write metadata, and Well Sort's
+own five pulls (`well_sort.warm_targets`) - then (b) EVERY well, via
+`history.warm_well` (the app's only genuinely per-well warehouse queries) plus
+its deviation-survey CSV. Two things make it matter: nothing per-well was warmed
+before, so the first engineer to open a well paid its two queries; and a
+one-shot warm decays, because `ttl_cache` deletes an entry past 2 x TTL and the
+next reader then blocks - a server up for days was cold again for the 1 h tier.
+
+Every target is a `cache.refresher` - `fn.cache_refresh(...)`, a FORCED
+re-query that overwrites the entry. A plain call returns a fresh entry and
+queries nothing, so the old loop's real refresh clock was the TTL, not the
+interval, and the interval had to sit under the shortest TTL it protected.
+`cache_refresh` stores with a retention floor (`cache.set_warm_retention`,
+= 2 x the interval), so a warmed entry stays SERVABLE across passes even if a
+pass fails outright; reads past the TTL still get the stale value plus a
+background SWR refresh, they just never get a blocking cold query. That
+decoupling is what lets the cadence be `WOFFL_WARM_INTERVAL_SEC` = 21600
+(6 h) by default (`0` = one pass, no loop), on `WOFFL_WARM_WORKERS` threads
+(default 3 - each holds one THREAD-LOCAL warehouse connection, so this is a
+warehouse-concurrency knob, not a CPU one). `WOFFL_WARM_WELLS=0` skips the
+per-well pass for local `uvicorn --reload`. Failures are logged and counted,
+never raised. Two exceptions to the "everything is forced" rule, both
+deliberate: `_xv_status` (5 min live safety-valve state - a 6 h-old reading
+would be worse than none) and `prop_hist_client`'s write metadata (its own 1 h
+TTL dict, paid inline by the first save, never on a read path).
+
+The loop never sleeps past local midnight (plus 2 min): `extended_tests` /
+`bhp_daily` keys carry today's date, so after the roll every per-well entry is
+a key nobody has filled and no retention floor can help. Per-well cache
+`maxsize` is sized for two days x the fleet for the same reason.
+`GET /meta/warmup` reports `interval_sec` and `retention_sec` alongside the
+pass counters.
+
+Static assets: /assets/* are content-hashed and served
 `immutable` (1 y); index.html is `no-cache` so redeploys pick up new asset
 hashes immediately. API JSON is gzipped. On Databricks Apps this matters
 doubly: every request rides the Apps proxy, and warehouse queries carry

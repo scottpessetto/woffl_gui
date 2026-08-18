@@ -123,6 +123,10 @@ spawn workers re-import the whole app stack, an uncapped default OOMs; explicit 
 always clamped to cpu count by `scotts_tools/_common.worker_ceiling()`; `app.yaml`
 pins **2** for the 2-vCPU tier — do not raise it unless the tier changes),
 `WOFFL_ENTRY_USER` (overrides attribution),
+`WOFFL_WARM_INTERVAL_SEC` / `WOFFL_WARM_WORKERS` / `WOFFL_WARM_WELLS`
+(the FastAPI fleet cache warmup - `server/warmup.py`; the worker count is a
+warehouse-connection cap, NOT a CPU cap, so it is deliberately separate from
+`WOFFL_MAX_WORKERS`),
 `DATABRICKS_CLIENT_ID`/`_SECRET` (presence of both = "deployed"), local lowercase
 `bricks_host`/`bricks_token`/`bricks_http`.
 

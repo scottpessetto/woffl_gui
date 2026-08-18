@@ -57,17 +57,31 @@ const DB_COLUMNS: Column<DbRow>[] = [
   { key: "bubble_point", label: "Pb (psi)", align: "right", render: (r) => fmtNum(num(r.bubble_point)) },
 ];
 
-const AGING_COLUMNS: Column<DbRow>[] = [
+/** Aging-pump columns. `flagDays` drives the "Over" flag, mirroring the
+ *  Streamlit page's threshold column - it marks rows, it never hides them. */
+const agingColumns = (flagDays: number): Column<DbRow>[] => [
   { key: "well", label: "Well" },
   { key: "pump", label: "Pump" },
   { key: "date_set", label: "Date Set", render: (r) => fmtDate(typeof r.date_set === "string" ? r.date_set : null) },
   { key: "days_in_hole", label: "Days In Hole", align: "right", render: (r) => fmtNum(num(r.days_in_hole)) },
+  { key: "installs", label: "Installs", align: "right", render: (r) => fmtNum(num(r.installs)) },
   { key: "last_test", label: "Last Test", render: (r) => fmtDate(typeof r.last_test === "string" ? r.last_test : null) },
+  {
+    key: "last_allocated",
+    label: "Last Alloc",
+    render: (r) => fmtDate(typeof r.last_allocated === "string" ? r.last_allocated : null),
+  },
   {
     key: "online",
     label: "Online",
     align: "center",
     render: (r) => (r.online === true ? <Badge tone="good">Yes</Badge> : <Badge>No</Badge>),
+  },
+  {
+    key: "over",
+    label: `Over ${fmtNum(flagDays)} d`,
+    align: "center",
+    render: (r) => ((num(r.days_in_hole) ?? 0) >= flagDays ? <Badge tone="fair">Yes</Badge> : "-"),
   },
 ];
 
@@ -104,13 +118,17 @@ export default function WellDatabasePage() {
   const [filter, setFilter] = useState("");
   const [estOnly, setEstOnly] = useState(false);
   const [knownOnly, setKnownOnly] = useState(true);
-  const [onlineOnly, setOnlineOnly] = useState(false);
-  const [onlineDays, setOnlineDays] = useState(30);
-  const [minDays, setMinDays] = useState(365);
+  const [onlineOnly, setOnlineOnly] = useState(true);
+  const [onlineDays, setOnlineDays] = useState(60);
+  const [flagDays, setFlagDays] = useState(365);
   const [propWell, setPropWell] = useState<string | null>(null);
 
   const dbQuery = useWellDatabase();
-  const agingQuery = useAgingPumps(knownOnly, onlineOnly, onlineDays, minDays);
+  // min_days=0: the threshold FLAGS rows here (the Streamlit page's "Over"
+  // column) instead of hiding them - a 334-day pump on an online well is the
+  // row an engineer is looking for, and truncating the list server-side made
+  // it vanish with no hint that a filter had eaten it.
+  const agingQuery = useAgingPumps(knownOnly, onlineOnly, onlineDays, 0);
   const propQuery = usePropHistory(propWell);
 
   const rows = useMemo(() => dbQuery.data?.rows ?? [], [dbQuery.data]);
@@ -127,6 +145,23 @@ export default function WellDatabasePage() {
     () => rows.map((r) => str(r.well)).filter((w) => w !== "-").sort(),
     [rows],
   );
+
+  const agingCols = useMemo(() => agingColumns(flagDays), [flagDays]);
+
+  const agingStats = useMemo(() => {
+    const days = (agingQuery.data?.rows ?? [])
+      .map((r) => num(r.days_in_hole))
+      .filter((d): d is number => d !== null)
+      .sort((a, b) => a - b);
+    if (days.length === 0) return null;
+    const mid = Math.floor(days.length / 2);
+    return {
+      tracked: days.length,
+      over: days.filter((d) => d >= flagDays).length,
+      oldest: days[days.length - 1],
+      median: days.length % 2 === 1 ? days[mid] : (days[mid - 1] + days[mid]) / 2,
+    };
+  }, [agingQuery.data, flagDays]);
 
   const historySorted = useMemo(() => {
     const history = propQuery.data?.history ?? [];
@@ -221,7 +256,7 @@ export default function WellDatabasePage() {
             onClick={() =>
               downloadCsv(
                 "aging_pumps.csv",
-                AGING_COLUMNS.map((c) => ({ key: c.key, label: c.label })),
+                agingCols.map((c) => ({ key: c.key, label: c.label })),
                 agingQuery.data?.rows ?? [],
               )
             }
@@ -240,7 +275,10 @@ export default function WellDatabasePage() {
             />
             Only wells in the table above
           </label>
-          <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-600">
+          <label
+            className="flex cursor-pointer items-center gap-2 text-xs text-slate-600"
+            title="Keeps wells with a well test inside the window - allocated or info-only. Allocation lags roughly a month, so requiring an allocated test hides online wells."
+          >
             <input
               type="checkbox"
               checked={onlineOnly}
@@ -257,28 +295,45 @@ export default function WellDatabasePage() {
               max={365}
               value={onlineDays}
               disabled={!onlineOnly}
-              onChange={(e) => setOnlineDays(Math.max(1, Number(e.target.value) || 30))}
+              onChange={(e) => setOnlineDays(Math.max(1, Number(e.target.value) || 60))}
               className={`${INPUT_CLS} w-20 tabular-nums disabled:bg-slate-50 disabled:text-slate-400`}
             />
           </label>
-          <label className="flex items-center gap-2 text-xs text-slate-600">
-            Min days in hole
+          <label
+            className="flex items-center gap-2 text-xs text-slate-600"
+            title="Marks pumps at or past this tenure. Every online well stays in the table - this flags, it does not filter."
+          >
+            Flag pumps older than (days)
             <input
               type="number"
-              min={0}
-              value={minDays}
-              onChange={(e) => setMinDays(Math.max(0, Number(e.target.value) || 0))}
+              min={30}
+              max={3650}
+              step={30}
+              value={flagDays}
+              onChange={(e) => setFlagDays(Math.max(1, Number(e.target.value) || 365))}
               className={`${INPUT_CLS} w-24 tabular-nums`}
             />
           </label>
         </div>
+        {agingStats && (
+          <div className="mb-3 grid grid-cols-2 gap-3 md:grid-cols-4">
+            <Metric label="JP wells tracked" value={fmtNum(agingStats.tracked)} />
+            <Metric
+              label={`Older than ${fmtNum(flagDays)} d`}
+              value={fmtNum(agingStats.over)}
+              tone={agingStats.over > 0 ? "fair" : undefined}
+            />
+            <Metric label="Oldest" value={`${fmtNum(agingStats.oldest)} d`} />
+            <Metric label="Median age" value={`${fmtNum(agingStats.median)} d`} />
+          </div>
+        )}
         {agingQuery.isError ? (
           <ErrorNote error={agingQuery.error} />
         ) : !agingQuery.data ? (
           <Spinner label="Loading aging pumps" />
         ) : (
           <DataTable
-            columns={AGING_COLUMNS}
+            columns={agingCols}
             rows={agingQuery.data.rows}
             rowKey={(r, i) => `${str(r.well)}-${i}`}
             emptyLabel="No pumps match the current filters"

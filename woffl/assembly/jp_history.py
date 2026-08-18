@@ -214,12 +214,17 @@ def filter_recently_online(
 ) -> pd.DataFrame:
     """Keep aging-pump rows whose well has produced recently.
 
-    "Online" evidence = the well's latest ALLOCATED well test (``last_test``:
-    {well: timestamp}) falling within ``days`` of ``today`` — the same recency
-    proxy Well Sort's stale-days logic trusts. A ``Last Test`` column is added
-    to every surviving row. Wells with NO known test are dropped (no evidence
-    of production). Empty in → empty out; an empty ``last_test`` map returns
-    the frame unchanged (source unavailable → don't silently drop everything).
+    "Online" evidence = the well's latest well test (``last_test``:
+    {well: timestamp}) falling within ``days`` of ``today``. EVERY test
+    counts, allocated or info-only: allocation is a monthly accounting pass,
+    so a producing well routinely has no allocated test for ~30 days and an
+    allocated-only proxy declared it offline (MPS-05, 2026-08-18: tested
+    2026-08-16, last allocated 2026-07-17).
+
+    A ``Last Test`` column is added to every surviving row. Wells with NO
+    known test are dropped (no evidence of production). Empty in → empty out;
+    an empty ``last_test`` map returns the frame unchanged (source
+    unavailable → don't silently drop everything).
     """
     if ages is None or ages.empty:
         return pd.DataFrame() if ages is None else ages

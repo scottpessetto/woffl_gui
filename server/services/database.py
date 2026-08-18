@@ -51,19 +51,31 @@ def database_rows() -> dict[str, Any]:
 
 # mirrors woffl/gui/well_database_page.py:_latest_test_dates
 _LATEST_TEST_QUERY = """\
-SELECT well_name, max(wt_date) AS last_test
+SELECT well_name,
+       max(wt_date) AS last_test,
+       max(CASE WHEN allocated THEN wt_date END) AS last_allocated
 FROM mpu.wells.vw_well_test
-WHERE allocated = True
 GROUP BY well_name
 """
 
 
 # mirrors woffl/gui/well_database_page.py:_latest_test_dates
 @ttl_cache(config.TTL_CHARS, maxsize=1)
-def latest_test_dates() -> dict[str, Any]:
-    """{well: latest ALLOCATED test date} - the recency proxy for "online".
+def latest_test_dates() -> tuple[dict[str, Any], dict[str, Any]]:
+    """({well: latest test}, {well: latest ALLOCATED test}) - the online proxy.
 
-    Fail-soft to {}: the aging filter then disables itself rather than
+    The FIRST map decides "online recently", and it counts EVERY well test,
+    allocated or info-only. Allocation is a monthly accounting pass, so a
+    well that is plainly producing routinely has no allocated test for ~30
+    days; an allocated-only proxy then called it offline and the aging list
+    dropped it. Measured 2026-08-18: MPS-05 tested 2026-08-16 (info-only)
+    with its last allocated test on 2026-07-17 - 32 days, outside the
+    30-day window, so a pump 334 days in hole went missing.
+
+    The second map is display-only. The aging table carries both dates so
+    "online, just not allocated yet" reads straight off the row.
+
+    Fail-soft to ({}, {}): the aging filter then disables itself rather than
     silently dropping every well (the empty result is cached like the
     Streamlit site cached it).
     """
@@ -72,12 +84,16 @@ def latest_test_dates() -> dict[str, Any]:
 
     try:
         df = execute_query(_LATEST_TEST_QUERY)
-        return {
-            _normalize_well_name(str(r["well_name"]).strip()): r["last_test"]
-            for _, r in df.iterrows()
-        }
+        any_test: dict[str, Any] = {}
+        allocated: dict[str, Any] = {}
+        for _, r in df.iterrows():
+            well = _normalize_well_name(str(r["well_name"]).strip())
+            any_test[well] = r["last_test"]
+            if pd.notna(r["last_allocated"]):
+                allocated[well] = r["last_allocated"]
+        return any_test, allocated
     except Exception:
-        return {}
+        return {}, {}
 
 
 # DataFrame column -> JSON key for the aging-pump rows.
@@ -88,6 +104,7 @@ _AGING_COLUMNS: dict[str, str] = {
     "Days In Hole": "days_in_hole",
     "Installs": "installs",
     "Last Test": "last_test",
+    "Last Allocated": "last_allocated",
     "Online": "online",
 }
 
@@ -104,9 +121,10 @@ def aging_pumps(known_only: bool, online_only: bool, online_days: int, min_days:
     Args:
         known_only: drop tracker wells absent from the chars table
             (converted to ESP, retired, or never characterized).
-        online_only: keep only wells with an ALLOCATED well test inside the
-            `online_days` window. Skipped when test dates are unavailable
-            (mirrors filter_recently_online's empty-map behavior).
+        online_only: keep only wells with a well test - allocated OR
+            info-only - inside the `online_days` window. Skipped when test
+            dates are unavailable (mirrors filter_recently_online's
+            empty-map behavior).
         online_days: recency window for the online proxy, days.
         min_days: keep pumps with days_in_hole >= this.
 
@@ -130,16 +148,17 @@ def aging_pumps(known_only: bool, online_only: bool, online_days: int, min_days:
         if ages.empty:
             return {"rows": []}
 
-    # Attach Last Test / Online for every row (the response always carries
-    # the proxy), then filter. mirrors
+    # Attach Last Test / Last Allocated / Online for every row (the response
+    # always carries the proxy), then filter. mirrors
     # woffl/assembly/jp_history.py:filter_recently_online - vw_well_test
     # dates arrive TZ-AWARE (Etc/UTC) while today is naive, so coerce
     # through UTC and strip the tz before comparing.
-    last_tests = latest_test_dates()
+    last_tests, last_allocated = latest_test_dates()
     ages = ages.copy()
-    ages["Last Test"] = pd.to_datetime(
-        ages["Well Name"].map(last_tests), utc=True, errors="coerce"
-    ).dt.tz_localize(None)
+    for column, source in (("Last Test", last_tests), ("Last Allocated", last_allocated)):
+        ages[column] = pd.to_datetime(
+            ages["Well Name"].map(source), utc=True, errors="coerce"
+        ).dt.tz_localize(None)
     today = pd.Timestamp.today().normalize()
     cutoff = today - pd.Timedelta(days=int(online_days))
     ages["Online"] = ages["Last Test"].notna() & (ages["Last Test"] >= cutoff)
@@ -185,8 +204,10 @@ ORDER BY ph.entry_datetime DESC, ph.prop_id
 
 
 # mirrors woffl/gui/prop_history.py:fetch_prop_history (5 min TTL - the page
-# an engineer refreshes right after a save, so a long TTL would show a lie)
-@ttl_cache(config.TTL_PROP_HISTORY, maxsize=64)
+# an engineer refreshes right after a save, so a long TTL would show a lie).
+# maxsize must exceed the well fleet (~90): at 64 a fleet-wide walk evicted
+# wells it had already loaded.
+@ttl_cache(config.TTL_PROP_HISTORY, maxsize=256)
 def _prop_history(enthid: int) -> pd.DataFrame:
     """Every prop_hist row for one enthid, newest first. Raises on failure."""
     from woffl.assembly.databricks_client import execute_query
@@ -202,9 +223,9 @@ def evict_prop_history(well: str) -> None:
 
     The enthid map is process-cached and warm after any successful write
     (the push resolved this same well through it), so the lookup is a dict
-    read. If it fails anyway, fall back to clearing the whole 64-entry
-    cache - a successful write must never fail on eviction, and correctness
-    beats one page's worth of re-SELECTs.
+    read. If it fails anyway, fall back to clearing the whole cache - a
+    successful write must never fail on eviction, and correctness beats one
+    page's worth of re-SELECTs.
     """
     from woffl.assembly.prop_hist_client import well_enthid_map
 

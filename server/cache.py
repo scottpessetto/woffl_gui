@@ -12,6 +12,13 @@ IMMEDIATELY while a background refresh replaces it, so TTL expiry never
 lands on a user request. Rules:
 - Stale is served for up to one extra TTL (the grace window); beyond that a
   read blocks and fetches like a cold miss.
+- EXCEPT for entries a warm loop owns: ``cache_refresh`` stores with a
+  retention floor (``set_warm_retention``), so an entry the warmup rewrites
+  every N hours stays servable for that whole span instead of being deleted
+  one TTL later. Freshness is unchanged - a read past the TTL still gets the
+  stale value plus a background refresh - only the "delete, then block the
+  next reader" cliff goes away. That cliff is what made a warm interval have
+  to be shorter than the shortest TTL it protected.
 - Refreshes are single-flight per key and run on a small persistent thread
   pool - persistent threads matter on Databricks, where the client keeps
   one connection per thread (spawn-per-refresh would handshake every time).
@@ -20,6 +27,10 @@ lands on a user request. Rules:
 - clear() bumps a version; any fetch that started before the clear cannot
   store its (possibly pre-write) result afterwards. This preserves the
   read-your-writes contract of the save/clear-pin/lock endpoints.
+- ``cache_refresh(*args)`` is the warm loop's WRITE path: it re-fetches
+  unconditionally and overwrites the entry, where a plain call short-circuits
+  on a fresh entry and refreshes nothing. It is single-flight against the SWR
+  latch, so a warm pass and a stale read never duplicate one query.
 """
 
 from __future__ import annotations
@@ -29,7 +40,7 @@ import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from functools import wraps
+from functools import partial, wraps
 from typing import Any, Callable, TypeVar
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -43,6 +54,30 @@ _REGISTRY_LOCK = threading.Lock()
 # thread-local; reusing threads reuses their warehouse connections).
 _REFRESH_POOL: ThreadPoolExecutor | None = None
 _REFRESH_POOL_LOCK = threading.Lock()
+
+# Retention floor for entries written by `cache_refresh` - the warm loop's
+# promise that it will rewrite them before this expires. Seconds; 0 keeps the
+# plain SWR grace (2 x TTL). Owned by server.warmup (set once at startup),
+# which lives here so cache.py imports nothing from it.
+_WARM_RETENTION = 0.0
+_WARM_RETENTION_LOCK = threading.Lock()
+
+
+def set_warm_retention(seconds: float) -> None:
+    """Guarantee `cache_refresh`-written entries stay servable this long.
+
+    Called by the warm loop with a span covering its own interval, so a warmed
+    entry can never be deleted between two passes and land a cold, blocking
+    query on a user. Applies to entries written AFTER the call.
+    """
+    global _WARM_RETENTION
+    with _WARM_RETENTION_LOCK:
+        _WARM_RETENTION = max(0.0, float(seconds))
+
+
+def warm_retention() -> float:
+    with _WARM_RETENTION_LOCK:
+        return _WARM_RETENTION
 
 
 def _refresh_pool() -> ThreadPoolExecutor:
@@ -79,13 +114,20 @@ class _TtlCache:
             del self._data[key]
             return "miss", None
 
-    def put(self, key: tuple, value: Any, version: int) -> bool:
-        """Store unless clear() ran after the fetch began (version bump)."""
+    def put(self, key: tuple, value: Any, version: int, retention: float = 0.0) -> bool:
+        """Store unless clear() ran after the fetch began (version bump).
+
+        `retention` is a floor on how long the entry stays SERVABLE (stale
+        included), not on how long it stays fresh: a warm-owned entry still
+        goes stale on its TTL and still triggers an SWR refresh on the next
+        read, it just is not deleted out from under the next reader.
+        """
         with self._lock:
             if version != self.version:
                 return False
             now = time.monotonic()
-            self._data[key] = (now + self.ttl, now + 2 * self.ttl, value)
+            servable = max(2 * self.ttl, retention)
+            self._data[key] = (now + self.ttl, now + servable, value)
             self._data.move_to_end(key)
             while len(self._data) > self.maxsize:
                 self._data.popitem(last=False)
@@ -162,12 +204,52 @@ def ttl_cache(ttl: float, maxsize: int = 32) -> Callable[[F], F]:
             key is built the same way as in `wrapper`."""
             cache.evict((args, tuple(sorted(kwargs.items()))))
 
+        def cache_refresh(*args: Any, **kwargs: Any) -> bool:
+            """Re-fetch NOW and overwrite the entry. The warm loop's write path.
+
+            A plain call cannot warm anything that is still fresh - it returns
+            the cached value and queries nothing - so a loop built out of plain
+            calls only ever refreshes on the pass that happens to observe a
+            stale entry. That is why the old warm interval had to sit under the
+            shortest TTL. This forces the query and stores with the warm
+            retention floor, which decouples "how often we re-query" from "how
+            long a value stays servable".
+
+            Single-flight against the SWR latch: returns False without querying
+            when a refresh for this key is already in flight. Fetch failures
+            propagate (the caller counts them) and leave the old entry intact.
+            """
+            key = (args, tuple(sorted(kwargs.items())))
+            if not cache.try_begin_refresh(key):
+                return False
+            try:
+                version = cache.version
+                cache.put(key, fn(*args, **kwargs), version, retention=warm_retention())
+            finally:
+                cache.end_refresh(key)
+            return True
+
+        wrapper.cache_refresh = cache_refresh  # type: ignore[attr-defined]
         wrapper.cache_evict = cache_evict  # type: ignore[attr-defined]
         wrapper.cache_clear = cache.clear  # type: ignore[attr-defined]
         wrapper._cache = cache  # type: ignore[attr-defined] - test/ops introspection
         return wrapper  # type: ignore[return-value]
 
     return decorate
+
+
+def refresher(fn: Any, *args: Any) -> Callable[[], bool]:
+    """A zero-arg thunk that forces `fn` to re-query and overwrite its entry.
+
+    The warm loop's target lists are built from these, because a plain callable
+    short-circuits on a fresh entry and warms nothing. Raises TypeError up
+    front when handed something that is not ttl_cache-decorated, so a target
+    list can never silently degrade into a list of no-ops.
+    """
+    cache_refresh = getattr(fn, "cache_refresh", None)
+    if cache_refresh is None:
+        raise TypeError(f"{getattr(fn, '__name__', fn)} is not ttl_cache-decorated")
+    return partial(cache_refresh, *args)
 
 
 def clear_all_caches() -> int:

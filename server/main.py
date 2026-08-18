@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 import sys
-import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -38,62 +37,20 @@ log = logging.getLogger("woffl.web")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 
-def _warm_caches() -> None:
-    """Fire-and-forget startup warm of the expensive Databricks fetches,
-    mirroring the Streamlit startup threads. Per-fetch failures are
-    swallowed - a cold cache degrades to lazy loading, never to a crash."""
-    from functools import partial
-
-    from server.config import DEFAULT_TEST_MONTHS
-    from server.services import datasources
-    from server.services import tests as tests_svc
-
-    def _warm(label: str, fn) -> None:
-        try:
-            fn()
-            log.info("cache warm ok: %s", label)
-        except Exception as exc:  # noqa: BLE001 - warmers must never raise
-            log.warning("cache warm failed (%s): %s", label, exc)
-
-    targets = [
-        ("well_characteristics", datasources.well_chars_safe),
-        ("pf_latest", datasources.pf_latest_safe),
-        ("jp_history", datasources.jp_history_safe),
-        ("well_tests", partial(tests_svc.fetch_all_well_tests, DEFAULT_TEST_MONTHS)),
-        # Fleet-wide saved-IPR snapshot: one Databricks query that makes the
-        # Optimization board and every saved-fit overlay read locally.
-        ("saved_ipr", _warm_saved_ipr),
-        # prop_hist write metadata (prop_xref whitelist + the enthid map).
-        # Both are 1 h module caches inside prop_hist_client, and the FIRST
-        # save of a process pays them inline (~0.5 s) before its INSERT.
-        ("prop_write_meta", _warm_prop_write_meta),
-    ]
-    # Well Sort pulls (producers, catalog, shut-in log, 180-day tests) warm
-    # in their own daemon threads; failures degrade to lazy loading too.
-    from server.services import well_sort as well_sort_svc
-
-    well_sort_svc.warm()
-    for label, fn in targets:
-        threading.Thread(target=_warm, args=(label, fn), daemon=True, name=f"warm-{label}").start()
-
-
-def _warm_saved_ipr() -> None:
-    from woffl.gui import ipr_anchor
-
-    ipr_anchor.warm_saved_ipr_cache()
-
-
-def _warm_prop_write_meta() -> None:
-    from woffl.assembly import prop_hist_client
-
-    prop_hist_client.fetch_prop_xref()
-    prop_hist_client._fetch_enthid_groups()
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _warm_caches()
-    yield
+    """Start the fleet cache warmup, stop it on shutdown.
+
+    Everything about what gets warmed, on what cadence, and with how many
+    warehouse connections lives in ``server.warmup`` - see its module docstring.
+    """
+    from server import warmup
+
+    warmup.start()
+    try:
+        yield
+    finally:
+        warmup.stop()
 
 
 def _version() -> str:

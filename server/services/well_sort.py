@@ -13,7 +13,6 @@ fixed "Tests window: 180 d" caption), not the client default of 120.
 
 from __future__ import annotations
 
-import threading
 from typing import Any, Optional
 
 import pandas as pd
@@ -100,13 +99,28 @@ def refresh() -> int:
     return len(_CACHED_FETCHERS)
 
 
-def warm() -> None:
-    """Startup warm: the slow pulls the first page load would otherwise eat."""
-    for fn in (_shut_in_history, _producers, _catalog, _last_tests_ever):
-        threading.Thread(target=fn, daemon=True, name=f"warm-{fn.__name__}").start()
-    threading.Thread(
-        target=_recent_tests, args=(TESTS_WINDOW_DAYS,), daemon=True, name="warm-_recent_tests"
-    ).start()
+def warm_targets() -> list[tuple[str, Any]]:
+    """(label, thunk) for the slow pulls a first page load would otherwise eat.
+
+    Threading and retry cadence belong to ``server.warmup``, which owns the one
+    warm loop for the whole app - this module only names its own fetchers so the
+    warmup never has to guess which of them are worth a query. Each thunk is a
+    ``cache.refresher``: a forced re-query that overwrites the entry, because a
+    plain call returns a still-fresh entry and warms nothing.
+
+    ``_xv_status`` is deliberately absent. It is live safety-valve state on a
+    5 min TTL - warming it every few hours would only ever serve a reading old
+    enough to be wrong, and the page already renders without it.
+    """
+    from server.cache import refresher
+
+    return [
+        ("shut_in_history", refresher(_shut_in_history)),
+        ("producers", refresher(_producers)),
+        ("producer_catalog", refresher(_catalog)),
+        ("last_tests_ever", refresher(_last_tests_ever)),
+        ("recent_tests", refresher(_recent_tests, TESTS_WINDOW_DAYS)),
+    ]
 
 
 # ---------------------------------------------------------------------------

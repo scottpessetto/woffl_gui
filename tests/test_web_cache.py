@@ -1,6 +1,6 @@
 """server.cache ttl_cache contract: TTL semantics, stale-while-revalidate,
-failure handling, and the clear() version guard that protects the write
-endpoints' read-your-writes behavior.
+failure handling, the clear() version guard that protects the write endpoints'
+read-your-writes behavior, and the warm loop's forced-overwrite write path.
 """
 
 from __future__ import annotations
@@ -8,7 +8,9 @@ from __future__ import annotations
 import threading
 import time
 
-from server.cache import ttl_cache
+import pytest
+
+from server.cache import refresher, set_warm_retention, ttl_cache
 
 
 def _wait_until(pred, timeout: float = 5.0) -> bool:
@@ -208,3 +210,128 @@ def test_clear_drops_every_entry_and_recomputes():
     assert fn("MPB-28") == "saved:MPB-28"
     assert fn("MPC-45") == "saved:MPC-45"
     assert calls == ["MPB-28", "MPC-45", "MPB-28", "MPC-45"]
+
+
+# ---------------------------------------------------------------------------
+# cache_refresh + the warm retention floor (the warmup's write path)
+# ---------------------------------------------------------------------------
+
+
+def test_a_plain_call_cannot_warm_a_fresh_entry_but_refresh_can():
+    """Why the warm loop needs its own write path at all: a plain call on a
+    fresh entry returns the cached value and queries NOTHING, so a loop built
+    out of plain calls refreshes on the TTL's schedule, not its own."""
+    calls = []
+
+    @ttl_cache(60.0)
+    def fn():
+        calls.append(1)
+        return len(calls)
+
+    assert fn() == 1
+    assert fn() == 1 and len(calls) == 1  # fresh: no re-query
+
+    assert fn.cache_refresh() is True
+    assert len(calls) == 2, "cache_refresh must re-query regardless of freshness"
+    assert fn() == 2, "and the new value must have replaced the old one"
+
+
+def test_refresh_is_single_flight_against_a_background_swr_refresh():
+    """A warm pass landing on a key the SWR pool is already refreshing must not
+    duplicate the warehouse query."""
+    calls = []
+
+    @ttl_cache(60.0)
+    def fn():
+        calls.append(1)
+        return len(calls)
+
+    fn()
+    fn._cache.try_begin_refresh(((), ()))  # pretend a stale read is refreshing
+    try:
+        assert fn.cache_refresh() is False
+        assert len(calls) == 1
+    finally:
+        fn._cache.end_refresh(((), ()))
+
+    assert fn.cache_refresh() is True and len(calls) == 2
+
+
+def test_a_failed_refresh_leaves_the_previous_value_intact():
+    """The whole point of overwriting rather than clearing: a warehouse blip
+    must degrade to "slightly stale", never to "cold and blocking"."""
+    calls = []
+
+    @ttl_cache(60.0)
+    def fn():
+        calls.append(1)
+        if len(calls) > 1:
+            raise RuntimeError("warehouse down")
+        return "good"
+
+    assert fn() == "good"
+    with pytest.raises(RuntimeError):
+        fn.cache_refresh()
+    assert fn() == "good", "the old entry must survive a failed refresh"
+
+
+def test_the_retention_floor_keeps_a_warmed_entry_servable_past_2x_ttl():
+    """Without this, a 6 h warm cadence over a 1 h TTL would delete every entry
+    two hours in and hand the next reader a cold, blocking query."""
+    warmed_calls = []
+
+    @ttl_cache(ttl=0.05)
+    def warmed():
+        warmed_calls.append(1)
+        return "value"
+
+    set_warm_retention(30.0)
+    try:
+        assert warmed.cache_refresh() is True
+        time.sleep(0.2)  # well past fresh + 2 x ttl
+        # Served from the entry, not recomputed inline: the read never blocks.
+        assert warmed() == "value"
+        assert len(warmed_calls) == 1
+    finally:
+        set_warm_retention(0.0)
+
+
+def test_an_unwarmed_entry_still_expires_into_a_blocking_recompute():
+    """The floor applies ONLY to what the warm path wrote - ordinary caching
+    semantics are untouched for everything else."""
+    calls = []
+
+    @ttl_cache(ttl=0.05)
+    def fn():
+        calls.append(1)
+        return len(calls)
+
+    set_warm_retention(30.0)  # set, but this entry is not warm-written
+    try:
+        assert fn() == 1
+        time.sleep(0.2)
+        assert fn() == 2
+    finally:
+        set_warm_retention(0.0)
+
+
+def test_refresher_refuses_an_uncached_function():
+    """A warm target list that silently became a list of no-ops is the failure
+    mode this guards: the loop would report success and warm nothing."""
+    with pytest.raises(TypeError):
+        refresher(lambda: None)
+
+
+def test_refresher_binds_the_arguments_of_the_key_it_warms():
+    calls = []
+
+    @ttl_cache(60.0)
+    def fn(months):
+        calls.append(months)
+        return months
+
+    fn(6)
+    refresher(fn, 12)()
+
+    assert calls == [6, 12]
+    assert fn(12) == 12 and calls == [6, 12], "the 12-month key is warm now"

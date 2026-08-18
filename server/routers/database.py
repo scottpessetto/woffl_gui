@@ -22,8 +22,8 @@ def database_wells() -> Any:
 @router.get("/aging-pumps", response_model=schemas.AgingPumpsResponse)
 def aging_pumps(
     known_only: bool = Query(True, description="Only wells present in the chars table"),
-    online_only: bool = Query(False, description="Only wells with a recent allocated test"),
-    online_days: int = Query(30, ge=1, le=3650, description="Recency window for online, days"),
+    online_only: bool = Query(False, description="Only wells with a recent well test (allocated or info-only)"),
+    online_days: int = Query(60, ge=1, le=3650, description="Recency window for online, days"),
     min_days: int = Query(365, ge=0, le=36500, description="Minimum days in hole"),
 ) -> Any:
     """Current-pump tenure per well, oldest first."""

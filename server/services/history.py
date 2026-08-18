@@ -74,7 +74,11 @@ ORDER BY vbdc.tag_date
 
 
 # mirrors woffl/gui/tabs/jp_history_tab.py:_cached_extended_tests
-@ttl_cache(config.TTL_EXTENDED_TESTS, maxsize=128)
+#
+# maxsize sizing: the key carries `end` = today, so every well gets a NEW key at
+# midnight. It must therefore hold at least TWO days x the fleet, or the day's
+# fresh entries evict each other while yesterday's are still resident.
+@ttl_cache(config.TTL_EXTENDED_TESTS, maxsize=512)
 def extended_tests(db_name: str, start: str, end: str) -> pd.DataFrame:
     """Well tests for an extended date range without requiring BHP.
 
@@ -130,7 +134,8 @@ def extended_tests(db_name: str, start: str, end: str) -> pd.DataFrame:
 
 
 # mirrors woffl/gui/tabs/jp_history_tab.py:_cached_bhp_daily
-@ttl_cache(config.TTL_EXTENDED_TESTS, maxsize=128)
+# Same rolling-`end` key as extended_tests - see its maxsize note.
+@ttl_cache(config.TTL_EXTENDED_TESTS, maxsize=512)
 def bhp_daily(db_name: str, start: str, end: str) -> pd.DataFrame:
     """Daily BHP for all dates (not just well-test dates).
 
@@ -226,6 +231,70 @@ def _current_pump_caption(jp_hist: pd.DataFrame, well: str) -> Optional[str]:
     return label
 
 
+def _installs_for(jp_hist: pd.DataFrame, well: str) -> pd.DataFrame:
+    """The well's dated installs, oldest first (empty frame when it has none)."""
+    if "Well Name" in jp_hist.columns:
+        well_jp = jp_hist[jp_hist["Well Name"] == well].copy()
+    else:
+        well_jp = jp_hist.iloc[0:0].copy()
+    if "Date Set" in well_jp.columns:
+        well_jp = well_jp.dropna(subset=["Date Set"]).sort_values("Date Set")
+    return well_jp
+
+
+def _query_window(well: str, well_jp: pd.DataFrame) -> tuple[str, str, str]:
+    """(db_name, start, end) for this well's extended_tests / bhp_daily pulls.
+
+    THE single source of those two cache keys: ``warm_well`` and
+    ``jp_history_payload`` must agree exactly or the warmup fills entries no
+    request ever reads. ``end`` is today, so the keys roll over at midnight -
+    see the maxsize notes on the two fetchers.
+    """
+    from woffl.assembly.well_test_client import _denormalize_well_name
+
+    return (
+        _denormalize_well_name(well),
+        pd.Timestamp(well_jp["Date Set"].min()).strftime("%Y-%m-%d"),
+        datetime.now().strftime("%Y-%m-%d"),
+    )
+
+
+def warm_well(well: str) -> bool:
+    """Pre-pay the two per-well Databricks pulls behind /wells/{name}/jp-history.
+
+    These are the app's only genuinely per-well warehouse queries, and they are
+    why a well used to be slow on its first open and instant for the rest of the
+    day. Called by ``server.warmup`` for every well in the fleet.
+
+    Returns:
+        True when the tracker had a dated install and both fetchers were
+        touched; False when this well has nothing to query.
+
+    Raises:
+        RuntimeError: when no JP-history source is reachable. Fetcher errors
+        propagate too - failures are never cached and the warmup driver logs
+        them and moves on.
+    """
+    jp_hist, source = datasources.jp_history_safe()
+    if jp_hist is None or source is None:
+        raise RuntimeError("JP history unavailable (Databricks and Excel fallback both failed)")
+    well_jp = _installs_for(jp_hist, well)
+    if well_jp.empty:
+        return False
+    db_name, start, end = _query_window(well, well_jp)
+    # Sequential on purpose: the warmup already runs wells in parallel and each
+    # of its threads owns one thread-local warehouse connection, so a nested
+    # pool here would double warehouse concurrency for no wall-clock win.
+    #
+    # cache_refresh, not a plain call: a plain call returns a still-fresh entry
+    # and queries nothing, which made the warm cadence the TTL rather than the
+    # loop's interval. Forcing it also stores with the warm retention floor, so
+    # the entry cannot be deleted between two passes (server/cache.py).
+    extended_tests.cache_refresh(db_name, start, end)  # type: ignore[attr-defined]
+    bhp_daily.cache_refresh(db_name, start, end)  # type: ignore[attr-defined]
+    return True
+
+
 def jp_history_payload(well: str) -> dict[str, Any]:
     """JpHistoryResponse payload for one well.
 
@@ -245,18 +314,11 @@ def jp_history_payload(well: str) -> dict[str, Any]:
     Raises:
         RuntimeError: when both JP-history sources are unavailable.
     """
-    from woffl.assembly.well_test_client import _denormalize_well_name
-
     jp_hist, source = datasources.jp_history_safe()
     if jp_hist is None or source is None:
         raise RuntimeError("JP history unavailable (Databricks and Excel fallback both failed)")
 
-    if "Well Name" in jp_hist.columns:
-        well_jp = jp_hist[jp_hist["Well Name"] == well].copy()
-    else:
-        well_jp = jp_hist.iloc[0:0].copy()
-    if "Date Set" in well_jp.columns:
-        well_jp = well_jp.dropna(subset=["Date Set"]).sort_values("Date Set")
+    well_jp = _installs_for(jp_hist, well)
 
     payload: dict[str, Any] = {
         "well": well,
@@ -277,9 +339,7 @@ def jp_history_payload(well: str) -> dict[str, Any]:
     payload["installs"] = frames.records(well_jp, _INSTALL_COLUMNS)
     payload["current_pump"] = _current_pump_caption(jp_hist, well)
 
-    db_name = _denormalize_well_name(well)
-    start = pd.Timestamp(well_jp["Date Set"].min()).strftime("%Y-%m-%d")
-    end = datetime.now().strftime("%Y-%m-%d")
+    db_name, start, end = _query_window(well, well_jp)
 
     # Fail-soft per series - the tab warns and renders what it has. The two
     # pulls are independent Databricks queries at seconds each, so they run

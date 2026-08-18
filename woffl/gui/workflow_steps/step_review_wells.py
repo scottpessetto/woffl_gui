@@ -78,6 +78,24 @@ def _is_default_offline(pad: str, well: str) -> bool:
     return _well_number(well) in _PAD_DEFAULT_OFFLINE.get(pad, set())
 
 
+# Both offline checkboxes (the save panel's and the Modeling-status
+# expander's) mirror the SAME store field. Streamlit ignores a widget's
+# `value=` once its key exists in session_state, and `_render_modeling_status`
+# writes its checkbox straight back into the store on EVERY rerun - so any code
+# path that authoritatively sets entry["offline"] must forget these keys, or the
+# stale widget value silently reverts the write on the next run. That is exactly
+# how a well that came back online stays stuck showing OFFLINE.
+def _offline_widget_keys(pad: str, well: str) -> tuple[str, str]:
+    return f"sp_offline_{well}", f"sp_status_off_{pad}_{well}"
+
+
+def _drop_offline_widget_state(pad: str, wells) -> None:
+    """Forget both offline checkboxes for ``wells`` so they re-seed from the store."""
+    for well in wells:
+        for key in _offline_widget_keys(pad, well):
+            st.session_state.pop(key, None)
+
+
 def _well_has_gauge(well: str) -> bool:
     """True if any test for the well carries a finite measured BHP."""
     try:
@@ -296,14 +314,23 @@ def _render_modeling_status(pad: str) -> None:
         cols = st.columns(3)
         for i, w in enumerate(sorted(store)):
             with cols[i % 3]:
-                # The checkbox's keyed state is the source of truth; write it
-                # straight back to the store each run so the badge + the run
-                # filter stay in sync.
+                # The checkbox's keyed state is the source of truth for THIS
+                # widget, so write it straight back to the store each run and
+                # keep the badge + the run filter in sync. Every code path that
+                # sets the store's flag itself drops this key first (see
+                # _drop_offline_widget_state) - otherwise a stale True here
+                # silently reverts the save.
                 store[w]["offline"] = st.checkbox(
                     f"{w} offline",
                     value=store[w].get("offline", False),
                     key=f"sp_status_off_{pad}_{w}",
                 )
+                # Say WHY. An engineer looking at a well that is flowing right
+                # now needs to see that the flag came from a force-fit with no
+                # well tests, not from a field decision.
+                if store[w]["offline"]:
+                    why = str(store[w].get("notes") or "").strip()
+                    st.caption(f"↳ {why}" if why else "↳ no reason recorded")
 
 
 def _render_save_panel(params, real_wells: list[str], pad: str):
@@ -424,9 +451,8 @@ def _render_save_controls(
             st.error(str(e))
             return
         store[well] = entry
-        # The offline checkbox re-seeds from the stored value next render;
-        # drop its widget state so a dedicated-button save shows through.
-        st.session_state.pop(f"sp_offline_{well}", None)
+        # Both offline checkboxes re-seed from the stored value next render.
+        _drop_offline_widget_state(pad, [well])
 
         # Best-effort: pin this well's IPR anchor to Databricks so it becomes
         # the auto-default for every future session (W3 of the
@@ -614,14 +640,11 @@ def _render_csv_io(pad: str) -> None:
                 # plausible-looking defaults at run time — flag them per well
                 # NOW (persisted across the rerun below).
                 st.session_state[f"_sp_csv_issues_{pad}"] = wrs.validate_store(loaded)
-                # Drop the offline-checkbox widget state for the loaded wells so
-                # their value= re-seeds from the freshly loaded store. Otherwise
-                # the checkbox returns its STALE persisted widget value and the
+                # Both offline checkboxes must re-seed from the freshly loaded
+                # store. Otherwise the stale persisted widget value wins and the
                 # next _render_modeling_status pass writes it straight back over
                 # the loaded "offline" flag (silently reverting it).
-                for w in loaded:
-                    st.session_state.pop(f"sp_status_off_{pad}_{w}", None)
-                    st.session_state.pop(f"sp_offline_{w}", None)
+                _drop_offline_widget_state(pad, loaded)
                 st.session_state[f"_sp_csv_sig_{pad}"] = sig
                 st.success(f"Loaded {len(loaded)} well(s) from CSV.")
                 st.rerun()
@@ -706,6 +729,13 @@ _ASSUMED_RESP = 1700.0
 _NO_TESTS_REASON = "no well tests in cache"
 
 
+# Note stamped on those stub entries. `_apply_batch_row` reads it back: the
+# stub's OFFLINE is a placeholder for "no targets to match", NOT an engineer's
+# decision, so a later successful match must clear it rather than carry a dead
+# reason forward forever.
+_NO_TESTS_OFFLINE_NOTE = "force-fit (offline - no well tests)"
+
+
 def _offline_stub_entry(well: str) -> dict:
     """Minimal review-store entry for a well force-fit can't touch (no well
     tests → no oil/PF targets): saved OFFLINE so the pad reads fully
@@ -775,7 +805,7 @@ def _offline_stub_entry(well: str) -> dict:
         "is_hypothetical": False,
         "offline": True,
         "reviewed": True,
-        "notes": "force-fit (offline — no well tests)",
+        "notes": _NO_TESTS_OFFLINE_NOTE,
     }
 
 
@@ -1077,7 +1107,13 @@ def _apply_batch_row(pad: str, store: dict, r, raw, *, note: str = "") -> str | 
             pwf=int(round(res.pwf)),
             pres=int(round(res.pres)),
         )
-        off = store.get(r.well, {}).get("offline", _is_default_offline(pad, r.well))
+        prior = store.get(r.well, {})
+        if prior.get("offline") and str(prior.get("notes", "")) == _NO_TESTS_OFFLINE_NOTE:
+            # The well matched, so it HAS tests: the stub's reason is gone. Any
+            # other offline flag is a human decision and stays.
+            off = False
+        else:
+            off = prior.get("offline", _is_default_offline(pad, r.well))
         store[r.well] = wrs.snapshot_from_params(
             p,
             # Fallback-anchored wells keep "forced" provenance — their ResP is
@@ -1314,6 +1350,12 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
                     store[w] = _offline_stub_entry(w)
                 defaulted_off.append(w)
             skipped = [(w, why) for w, why in skipped if w not in defaulted_off]
+            # Every entry this pass wrote (matched rows AND the no-test
+            # defaults) must forget its offline checkboxes, or the stale widget
+            # value overwrites the store on the very next rerun.
+            _drop_offline_widget_state(
+                pad, [r.well for r in rows] + defaulted_off
+            )
 
             st.session_state[f"batch_rows_{pad}"] = rows
             st.session_state[f"batch_skipped_{pad}"] = skipped
@@ -1443,6 +1485,7 @@ def _render_batch_automatch(pad: str, real_wells: list[str]) -> None:
                         skipped.append(err)
                     else:
                         applied += 1
+                _drop_offline_widget_state(pad, [r.well for r in matched])
                 st.success(
                     f"Applied {applied} matched well(s) to the {pad}-Pad review store — "
                     "they're saved. Open any in the Solver below to fine-tune."
