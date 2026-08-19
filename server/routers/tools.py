@@ -24,6 +24,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from server import jobs, schemas
 from server.services.tools import pad_watercut as pad_wc_svc
+from server.services.tools import sep_oil_loss as sep_loss_svc
 
 router = APIRouter(prefix="/tools", tags=["scotts-tools"])
 
@@ -85,6 +86,45 @@ def pad_watercut_window() -> Any:
     """The tab's default range (three years back to today)."""
     start, end = pad_wc_svc.default_window()
     return {"start": start, "end": end}
+
+
+# ── Separator Oil Loss (fast; one historian query, cached) ─────────────────
+
+
+@router.get("/sep-oil-loss", response_model=schemas.SepOilLossResponse)
+def sep_oil_loss(
+    days: int = Query(14, ge=1, le=90),
+    field_oil_bopd: float = Query(65000.0, ge=1000, le=200000),
+    max_oil_frac: float = Query(0.25, gt=0, le=1),
+) -> Any:
+    """Oil leaving with the first-stage separator water leg, as a band.
+
+    ``field_oil_bopd`` is both the physical ceiling on the water leg and the
+    denominator for the percent-of-field columns; ``max_oil_frac`` sets the
+    conservative bound. See services/tools/sep_oil_loss.py for the method.
+    """
+    try:
+        return sep_loss_svc.sep_oil_loss(days, field_oil_bopd, max_oil_frac)
+    except ValueError as exc:
+        raise _invalid(exc) from None
+
+
+@router.get("/sep-oil-loss/day", response_model=schemas.SepOilLossDayResponse)
+def sep_oil_loss_day(
+    date: str = Query(..., description="Field calendar day, YYYY-MM-DD"),
+    days: int = Query(14, ge=1, le=90),
+    field_oil_bopd: float = Query(65000.0, ge=1000, le=200000),
+    max_oil_frac: float = Query(0.25, gt=0, le=1),
+) -> Any:
+    """One field day at full resolution - the drill-down behind a daily bar.
+
+    Re-slices the window's already-cached historian frame, so clicking a bar
+    costs no warehouse round trip.
+    """
+    try:
+        return sep_loss_svc.sep_oil_loss_day(date, days, field_oil_bopd, max_oil_frac)
+    except ValueError as exc:
+        raise _invalid(exc) from None
 
 
 # ── Test Harness ───────────────────────────────────────────────────────────

@@ -2,18 +2,22 @@
  * Well Profile - wellbore trajectory visualization. Plots horizontal
  * departure vs TVD and MD vs TVD from the deviation survey (or the field
  * preset trajectory when no survey exists), plus inclination when available.
+ * Carries the MD <-> TVD depth interpolator, whose hit is marked on both
+ * depth charts.
  * Mirrors woffl/gui/tabs/well_profile.py.
  */
 
-import { useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { useWellProfile } from "../api/hooks";
+import type { DepthLookupResponse } from "../api/types";
 import type { EChartsOption } from "../charts/echarts";
-import { ACCENT, axis, axisTooltip, baseGrid, baseTooltip, GOLD, houseOption, SLATE } from "../charts/theme";
+import { ACCENT, axis, axisTooltip, baseGrid, baseTooltip, CRIMSON, GOLD, houseOption, SLATE } from "../charts/theme";
 import { ChartPanel } from "../charts/ChartPanel";
 import { Badge, Card, ErrorNote, InfoNote, Spinner } from "../components/ui";
 import { fmtNum } from "../lib/format";
 import { useParamsStore } from "../state/params";
+import { DepthInterpolator } from "./well-profile/DepthInterpolator";
 
 /** Index of the value in `values` closest to `target`. */
 function nearestIndex(values: number[], target: number): number {
@@ -29,12 +33,47 @@ function nearestIndex(values: number[], target: number): number {
   return best;
 }
 
+/** Linear read of `ys` at `x` on the monotone `xs` - marker placement only. */
+function interpAt(xs: number[], ys: number[], x: number): number {
+  if (xs.length === 0) return 0;
+  let hi = 1;
+  while (hi < xs.length - 1 && xs[hi] < x) hi++;
+  const lo = hi - 1;
+  const span = xs[hi] - xs[lo];
+  if (span <= 0) return ys[lo];
+  return ys[lo] + ((x - xs[lo]) / span) * (ys[hi] - ys[lo]);
+}
+
+/** Crosshair + dot marking one looked-up depth on a depth chart. */
+function markerSeries(name: string, x: number, y: number): Record<string, unknown> {
+  return {
+    name,
+    type: "scatter",
+    data: [[x, y]],
+    symbol: "circle",
+    symbolSize: 11,
+    itemStyle: { color: CRIMSON },
+    z: 10,
+    markLine: {
+      silent: true,
+      symbol: "none",
+      data: [
+        { xAxis: x, lineStyle: { color: CRIMSON, type: "dotted", width: 1 }, label: { show: false } },
+        { yAxis: y, lineStyle: { color: CRIMSON, type: "dotted", width: 1 }, label: { show: false } },
+      ],
+    },
+  };
+}
+
 export default function WellProfilePage() {
   const well = useParamsStore((s) => s.well);
   const params = useParamsStore((s) => s.params);
 
   const query = useWellProfile(well, params.jpump_tvd, params.field_model);
   const data = query.data;
+  const [hit, setHit] = useState<DepthLookupResponse | null>(null);
+  // Stable identity: DepthInterpolator pushes through an effect keyed on it.
+  const onResult = useCallback((next: DepthLookupResponse | null) => setHit(next), []);
 
   const profileOption = useMemo<EChartsOption | null>(() => {
     if (!data) return null;
@@ -60,6 +99,11 @@ export default function WellProfilePage() {
         itemStyle: { color: GOLD },
       });
     }
+    if (hit && data.md.length > 0) {
+      series.push(
+        markerSeries("Lookup", interpAt(data.md, data.hd, hit.md), hit.tvd),
+      );
+    }
     return houseOption({
       title: { text: "Wellbore Profile", left: 8, textStyle: { fontSize: 13, fontWeight: 600 } },
       tooltip: { ...baseTooltip, trigger: "axis", formatter: axisTooltip({ headerUnit: "ft out", unit: "ft TVD" }) },
@@ -68,7 +112,7 @@ export default function WellProfilePage() {
       yAxis: { type: "value", ...axis("True Vertical Depth (ft)"), inverse: true },
       series,
     });
-  }, [data]);
+  }, [data, hit]);
 
   const mdTvdOption = useMemo<EChartsOption | null>(() => {
     if (!data) return null;
@@ -121,6 +165,9 @@ export default function WellProfilePage() {
         itemStyle: { color: GOLD },
       });
     }
+    if (hit) {
+      series.push(markerSeries("Lookup", hit.md, hit.tvd));
+    }
     return houseOption({
       title: { text: "MD vs TVD", left: 8, textStyle: { fontSize: 13, fontWeight: 600 } },
       tooltip: { ...baseTooltip, trigger: "axis", formatter: axisTooltip({ headerUnit: "ft MD", unit: "ft TVD" }) },
@@ -130,7 +177,7 @@ export default function WellProfilePage() {
       yAxis: { type: "value", ...axis("True Vertical Depth (ft)"), inverse: true },
       series,
     });
-  }, [data]);
+  }, [data, hit]);
 
   const inclinationOption = useMemo<EChartsOption | null>(() => {
     const inc = data?.inclination;
@@ -181,6 +228,12 @@ export default function WellProfilePage() {
           trajectory scaled to the jet pump TVD.
         </InfoNote>
       )}
+      <DepthInterpolator
+        well={well}
+        fieldModel={params.field_model}
+        mdRange={[data.md[0] ?? 0, data.md[data.md.length - 1] ?? 0]}
+        onResult={onResult}
+      />
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <ChartPanel option={profileOption} height={480} zoom={{ xAxisIndex: [0], yAxisIndex: [0] }} />

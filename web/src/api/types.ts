@@ -1067,6 +1067,34 @@ export interface WellProfileResponse {
   inclination: { md: number[]; deg: number[] } | null;
 }
 
+export interface DepthStation {
+  md: number;
+  tvd: number;
+}
+
+export interface DepthLookupResponse {
+  well: string;
+  has_survey: boolean;
+  /** minimum_curvature when the survey carries inclination + azimuth. */
+  method: "minimum_curvature" | "chord";
+  given: "md" | "tvd";
+  md: number;
+  tvd: number;
+  inclination: number | null;
+  azimuth: number | null;
+  /** Dogleg severity of the containing segment, deg/100 ft. */
+  dls: number | null;
+  /** Every MD reaching that TVD - a horizontal well crosses one twice. */
+  md_solutions: number[];
+  at_station: boolean;
+  station_above: DepthStation | null;
+  station_below: DepthStation | null;
+  station_count: number;
+  md_range: number[];
+  tvd_range: number[];
+  note: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Equivalents
 // ---------------------------------------------------------------------------
@@ -1402,6 +1430,94 @@ export interface PadWatercutResponse {
   start: string;
   end: string;
   series: PadWatercutSeries[];
+}
+
+// Separator Oil Loss - mirrors schemas.SepLossPeriod / SepLossEvent /
+// SepOilLossResponse. Every barrel figure is a band (lower, upper).
+
+/** One look-back roll-up. Barrels are a band, never a single number. */
+export interface SepLossPeriod {
+  label: string; // "Last 24 h"
+  days: number;
+  hours: number; // valid (separator running) hours in the look-back
+  downtime_hours: number;
+  flow_avg: number; // BPD, time-weighted
+  wc_avg: number; // %, time-weighted
+  base_avg: number; // %, the analyzer's own film-corrected plateau
+  bbl_upper: number; // meter as read, film-corrected, capped at field oil
+  bbl_lower: number; // oil fraction of the leg capped at max_oil_frac
+  bopd_upper: number;
+  bopd_lower: number;
+  pct_field_upper: number | null; // % of field oil production
+  pct_field_lower: number | null;
+  upset_hours: number;
+  events: number;
+}
+
+/** One field calendar day (Alaska local) of the loss band. */
+export interface SepLossDay {
+  date: string; // YYYY-MM-DD
+  hours: number; // separator running hours inside the day
+  covered_hours: number; // how much of the day the window spans
+  bbl_upper: number;
+  bbl_lower: number;
+  pct_field_upper: number | null; // blank on a day that barely ran
+  pct_field_lower: number | null;
+  upset_hours: number;
+  events: number;
+  partial: boolean; // clipped by the window or cut by downtime
+}
+
+/** One carry-under excursion, classified by its vessel-level signature. */
+export interface SepLossEvent {
+  start: string; // ISO 8601, Alaska offset
+  end: string;
+  hours: number;
+  wc_min: number; // %
+  wc_avg: number; // %
+  flow_avg: number; // BPD
+  bbl_upper: number;
+  bbl_lower: number;
+  level_min: number | null; // controlled level, %
+  level_avg: number | null; // %
+  level_sp_avg: number | null; // that loop's setpoint, %
+  level_dev_avg: number | null; // level - setpoint, points
+  // "at setpoint" is the interesting one: level held where it was asked and
+  // the water leg ran oil anyway, so separation failed, not level control.
+  kind: "level loss" | "off setpoint" | "at setpoint";
+  // DataTable rows carry an index signature (same as WellTestRow, EquivalentRow).
+  [key: string]: unknown;
+}
+
+export interface SepOilLossResponse {
+  flow_tag: string; // "MPU_FI_5365", water-leg flow
+  wc_tag: string; // "MPU_AI_5317", Red Eye water cut
+  level_tag: string | null; // "MPU_LIC_5365CV1", the CONTROLLED level
+  level_sp_tag: string | null; // "MPU_LC5365SP1", that loop's setpoint
+  days: number;
+  start: string | null; // ISO 8601, Alaska offset
+  end: string | null;
+  field_oil_bopd: number; // ceiling and percent-of-field denominator
+  max_oil_frac: number; // oil-fraction cap behind the lower bound
+  flow_min_bpd: number; // below this the separator is down; hours excluded
+  upset_drop_pts: number; // points below the plateau that count as an upset
+  valid_hours: number;
+  excluded_hours: number;
+  periods: SepLossPeriod[];
+  daily: SepLossDay[];
+  events: SepLossEvent[];
+  /** Parallel arrays keyed by `t` (ISO strings): flow, wc, base, level,
+   *  level_sp, oil_upper, cum_upper, cum_lower. Nulls where a tag had none. */
+  series: Record<string, (number | null)[] | string[]>;
+}
+
+/** The drill-down behind one daily bar: same day at full resolution. */
+export interface SepOilLossDayResponse {
+  date: string;
+  days: number;
+  summary: SepLossDay | null;
+  events: SepLossEvent[];
+  series: Record<string, (number | null)[] | string[]>;
 }
 
 /** Every tool job shares one envelope. `result` shape is per-tool. */

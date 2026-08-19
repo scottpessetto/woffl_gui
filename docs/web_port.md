@@ -45,6 +45,7 @@ mirrored by `web/src/api/types.ts`.
 | GET /wells/{name}/context | server replay of the sidebar seeding pipeline: chars, pump-from-history, IPR auto-populate, saved-IPR overlay + locks, live PF; returns seeds + as-built locks + provenance |
 | GET /wells/{name}/tests | windowed well tests (months, cap) |
 | GET /wells/{name}/profile | survey MD/VD/HD + filtered profile + JP marker |
+| GET /wells/{name}/depth | MD <-> TVD along the survey by minimum curvature (SPE 84246); exactly one of `md`/`tvd`, returns every MD crossing a TVD plus hole angle and DLS |
 | GET /wells/{name}/jp-history | installs + extended tests + daily BHP |
 | GET /wells/{name}/ipr-pin | saved anchor pin status |
 | POST /wells/{name}/save-ipr | WRITE: pin the anchor test + save the sidebar's IPR/fluid values (+ calibrated friction) to prop_hist |
@@ -69,9 +70,11 @@ mirrored by `web/src/api/types.ts`.
 | POST /well-sort/refresh | clears the Well Sort fetch caches (read-only op) |
 | GET /meta/warmup | fleet cache warmup progress (passes, per-well counts, failures) |
 | POST /gauge/parse | memory-gauge XLSX parse + multi-file combine (stateless; client holds gauge state per session, math in woffl.gui.memory_gauge) |
+| GET /tools/sep-oil-loss | Separator Oil Loss: oil leaving with the first-stage water leg, as a bounded band (see below) |
 
 Server caching mirrors the old `@st.cache_data` TTLs (`server/config.py`):
-tests 24 h, chars/PF/profiles 1 h, saved IPR / prop history 5 min. Failures
+tests 24 h, chars/PF/profiles 1 h, saved IPR / prop history / historian 5 min.
+Failures
 are never cached. Beyond Streamlit, `server/cache.py` is stale-while-
 revalidate: an expired entry serves instantly while a persistent background
 thread refreshes it (single-flight per key, stale grace = one extra TTL),
@@ -126,6 +129,47 @@ Client side: TanStack Query defaults to a 60 s staleTime floor
 snapshot-keyed sweeps (Batch) hold for the whole session, and background
 job pollers set `refetchIntervalInBackground: true` so a run keeps
 updating while the engineer alt-tabs.
+
+### Separator Oil Loss (Scott's Tools)
+
+`GET /api/tools/sep-oil-loss` reads three SCADA tags off the first-stage
+separator through `woffl/assembly/historian_client.py` and integrates the oil
+leaving with the water leg. The engine and the full derivation live in
+`server/services/tools/sep_oil_loss.py`; the parts you will otherwise get
+wrong:
+
+- `reporting.historian.vw_mpu_measurements` is **exception reported**, not
+  fixed interval. Every average must be time weighted and every cross-tag
+  merge must be an as-of step-hold. A plain `mean()` over-weights whichever
+  tag was moving fastest.
+- The Red Eye analyzer (`MPU_AI_5317`) **films over** and stops reaching 100%.
+  Readings are therefore referenced against the analyzer's own trailing 24 h
+  p95 plateau, and only departures below that plateau are charged. On the
+  validation window the film was 27,333 bbl of a 138,807 bbl raw integral.
+- Validity gates on **flow** (`MPU_FI_5365` > 1,000 BPD), never on the water
+  cut. A deep water-cut drop is real oil carry-under: the analyzer sweeps
+  continuously through 90/60/30/5/0 over minutes. Filtering on the analyzer
+  value would delete exactly the events the tool exists to find.
+- The level channel is `MPU_LIC_5365CV1`, the **controlled** indication the
+  loop acts on, with `MPU_LC5365SP1` as its setpoint. It is NOT `MPU_LI_5365A`
+  - that transmitter sits a mean 14.53 points from setpoint (corr 0.35) while
+  the LIC sits 3.98 (corr 0.71). The choice decides the diagnosis: on
+  LI_5365A two thirds of upsets looked like lost level, and on the controlled
+  channel 63% of the barrels go out with the level held AT setpoint, which
+  makes them a separation problem rather than a level-control one.
+- The meter-implied rate can exceed total field oil (Milne sells
+  50,000-65,000 BOPD), so the answer is always a **band**: `bbl_upper` is the
+  analyzer as read with the instantaneous rate capped at field production,
+  `bbl_lower` caps the oil fraction of the leg at `max_oil_frac`. Both carry a
+  percent-of-field column so an implausible number announces itself. Never
+  quote one end of the band alone.
+- `periods` are ROLLING look-backs from the last sample; `daily` is one row
+  per **Alaska calendar** day the window touches, so night-shift upsets land
+  on the day the crew would name. The two do not sum to each other and are
+  not meant to: the daily bars cover clipped end days the rolling cut drops.
+  A day flagged `partial` is clipped by the window or cut by downtime, and
+  `pct_field_*` is withheld below 1 h of runtime because the denominator goes
+  to zero and turns a handful of barrels into a headline percentage.
 
 ## Write safety
 

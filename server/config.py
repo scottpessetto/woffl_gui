@@ -49,6 +49,9 @@ TTL_WELL_SORT = 3_600
 TTL_XV_STATUS = 300
 # Pump curves are files on disk - they only change when the data files do.
 TTL_PUMP_CURVE = 86_400
+# Process historian: exception-reported SCADA, so the newest hour matters and
+# the query is heavy (~350k rows / 35 days). Five minutes is the compromise.
+TTL_HISTORIAN = 300
 
 
 def writes_enabled() -> bool:

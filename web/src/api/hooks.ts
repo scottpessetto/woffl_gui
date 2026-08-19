@@ -8,6 +8,7 @@ import type {
   CombineJobStatus,
   CombineRequest,
   CombineStarted,
+  DepthLookupResponse,
   EquivalentsResponse,
   EventCalibrationRequest,
   IprFitRequest,
@@ -49,6 +50,8 @@ import type {
   DateWindow,
   HarnessCasesResponse,
   PadWatercutResponse,
+  SepOilLossDayResponse,
+  SepOilLossResponse,
   ToolCatalogResponse,
   ToolJobStarted,
   ToolJobStatus,
@@ -276,6 +279,26 @@ export const useWellProfile = (well: string, jpumpTvd: number, fieldModel: strin
         signal,
       ),
     staleTime: HOUR_1,
+  });
+
+/** MD <-> TVD along the deviation survey. `value` null parks the query.
+ * The survey is a static file, so a hit never goes stale. */
+export const useDepthLookup = (
+  well: string,
+  given: "md" | "tvd",
+  value: number | null,
+  fieldModel: string,
+) =>
+  useQuery({
+    queryKey: ["well-depth", well, given, value, fieldModel],
+    queryFn: ({ signal }) =>
+      get<DepthLookupResponse>(
+        `/wells/${encodeURIComponent(well)}/depth?${given}=${value}&field_model=${fieldModel}`,
+        signal,
+      ),
+    enabled: value !== null,
+    staleTime: Infinity,
+    retry: false,
   });
 
 export const useEquivalents = (nozzle: string, throat: string) =>
@@ -550,6 +573,43 @@ export const usePadWatercut = (start: string, end: string, enabled: boolean) =>
       ),
     enabled: enabled && Boolean(start && end),
     staleTime: MIN_30,
+    retry: false,
+  });
+
+/** Separator Oil Loss. `maxOilFrac` is a fraction (0-1), not a percent. */
+export const useSepOilLoss = (days: number, fieldOil: number, maxOilFrac: number) =>
+  useQuery({
+    queryKey: ["sep-oil-loss", days, fieldOil, maxOilFrac],
+    queryFn: ({ signal }) =>
+      get<SepOilLossResponse>(
+        `/tools/sep-oil-loss?days=${days}&field_oil_bopd=${fieldOil}&max_oil_frac=${maxOilFrac}`,
+        signal,
+      ),
+    staleTime: MIN_5,
+    // Window/knob changes are a new key: hold the last window on screen so
+    // the charts stay mounted behind the small "Updating" spinner.
+    placeholderData: keepPreviousData,
+  });
+
+/** One field day at full resolution. `date` null parks the query. Re-slices
+ *  the window's cached frame server-side, so this is not a second warehouse
+ *  round trip. */
+export const useSepOilLossDay = (
+  date: string | null,
+  days: number,
+  fieldOil: number,
+  maxOilFrac: number,
+) =>
+  useQuery({
+    queryKey: ["sep-oil-loss-day", date, days, fieldOil, maxOilFrac],
+    queryFn: ({ signal }) =>
+      get<SepOilLossDayResponse>(
+        `/tools/sep-oil-loss/day?date=${date}&days=${days}` +
+          `&field_oil_bopd=${fieldOil}&max_oil_frac=${maxOilFrac}`,
+        signal,
+      ),
+    enabled: date !== null,
+    staleTime: MIN_5,
     retry: false,
   });
 

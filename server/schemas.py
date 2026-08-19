@@ -963,6 +963,33 @@ class WellProfileResponse(BaseModel):
     inclination: Optional[dict[str, list[float]]] = None  # {md: [...], deg: [...]}
 
 
+class DepthStation(BaseModel):
+    md: float
+    tvd: float
+
+
+class DepthLookupResponse(BaseModel):
+    """One MD <-> TVD conversion along the well's deviation survey."""
+
+    well: str
+    has_survey: bool
+    method: Literal["minimum_curvature", "chord"]
+    given: Literal["md", "tvd"]
+    md: float
+    tvd: float
+    inclination: Optional[float] = None  # deg from vertical
+    azimuth: Optional[float] = None  # deg
+    dls: Optional[float] = None  # dogleg severity, deg/100 ft
+    md_solutions: list[float] = Field(default_factory=list)  # every MD at that TVD
+    at_station: bool = False
+    station_above: Optional[DepthStation] = None
+    station_below: Optional[DepthStation] = None
+    station_count: int
+    md_range: list[float]  # [shallowest, deepest] survey MD
+    tvd_range: list[float]
+    note: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Pump equivalents
 # ---------------------------------------------------------------------------
@@ -1134,6 +1161,12 @@ TOOL_CATALOG: list[dict[str, str]] = [
         "path": "/tools/pad-watercut",
     },
     {
+        "id": "sep-oil-loss",
+        "label": "Separator Oil Loss",
+        "caption": "Oil leaving with the first-stage water leg (FI-5365 / AI-5317).",
+        "path": "/tools/sep-oil-loss",
+    },
+    {
         "id": "test-harness",
         "label": "Test Harness",
         "caption": "Curated sanity cases run against today's live data.",
@@ -1233,3 +1266,91 @@ class PadWatercutResponse(BaseModel):
     start: str
     end: str
     series: list[PadWatercutSeries]
+
+
+# ── Separator Oil Loss ─────────────────────────────────────────────────────
+
+
+class SepLossPeriod(BaseModel):
+    """One look-back roll-up. Barrels are a band, never a single number."""
+
+    label: str
+    days: int
+    hours: float  # valid (separator running) hours in the look-back
+    downtime_hours: float
+    flow_avg: float  # BPD, time-weighted
+    wc_avg: float  # %, time-weighted
+    base_avg: float  # %, the analyzer's own film-corrected plateau
+    bbl_upper: float  # meter as read, film-corrected, capped at field oil
+    bbl_lower: float  # oil fraction of the leg capped at max_oil_frac
+    bopd_upper: float
+    bopd_lower: float
+    pct_field_upper: Optional[float] = None
+    pct_field_lower: Optional[float] = None
+    upset_hours: float
+    events: int
+
+
+class SepLossDay(BaseModel):
+    """One FIELD calendar day. Alaska local, so a night-shift upset lands in
+    the day the crew would name."""
+
+    date: str  # YYYY-MM-DD
+    hours: float  # separator running hours inside the day
+    covered_hours: float  # how much of the day the window spans
+    bbl_upper: float
+    bbl_lower: float
+    pct_field_upper: Optional[float] = None
+    pct_field_lower: Optional[float] = None
+    upset_hours: float
+    events: int
+    partial: bool  # clipped by the window or cut by downtime; not comparable
+
+
+class SepLossEvent(BaseModel):
+    start: str
+    end: str
+    hours: float
+    wc_min: float
+    wc_avg: float
+    flow_avg: float
+    bbl_upper: float
+    bbl_lower: float
+    level_min: Optional[float] = None  # controlled level, %
+    level_avg: Optional[float] = None
+    level_sp_avg: Optional[float] = None  # that loop's setpoint, %
+    level_dev_avg: Optional[float] = None  # level - setpoint, points
+    # "at setpoint" is the interesting one: level held where it was asked and
+    # the water leg ran oil anyway, so separation failed, not level control.
+    kind: Literal["level loss", "off setpoint", "at setpoint"]
+
+
+class SepOilLossResponse(BaseModel):
+    flow_tag: str
+    wc_tag: str
+    level_tag: Optional[str] = None  # MPU_LIC_5365CV1, the CONTROLLED level
+    level_sp_tag: Optional[str] = None
+    days: int
+    start: Optional[str] = None
+    end: Optional[str] = None
+    field_oil_bopd: float
+    max_oil_frac: float
+    flow_min_bpd: float
+    upset_drop_pts: float
+    valid_hours: float
+    excluded_hours: float
+    periods: list[SepLossPeriod] = Field(default_factory=list)
+    daily: list[SepLossDay] = Field(default_factory=list)
+    events: list[SepLossEvent] = Field(default_factory=list)
+    # Parallel arrays keyed by `t`; nulls where a tag had no reading yet.
+    series: dict[str, list[Any]] = Field(default_factory=dict)
+
+
+class SepOilLossDayResponse(BaseModel):
+    """One field day at full resolution - the drill-down behind a daily bar."""
+
+    date: str
+    days: int
+    summary: Optional[SepLossDay] = None
+    events: list[SepLossEvent] = Field(default_factory=list)
+    series: dict[str, list[Any]] = Field(default_factory=dict)

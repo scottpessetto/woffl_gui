@@ -24,6 +24,7 @@ const OptimizePage = lazy(() => import("./pages/OptimizePage"));
 // app never downloads them.
 const ToolsPage = lazy(() => import("./pages/ToolsPage"));
 const PadWatercutPage = lazy(() => import("./pages/tools/PadWatercutPage"));
+const SepOilLossPage = lazy(() => import("./pages/tools/SepOilLossPage"));
 const HeaderImpactPage = lazy(() => import("./pages/tools/HeaderImpactPage"));
 const PfScenarioPage = lazy(() => import("./pages/tools/PfScenarioPage"));
 const JpWashoutPage = lazy(() => import("./pages/tools/JpWashoutPage"));
@@ -200,6 +201,16 @@ export default function App() {
             element={
               <Suspense fallback={<Spinner label="Loading view" />}>
                 <PadWatercutPage />
+              </Suspense>
+            }
+          />
+        )}
+        {toolsUnlocked && (
+          <Route
+            path="/tools/sep-oil-loss"
+            element={
+              <Suspense fallback={<Spinner label="Loading view" />}>
+                <SepOilLossPage />
               </Suspense>
             }
           />

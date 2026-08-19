@@ -7,12 +7,14 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from server.schemas import (
+    DepthLookupResponse,
     ResponseHistoryResponse,
     WellContext,
     WellProfileResponse,
     WellsResponse,
     WellTestsResponse,
 )
+from server.services import depth_interp as depth_svc
 from server.services import response_history as response_history_svc
 from server.services import tests as tests_svc
 from server.services import wells as wells_svc
@@ -61,6 +63,26 @@ def get_well_profile(
     """Survey-based well profile; field-model preset fallback when no survey."""
     return wells_svc.well_profile_payload(name, jpump_tvd, field_model)
 
+
+@router.get("/wells/{name}/depth", response_model=DepthLookupResponse)
+def get_well_depth(
+    name: str,
+    md: Optional[float] = Query(None, ge=0, le=40000),
+    tvd: Optional[float] = Query(None, ge=0, le=40000),
+    field_model: Optional[Literal["Schrader", "Kuparuk"]] = Query(None),
+) -> dict[str, Any]:
+    """MD <-> TVD along the deviation survey (minimum curvature).
+
+    Exactly one of ``md`` or ``tvd``. Wells with no survey fall back to the
+    field-model preset trajectory and report ``method="chord"``.
+    """
+    try:
+        return depth_svc.depth_lookup(name, md=md, tvd=tvd, field_model=field_model)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid", "message": str(exc)},
+        ) from None
 
 
 @router.get("/wells/{name}/response-history", response_model=ResponseHistoryResponse)
