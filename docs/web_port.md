@@ -161,9 +161,11 @@ wrong:
 - The meter-implied rate can exceed total field oil (Milne sells
   50,000-65,000 BOPD), so the answer is always a **band**: `bbl_upper` is the
   analyzer as read with the instantaneous rate capped at field production,
-  `bbl_lower` caps the oil fraction of the leg at `max_oil_frac`. Both carry a
-  percent-of-field column so an implausible number announces itself. Never
-  quote one end of the band alone.
+  `bbl_lower` caps the oil fraction of the leg at `max_oil_frac`, which
+  defaults to 0.10 - a leg running more than a tenth oil is already an upset,
+  and a looser cap stops being a floor and just tracks the as-read meter. Both
+  carry a percent-of-field column so an implausible number announces itself.
+  Never quote one end of the band alone.
 - `periods` are ROLLING look-backs from the last sample; `daily` is one row
   per **Alaska calendar** day the window touches, so night-shift upsets land
   on the day the crew would name. The two do not sum to each other and are

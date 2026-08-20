@@ -4,7 +4,7 @@
  */
 
 import clsx from "clsx";
-import { ChevronDown, ChevronUp, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronUp, HelpCircle, Loader2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
@@ -212,6 +212,69 @@ export function WarnNote({ children, className }: { children: ReactNode; classNa
       )}
     >
       {children}
+    </div>
+  );
+}
+
+/**
+ * A hover/focus explainer: a small trigger that shows a panel of prose only
+ * when it is wanted. Use it for method notes that an engineer needs once and
+ * then wants out of the way - a standing InfoNote pushes the charts down the
+ * page every visit.
+ *
+ * CSS-driven (group-hover plus group-focus-within on a real button), so it
+ * cannot get stuck open, and tabbing to the trigger opens it for keyboard and
+ * touch. `align` picks which edge the panel hangs from - use "right" near the
+ * right margin so a wide panel does not run off screen.
+ */
+export function HelpPopover({
+  label,
+  title,
+  children,
+  align = "left",
+  width = "w-[32rem]",
+  className,
+}: {
+  label: string;
+  title?: string;
+  children: ReactNode;
+  align?: "left" | "right";
+  width?: string;
+  className?: string;
+}) {
+  return (
+    <div className={clsx("group relative inline-block", className)}>
+      <button
+        type="button"
+        aria-label={`${label} (explainer)`}
+        className={
+          "inline-flex h-7 items-center gap-1 rounded-md border border-slate-300 bg-white " +
+          "px-2 text-xs font-medium text-slate-600 transition-colors hover:border-blue-400 " +
+          "hover:text-blue-700 focus:outline-none focus-visible:border-blue-400 " +
+          "focus-visible:ring-1 focus-visible:ring-blue-200"
+        }
+      >
+        <HelpCircle className="h-3.5 w-3.5" aria-hidden="true" />
+        {label}
+      </button>
+      <div
+        role="tooltip"
+        className={clsx(
+          "invisible absolute top-full z-30 mt-1 rounded-md border border-slate-200 bg-white",
+          "p-3 text-xs leading-relaxed text-slate-600 opacity-0 shadow-lg transition-opacity",
+          "group-hover:visible group-hover:opacity-100",
+          "group-focus-within:visible group-focus-within:opacity-100",
+          align === "right" ? "right-0" : "left-0",
+          width,
+        )}
+      >
+        {title && (
+          <div className="mb-1.5 text-[11px] font-semibold tracking-wide text-slate-500 uppercase">
+            {title}
+          </div>
+        )}
+        {children}
+      </div>
     </div>
   );
 }

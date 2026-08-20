@@ -446,7 +446,7 @@ def sep_oil_loss_day(
     date: str,
     days: int = 14,
     field_oil_bopd: float = 65_000.0,
-    max_oil_frac: float = 0.25,
+    max_oil_frac: float = 0.10,
 ) -> dict[str, Any]:
     """One FIELD calendar day at full resolution, for the drill-down.
 
@@ -523,7 +523,7 @@ def sep_oil_loss_day(
 def sep_oil_loss(
     days: int = 14,
     field_oil_bopd: float = 65_000.0,
-    max_oil_frac: float = 0.25,
+    max_oil_frac: float = 0.10,
 ) -> dict[str, Any]:
     """Oil leaving with the first-stage separator water leg.
 
@@ -535,7 +535,9 @@ def sep_oil_loss(
             default takes the top of that range, which raises the rate cap
             (a larger upper bound) and lowers every percent-of-field share.
         max_oil_frac (float): Ceiling on the oil FRACTION of the water leg for
-            the conservative bound, 0-1.
+            the conservative bound, 0-1. Defaults to 0.10 - a leg running more
+            than a tenth oil is already an upset, so a looser cap stops being a
+            floor and just tracks the as-read meter.
 
     Returns:
         payload (dict): Matching schemas.SepOilLossResponse.

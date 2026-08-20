@@ -96,7 +96,7 @@ def pad_watercut_window() -> Any:
 def sep_oil_loss(
     days: int = Query(14, ge=1, le=90),
     field_oil_bopd: float = Query(65000.0, ge=1000, le=200000),
-    max_oil_frac: float = Query(0.25, gt=0, le=1),
+    max_oil_frac: float = Query(0.10, gt=0, le=1),
 ) -> Any:
     """Oil leaving with the first-stage separator water leg, as a band.
 
@@ -115,7 +115,7 @@ def sep_oil_loss_day(
     date: str = Query(..., description="Field calendar day, YYYY-MM-DD"),
     days: int = Query(14, ge=1, le=90),
     field_oil_bopd: float = Query(65000.0, ge=1000, le=200000),
-    max_oil_frac: float = Query(0.25, gt=0, le=1),
+    max_oil_frac: float = Query(0.10, gt=0, le=1),
 ) -> Any:
     """One field day at full resolution - the drill-down behind a daily bar.
 

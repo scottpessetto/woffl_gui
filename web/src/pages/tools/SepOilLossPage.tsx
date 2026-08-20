@@ -14,6 +14,14 @@
  * "lower - upper" with its percent of field production beside it, so an
  * implausible as-read number announces itself instead of being quoted.
  *
+ * The method itself sits behind two HOVER explainers rather than a standing
+ * paragraph: what the band means, and how the upper and lower bound are
+ * found, step by step. Both open on the same point, because it is the one
+ * every reader assumes wrongly: the number is NOT flow x (1 - wc) off the Red
+ * Eye. The method popover names the five corrections that separate the two
+ * and closes with a worked day whose arithmetic is recomputed from the live
+ * knobs (`workedExample`), so the prose can never drift from the payload.
+ *
  * An operator OIW grab-sample workbook can be uploaded to overlay the SAMPLED
  * loss on the daily chart (POST /tools/sep-oil-loss/samples - parsed and
  * returned, held in page state, never stored). It is a different stream at
@@ -55,6 +63,7 @@ import {
   type Column,
   DataTable,
   ErrorNote,
+  HelpPopover,
   InfoNote,
   Metric,
   Section,
@@ -77,6 +86,32 @@ const OIL_PCT_MAX = 100;
 
 /** Above this share of field oil the as-read number is not quotable. */
 const PLAUSIBLE_PCT = 10;
+
+/**
+ * One typical day, used in the method explainer to show what the film
+ * correction actually costs: a Red Eye plateaued at EX_PLATEAU on a
+ * steady EX_FLOW leg, with one EX_MINUTES carry-under to EX_DIP.
+ * Numbers match services/tools/sep_oil_loss.py `_oil_rates` / `_barrels`.
+ */
+const EX_FLOW = 70_000;
+const EX_PLATEAU = 96;
+const EX_DIP = 60;
+const EX_MINUTES = 30;
+
+/** Naive `flow x (1 - wc)` against both bounds for that day, recomputed from
+ *  the live knobs so the arithmetic on screen is the arithmetic being run. */
+function workedExample(
+  fieldOil: number,
+  oilPct: number,
+): { naive: number; film: number; upper: number; lower: number; rate: number; capped: number } {
+  const dipH = EX_MINUTES / 60;
+  const film = EX_FLOW * ((100 - EX_PLATEAU) / 100) * ((24 - dipH) / 24);
+  const naive = film + EX_FLOW * ((100 - EX_DIP) / 100) * (dipH / 24);
+  const deficit = (EX_PLATEAU - EX_DIP) / 100;
+  const rate = Math.min(EX_FLOW * deficit, fieldOil);
+  const capped = EX_FLOW * Math.min(deficit, oilPct / 100);
+  return { naive, film, upper: rate * (dipH / 24), lower: capped * (dipH / 24), rate, capped };
+}
 
 /** The leg flow is context behind the reading, not the reading: SLATE, faded. */
 const FLOW_LINE = "rgba(100,116,139,0.45)";
@@ -760,7 +795,10 @@ function PeriodCard({ p }: { p: SepLossPeriod }) {
 export default function SepOilLossPage() {
   const [days, setDays] = useState(14);
   const [fieldOilIn, setFieldOilIn] = useState(65_000);
-  const [oilPctIn, setOilPctIn] = useState(25);
+  // 10% of the leg is the conservative cap an engineer will actually defend:
+  // above that the "lower" bound stops being a floor and just tracks the
+  // as-read meter, which is the number this page exists to bracket.
+  const [oilPctIn, setOilPctIn] = useState(10);
   // A daily bar drills the top chart into that field day at full resolution.
   const [focusDay, setFocusDay] = useState<string | null>(null);
 
@@ -770,6 +808,8 @@ export default function SepOilLossPage() {
   const fieldOil = clamp(fieldOilTyped, FIELD_OIL_MIN, FIELD_OIL_MAX);
   const oilPct = clamp(oilPctTyped, OIL_PCT_MIN, OIL_PCT_MAX);
   const outOfRange = fieldOilTyped !== fieldOil || oilPctTyped !== oilPct;
+  // The method explainer's arithmetic, on the knobs currently in force.
+  const example = useMemo(() => workedExample(fieldOil, oilPct), [fieldOil, oilPct]);
 
   const query = useSepOilLoss(days, fieldOil, oilPct / 100);
   const data = query.data ?? null;
@@ -974,13 +1014,95 @@ export default function SepOilLossPage() {
         )}
       </Section>
 
-      <InfoNote>
-        The band is bounded below by capping the oil fraction of the water leg at{" "}
-        {fmtNum(oilPct)}% and above by the analyzer as read with the film correction, held to the
-        field oil rate as a physical ceiling. Every reading is referenced to the analyzer&apos;s
-        own trailing 24 h plateau because a filmed Red Eye stops reaching 100%, so only
-        departures below that plateau are charged as oil.
-      </InfoNote>
+      {/* The method is a hover away rather than a standing paragraph: it is
+          read once and then only gets between the engineer and the charts. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <HelpPopover label="What the band means" title="Quote the band, never one end">
+          <p>
+            Neither end is the raw meter arithmetic. Flow x (1 - wc) off the Red Eye is NOT the
+            answer: it bills the analyzer&apos;s film as oil around the clock, counts every hour
+            the separator is down as 100% oil, and can imply more oil out the water leg than the
+            field produces. Hover &quot;How the bounds are found&quot; for the five corrections.
+          </p>
+          <p className="mt-2">
+            What you get instead is a band. Every barrel figure reads lower - upper with its
+            share of field oil beside it. The UPPER bound is the analyzer as read AFTER the film
+            correction and the flow gate, with the instantaneous oil rate held to{" "}
+            {fmtNum(fieldOil)} BOPD - all of the field&apos;s oil short-circuiting the vessel is
+            the absolute physical ceiling. The LOWER bound is the same integral with the oil
+            fraction of the leg capped at {fmtNum(oilPct)}%.
+          </p>
+          <p className="mt-2">
+            The two ends can differ several-fold during a bad excursion, because the meter can
+            imply 70,000-87,000 BOPD out the water leg, which is more oil than the field makes.
+            Quoting the upper end alone invents barrels; quoting the lower end alone buries the
+            problem.
+          </p>
+        </HelpPopover>
+        <HelpPopover
+          label="How the bounds are found"
+          title="Upper and lower bound, step by step"
+          width="w-[34rem]"
+        >
+          <p className="mb-2">
+            Start from flow x (1 - wc) and understand why it is wrong. On a filmed meter it
+            charges oil that is not there, on a down separator it charges the whole leg, and on a
+            deep excursion it charges more oil than the field makes. Five corrections, in order:
+          </p>
+          <ol className="list-decimal space-y-1.5 pl-4">
+            <li>
+              <span className="font-medium text-slate-700">Clock.</span> The water-leg flow meter
+              is the fastest and most regular tag, so it sets the integration clock; water cut,
+              level and setpoint step-hold onto it, which is what an exception-reported historian
+              means. No single sample stands for more than 15 minutes, so one dropout cannot
+              smear a stale value across hours.
+            </li>
+            <li>
+              <span className="font-medium text-slate-700">Gate.</span> Samples at or below the
+              flow gate are dropped outright - the separator is down or the meter is drifting
+              around zero. The gate is on FLOW only, never on the water-cut value: the deep
+              90 - 60 - 30 - 5 sweeps are real carry-under, and screening on the analyzer would
+              delete the events this page exists to find.
+            </li>
+            <li>
+              <span className="font-medium text-slate-700">Datum.</span> Each reading is
+              referenced to the analyzer&apos;s OWN trailing 24 h p95 water cut, clipped to
+              80-100%. A filmed Red Eye stops reaching 100%, so a straight 100 - wc bills the
+              film as oil forever; only departures below the meter&apos;s own plateau are
+              charged.
+            </li>
+            <li>
+              <span className="font-medium text-slate-700">Rate.</span> Implied oil fraction is
+              plateau minus reading, never negative. UPPER rate is leg flow x that fraction,
+              clipped at {fmtNum(fieldOil)} BOPD. LOWER rate is leg flow x the same fraction with
+              the FRACTION capped at {fmtNum(oilPct)}%, so the cap bites only on the excursions
+              that imply more oil in the leg than it could plausibly carry.
+            </li>
+            <li>
+              <span className="font-medium text-slate-700">Barrels.</span> Rate x hours / 24,
+              summed over the valid samples in the look-back. Percent of field divides that by{" "}
+              {fmtNum(fieldOil)} BOPD over the same valid hours, so downtime never inflates the
+              share.
+            </li>
+          </ol>
+          <p className="mt-2">
+            <span className="font-medium text-slate-700">Worked example.</span> A meter plateaued
+            at {EX_PLATEAU}% on a steady {fmtNum(EX_FLOW)} BPD leg, with one {EX_MINUTES} minute
+            carry-under to {EX_DIP}%. Flow x (1 - wc) charges {fmtNum(example.naive)} bbl that
+            day, {fmtNum(example.film)} bbl of it film the meter can no longer read off. This
+            page charges NOTHING while the reading sits on its own plateau, then{" "}
+            {fmtNum(example.upper)} bbl upper and {fmtNum(example.lower)} bbl lower for the dip -
+            {" "}{fmtNum(example.rate)} BOPD as read against {fmtNum(example.capped)} BOPD at
+            the {fmtNum(oilPct)}% cap.
+          </p>
+          <p className="mt-2">
+            Both knobs are yours: field oil {fmtNum(FIELD_OIL_MIN)} - {fmtNum(FIELD_OIL_MAX)}{" "}
+            BOPD, oil cap {OIL_PCT_MIN} - {OIL_PCT_MAX}%. Raising field oil loosens the ceiling
+            and lowers every percent-of-field share; tightening the cap pulls the lower bound
+            down. Above {PLAUSIBLE_PCT}% of field oil the as-read end is not quotable.
+          </p>
+        </HelpPopover>
+      </div>
 
       {query.isError && <ErrorNote error={query.error} />}
       {query.isLoading && <Spinner label="Reading the separator historian" />}
