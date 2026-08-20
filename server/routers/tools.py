@@ -20,9 +20,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 
 from server import jobs, schemas
+from server.services.tools import oiw_samples as oiw_svc
 from server.services.tools import pad_watercut as pad_wc_svc
 from server.services.tools import sep_oil_loss as sep_loss_svc
 
@@ -123,6 +124,40 @@ def sep_oil_loss_day(
     """
     try:
         return sep_loss_svc.sep_oil_loss_day(date, days, field_oil_bopd, max_oil_frac)
+    except ValueError as exc:
+        raise _invalid(exc) from None
+
+
+# One operator sample workbook is ~1 MB (ten years of grab samples); anything
+# past this is not the sample log and only wastes parse time.
+_MAX_SAMPLES_BYTES = 25 * 1024 * 1024
+
+
+@router.post("/sep-oil-loss/samples", response_model=schemas.OiwSamplesResponse)
+async def sep_oil_loss_samples(
+    file: UploadFile = File(...),
+    location: str = Query(oiw_svc.DEFAULT_LOCATION, description="Sample point"),
+    water_rate_bpd: float = Query(oiw_svc.DEFAULT_WATER_RATE_BPD, ge=1000, le=300000),
+    sheet: str = Query(oiw_svc.DEFAULT_SHEET, description="Worksheet to read"),
+) -> Any:
+    """Parse an operator OIW grab-sample workbook into daily sampled rates.
+
+    Stateless, the same contract as POST /gauge/parse: parse, return, the
+    client holds the result. Nothing is stored server-side, on disk or in
+    Databricks. ``water_rate_bpd`` is the basis the ppm is converted on and
+    comes back in the response - the workbook's own (BOPD) column assumes a
+    fixed 95,000 BWPD and is never read.
+    """
+    name = file.filename or "samples.xlsx"
+    if not name.lower().endswith(".xlsx"):
+        raise _invalid(ValueError(f"{name}: expected an .xlsx workbook"))
+    blob = await file.read()
+    if len(blob) > _MAX_SAMPLES_BYTES:
+        raise _invalid(
+            ValueError(f"{name}: file exceeds {_MAX_SAMPLES_BYTES // (1024 * 1024)} MB")
+        )
+    try:
+        return oiw_svc.oiw_samples(blob, name, location, water_rate_bpd, sheet)
     except ValueError as exc:
         raise _invalid(exc) from None
 

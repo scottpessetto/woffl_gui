@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 
-import { api, get, post, stableStringify } from "./client";
+import { api, get, post, stableStringify, upload } from "./client";
 import type {
   AgingPumpsResponse,
   BatchResponse,
@@ -19,6 +19,7 @@ import type {
   MarginalWcResponse,
   MatchHealthRequest,
   MetaResponse,
+  OiwSamplesResponse,
   OptimizeJobStatus,
   OptimizeRunRequest,
   OptimizeRunStarted,
@@ -610,6 +611,36 @@ export const useSepOilLossDay = (
       ),
     enabled: date !== null,
     staleTime: MIN_5,
+    retry: false,
+  });
+
+/** One grab-sample workbook upload. The File stays in page state because
+ *  every knob change (location, water-rate basis) re-parses the same file:
+ *  the server holds nothing, exactly like /gauge/parse. */
+export interface OiwSamplesArgs {
+  file: File;
+  location: string;
+  waterRateBpd: number;
+  sheet: string;
+}
+
+/** Parse an operator OIW grab-sample workbook into daily sampled rates.
+ *  Nothing is stored server-side; the caller keeps the response. */
+export const useOiwSamples = () =>
+  useMutation({
+    mutationFn: (args: OiwSamplesArgs) => {
+      const form = new FormData();
+      form.append("file", args.file, args.file.name);
+      const query = new URLSearchParams({
+        location: args.location,
+        water_rate_bpd: String(args.waterRateBpd),
+        sheet: args.sheet,
+      });
+      return upload<OiwSamplesResponse>(
+        `/tools/sep-oil-loss/samples?${query.toString()}`,
+        form,
+      );
+    },
     retry: false,
   });
 

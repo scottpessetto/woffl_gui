@@ -1520,6 +1520,39 @@ export interface SepOilLossDayResponse {
   series: Record<string, (number | null)[] | string[]>;
 }
 
+// Operator OIW grab samples - mirrors schemas.OiwSampleDay /
+// OiwSamplesResponse. Uploaded, parsed, held in page state; never persisted.
+
+/** One Alaska calendar day of grab samples at one location. `bbl` equals
+ *  `bopd_mean` - a daily rate held for one day is that many barrels - and
+ *  both are the plain unweighted mean of the day's per-sample rates. */
+export interface OiwSampleDay {
+  date: string; // YYYY-MM-DD, Alaska calendar
+  samples: number;
+  ppm_mean: number; // ppm oil in water
+  ppm_min: number;
+  ppm_max: number;
+  bopd_mean: number; // ppm x water_rate_bpd / 1e6, BOPD
+  bbl: number; // bbl over the day
+  location: string;
+}
+
+/** POST /tools/sep-oil-loss/samples - one parsed grab-sample workbook.
+ *  `notes` carries the water-rate basis and, for every location but V-5317,
+ *  the caveat that the samples are downstream of the deoilers. */
+export interface OiwSamplesResponse {
+  filename: string;
+  sheet: string;
+  location: string;
+  water_rate_bpd: number; // BPD basis the ppm was converted on
+  locations_available: string[];
+  first_date: string | null; // YYYY-MM-DD
+  last_date: string | null;
+  sample_count: number; // samples at `location`, not rows in the sheet
+  daily: OiwSampleDay[];
+  notes: string[];
+}
+
 /** Every tool job shares one envelope. `result` shape is per-tool. */
 export interface ToolJobStatus {
   job_id: string;

@@ -13,12 +13,26 @@
  * The page exists to make the BAND unavoidable. Every barrel figure reads
  * "lower - upper" with its percent of field production beside it, so an
  * implausible as-read number announces itself instead of being quoted.
+ *
+ * An operator OIW grab-sample workbook can be uploaded to overlay the SAMPLED
+ * loss on the daily chart (POST /tools/sep-oil-loss/samples - parsed and
+ * returned, held in page state, never stored). It is a different stream at
+ * every sample point but V-5317: P-5417C sits downstream of the deoilers, so
+ * the gap to the calculated band is deoiler recovery, not error, and the page
+ * says so under the chart rather than letting the marks read as a check.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { useSepOilLoss, useSepOilLossDay } from "../../api/hooks";
-import type { SepLossDay, SepLossEvent, SepLossPeriod, SepOilLossResponse } from "../../api/types";
+import { useOiwSamples, useSepOilLoss, useSepOilLossDay } from "../../api/hooks";
+import type {
+  OiwSampleDay,
+  OiwSamplesResponse,
+  SepLossDay,
+  SepLossEvent,
+  SepLossPeriod,
+  SepOilLossResponse,
+} from "../../api/types";
 import { ChartPanel } from "../../charts/ChartPanel";
 import type { EChartsOption } from "../../charts/echarts";
 import {
@@ -70,6 +84,19 @@ const FLOW_LINE = "rgba(100,116,139,0.45)";
 const BAND_FILL = "rgba(37,99,235,0.10)";
 /** Same hue at 30% - the day the top chart is currently showing. */
 const BAND_FOCUS = "rgba(37,99,235,0.30)";
+
+/** Operator grab-sample defaults, matching services/tools/oiw_samples.py. */
+const SAMPLE_SHEET = "OIW Daily";
+const SAMPLE_LOCATION = "P-5417C";
+/** The ONE sample point on the same stream as the calculated band. Every
+ *  other tap is downstream of the deoilers, so the two are not comparable. */
+const UPSTREAM_LOCATION = "V-5317";
+const WATER_RATE_MIN = 1_000;
+const WATER_RATE_MAX = 300_000;
+
+const SELECT_CLS =
+  "mt-1 block h-8 rounded-md border border-slate-300 bg-white px-2 text-sm " +
+  "text-slate-800 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200";
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
@@ -145,6 +172,14 @@ interface Traces {
   /** Minutes east of UTC on the server's stamps; ticks label field days. */
   offsetMinutes: number;
   n: number;
+}
+
+/** The uploaded grab samples, indexed for the daily chart. `location` is the
+ *  workbook's own spelling of the sample point, so the series label and the
+ *  caveat always name the tap the marks actually came from. */
+interface SampleOverlay {
+  location: string;
+  byDate: Record<string, OiwSampleDay | undefined>;
 }
 
 /** The `t` column of the loose series map. */
@@ -462,8 +497,17 @@ function cumOption(tr: Traces): EChartsOption {
  * separator downtime - are hatched, because a short day always looks quiet.
  * Clicking a bar drills the top chart into that day; the focused bar fills
  * solid so it is obvious which day the trace above belongs to.
+ *
+ * `samples` overlays the operators' grab-sample rate for the days it covers,
+ * on the same barrels axis. It is a DIFFERENT stream at every location but
+ * V-5317 - downstream of the deoilers - which is why the caption under the
+ * chart says so rather than letting the marks read as a check on the band.
  */
-function dailyOption(days: SepLossDay[], focus: string | null): EChartsOption {
+function dailyOption(
+  days: SepLossDay[],
+  focus: string | null,
+  samples: SampleOverlay | null,
+): EChartsOption {
   const labels = days.map((d) => d.date);
   const base = days.map((d) => d.bbl_lower);
   const span = days.map((d) => ({
@@ -476,6 +520,51 @@ function dailyOption(days: SepLossDay[], focus: string | null): EChartsOption {
     },
   }));
   const lower = days.map((d) => d.bbl_lower);
+  const sampleName = samples === null ? null : `Sampled (${samples.location})`;
+
+  const series: Record<string, unknown>[] = [
+    {
+      type: "bar",
+      stack: "day",
+      data: base,
+      silent: true,
+      itemStyle: { color: "transparent" },
+      z: 1,
+    },
+    {
+      type: "bar",
+      stack: "day",
+      data: span,
+      barMaxWidth: 26,
+      z: 2,
+    },
+    {
+      // The lower bound as a tick on top of the transparent base, so the
+      // number to quote is a mark and not just where the shading starts.
+      type: "scatter",
+      data: lower,
+      symbol: "rect",
+      symbolSize: [18, 2],
+      itemStyle: { color: ACCENT },
+      silent: true,
+      z: 5,
+    },
+  ];
+  if (samples !== null && sampleName !== null) {
+    // Hoisted: narrowing of a parameter does not survive into the callback.
+    const byDate = samples.byDate;
+    series.push({
+      name: sampleName,
+      type: "scatter",
+      // Nulls on days with no grab sample: the marks are the sample record,
+      // not a curve to interpolate across a day nobody walked out to.
+      data: labels.map((d) => byDate[d]?.bbl ?? null),
+      symbol: "diamond",
+      symbolSize: 9,
+      itemStyle: { color: GOLD },
+      z: 6,
+    });
+  }
 
   return houseOption({
     tooltip: {
@@ -502,10 +591,33 @@ function dailyOption(days: SepLossDay[], focus: string | null): EChartsOption {
             ),
           );
         }
+        const hit = samples === null ? undefined : samples.byDate[day.date];
+        if (hit !== undefined && sampleName !== null) {
+          rows.push(
+            ttRow(
+              GOLD,
+              sampleName,
+              `${fmtNum(hit.bbl)} bbl at ${fmtNum(hit.ppm_mean)} ppm, ` +
+                `${hit.samples} ${hit.samples === 1 ? "sample" : "samples"}`,
+            ),
+          );
+        }
         return ttHeader(day.date) + rows.join("");
       },
     },
-    grid: { ...baseGrid, top: 24, left: 76, bottom: 28 },
+    // No legend without the overlay: the band's two carriers are unnamed, so
+    // there would be nothing to list.
+    legend:
+      sampleName === null
+        ? { show: false }
+        : {
+            top: 4,
+            right: 8,
+            itemWidth: 18,
+            textStyle: { fontSize: 12 },
+            data: [sampleName],
+          },
+    grid: { ...baseGrid, top: sampleName === null ? 24 : 44, left: 76, bottom: 28 },
     xAxis: {
       type: "category",
       data: labels,
@@ -516,34 +628,7 @@ function dailyOption(days: SepLossDay[], focus: string | null): EChartsOption {
       axisLabel: { color: SLATE, fontSize: 11, formatter: dayMon },
     },
     yAxis: { type: "value", ...axis("Oil to the water leg (bbl)", { min: 0 }) },
-    series: [
-      {
-        type: "bar",
-        stack: "day",
-        data: base,
-        silent: true,
-        itemStyle: { color: "transparent" },
-        z: 1,
-      },
-      {
-        type: "bar",
-        stack: "day",
-        data: span,
-        barMaxWidth: 26,
-        z: 2,
-      },
-      {
-        // The lower bound as a tick on top of the transparent base, so the
-        // number to quote is a mark and not just where the shading starts.
-        type: "scatter",
-        data: lower,
-        symbol: "rect",
-        symbolSize: [18, 2],
-        itemStyle: { color: ACCENT },
-        silent: true,
-        z: 5,
-      },
-    ],
+    series,
   });
 }
 
@@ -691,6 +776,49 @@ export default function SepOilLossPage() {
   const dayQuery = useSepOilLossDay(focusDay, days, fieldOil, oilPct / 100);
   const dayData = dayQuery.data && dayQuery.data.date === focusDay ? dayQuery.data : null;
 
+  // The uploaded workbook lives in page state and nowhere else: the endpoint
+  // parses and returns, exactly like the gauge tool, so a reload dropping the
+  // overlay is the correct behaviour and not lost work.
+  const [sampleFile, setSampleFile] = useState<File | null>(null);
+  const [samples, setSamples] = useState<OiwSamplesResponse | null>(null);
+  const [sampleLoc, setSampleLoc] = useState(SAMPLE_LOCATION);
+  const [waterRateIn, setWaterRateIn] = useState(95_000);
+  const waterRate = clamp(useDebounced(waterRateIn, 500), WATER_RATE_MIN, WATER_RATE_MAX);
+  const { mutate: parseSamples, isPending: parsing, error: parseError, reset: resetParse } =
+    useOiwSamples();
+
+  // One trigger for every input: picking a file, switching sample point and
+  // changing the water-rate basis all re-parse the same File, because the
+  // server kept nothing to re-roll and the basis is part of the answer.
+  useEffect(() => {
+    if (sampleFile === null) return;
+    parseSamples(
+      { file: sampleFile, location: sampleLoc, waterRateBpd: waterRate, sheet: SAMPLE_SHEET },
+      {
+        onSuccess: (parsed) => {
+          setSamples(parsed);
+          // The workbook's own spelling of the tap wins, so the picker and
+          // the chart label read the way the log does.
+          if (parsed.location !== sampleLoc) setSampleLoc(parsed.location);
+        },
+      },
+    );
+  }, [sampleFile, sampleLoc, waterRate, parseSamples]);
+
+  const clearSamples = useCallback(() => {
+    setSampleFile(null);
+    setSamples(null);
+    resetParse();
+  }, [resetParse]);
+
+  const overlay = useMemo<SampleOverlay | null>(() => {
+    if (samples === null || samples.daily.length === 0) return null;
+    const byDate: Record<string, OiwSampleDay | undefined> = {};
+    for (const day of samples.daily) byDate[day.date] = day;
+    return { location: samples.location, byDate };
+  }, [samples]);
+  const downstream = overlay !== null && overlay.location.toUpperCase() !== UPSTREAM_LOCATION;
+
   // Clicking a bar swaps the top chart's source; everything else is shared,
   // so the same builder draws both and the axes cannot drift apart.
   const tr = useMemo(() => (data ? buildTraces(data) : null), [data]);
@@ -702,8 +830,8 @@ export default function SepOilLossPage() {
   );
   const cumOpt = useMemo(() => (tr && tr.n > 0 ? cumOption(tr) : null), [tr]);
   const dailyOpt = useMemo(
-    () => (data && data.daily.length > 0 ? dailyOption(data.daily, focusDay) : null),
-    [data, focusDay],
+    () => (data && data.daily.length > 0 ? dailyOption(data.daily, focusDay, overlay) : null),
+    [data, focusDay, overlay],
   );
 
   const pickDay = useCallback((date: string) => {
@@ -760,6 +888,55 @@ export default function SepOilLossPage() {
             max={OIL_PCT_MAX}
             step={5}
           />
+          <div>
+            <span className="text-xs text-slate-500">OIW samples (.xlsx)</span>
+            <input
+              type="file"
+              accept=".xlsx"
+              aria-label="OIW samples (.xlsx)"
+              onChange={(e) => {
+                const picked = e.target.files;
+                if (picked && picked.length > 0) setSampleFile(picked[0]);
+                e.target.value = ""; // same file re-pickable after a Clear
+              }}
+              className={
+                "mt-1 block h-8 w-56 text-xs text-slate-600 file:mr-2 file:h-8 " +
+                "file:rounded-md file:border file:border-slate-300 file:bg-white " +
+                "file:px-2 file:text-xs file:font-medium file:text-slate-700 " +
+                "hover:file:bg-slate-50"
+              }
+            />
+          </div>
+          {samples !== null && samples.locations_available.length > 0 && (
+            <label className="block">
+              <span className="text-xs text-slate-500">Sample point</span>
+              <select
+                value={sampleLoc}
+                onChange={(e) => setSampleLoc(e.target.value)}
+                className={SELECT_CLS}
+              >
+                {samples.locations_available.map((loc) => (
+                  <option key={loc} value={loc}>
+                    {loc}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <NumField
+            label="Sample water rate (BPD)"
+            value={waterRateIn}
+            onChange={setWaterRateIn}
+            min={WATER_RATE_MIN}
+            max={WATER_RATE_MAX}
+            step={5000}
+            width="w-32"
+          />
+          {sampleFile !== null && (
+            <Button size="sm" variant="ghost" onClick={clearSamples}>
+              Clear samples
+            </Button>
+          )}
         </div>
 
         {outOfRange && (
@@ -767,6 +944,32 @@ export default function SepOilLossPage() {
             Field oil is limited to {fmtNum(FIELD_OIL_MIN)} - {fmtNum(FIELD_OIL_MAX)} BOPD and the
             oil cap to {OIL_PCT_MIN} - {OIL_PCT_MAX}%. Showing the nearest valid value
             ({fmtNum(fieldOil)} BOPD, {fmtNum(oilPct)}%).
+          </WarnNote>
+        )}
+
+        {parsing && <Spinner label="Parsing OIW samples" />}
+        {parseError !== null && <ErrorNote error={parseError} className="mt-3" />}
+        {samples !== null && samples.sample_count > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+            <Badge
+              tone="info"
+              title={`${samples.filename}, sheet ${samples.sheet}. Held in this page only - a reload clears it.`}
+            >
+              {fmtNum(samples.sample_count)} samples at {samples.location}
+              {samples.first_date !== null && samples.last_date !== null
+                ? `, ${samples.first_date} to ${samples.last_date}`
+                : ""}
+            </Badge>
+            <span>
+              Sampled rate is ppm x {fmtNum(samples.water_rate_bpd)} BPD / 1e6, one unweighted
+              mean per Alaska day
+            </span>
+          </div>
+        )}
+        {samples !== null && samples.sample_count === 0 && (
+          <WarnNote className="mt-3">
+            No samples at {samples.location} on sheet {samples.sheet}. Pick another sample point
+            from the list.
           </WarnNote>
         )}
       </Section>
@@ -902,6 +1105,23 @@ export default function SepOilLossPage() {
               Days are Alaska local and cover the whole window, so they will not sum to a
               rolling look-back card.
             </p>
+            {overlay !== null && samples !== null && (
+              <p className="mt-1 px-1 text-xs text-slate-500">
+                Gold diamonds are the operators&apos; grab samples at {overlay.location}: the
+                day&apos;s unweighted mean of ppm x {fmtNum(samples.water_rate_bpd)} BPD / 1e6,
+                on the days somebody pulled a sample. Held in this page only.
+              </p>
+            )}
+            {downstream && overlay !== null && (
+              <WarnNote className="mt-2">
+                Sampled OIW at {overlay.location} is taken DOWNSTREAM of the deoilers
+                (V-5419 / V-5421 / V-5422 / V-5425), while the calculated band is the
+                first-stage water leg UPSTREAM of them. The gap between the diamonds and the
+                bars is deoiler recovery, not measurement error - the two are not measuring
+                the same stream. Only {UPSTREAM_LOCATION} samples the stream the band
+                describes.
+              </WarnNote>
+            )}
           </Card>
         </Section>
       )}

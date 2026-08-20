@@ -71,6 +71,7 @@ mirrored by `web/src/api/types.ts`.
 | GET /meta/warmup | fleet cache warmup progress (passes, per-well counts, failures) |
 | POST /gauge/parse | memory-gauge XLSX parse + multi-file combine (stateless; client holds gauge state per session, math in woffl.gui.memory_gauge) |
 | GET /tools/sep-oil-loss | Separator Oil Loss: oil leaving with the first-stage water leg, as a bounded band (see below) |
+| POST /tools/sep-oil-loss/samples | operator OIW grab-sample XLSX parse -> daily sampled loss overlay (stateless; page holds it, see below) |
 
 Server caching mirrors the old `@st.cache_data` TTLs (`server/config.py`):
 tests 24 h, chars/PF/profiles 1 h, saved IPR / prop history / historian 5 min.
@@ -170,6 +171,33 @@ wrong:
   A day flagged `partial` is clipped by the window or cut by downtime, and
   `pct_field_*` is withheld below 1 h of runtime because the denominator goes
   to zero and turns a handful of barrels into a headline percentage.
+
+`POST /api/tools/sep-oil-loss/samples` takes an upload of the operators' CFP
+grab-sample workbook and returns the SAMPLED loss per Alaska calendar day, to
+overlay on those same daily bars (`server/services/tools/oiw_samples.py`).
+Stateless, exactly like `POST /gauge/parse`: it parses and returns, the page
+holds the result, nothing is stored on disk or in Databricks. What matters
+here:
+
+- `oil_bopd = ppm x water_rate_bpd / 1e6`, with `water_rate_bpd` a REQUEST
+  parameter echoed in the response. The workbook's own `(BOPD)` column is a
+  hardcoded 95,000 BWPD basis, blank on most recent rows, and is never read.
+- A day is the plain UNWEIGHTED mean of its samples' rates. These are a
+  handful of irregular manual grabs; time weighting them would invent a duty
+  cycle the log does not carry.
+- The log is hand kept: blank rows, text in numeric cells and a stray year
+  2107 date all live in it. A row survives only with a parseable, plausible
+  date AND a finite positive ppm; the count dropped comes back in `notes`.
+  Case variants of a tap ("P-5417C" / "p-5417c") are one location; anything
+  further apart is left alone.
+- **The two series are not the same stream.** `P-5417C`, the only tap still
+  being sampled, sits DOWNSTREAM of the deoilers (V-5419 / V-5421 / V-5422 /
+  V-5425) while the calculated band is the first-stage water leg upstream of
+  them. Its 1,000-2,500 ppm baseline on 71,000 BPD is ~106 BOPD, far below the
+  band's lower bound, and that gap is deoiler RECOVERY, not measurement error.
+  `V-5317` is the one location that samples the band's own stream. Every
+  response carries that caveat in `notes` and the page renders it under the
+  chart; do not present the sampled marks as a check on the band.
 
 ## Write safety
 

@@ -1354,3 +1354,42 @@ class SepOilLossDayResponse(BaseModel):
     summary: Optional[SepLossDay] = None
     events: list[SepLossEvent] = Field(default_factory=list)
     series: dict[str, list[Any]] = Field(default_factory=dict)
+
+
+class OiwSampleDay(BaseModel):
+    """One Alaska calendar day of operator grab samples at one location.
+
+    ``bbl`` equals ``bopd_mean``: a daily rate held for one day is that many
+    barrels. Both are the time-UNWEIGHTED mean of the day's per-sample rates -
+    irregular manual grabs carry no duty cycle to weight with.
+    """
+
+    date: str  # YYYY-MM-DD, Alaska calendar
+    samples: int
+    ppm_mean: float  # ppm oil in water
+    ppm_min: float
+    ppm_max: float
+    bopd_mean: float  # ppm x water_rate_bpd / 1e6, BOPD
+    bbl: float  # bbl over the day
+    location: str
+
+
+class OiwSamplesResponse(BaseModel):
+    """POST /tools/sep-oil-loss/samples - one parsed grab-sample workbook.
+
+    Stateless, like /gauge/parse: the client holds this, nothing is stored.
+    ``notes`` always carries the water-rate basis and, for any location other
+    than V-5317, the caveat that the samples are DOWNSTREAM of the deoilers
+    while the calculated band is the first-stage leg upstream of them.
+    """
+
+    filename: str
+    sheet: str
+    location: str
+    water_rate_bpd: float  # BPD basis the ppm was converted on
+    locations_available: list[str] = Field(default_factory=list)
+    first_date: Optional[str] = None  # YYYY-MM-DD
+    last_date: Optional[str] = None
+    sample_count: int  # samples at `location`, not rows in the sheet
+    daily: list[OiwSampleDay] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
