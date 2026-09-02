@@ -4,11 +4,11 @@ ultimately call methods from jetplot to create multiple plots that are all relat
 
 import os
 
-import matplotlib.pyplot as plt
 import numpy as np
 
 from woffl.flow import jetflow as jf
 from woffl.flow import jetplot as jplt
+from woffl.flow.jetplot import plt  # lazy pyplot proxy (see jetplot._LazyModule)
 from woffl.flow import outflow as of
 from woffl.flow import singlephase as sp
 from woffl.flow.inflow import InFlow

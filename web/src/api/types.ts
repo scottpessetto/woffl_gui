@@ -166,6 +166,8 @@ export interface PumpInfo {
   throat_ratio: string | null;
   tubing_od: number | null;
   date_set: string | null;
+  /** "databricks" = live tracker; "excel_fallback" = bundled snapshot (may be months stale). */
+  source?: "databricks" | "excel_fallback" | null;
 }
 
 export interface PfSeed {
@@ -187,6 +189,10 @@ export interface WellContext {
   chars: Record<string, unknown>;
   chars_source: "databricks" | "csv_fallback";
   seeds: Partial<SimParams>;
+  /** Measured jet-pump MD (ft) for the optimizer's WellConfig; not a SimParams field. */
+  jpump_md: number | null;
+  /** Seeds the widget bounds altered on the way in, e.g. "pres: 5200 -> 5000 (...)". */
+  clamped?: string[];
   as_built_locks: { tubing: boolean; casing: boolean; jpump_tvd: boolean };
   prop_locks: { form_wc: PropLock; form_gor: PropLock; res_pres: PropLock };
   pump: PumpInfo | null;
@@ -279,10 +285,18 @@ export interface PadFitStatusResponse {
   extras: PadFitWell[];
 }
 
+/** A pad with a booster-plant model, i.e. one the pad optimizer can run.
+ *  The ONE definition - the run request, the match-health request, the run
+ *  panel and the page tabs all narrow to this. */
+export type RunPad = "S" | "I" | "M" | "E";
+
+/** Which E-Pad booster build the run assumes is in the ground. */
+export type EPadBuild = "SM25000_26STG" | "SN35000_18STG";
+
 /** POST /optimize/run - mirror of server.schemas.OptimizeRunRequest. */
 export interface OptimizeRunRequest {
   kind: "pad" | "cfp";
-  pad: "S" | "I" | "M" | null;
+  pad: RunPad | null;
   offline: string[];
   future: { name: string; match: string }[];
   nozzles: string[];
@@ -299,6 +313,14 @@ export interface OptimizeRunRequest {
   psi_per_kbpd: number;
   c_pad_pf_psi: number;
   cfp_pads: string[]; // which of B/G/C/J participate (cfp runs)
+  /** E-Pad booster configuration. None of these four is a measured E-Pad
+   *  tag - no SCADA point, no motor nameplate and no piping rating came with
+   *  the vendor curve sheets - so a run states them. Ignored on other pads. */
+  e_pad_build: EPadBuild;
+  e_pad_suction_psi: number;
+  e_pad_hz_max: number;
+  e_pad_max_header_psi: number;
+  e_pad_amp_limit_a: number | null;
 }
 
 export interface PadRunRow {
@@ -512,7 +534,7 @@ export interface OptimizeRunStarted {
 
 /** POST /optimize/match-health - start a scorecard job for one pad. */
 export interface MatchHealthRequest {
-  pad: "S" | "I" | "M";
+  pad: RunPad;
 }
 
 export type MatchHealthVerdict = "contradicted" | "railed-cal" | "weak-fit" | "ok";
@@ -681,6 +703,165 @@ export interface PumpCurveResponse {
   nameplate: PumpCurveNameplate;
   station: PumpStationCurve;
   pumps: PumpMachineCurve[];
+}
+
+// ---------------------------------------------------------------------------
+// E-Pad booster candidate comparison
+// ---------------------------------------------------------------------------
+
+/** POST /optimize/e-pad-booster - mirror of server.schemas.EPadBoosterRequest.
+ * The duty an engineer sweeps: how much dP the booster has to make, and the
+ * fluid / wear / speed / motor limits it has to make it under. Omitted fields
+ * take the server defaults (600 psid from 2,800 psi suction = the 3,400 psig
+ * E-Pad power-fluid header). */
+export interface EPadBoosterRequest {
+  dp_psid: number;
+  suction_psi: number;
+  sg: number;
+  /** head-only wear derate; 1.00 = as-new */
+  condition: number;
+  hz_max: number;
+  amps_per_bhp: number;
+  /** null = report amps, enforce no cap */
+  amp_limit_a: number | null;
+}
+
+export interface EPadTarget {
+  dp_psid: number;
+  suction_psi: number;
+  discharge_psi: number;
+  sg: number;
+  condition: number;
+  hz_max: number;
+  amps_per_bhp: number;
+  amp_limit_a: number | null;
+  /** E-Pad's PF header setpoint (psig) - what the one-click duty button aims at */
+  header_default_psi: number;
+}
+
+export interface EPadNotes {
+  amps: string;
+  condition: string;
+  housing_pressure: string;
+  not_enforced: string[];
+  stage_table: string;
+}
+
+export interface EPadPumpNameplate {
+  key: string;
+  label: string;
+  installed: boolean;
+  model: string;
+  stage_type: string;
+  series_housing: string;
+  arrangement: string;
+  n_stages: number;
+  motor: string;
+  amp_limit_a: number | null;
+  amps_per_bhp: number;
+  /** catalog reference only - NOT enforced; see EPadNotes.housing_pressure */
+  shaft_limit_hp: number;
+  housing_pressure_limit_psi: number;
+  source: string;
+}
+
+/** One flow on the constant-dP locus. `hz` and everything after it are null
+ * when no speed holds the required dP at this flow. `ror_lo`/`ror_hi` are the
+ * recommended range AT THAT SPEED, which is why they move point to point. */
+export interface EPadPoint {
+  q_bpd: number;
+  hz: number | null;
+  dp_psid: number | null;
+  discharge_psi: number | null;
+  head_ft: number | null;
+  bhp: number | null;
+  amps: number | null;
+  amp_headroom_a: number | null;
+  eff_pct: number | null;
+  pct_of_bep: number | null;
+  ror_lo: number | null;
+  ror_hi: number | null;
+  in_ror: boolean;
+  amp_ok: boolean;
+  ok: boolean;
+  blocked_by: string | null;
+}
+
+export interface EPadSpeedCurve {
+  hz: number;
+  label: string;
+  points: number[][]; // [flow_bpd, dp_psid, bhp, amps, eff_pct]
+}
+
+/** One rung of the fixed-speed ladder: pin the drive here and this is the
+ * flow that comes out at the required dP, checked against the recommended
+ * range AT THAT SPEED. `q_bpd` and everything downstream are null when the
+ * speed's whole curve sits below the required dP. */
+export interface EPadSpeedRow {
+  hz: number;
+  /** true on the solved duty speed - the row that explains the headline */
+  is_duty: boolean;
+  q_bpd: number | null;
+  discharge_psi: number | null;
+  ror_lo: number;
+  ror_hi: number;
+  pct_of_ror_hi: number | null;
+  in_ror: boolean;
+  bhp: number | null;
+  amps: number | null;
+  amp_ok: boolean;
+  eff_pct: number | null;
+  blocked_by: string | null;
+}
+
+/** The other operating policy: run flat out at the speed cap and choke the
+ * surplus pressure off. More water, more shaft power, a throttling loss.
+ * Null when the speed cap cannot make the required dP in range at all. */
+export interface EPadThrottled {
+  q_bpd: number;
+  hz: number;
+  dp_made_psid: number;
+  discharge_psi: number;
+  throttle_psid: number;
+  /** hydraulic HP burned across the choke */
+  throttle_hhp: number;
+  bhp: number;
+  amps: number;
+  amp_headroom_a: number | null;
+  eff_pct: number;
+  in_ror: boolean;
+}
+
+export interface EPadCandidate {
+  nameplate: EPadPumpNameplate;
+  bep_60hz: number;
+  ror_60hz: number[];
+  max_valid_flow_60hz: number;
+  /** the flow the constant-dP locus ends at: past it the build cannot hold
+   *  the dP (out of head at hz_max, or it would over-deliver) */
+  q_ceiling: number;
+  /** the MAX-flow feasible point - the deliverable water rate at this duty,
+   *  reached by SLOWING the drive until it makes exactly that dP */
+  duty: EPadPoint | null;
+  /** the bottom of the same window - the turndown */
+  min_duty: EPadPoint | null;
+  /** the run-flat-out-and-choke alternative to `duty` */
+  throttled: EPadThrottled | null;
+  window: number[] | null;
+  limited_by: string;
+  infeasible_reason: string | null;
+  locus: EPadPoint[];
+  curves: EPadSpeedCurve[];
+  speed_table: EPadSpeedRow[];
+  machine: PumpMachineCurve;
+}
+
+export interface EPadBoosterResponse {
+  pad: string;
+  target: EPadTarget;
+  notes: EPadNotes;
+  /** installed build first */
+  candidates: EPadCandidate[];
 }
 
 
@@ -895,6 +1076,8 @@ export interface IprCoeffs {
   most_recent_date: string | null;
   anchor_label: string | null;
   anchor_date: string | null;
+  /** "fit" | "floor_fallback" - the latter is max BHP + 50, not a fitted RP; always reported weak. */
+  rp_source?: "fit" | "floor_fallback" | string;
 }
 
 export interface IprFitResponse {

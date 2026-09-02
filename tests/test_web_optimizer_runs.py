@@ -361,10 +361,16 @@ def test_cfp_pads_filter_and_water_enrichment(client, monkeypatch):
         runs, "_current_and_tests", lambda names: ({n: "12B" for n in names}, {})
     )
 
+    import pandas as pd
+
     import woffl.assembly.pf_pressure as pf_pressure
     import woffl.gui.cfp_moves as cfp_moves
+    from server.services import datasources
 
-    monkeypatch.setattr(pf_pressure, "pad_pf_cluster", lambda pad: None)
+    # No warehouse in unit tests: the fleet PF frame is empty and the cluster
+    # resolver (now called with that FRAME, not a pad letter) finds nothing.
+    monkeypatch.setattr(datasources, "pf_latest_safe", lambda: pd.DataFrame())
+    monkeypatch.setattr(pf_pressure, "pad_pf_cluster", lambda df, **kw: {})
 
     captured: dict = {}
 
@@ -442,3 +448,65 @@ def test_cfp_pads_filter_and_water_enrichment(client, monkeypatch):
     body3 = _wait_done(client, r3.json()["job_id"])
     assert body3["status"] == "error"
     assert "no active wells" in body3["error"]
+
+
+def test_cfp_offline_wells_are_bring_online_candidates(client, monkeypatch):
+    """SRV-4 / OPT-A10 (review 2026-09-01): a board-offline well must reach
+    the CFP engine with online=False - it IS the bring-online candidate.
+    Until the fix it was dropped before hydration, so the SI/BOL ladder
+    could never price bringing a shut-in well back on."""
+    from types import SimpleNamespace
+
+    import pandas as pd
+
+    import woffl.assembly.pf_pressure as pf_pressure
+    import woffl.gui.cfp_moves as cfp_moves
+    from server.services import datasources
+
+    universe = {
+        "wells": [{"name": "MPB-28", "pad": "B"}, {"name": "MPG-01", "pad": "G"}],
+        "source": "databricks",
+    }
+    seeds = {"pres": 1700.0, "qwf": 900.0, "pwf": 600.0, "form_wc": 0.7}
+    monkeypatch.setattr(wells_svc, "list_wells", lambda: universe)
+    monkeypatch.setattr(wells_svc, "well_context", lambda well, months, cap: {"seeds": dict(seeds)})
+    monkeypatch.setattr(runs, "_current_and_tests", lambda names: ({n: "12B" for n in names}, {}))
+    monkeypatch.setattr(datasources, "pf_latest_safe", lambda: pd.DataFrame())
+    monkeypatch.setattr(pf_pressure, "pad_pf_cluster", lambda df, **kw: {})
+
+    captured: dict = {}
+
+    def fake_surfaces(pad_configs, online, current, plant, **kw):
+        captured["online"] = dict(online)
+        wells = {
+            c.well_name: SimpleNamespace(pad=c.pad, online=online[c.well_name])
+            for ws in pad_configs.values()
+            for c in ws
+        }
+        return SimpleNamespace(wells=wells)
+
+    def fake_summary(surfaces, plant):
+        return {
+            "today": {"pressure": 2800.0, "oil": 100.0, "water": 1000.0, "n_online": 1, "n_bol_candidates": 1},
+            "lambda_bopd_per_psi": 1.0,
+            "singles": [],
+            "n_positive_singles": 0,
+            "pairs": [],
+            "frontier": [],
+            "plan": None,
+            "plan_gain": None,
+            "baseline": {"MPB-28": "12B", "MPG-01": "OFF"},
+        }
+
+    monkeypatch.setattr(cfp_moves, "build_response_surfaces", fake_surfaces)
+    monkeypatch.setattr(cfp_moves, "anchor", lambda surfaces, psi_per_kbpd: object())
+    monkeypatch.setattr(cfp_moves, "moves_summary", fake_summary)
+    monkeypatch.setattr(cfp_moves, "option_at", lambda ws, label, pressure: (0.0, 0.0))
+
+    r = client.post(
+        "/api/optimize/run", json={"kind": "cfp", "cfp_pads": ["B", "G"], "offline": ["MPG-01"]}
+    )
+    assert r.status_code == 200
+    body = _wait_done(client, r.json()["job_id"])
+    assert body["status"] == "done", body.get("error")
+    assert captured["online"] == {"MPB-28": True, "MPG-01": False}

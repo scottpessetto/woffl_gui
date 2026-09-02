@@ -393,3 +393,26 @@ def test_empty_well_is_422(client):
         client.post("/api/optimize/event-calibration", json={"well": ""}).status_code
         == 422
     )
+
+
+def test_job_streams_fitter_progress_into_envelope(client, monkeypatch):
+    """The fitter's per-pass line must land in job["progress"] as it runs -
+    the poller showed one frozen string for the whole 3-minute MPE-35 fit."""
+    import woffl.gui.fric_calibration as fc
+
+    job = {"progress": "start"}
+    seen = {}
+
+    def fake_mp(cfg, nz, th, built, progress=None, **kw):
+        assert callable(progress)
+        progress("fitting 24 points - pass 1 (evaluation 10)")
+        seen["after_callback"] = job["progress"]
+        return _fit_result()
+
+    monkeypatch.setattr(fc, "calibrate_multipoint", fake_mp)
+    payload = ec._run_event_calibration_job(job, WELL)
+
+    assert seen["after_callback"] == "fitting 24 points - pass 1 (evaluation 10)"
+    assert payload["method"] == "event"
+    # After the fit the envelope names the evidence step, not the last pass.
+    assert "field evidence" in job["progress"]

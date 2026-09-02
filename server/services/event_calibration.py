@@ -216,8 +216,17 @@ def _run_event_calibration_job(job: dict[str, Any], well: str) -> dict[str, Any]
     else:
         n_points = len(built.get("points") or [])
         job["progress"] = f"fitting {n_points} points..."
+
+        # The fit is up to four Nelder-Mead passes of ~100 iterations, each
+        # solving every point ~170 times - 25-62 s PER PASS at 24 points
+        # (MPE-35, 2026-09-01: 3.2 min end to end). Stream the fitter's
+        # pass/evaluation line into the envelope so the poller shows
+        # movement instead of one frozen string for minutes.
+        def _progress(msg: str) -> None:
+            job["progress"] = msg
+
         result = fric_calibration.calibrate_multipoint(
-            config, str(nozzle), str(throat), built
+            config, str(nozzle), str(throat), built, progress=_progress
         )
         if result.refusal:
             refusal = str(result.refusal)
@@ -247,6 +256,9 @@ def _run_event_calibration_job(job: dict[str, Any], well: str) -> dict[str, Any]
     # mined columns None; the fit report still builds.
     mined_beta: Optional[float] = None
     mined_beta_source: Optional[str] = None
+    # A Databricks round trip (or stall) here used to hide behind the last
+    # fitter line; label it so a slow warehouse reads as what it is.
+    job["progress"] = "fit done - checking the measured suction response (field evidence)..."
     try:
         ev = evidence_svc.pad_evidence(
             [well], {well: res_pres} if res_pres is not None else None

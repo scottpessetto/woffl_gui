@@ -256,11 +256,17 @@ class CFPPlant(PadPlant):
         pad: str,
         disch_p: float,
         measured_pad_pf: float | None = None,
+        anchor_disch_p: float | None = None,
     ) -> Optional[float]:
         """PF pressure delivered to a pad at a given plant discharge.
 
         Prefers a **measured anchor**: hold the pad's own gauge reading and move
-        it by the CHANGE in discharge from the metered baseline. The hardcoded
+        it by the CHANGE in discharge from the baseline it was measured at.
+        ``anchor_disch_p`` is that baseline - TODAY's discharge when the pad
+        reading is today's (the CFP run passes its live ``p0``). It defaults
+        to the 2026-07 ``MEASURED_DISCHARGE_PSI`` constant only as a fallback;
+        anchoring today's pad reading to July's discharge offset every grid
+        point by (p0 - 2,792) psi (review 2026-09-01, OPT-A2). The hardcoded
         ``PAD_LINE_DP`` constants are only the fallback, because all three were
         measured wrong on 2026-07-29 (discharge 2,792 psi vs live per-well PF):
 
@@ -286,9 +292,12 @@ class CFPPlant(PadPlant):
         if key not in _cfp.PAD_LINE_DP:
             return None
         if measured_pad_pf is not None:
-            return float(measured_pad_pf) + (
-                float(disch_p) - _cfp.MEASURED_DISCHARGE_PSI
+            anchor = (
+                float(anchor_disch_p)
+                if anchor_disch_p is not None
+                else _cfp.MEASURED_DISCHARGE_PSI
             )
+            return float(measured_pad_pf) + (float(disch_p) - anchor)
         return float(disch_p) - _cfp.PAD_LINE_DP[key]
 
     def plant_supplied_pads(self) -> tuple[str, ...]:

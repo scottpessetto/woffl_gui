@@ -78,7 +78,9 @@ def fit_rp_through_anchor(
     end_pres = int(max_pres)
 
     if start_pres >= end_pres:
-        return int(floor) + 50
+        # Floor fallback, CLAMPED to the field cap like the library fit is
+        # (this copy returned 1,840 against a 1,800 cap - review SOLV-F5).
+        return min(int(floor) + 50, int(max_pres)) if int(max_pres) > int(floor) else int(floor) + 50
 
     q_scale, p_scale = _axis_scales(bhp_values, fluid_values)
 
@@ -99,7 +101,22 @@ def fit_rp_through_anchor(
             best_sse = sse
             best_rp = pres
 
-    return int(best_rp) if best_rp is not None else int(floor) + 50
+    if best_rp is not None:
+        return int(best_rp)
+    return min(int(floor) + 50, int(max_pres)) if int(max_pres) > int(floor) else int(floor) + 50
+
+
+def rp_is_floor_fallback(
+    bhp_values, fluid_values, anchor_bhp: float, max_pres: float
+) -> bool:
+    """True when ``fit_rp_through_anchor`` had no room to search (max BHP or
+    the anchor BHP sits within 10 psi of the field cap) and returned the
+    max-BHP + 50 floor fallback rather than a fitted pressure (SOLV-F5)."""
+    bhp_values = np.asarray(bhp_values, dtype=float)
+    finite = ~np.isnan(bhp_values)
+    max_bhp = float(np.max(bhp_values[finite])) if finite.any() else float(anchor_bhp)
+    floor = max(max_bhp, float(anchor_bhp))
+    return int(floor) + 10 >= int(max_pres)
 
 
 def _r_squared(
@@ -403,11 +420,17 @@ def compute_anchored_vogel(
     rp = fit_rp_through_anchor(
         bhp_values, fluid_values, anchor_bhp, anchor_fluid, field_max_rp
     ) + int(resp_modifier)
+    rp_source = (
+        "floor_fallback"
+        if rp_is_floor_fallback(bhp_values, fluid_values, anchor_bhp, field_max_rp)
+        else "fit"
+    )
 
     if anchor_bhp >= rp:
         # Degenerate: anchor BHP at/above the fitted RP. Nudge RP just above it
         # so the Vogel math stays valid rather than returning None.
         rp = int(anchor_bhp) + 50
+        rp_source = "floor_fallback"
 
     qmax = InFlow.vogel_qmax(anchor_fluid, anchor_bhp, rp)
 
@@ -438,6 +461,9 @@ def compute_anchored_vogel(
         "R2": round(r2, 3),
         "anchor_label": anchor_label,
         "anchor_date": anchor_date_val if pd.notna(anchor_date_val) else None,
+        # "fit" | "floor_fallback" - the latter is max BHP + 50, not a fitted
+        # reservoir pressure; the server reports it WEAK (SOLV-F5).
+        "RP_source": rp_source,
     }
 
 

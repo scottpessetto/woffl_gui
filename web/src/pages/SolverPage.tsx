@@ -21,6 +21,7 @@ import { useDebounced } from "../lib/useDebounced";
 import { vogelQmax } from "../lib/vogel";
 import { gaugeMonths, useGaugeStore } from "../state/gauge";
 import { effectiveParams, useParamsStore } from "../state/params";
+import { useSensitivityStore } from "../state/sensitivity";
 
 import { ComparisonCard } from "./solver/ComparisonCard";
 import { CalibrateBar } from "./solver/CalibrateBar";
@@ -138,6 +139,13 @@ function Workbench({ well }: { well: string }) {
     const fitAnchor = anchorMode === "manual" ? null : (iprFitQ.data?.coeffs.anchor_date ?? null);
     return resolveAnchorTest(sortedTests, anchorMode, anchorDate, fitAnchor) ?? sortedTests[0];
   }, [sortedTests, decouple, compareKey, anchorMode, anchorDate, iprFitQ.data]);
+
+  // Publish the comparison test so the Sensitivity page scores against the
+  // SAME test the engineer is looking at here (review 2026-09-01, WEB-15).
+  const setCompareKeyShared = useSensitivityStore((s) => s.setCompareKey);
+  useEffect(() => {
+    setCompareKeyShared(well, compareTest ? testKey(compareTest) : null);
+  }, [well, compareTest, setCompareKeyShared]);
 
   // Auto-apply the FIRST fit's seeds once per well - the web equivalent of
   // Streamlit's open-time anchor sync (_sync_chosen_ipr_to_sidebar): the

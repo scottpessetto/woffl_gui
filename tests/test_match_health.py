@@ -125,11 +125,25 @@ def test_floor_violation_needs_both_sides():
 
 def test_contradicted_on_floor_violation():
     # Model floor 145 psi above the measured floor - the MPM-64 signature.
+    # The model must CLAIM the floor (sonic) for the measured floor to
+    # falsify it.
     row = _assemble_one(
-        _check_row("W1", model_psu=525.0), _cfg("W1"), _ev(floor=380.0)
+        _check_row("W1", model_psu=525.0, sonic=True), _cfg("W1"), _ev(floor=380.0)
     )
     assert row["floor_violation"] == pytest.approx(145.0)
     assert row["verdict"] == "contradicted"
+
+
+def test_subsonic_floor_violation_is_not_contradicted():
+    """EVID-F3 (review 2026-09-01): a subsonic well whose modeled psu today
+    sits above the lowest BHP it reached in the last year is not
+    contradicted - it is simply not at its floor today. Only a SONIC claim
+    (zero suction response) is falsified by the measured floor."""
+    row = _assemble_one(
+        _check_row("W1", model_psu=525.0, sonic=False), _cfg("W1"), _ev(floor=380.0)
+    )
+    assert row["floor_violation"] == pytest.approx(145.0)
+    assert row["verdict"] == "ok"
 
 
 def test_floor_violation_at_threshold_is_not_contradicted():
@@ -200,7 +214,7 @@ def test_verdict_precedence_contradicted_beats_railed_beats_weak():
     prov = {"W1": {"ipr_source": "auto", "ipr_r2": 0.2, "has_friction": True}}
     # All three fire -> contradicted wins.
     row = _assemble_one(
-        _check_row("W1", model_psu=600.0),
+        _check_row("W1", model_psu=600.0, sonic=True),
         _cfg("W1", ken=0.40, kth=0.05, kdi=0.05),
         _ev(floor=380.0),
         prov=prov,

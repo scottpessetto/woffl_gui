@@ -14,7 +14,14 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from server import schemas
-from server.services import event_calibration, ipr, match_health, optimizer_runs, pad_curves
+from server.services import (
+    e_pad_curves,
+    event_calibration,
+    ipr,
+    match_health,
+    optimizer_runs,
+    pad_curves,
+)
 
 router = APIRouter(prefix="/optimize", tags=["optimize"])
 
@@ -81,8 +88,12 @@ def run_status(job_id: str) -> Any:
 
 @router.get("/pump-curve", response_model=schemas.PumpCurveResponse)
 def pump_curve(
-    pad: Literal["S", "I", "M"] = Query(...),
+    pad: Literal["S", "I", "M", "E"] = Query(...),
     n_pumps: Optional[int] = Query(None, ge=1, le=3),
+    build: Optional[Literal["SM25000_26STG", "SN35000_18STG"]] = Query(None),
+    suction_psi: Optional[float] = Query(None, ge=0.0, le=5000.0),
+    hz_max: Optional[float] = Query(None, ge=30.0, le=60.0),
+    max_header_psi: Optional[float] = Query(None, ge=1000.0, le=5000.0),
 ) -> Any:
     """Industry-format booster-pump curves for one pad's plant: the station
     family of delivered header pressure vs total flow plus each machine's
@@ -92,11 +103,57 @@ def pump_curve(
     Read-only static physics off the plant model and its data files - no run
     state - so it renders before a run and the engineer sees plant capability
     while configuring. n_pumps defaults to the plant's own.
+
+    The four E-Pad knobs exist because none of them is a measured E-Pad tag
+    (see server.schemas.OptimizeRunRequest) and the curve sheet beside a run
+    form must show the booster the run will actually assume. They are rejected
+    on the other pads rather than silently ignored.
     """
+    e_knobs = {
+        "build": build,
+        "suction_psi": suction_psi,
+        "hz_max": hz_max,
+        "max_header_psi": max_header_psi,
+    }
+    passed = [k for k, v in e_knobs.items() if v is not None]
+    if pad != "E" and passed:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid",
+                "message": (
+                    f"{', '.join(passed)} configure the E-Pad booster only; "
+                    f"{pad}-Pad's plant is fixed vendor data"
+                ),
+            },
+        )
     try:
-        return pad_curves.pump_curve(pad, n_pumps)
+        return pad_curves.pump_curve(pad, n_pumps, **e_knobs)
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
             detail={"error": "invalid", "message": str(exc)},
         ) from exc
+
+
+@router.post("/e-pad-booster", response_model=schemas.EPadBoosterResponse)
+def e_pad_booster(req: schemas.EPadBoosterRequest) -> Any:
+    """What each E-Pad booster candidate can deliver at a required dP: the
+    flow window inside the vendor recommended operating range, the speed and
+    amps it takes, and what caps the top of the window.
+
+    The installed SM25000 26-stage build against the SN35000 18-stage
+    alternative. Read-only static physics off the catalog stage curves - no
+    run state, no Databricks - so POST here is a pure computation, not a
+    write; the body only exists because the duty (dP, suction, SG, wear, speed
+    cap, amps/BHP, motor amp limit) is seven scalars an engineer sweeps.
+    """
+    return e_pad_curves.capability(
+        req.dp_psid,
+        req.suction_psi,
+        req.sg,
+        req.condition,
+        req.hz_max,
+        req.amps_per_bhp,
+        req.amp_limit_a,
+    )

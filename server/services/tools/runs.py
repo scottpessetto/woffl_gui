@@ -240,7 +240,11 @@ def header_impact(
         "totals": {
             "wells": len(out),
             "delta_oil": round(sum(d_oil), 1) if d_oil else 0.0,
-            "responsive": sum(1 for r in out if r.get("Verdict") == "responsive"),
+            # _verdict emits "responsive (physics)" / "responsive ✓", never the
+            # bare word - the exact match counted 0 forever (EVID-F15).
+            "responsive": sum(
+                1 for r in out if str(r.get("Verdict") or "").startswith("responsive")
+            ),
             "sonic": sum(1 for r in out if r.get("SonicNow")),
         },
         "delta_p": delta_p,

@@ -229,8 +229,16 @@ def ttl_cache(ttl: float, maxsize: int = 32) -> Callable[[F], F]:
                 cache.end_refresh(key)
             return True
 
+        def cache_has(*args: Any, **kwargs: Any) -> bool:
+            """True when an entry for this call signature is servable (fresh
+            OR stale) - a peek that never queries. Lets a caller derive a
+            narrower result from a broader cached one instead of re-fetching."""
+            state, _value = cache.get((args, tuple(sorted(kwargs.items()))))
+            return state in ("fresh", "stale")
+
         wrapper.cache_refresh = cache_refresh  # type: ignore[attr-defined]
         wrapper.cache_evict = cache_evict  # type: ignore[attr-defined]
+        wrapper.cache_has = cache_has  # type: ignore[attr-defined]
         wrapper.cache_clear = cache.clear  # type: ignore[attr-defined]
         wrapper._cache = cache  # type: ignore[attr-defined] - test/ops introspection
         return wrapper  # type: ignore[return-value]

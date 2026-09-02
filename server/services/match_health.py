@@ -88,7 +88,17 @@ def friction_rails(
 def _verdict(row: dict[str, Any]) -> str:
     """First match wins: contradicted > railed-cal > weak-fit > ok."""
     fv = row.get("floor_violation")
-    if fv is not None and fv > FLOOR_VIOLATION_MIN_PSI:
+    if (
+        fv is not None
+        and fv > FLOOR_VIOLATION_MIN_PSI
+        and row.get("sonic") is True
+        and row.get("floor_source", "era") != "prior_era"
+    ):
+        # The floor gate only falsifies a model that CLAIMS the well sits on
+        # its cavitation floor: a subsonic well whose modeled psu today is
+        # above the lowest BHP it reached in the last year is not
+        # contradicted, it is just not at its floor today. Same rule as
+        # pad_optimize._apply_suction_evidence (review 2026-09-01, EVID-F3).
         return "contradicted"
     if (
         row.get("beta_source") == "well"
@@ -155,10 +165,13 @@ def assemble_rows(
             "model_psu": model_psu,
             "sonic": cr.get("sonic"),
             "evidence_floor": floor,
+            "floor_source": ev.get("floor_source"),  # "era" | "prior_era" | "all"
             "floor_violation": violation,
             "beta": _num(ev.get("beta")),
+            "beta_raw": _num(ev.get("beta_raw")),
             "beta_source": ev.get("beta_source"),
             "n_pairs": ev.get("n_pairs"),
+            "n_events": ev.get("n_events"),
             "ken": ken,
             "kth": kth,
             "kdi": kdi,

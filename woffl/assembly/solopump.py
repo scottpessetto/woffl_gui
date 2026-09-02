@@ -13,6 +13,7 @@ from woffl.flow import jetflow as jf
 from woffl.flow import outflow as of
 from woffl.flow import singlephase as sp
 from woffl.flow.errors import ConvergenceError, JetPumpError, ThroatEntryNoSolution
+from woffl.flow.jetplot import JetBook, ThroatEntryChoked
 from woffl.geometry import JetPump, PipeInPipe, WellProfile
 from woffl.pvt import FormWater, ResMix
 
@@ -97,6 +98,8 @@ def discharge_residual(
     prop_su: ResMix,
     prop_pf: FormWater,
     jpump_direction: str = "reverse",
+    *,
+    te_seed: JetBook | None = None,
 ) -> tuple[float, float, float, float, float]:
     """Discharge Residual
 
@@ -116,6 +119,10 @@ def discharge_residual(
         prop_su (ResMix): Reservoir Mixture Conditions
         prop_pf (FormWater): Power Fluid Properties, assumed to be the same as formation water
         jpump_direction (str): Jet Pump Direction, "forward" or "reverse" Circulating
+        te_seed (JetBook | None): Optional unscaled throat-entry book already
+            swept from this psu (``psu_minimize``'s); reused instead of
+            re-sweeping when its first pressure is exactly ``psu``. Keyword-only.
+            [LIBRARY change -> upstream PR to kwellis/woffl] SOLV-F9.
 
     Returns:
         res_di (float): Jet Pump Discharge minus Out Flow Discharge, psid
@@ -139,7 +146,13 @@ def discharge_residual(
 
     # merge from jetpump_base_calcs into here to allow for power fluid flow iteration
     qoil_std, te_book = jf.throat_entry_zero_tde(
-        psu=psu, tsu=tsu, ken=jpump.ken, ate=jpump.ate, ipr_su=ipr_su, prop_su=prop_su
+        psu=psu,
+        tsu=tsu,
+        ken=jpump.ken,
+        ate=jpump.ate,
+        ipr_su=ipr_su,
+        prop_su=prop_su,
+        seed_book=te_seed,
     )
     pte, vte, rho_te, mach_te = te_book.dete_zero()
 
@@ -258,6 +271,8 @@ def _residual_walk_inward(
     prop_su: ResMix,
     prop_pf: FormWater,
     jpump_direction: str,
+    *,
+    te_seed: JetBook | None = None,
 ) -> tuple[float, float, tuple[float, float, float, float]]:
     """Discharge residual at ``psu_start``, walking inward if it's infeasible.
 
@@ -287,6 +302,22 @@ def _residual_walk_inward(
     fallback and aborted a solve this rescue exists for. Raises
     :class:`ConvergenceError` if no feasible suction is found within range.
 
+    ``te_seed`` (keyword-only) is the throat-entry book already swept at
+    ``psu_start`` (SOLV-F9); it is only ever reused for the endpoint probe.
+
+    SOLV-F2 (review 2026-09-01): the probe grid is coarse - its gaps reach
+    14 % of the span, ~140 psi on a 1,000 psi bracket - so the first feasible
+    probe can overshoot the feasibility edge by a lot. When it does AND its
+    residual already has the sign the FAR end owns (positive walking up from
+    psu_min, negative walking down from psu_max), the root sits in the
+    unprobed gap and returning the probe would report it as the operating
+    point (the marginal 11A fixture: floor 1877.1, probe 1885.0, residual
+    +35 psid, reported as "sonic" at Mach 0.50). So bisect on FEASIBILITY
+    between the last infeasible and the first feasible fraction until the
+    residual flips sign (the root is then bracketed) or the edge is pinned
+    to within ``_EDGE_TOL_PSI`` - 2-4 extra residual evaluations. A feasible
+    endpoint still returns from the very first probe, bit-identical.
+
     Returns ``(psu, residual, (qoil_std, fwat_bwpd, qnz_bwpd, mach_te))``.
     [LIBRARY change -> upstream PR to kwellis/woffl]
     """
@@ -308,6 +339,7 @@ def _residual_walk_inward(
         0.82,
         0.95,
     )
+    last_infeasible: float | None = None  # fraction of the latest infeasible probe
     for fr in fracs:
         psu = psu_start + span * fr
         try:
@@ -323,8 +355,15 @@ def _residual_walk_inward(
                 prop_su,
                 prop_pf,
                 jpump_direction,
+                te_seed=te_seed if fr == 0.0 else None,
             )
-            return psu, res, (qoil, fwat, qnz, mach)
+        except ThroatEntryChoked:
+            # FLOW-5: below the throat-entry choke floor by more than the
+            # sweep tolerance - the feasible region is ABOVE, step inward.
+            # (Caught before its parent ThroatEntryNoSolution on purpose.)
+            # [LIBRARY change -> upstream PR to kwellis/woffl]
+            last_infeasible = fr
+            continue
         except ThroatEntryNoSolution:
             raise  # drives the GUI's GOR auto-recovery — must propagate unchanged
         except JetPumpError:
@@ -332,8 +371,101 @@ def _residual_walk_inward(
             # pressure below throat entry (bare JetPumpError from
             # nozzle_velocity) at this suction — step inward.
             # [P1-8 fix -> upstream PR to kwellis/woffl]
+            last_infeasible = fr
             continue
+        if last_infeasible is not None and res * span > 0:
+            # SOLV-F2: walked past the feasibility edge AND the residual
+            # already carries the far end's sign - the root is in the gap.
+            # [LIBRARY change -> upstream PR to kwellis/woffl]
+            return _refine_feasibility_edge(
+                psu_start,
+                span,
+                last_infeasible,
+                fr,
+                (psu, res, (qoil, fwat, qnz, mach)),
+                pwh,
+                tsu,
+                ppf_surf,
+                jpump,
+                wellbore,
+                wellprof,
+                ipr_su,
+                prop_su,
+                prop_pf,
+                jpump_direction,
+            )
+        return psu, res, (qoil, fwat, qnz, mach)
     raise ConvergenceError("no feasible suction pressure for the inner throat solve")
+
+
+_EDGE_TOL_PSI = 2.0  # SOLV-F2: how close to the feasibility edge the bisection lands
+_EDGE_MAX_EVALS = 8  # 140 psi gap / 2^7 < 2 psi, so this cap is never the binding limit
+
+
+def _refine_feasibility_edge(
+    psu_start: float,
+    span: float,
+    lo_fr: float,
+    hi_fr: float,
+    hi_result: tuple[float, float, tuple[float, float, float, float]],
+    pwh: float,
+    tsu: float,
+    ppf_surf: float,
+    jpump: JetPump,
+    wellbore: PipeInPipe,
+    wellprof: WellProfile,
+    ipr_su: InFlow,
+    prop_su: ResMix,
+    prop_pf: FormWater,
+    jpump_direction: str,
+) -> tuple[float, float, tuple[float, float, float, float]]:
+    """Bisect the suction between an infeasible and a feasible probe fraction.
+
+    [LIBRARY change -> upstream PR to kwellis/woffl] SOLV-F2 helper for
+    :func:`_residual_walk_inward`. ``lo_fr`` is the last INFEASIBLE fraction
+    and ``hi_fr`` the first FEASIBLE one (``hi_result`` is its evaluation).
+    Halves the gap on feasibility, keeping the feasible side, and stops as
+    soon as a feasible point's residual has the sign that brackets the root
+    against the far end (``res * span <= 0``) or the gap is within
+    ``_EDGE_TOL_PSI``. Returns the feasible evaluation closest to the edge -
+    when the residual never flips, the pump is pinned by throat-mixture
+    feasibility, NOT by the throat-entry choke, and the caller must not call
+    it sonic. ``ThroatEntryNoSolution`` propagates unchanged, as in the walk.
+    """
+    lo, hi = lo_fr, hi_fr
+    best = hi_result
+    for _ in range(_EDGE_MAX_EVALS):
+        if abs(span) * (hi - lo) <= _EDGE_TOL_PSI:
+            break
+        mid = 0.5 * (lo + hi)
+        psu = psu_start + span * mid
+        try:
+            res, qoil, fwat, qnz, mach = discharge_residual(
+                psu,
+                pwh,
+                tsu,
+                ppf_surf,
+                jpump,
+                wellbore,
+                wellprof,
+                ipr_su,
+                prop_su,
+                prop_pf,
+                jpump_direction,
+            )
+        except ThroatEntryChoked:
+            lo = mid
+            continue
+        except ThroatEntryNoSolution:
+            raise
+        except JetPumpError:
+            lo = mid
+            continue
+        hi = mid
+        best = (psu, res, (qoil, fwat, qnz, mach))
+        if res * span <= 0:
+            break  # root bracketed between here and the far end
+    return best
 
 
 def jetpump_solver(
@@ -388,6 +520,7 @@ def jetpump_solver(
         prop_su=prop_su,
         mach_crit=mach_crit,
     )
+    psu_floor = psu_min  # the Mach = mach_crit throat-entry choke floor
     psu_max = ipr_su.pres - 10  # max suction pressure that can be used
 
     # Lower-bracket residual. The inner throat-mixture solve can be infeasible
@@ -399,6 +532,12 @@ def jetpump_solver(
     # the endpoint is already feasible (the overwhelming majority) the first
     # probe returns it unchanged, so converged solves stay bit-identical.
     # [LIBRARY change -> upstream PR to kwellis/woffl]
+    #
+    # SOLV-F9: psu_minimize already swept the throat entry at psu_min; hand
+    # that book to the endpoint probe so discharge_residual does not sweep it
+    # again (~10 % of a sonic solve). Only at the historic mach_crit = 1.0 -
+    # the Mach-one walk scales kde by 1/mach_crit^2, so any other threshold
+    # must re-sweep unscaled. [LIBRARY change -> upstream PR to kwellis/woffl]
     psu_min, res_min, (qoil_std, fwat_bwpd, qnz_bwpd, mach_te) = _residual_walk_inward(
         psu_min,
         psu_max,
@@ -412,12 +551,28 @@ def jetpump_solver(
         prop_su,
         prop_pf,
         jpump_direction,
+        te_seed=te_book if mach_crit == 1.0 else None,
     )
 
     # if the jetpump (available) discharge is above the outflow (required) discharge at lowest suction
     # the well will flow, but at its critical limit
     if res_min > 0:
-        sonic_status = True
+        # [LIBRARY change -> upstream PR to kwellis/woffl] SOLV-F2: "sonic"
+        # means the operating point IS the throat-entry choke floor psu_minimize
+        # solved for (tde at Mach = mach_crit is zero there by construction).
+        # When the walk had to move the suction inward and the residual is
+        # still positive at the feasibility edge, the pump is pinned by
+        # throat-MIXTURE feasibility at a subsonic entry (11A: Mach 0.50) and
+        # must not be reported as choked - fric_calibration would refuse the
+        # well as "pinned" and Header Impact would call it sonic-decoupled.
+        # NOTE a mach_te threshold is deliberately NOT used: at the floor the
+        # reported mach_te is the last SUBSONIC point of the 25-psi sweep
+        # (E-41 9X/10X/11X read 0.89/0.89/0.88 while choked), so any
+        # threshold loose enough for them would mislabel marginal pumps.
+        # "At the floor" allows the walk's edge tolerance: a floor probe that
+        # FLOW-5 rejected (its discrete clamp just over tolerance) is refined
+        # to within _EDGE_TOL_PSI of the floor and is still the choke.
+        sonic_status = bool(psu_min - psu_floor <= _EDGE_TOL_PSI)
         return psu_min, sonic_status, qoil_std, fwat_bwpd, qnz_bwpd, mach_te
 
     psu_max, res_max, _ = _residual_walk_inward(
@@ -587,6 +742,16 @@ def _secant_solve(
     # cached rates correspond to, so the returned rates can never be the stale
     # 0.0 initializers (see the final guard before return).
     rates_at = None
+    # [LIBRARY change -> upstream PR to kwellis/woffl] SOLV-P3: every suction
+    # evaluated so far -> (residual, rates or None). discharge_residual is a
+    # pure function of psu, so a clamp that lands the iterate back on a point
+    # already evaluated (typically a bracket end) is served from here instead
+    # of paying ~5 ms to recompute the identical numbers. Bit-identical by
+    # construction. Guarded by TestSecantSolveReusesKnownPoints.
+    known: dict[float, tuple[float, tuple[float, float, float, float] | None]] = {
+        psu_min: (res_min, None),
+        psu_max: (res_max, None),
+    }
     for psu in psu_list:
         if psu in res_lookup:
             res_list.append(res_lookup[psu])
@@ -606,6 +771,7 @@ def _secant_solve(
             )
             res_list.append(res_seed)
             rates_at = psu
+            known[psu] = (res_seed, (qoil_std, fwat_bwpd, qnz_bwpd, mach_te))
 
     n = 0  # loop counter
     while abs(psu_list[-2] - psu_list[-1]) > psu_diff or abs(res_list[-1]) > res_tol:
@@ -613,22 +779,40 @@ def _secant_solve(
         # psu_min (res <= 0) and psu_max (res >= 0), so clamp overshoots back in
         psu_nxt = jf.psu_secant(psu_list[-2], psu_list[-1], res_list[-2], res_list[-1])
         psu_nxt = min(max(psu_nxt, psu_min), psu_max)
-        res_nxt, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = discharge_residual(
-            psu_nxt,
-            pwh,
-            tsu,
-            ppf_surf,
-            jpump,
-            wellbore,
-            wellprof,
-            ipr_su,
-            prop_su,
-            prop_pf,
-            jpump_direction,
-        )
+        if psu_nxt == psu_list[-1] and abs(res_list[-1]) > res_tol:
+            # SOLV-P3: the clamp pinned the iterate on the point it is already
+            # standing on. Re-evaluating returns the same residual, the loop
+            # cannot exit (|res| > res_tol) and the next psu_secant raises on
+            # equal residuals - so raise now and hand off to the fallbacks with
+            # the identical outcome, minus the wasted evaluation.
+            raise ConvergenceError(
+                "Suction Pressure for Overall System did not converge "
+                "(secant pinned on a bracket end)"
+            )
+        hit = known.get(psu_nxt)
+        if hit is not None:
+            res_nxt, rates = hit
+            if rates is not None:
+                qoil_std, fwat_bwpd, qnz_bwpd, mach_te = rates
+                rates_at = psu_nxt
+        else:
+            res_nxt, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = discharge_residual(
+                psu_nxt,
+                pwh,
+                tsu,
+                ppf_surf,
+                jpump,
+                wellbore,
+                wellprof,
+                ipr_su,
+                prop_su,
+                prop_pf,
+                jpump_direction,
+            )
+            rates_at = psu_nxt
+            known[psu_nxt] = (res_nxt, (qoil_std, fwat_bwpd, qnz_bwpd, mach_te))
         psu_list.append(psu_nxt)
         res_list.append(res_nxt)
-        rates_at = psu_nxt
         n += 1
         if n == 20:
             raise ConvergenceError(
@@ -714,19 +898,34 @@ def _bisection_solve(
     psu_diff = 1.5  # tighter than the secant's 5 psi since bisection is cheap-ish
     psu_mid = (psu_lo + psu_hi) / 2
     # carry the most recent evaluation out so the final return uses the mid point
-    res_mid, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = discharge_residual(
-        psu_mid,
-        pwh,
-        tsu,
-        ppf_surf,
-        jpump,
-        wellbore,
-        wellprof,
-        ipr_su,
-        prop_su,
-        prop_pf,
-        jpump_direction,
-    )
+    qoil_std = fwat_bwpd = qnz_bwpd = mach_te = 0.0
+    # [LIBRARY change -> upstream PR to kwellis/woffl] SOLV-F3: which suction
+    # the cached rates belong to (mirrors _secant_solve). An infeasible probe
+    # leaves the rates at the PREVIOUS midpoint, so on a width exit the
+    # returned psu and rates could belong to different suctions (probe:
+    # psu 469.5 with the rates of 470.3); the guard before return fixes that.
+    rates_at: float | None = None
+    try:
+        res_mid, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = discharge_residual(
+            psu_mid,
+            pwh,
+            tsu,
+            ppf_surf,
+            jpump,
+            wellbore,
+            wellprof,
+            ipr_su,
+            prop_su,
+            prop_pf,
+            jpump_direction,
+        )
+        rates_at = psu_mid
+    except JetPumpError:
+        # SOLV-F3: the FIRST midpoint used to be evaluated outside the try,
+        # so an infeasible first probe escaped as "solver failed" on a well
+        # whose root is bracketed. Same too-low-side treatment as the loop.
+        # [LIBRARY change -> upstream PR to kwellis/woffl]
+        res_mid = -(res_tol + 1.0)
 
     n = 0
     while (psu_hi - psu_lo) / 2 > psu_diff and abs(res_mid) > res_tol:
@@ -749,6 +948,7 @@ def _bisection_solve(
                 prop_pf,
                 jpump_direction,
             )
+            rates_at = psu_mid
         except JetPumpError:
             # Shouldn't occur inside [psu_min, psu_max] (psu_min is the
             # feasibility floor), but if a probe point has no throat-entry
@@ -773,5 +973,42 @@ def _bisection_solve(
         if n == 60:
             raise ConvergenceError(
                 "Suction Pressure for Overall System did not converge (bisection)"
+            )
+    # [LIBRARY change -> upstream PR to kwellis/woffl] SOLV-F3: the returned
+    # rates must come from the returned suction. On the normal path rates_at
+    # already equals psu_mid (no-op, bit-identical). If the last probe was
+    # infeasible, psu_mid itself has no throat solution - it sits on the
+    # too-low side - so the answer is the feasible upper end psu_hi (its
+    # residual is >= 0 from a real evaluation and the bracket is already
+    # within 2 * psu_diff). Guarded by TestBisectionSolveConsistency.
+    if rates_at != psu_mid:
+        try:
+            _res, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = discharge_residual(
+                psu_mid,
+                pwh,
+                tsu,
+                ppf_surf,
+                jpump,
+                wellbore,
+                wellprof,
+                ipr_su,
+                prop_su,
+                prop_pf,
+                jpump_direction,
+            )
+        except JetPumpError:
+            psu_mid = psu_hi
+            _res, qoil_std, fwat_bwpd, qnz_bwpd, mach_te = discharge_residual(
+                psu_hi,
+                pwh,
+                tsu,
+                ppf_surf,
+                jpump,
+                wellbore,
+                wellprof,
+                ipr_su,
+                prop_su,
+                prop_pf,
+                jpump_direction,
             )
     return psu_mid, False, qoil_std, fwat_bwpd, qnz_bwpd, mach_te

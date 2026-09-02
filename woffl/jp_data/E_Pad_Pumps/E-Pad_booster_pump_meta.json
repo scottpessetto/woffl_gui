@@ -1,0 +1,124 @@
+{
+  "site": "Milne Point Unit, E-Pad",
+  "service": "power-fluid booster (produced water) feeding the E-Pad PF header",
+  "purpose": "candidate comparison at a required differential pressure: the SM25000 build currently in the well vs the SN35000 alternative",
+  "reference": {
+    "ref_speed_rpm": 3500,
+    "ref_speed_hz": 60,
+    "curve_sg": 1.0,
+    "ft_to_psi_divisor": 2.31,
+    "stage_table_columns": ["flow_bpd", "head_ft_per_stage", "bhp_per_stage"],
+    "stage_table_note": "Head and BHP per stage at 60 Hz / 3500 RPM on water (SG 1.0), read off the Summit ESP catalog performance curve for the stage. Evaluated by LINEAR interpolation between rows: the rows are the digitization itself, and a polynomial fit through 10-15 points adds wiggle the vendor sheet does not have. Both stages are mixed-flow, so head RISES off shut-off before falling (SM25000: 154 ft at 0, 156 ft at 5,000) - that is the real curve shape, not a fit artifact.",
+    "affinity": "Q ~ Hz; head ~ (Hz/60)^2; BHP ~ (Hz/60)^3. Q60 = Q * 60 / Hz indexes the 60 Hz stage table.",
+    "compute": {
+      "head_ft": "condition * n_stages * head_per_stage(Q60) * (Hz/60)^2",
+      "dp_psi": "head_ft * SG / 2.31",
+      "discharge_psi": "suction_psi + dp_psi",
+      "bhp": "SG * n_stages * bhp_per_stage(Q60) * (Hz/60)^3",
+      "amps": "amps_per_bhp * bhp",
+      "ror_at_hz": "[xrc_lo_60hz * Hz/60, xrc_hi_60hz * Hz/60]"
+    },
+    "condition_note": "Head-only wear derate (1.00 = as-new), the 'Condition' cell of the Summit E Pad Booster workbooks. Shaft power stays on the as-new curve, so efficiency falls with it."
+  },
+  "defaults": {
+    "sg": 1.02,
+    "suction_psi": 2800,
+    "target_discharge_psi": 3400,
+    "condition": 1.0,
+    "hz_max": 60.0,
+    "amps_per_bhp": 0.1435,
+    "amps_per_bhp_note": "amps ~ k * BHP, the convention the I-Pad and M-Pad plant models use. k = 0.1435 A/BHP is the LIVE-CALIBRATED value for the I-Pad 26-stage SN35000 HPS unit on a 4160 V motor (SCADA 2026-06-16), carried over here because no E-Pad motor nameplate came with the curve sheets. It is a TRANSFERRED ESTIMATE: valid for a 4160 V class motor, scale by 4160/V for another voltage, and replace it on screen once the E-Pad motor data is in hand. Use for trend, not for protection.",
+    "hz_floor_note": "The model's 20 Hz speed floor (e_pad_booster._HZ_FLOOR) is numerical, not an operating limit: below it the 60-Hz-equivalent flow walks off the digitized stage table. The recommended operating range binds long before it at any useful flow.",
+    "target_discharge_note": "3,400 psig is the E-Pad power-fluid header pressure (server/services/wells.py _PAD_PF_DEFAULTS; C/E/H/I/M/S run at 3400)."
+  },
+  "pumps": {
+    "SM25000_26STG": {
+      "installed": true,
+      "label": "SM25000 - 26 stg (in well)",
+      "model": "Summit ESP SM25000",
+      "stage_type": "Mixed flow, XRC construction, CCW",
+      "series_housing": "875 series, 8.75 in housing (10.75 in min casing)",
+      "arrangement": "single unit, VFD driven",
+      "n_stages": 26,
+      "motor": "not stated in the supplied curve sheet - enter the amp limit on screen",
+      "amp_limit_A": null,
+      "bep_flow_bpd_60hz": 27000,
+      "xrc_operating_range_bpd_60hz": [8100, 32400],
+      "max_valid_flow_bpd_60hz": 41000,
+      "shaft_limit_hp": {"standard": 1094, "high_strength": 1795},
+      "housing_pressure_limit_psi": {"standard": 4400, "high_pressure": 4400},
+      "shaft_diameter_in": 1.38,
+      "shaft_area_sq_in": 1.5,
+      "stage_table": [
+        [0, 154, 15.9],
+        [5000, 156, 18.8],
+        [10000, 152, 21.6],
+        [15000, 144, 24.5],
+        [20000, 138, 27.6],
+        [25000, 128, 30.4],
+        [30000, 115, 32.8],
+        [35000, 94, 34.4],
+        [40000, 66, 35.3],
+        [41000, 60, 35.3]
+      ],
+      "as_configured": {
+        "freq_hz": 55,
+        "sg": 1.02,
+        "condition": 1.0,
+        "suction_psi": 2800,
+        "note": "the scenario cells of 'Summit E Pad Booster (1).xlsx' sheet 'Current'"
+      },
+      "source": "temp/Summit E Pad Booster (1).xlsx (sheet 'Current' stage table + the embedded Summit ESP 'SM25000 Pump / Pump Performance Curve / S.G. 1.0 | 1 Stage | 3500 RPM | 60 Hz' catalog page, halliburton.com p. 250)"
+    },
+    "SN35000_18STG": {
+      "installed": false,
+      "label": "SN35000 - 18 stg (alternative)",
+      "model": "Summit ESP SN35000",
+      "stage_type": "Mixed flow, XRC construction, CCW",
+      "series_housing": "950 series, 9.5 in housing (11.75 in min casing)",
+      "arrangement": "single unit, VFD driven",
+      "n_stages": 18,
+      "motor": "not stated in the supplied curve sheet - enter the amp limit on screen",
+      "amp_limit_A": null,
+      "bep_flow_bpd_60hz": 41250,
+      "xrc_operating_range_bpd_60hz": [12400, 49500],
+      "max_valid_flow_bpd_60hz": 62000,
+      "shaft_limit_hp": {"standard": 1440, "high_strength": 2370},
+      "housing_pressure_limit_psi": {"standard": 2800, "high_pressure": 2800},
+      "shaft_diameter_in": 1.5,
+      "shaft_area_sq_in": 1.77,
+      "stage_table": [
+        [0, 235, 42],
+        [2500, 235, 42],
+        [5000, 234, 43],
+        [10000, 225, 44],
+        [15000, 215, 47],
+        [20000, 204, 50],
+        [25000, 193, 53],
+        [30000, 184, 57],
+        [35000, 174, 60],
+        [40000, 164, 63],
+        [45000, 151, 66],
+        [50000, 131, 67],
+        [55000, 108, 67.5],
+        [60000, 77, 67.2],
+        [62000, 63, 67.1]
+      ],
+      "as_configured": {
+        "freq_hz": 55,
+        "sg": 1.0,
+        "condition": 1.0,
+        "suction_psi": 2600,
+        "note": "the scenario cells of 'Summit E Pad Booster as SN35000.xlsx' sheet 'Current'"
+      },
+      "source": "temp/Summit E Pad Booster as SN35000.xlsx (sheet 'Current' stage table + the embedded Summit ESP 'SN35000 Pump / Pump Performance Curve / S.G. 1.0 | 1 Stage | 3500 RPM | 60 Hz' catalog page, halliburton.com p. 256)"
+    }
+  },
+  "housing_pressure_caveat": "The housing pressure limits above are the ESP CATALOG numbers for a downhole housing (SN35000: 2,800 psi). They are NOT enforced by the model. E-Pad boosts on surface in an HPS barrel with its own pressure-rated discharge head, and the same SN35000 stage runs at 3,408 psig discharge on I-Pad today (SCADA 2026-06-16, I_Pad_Pumps meta 'validated'). Enforcing the catalog housing limit would raise a false alarm at the 3,400 psi header. Chase the actual HPS barrel/discharge-head rating before committing a build.",
+  "not_enforced": [
+    "shaft HP limit - carried for reference; neither build approaches it (SM25000 26 stg peaks near 721 BHP at 55 Hz against a 1,094 HP standard shaft)",
+    "housing pressure limit - see housing_pressure_caveat",
+    "NPSH / suction requirements - not published on the catalog pages supplied"
+  ],
+  "prepared": "2026-08-27"
+}

@@ -241,16 +241,35 @@ class TestFetchMilneWellTests:
         assert dropped == []
 
     @patch("woffl.assembly.well_test_client.execute_query")
-    def test_malicious_well_name_raises_before_query(self, mock_query):
+    def test_malicious_well_name_never_reaches_query(self, mock_query):
         """A well name that could break out of the SQL string literal must
-        raise UnsafeSqlValueError before execute_query ever runs (P2-7)."""
-        with pytest.raises(UnsafeSqlValueError):
-            fetch_milne_well_tests(
-                "2024-01-01",
-                "2024-12-31",
-                ["B-028'; DROP TABLE mpu.wells.vw_well_test --"],
-            )
+        never reach execute_query (P2-7). Since 2026-09-01 (review DATA-3)
+        it is DROPPED and logged rather than raised: one unusual name in
+        vw_well_header used to abort the fleet fetch and leave every well
+        with no tests. With no safe names left, nothing is queried."""
+        df, dropped = fetch_milne_well_tests(
+            "2024-01-01",
+            "2024-12-31",
+            ["B-028'; DROP TABLE mpu.wells.vw_well_test --"],
+        )
         mock_query.assert_not_called()
+        assert df.empty and dropped == []
+
+    @patch("woffl.assembly.well_test_client.execute_query")
+    def test_bad_name_is_excluded_but_good_names_still_fetch(self, mock_query):
+        import pandas as pd
+
+        mock_query.return_value = pd.DataFrame()
+        fetch_milne_well_tests(
+            "2024-01-01",
+            "2024-12-31",
+            ["B-028", "B-028'; DROP TABLE mpu.wells.vw_well_test --", "b-029 st"],
+        )
+        mock_query.assert_called_once()
+        sql = mock_query.call_args[0][0]
+        assert "'B-028'" in sql
+        assert "DROP TABLE" not in sql
+        assert "b-029" not in sql
 
     @patch("woffl.assembly.well_test_client.execute_query")
     def test_malicious_date_raises_before_query(self, mock_query):

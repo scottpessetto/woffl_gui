@@ -146,8 +146,12 @@ def test_dedi_zero_non_monotonic_raises_typed():
 CLEAN_MD = [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
 CLEAN_VD = [0, 95, 180, 270, 350, 375, 400, 410, 415, 420, 425]
 
-# same survey with gauge noise at the first two stations: |dvd| > |dmd|
-NOISY_VD = [0, 103, 180, 270, 350, 375, 400, 410, 415, 420, 425]
+# same survey with gauge noise at the first two stations: |dvd| > |dmd| by
+# 0.4 ft. Kept UNDER wellprofile.SURVEY_STEP_TOL_FT (0.5): since FLOW-3
+# (2026-09-02) a bigger excess is rejected at construction as a corrupt
+# survey (tests/test_wellprofile_validation.py), and this test is about the
+# sub-tolerance clip in _horz_dist.
+NOISY_VD = [0, 100.4, 180, 270, 350, 375, 400, 410, 415, 420, 425]
 
 
 def _old_horz_dist(md_ray, vd_ray):

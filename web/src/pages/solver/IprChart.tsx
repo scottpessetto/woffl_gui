@@ -272,7 +272,9 @@ export function IprChart({
           <ChartPanel option={option} height={520} zoom={{ xAxisIndex: [0], yAxisIndex: [0] }} />
           {fit?.weak && curveIsFit && (
             <WarnNote className="mt-2">
-              IPR fit is weak (R2 {fmtNum(fit.coeffs.r2, 2)}) - treat the curve as a sketch
+              {fit.coeffs.rp_source === "floor_fallback"
+                ? `Reservoir pressure ${fmtNum(fit.coeffs.res_p, 0)} psi is a FLOOR FALLBACK (max test BHP + 50), not a fit - the curve has no room to search. Decide a reservoir pressure in the sidebar.`
+                : `IPR fit is weak (R2 ${fmtNum(fit.coeffs.r2, 2)}) - treat the curve as a sketch`}
             </WarnNote>
           )}
         </div>

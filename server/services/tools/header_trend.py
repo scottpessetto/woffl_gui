@@ -331,7 +331,10 @@ def fit_within_day(
     y_name: str,
     x_name: str,
     min_pts_per_day: int = 6,
-    min_x_range: float = 2.0,
+    # A day whose driver moved less than this carries no slope information
+    # against hourly gauge noise of a few psi; such days were exactly the
+    # ones the r² filter kept when noise happened to align (EVID-F14).
+    min_x_range: float = 15.0,
     min_bhp: float = 50.0,
     r2_day_min: float = 0.5,
     slope_lo: float = 0.2,
@@ -399,16 +402,23 @@ def fit_within_day(
         return _empty_fit(y_name, x_name)
 
     # "Good" days: a clean, physically-signed fit (good r² AND slope in band).
-    # Averaging over good days only — dropping the bad/negative/flat daily fits,
-    # as the original tool did — is what keeps slug/noise days from diluting the
-    # slope toward zero. n_days counts all fittable days so an all-bad (e.g.
-    # sonic-decoupled) well reads as slugging, not insufficient.
+    # They drive CLASSIFICATION only (responsive / slugging via n_good_days).
+    # The slope ESTIMATE is the median over every day with a real fit
+    # (r² >= r2_day_min), whatever its sign or size. Averaging only the
+    # in-band days was a truncated estimator: conditioning on the estimate
+    # lying in [0.2, 1.5] biases it toward the band's interior, so a well
+    # with a true coupling of 0.12 and daily noise 0.15 passed on ~30% of
+    # days, read "responsive", and reported ~0.3 - and the group donor
+    # default for every weak well inherited the 0.2 floor (review
+    # 2026-09-01, EVID-F13). The median resists the slug/noise days the
+    # band was meant to exclude without the truncation.
     daily["good"] = (
         (daily["r2"] >= r2_day_min)
         & (daily["slope"] >= slope_lo)
         & (daily["slope"] <= slope_hi)
     )
     good = daily[daily["good"]]
+    fittable = daily[daily["r2"] >= r2_day_min]
     if good.empty:
         return WithinDayFit(
             y_name, x_name, np.nan, np.nan, np.nan, int(len(daily)), 0, np.nan, daily
@@ -416,12 +426,12 @@ def fit_within_day(
     return WithinDayFit(
         y_name=y_name,
         x_name=x_name,
-        mean_slope=float(good["slope"].mean()),
-        median_slope=float(good["slope"].median()),
-        slope_std=float(good["slope"].std(ddof=0)),
+        mean_slope=float(fittable["slope"].median()),
+        median_slope=float(fittable["slope"].median()),
+        slope_std=float(fittable["slope"].std(ddof=0)),
         n_days=int(len(daily)),
         n_good_days=int(len(good)),
-        mean_r2=float(good["r2"].mean()),
+        mean_r2=float(fittable["r2"].mean()),
         daily=daily,
     )
 

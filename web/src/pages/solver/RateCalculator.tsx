@@ -1,6 +1,6 @@
 /**
  * What-if rate calculator: pick a flowing BHP and read the Vogel rate off
- * the current IPR curve, split into liquid / oil / water at the sidebar
+ * the current IPR curve, split into oil / water / liquid at the sidebar
  * water cut. Pure client-side math (lib/vogel), zero server round trips.
  */
 
@@ -59,11 +59,26 @@ export function RateCalculator({
             className={`${INPUT_CLS} mt-1`}
           />
         </label>
-        <p className="text-sm font-medium tabular-nums text-slate-700">
-          {fluid !== null
-            ? `${fmtNum(fluid)} BLPD / ${fmtNum(oil)} BOPD / ${fmtNum(water)} BWPD`
-            : "Enter a BHP to compute a rate"}
-        </p>
+        {fluid !== null ? (
+          <dl className="space-y-1 text-sm">
+            {(
+              [
+                ["Oil Rate", oil, "BOPD"],
+                ["Water Rate", water, "BWPD"],
+                ["Liquid Rate", fluid, "BLPD"],
+              ] as const
+            ).map(([label, value, unit]) => (
+              <div key={label} className="flex items-baseline justify-between gap-4">
+                <dt className="text-slate-500">{label}:</dt>
+                <dd className="font-medium tabular-nums text-slate-800">
+                  {fmtNum(value)} <span className="text-xs text-slate-400">{unit}</span>
+                </dd>
+              </div>
+            ))}
+          </dl>
+        ) : (
+          <p className="text-sm text-slate-500">Enter a BHP to compute a rate</p>
+        )}
       </Card>
     </Section>
   );

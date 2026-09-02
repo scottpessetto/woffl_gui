@@ -36,6 +36,15 @@ class ResMix:
             Self
         """
 
+        # [LIBRARY change -> upstream PR to kwellis/woffl] PVT-F4: validate the
+        # mixture inputs the way every child class validates its own. A wc
+        # outside [0, 1] produced a NEGATIVE oil volume fraction (wc 1.05 ->
+        # -0.055) and a negative fgor a negative gas mass fraction, silently.
+        if not (0 <= wc <= 1):
+            raise ValueError(f"Watercut {wc} Outside Range of 0 to 1")
+        if fgor < 0:
+            raise ValueError(f"Formation GOR {fgor} scf/stb must be >= 0")
+
         self.wc = wc  # specify a decimal
         self.fgor = fgor
         self.oil = oil
@@ -81,7 +90,14 @@ class ResMix:
         self.press = press
         self.temp = temp
 
-        self.oil = self.oil.condition(press, temp)
+        # [LIBRARY change -> upstream PR to kwellis/woffl] PVT-F5: the oil can
+        # hold no more gas in solution than the stream carries (fgor). Below
+        # that the mass balance already clamped free gas to zero; the oil's
+        # own properties now agree with it. Streams with fgor >= Rs(p) — the
+        # normal saturated case — are bit-identical. The standard-condition
+        # densities in __init__ are deliberately NOT capped: the stock-tank
+        # oil is a property of the oil, not the stream.
+        self.oil = self.oil.condition(press, temp, rs_max=self.fgor)
         self.wat = self.wat.condition(press, temp)
         self.gas = self.gas.condition(press, temp)
 
@@ -315,8 +331,22 @@ class ResMix:
     def cmix(self) -> float:
         """Mixture Speed of Sound
 
-        Return the adiabatic? Speed of Sound in the mixture.
+        Return the homogeneous (Wood 1930) speed of sound in the mixture.
         Requires a pressure and temperature condition to previously be set.
+
+        The gas compressibility is deliberately ISOTHERMAL, not adiabatic. In
+        a bubbly liquid the liquid is a heat bath for the gas: the bubbles are
+        small and the liquid's heat capacity so much larger that the gas
+        compresses at (very nearly) constant temperature over an acoustic
+        cycle, which is Wood's original argument and what Himr (2009) fits.
+        Using the adiabatic 1/(gamma p) would UNDER-state cg by gamma (~1.3)
+        and over-state the mixture sound speed. Do not "fix" this.
+
+        The oil term is ``BlackOil.compress_acoustic`` (liquid-phase, continuous
+        across the bubble point), NOT the material-balance ``compress`` — below
+        Pb that one includes liberated-gas volume and is not an acoustic
+        property (PVT-F1). ``comp_comp`` keeps returning the material-balance
+        tuple for any caller that wants it.
 
         Args:
             None
@@ -325,11 +355,18 @@ class ResMix:
             snd_mix (float): speed of sound in the mixture, ft/s
 
         References:
-            Sound Speed in the Mixture Water-Air D.Himr (2009)
+            - Wood, A.B. (1930) A Textbook of Sound, Bell — two-phase mixture
+            - Sound Speed in the Mixture Water-Air D.Himr (2009)
         """
 
         def _compute() -> float:
-            co, cw, cg = self.comp_comp()  # isothermal compressibility
+            # [LIBRARY change -> upstream PR to kwellis/woffl] PVT-F1: the
+            # oil compressibility in the sound-speed path is the ACOUSTIC one
+            # (Vasquez-Beggs at Rs(p)); the material-balance McCain co below
+            # Pb gave 100-900 ft/s pure-oil sound speeds and a 4x jump at Pb.
+            co = self.oil.compress_acoustic
+            cw = self.wat.compress
+            cg = self.gas.compress  # isothermal compressibility
             yoil, ywat, ygas = self.volm_fract()  # volume fractions
             rho_s = self.rho_mix()
             cs = self._homogenous_mixture(

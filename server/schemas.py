@@ -186,6 +186,9 @@ class PumpInfo(BaseModel):
     throat_ratio: Optional[str] = None
     tubing_od: Optional[float] = None
     date_set: Optional[str] = None  # YYYY-MM-DD
+    # "databricks" = live tracker; "excel_fallback" = the bundled xlsx
+    # snapshot (dated), which the client must badge as possibly stale.
+    source: Optional[Literal["databricks", "excel_fallback"]] = None
 
 
 class PfSeed(BaseModel):
@@ -215,6 +218,13 @@ class WellContext(BaseModel):
     chars: dict[str, Any]  # raw characteristics row (NaN -> null)
     chars_source: Literal["databricks", "csv_fallback"]
     seeds: dict[str, Any]  # partial SimParams field -> value
+    # Measured jet-pump MD (chars JP_MD, else the survey's shallowest crossing
+    # of the seeded TVD), ft. Consumed by the optimizer's WellConfig; NOT a
+    # SimParams field, so it rides beside the seeds rather than inside them.
+    jpump_md: Optional[float] = None
+    # Seeds that the widget bounds altered ("pres: 5200 -> 5000 (...)").
+    # Empty when every seed was inside its bounds. Never silent (SRV-9).
+    clamped: list[str] = []
     as_built_locks: dict[str, bool]  # tubing / casing / jpump_tvd
     prop_locks: dict[str, PropLock]  # form_wc / form_gor / res_pres
     pump: Optional[PumpInfo] = None
@@ -337,13 +347,13 @@ class FutureWellSpec(BaseModel):
 
 
 class OptimizeRunRequest(BaseModel):
-    """Start an optimization run. kind=pad runs one of the S/I/M PadPlants
+    """Start an optimization run. kind=pad runs one of the S/I/M/E PadPlants
     through pad_optimize.run_optimization; kind=cfp runs the anchored-delta
     moves engine over the B/G/C/J CFP pads. Well models hydrate from saved
     fits; `offline` wells are excluded; `future` wells clone their donor."""
 
     kind: Literal["pad", "cfp"]
-    pad: Optional[Literal["S", "I", "M"]] = None  # required when kind=pad
+    pad: Optional[Literal["S", "I", "M", "E"]] = None  # required when kind=pad
     offline: list[str] = []
     future: list[FutureWellSpec] = []
     nozzles: list[str] = ["9", "10", "11", "12", "13", "14", "15"]
@@ -368,6 +378,16 @@ class OptimizeRunRequest(BaseModel):
     # modeled as boosted on-pad at c_pad_pf_psi (the C-Pad treatment). POPs
     # pads separate water on-pad, so they never load the machines: rejected.
     cfp_pads: list[str] = ["B", "G", "C", "J"]
+    # e-pad-run knobs. E-Pad's booster is the only plant whose configuration
+    # is NOT a measured tag: no E-Pad SCADA point, no motor nameplate, and no
+    # piping rating came with the vendor curve sheets, so every one of these
+    # is the engineer's to state. Defaults are the Summit workbook's cells
+    # (suction) and I-Pad's operational cap (header). Ignored on other pads.
+    e_pad_build: Literal["SM25000_26STG", "SN35000_18STG"] = "SM25000_26STG"
+    e_pad_suction_psi: float = Field(2800.0, ge=0.0, le=5000.0)
+    e_pad_hz_max: float = Field(60.0, ge=30.0, le=60.0)
+    e_pad_max_header_psi: float = Field(3500.0, ge=1000.0, le=5000.0)
+    e_pad_amp_limit_a: Optional[float] = Field(None, gt=0.0, le=5000.0)
 
     @field_validator("cfp_pads")
     @classmethod
@@ -391,7 +411,7 @@ class OptimizeRunStarted(BaseModel):
 class MatchHealthRequest(BaseModel):
     """Start a match-health scorecard job for one pad's active wells."""
 
-    pad: Literal["S", "I", "M"]
+    pad: Literal["S", "I", "M", "E"]
 
 
 class EventCalibrationRequest(BaseModel):
@@ -493,6 +513,215 @@ class PumpCurveResponse(BaseModel):
     nameplate: PumpCurveNameplate
     station: PumpStationCurve
     pumps: list[PumpMachineCurve]
+
+
+# ---------------------------------------------------------------------------
+# E-Pad booster candidate comparison
+# ---------------------------------------------------------------------------
+
+
+class EPadBoosterRequest(BaseModel):
+    """POST /optimize/e-pad-booster - what each E-Pad booster candidate can
+    deliver at a required differential pressure.
+
+    Pure static physics off the catalog stage curves plus these inputs: no
+    run state, no saved fits, no Databricks. Bounds are the model's honest
+    validity, not UI taste - the stage tables are digitized 60 Hz catalog
+    curves, so `hz_max` cannot exceed 60, and `condition` is a head DERATE so
+    it cannot exceed 1.
+    """
+
+    dp_psid: float = Field(600.0, gt=0.0, le=4000.0)
+    suction_psi: float = Field(2800.0, ge=0.0, le=5000.0)
+    sg: float = Field(1.02, ge=0.90, le=1.30)
+    # Head-only wear derate; 1.00 = as-new (the workbooks' "Condition" cell).
+    condition: float = Field(1.0, gt=0.50, le=1.0)
+    hz_max: float = Field(60.0, ge=30.0, le=60.0)
+    amps_per_bhp: float = Field(0.1435, gt=0.0, le=20.0)
+    # None = report amps, enforce no cap. There is no E-Pad motor nameplate in
+    # the vendor data, so a default limit would be invented.
+    amp_limit_a: Optional[float] = Field(None, gt=0.0, le=5000.0)
+
+
+class EPadTarget(BaseModel):
+    """The duty the report was solved at, echoed back so a chart or a printout
+    is self-describing."""
+
+    dp_psid: float
+    suction_psi: float
+    discharge_psi: float
+    sg: float
+    condition: float
+    hz_max: float
+    amps_per_bhp: float
+    amp_limit_a: Optional[float]
+    # E-Pad's power-fluid header setpoint (psig) - the discharge the screen's
+    # one-click duty button targets.
+    header_default_psi: float
+
+
+class EPadNotes(BaseModel):
+    """Provenance and caveats out of the meta json, so the screen states the
+    model's limits instead of the engineer having to know them."""
+
+    amps: str
+    condition: str
+    housing_pressure: str
+    not_enforced: list[str]
+    stage_table: str
+
+
+class EPadPumpNameplate(BaseModel):
+    """Candidate identity - what an engineer reads before trusting the curve.
+    `amp_limit_a` / `amps_per_bhp` echo the request, not vendor data: neither
+    is published for E-Pad."""
+
+    key: str
+    label: str
+    installed: bool
+    model: str
+    stage_type: str
+    series_housing: str
+    arrangement: str
+    n_stages: int
+    motor: str
+    amp_limit_a: Optional[float]
+    amps_per_bhp: float
+    # Catalog reference only - NOT enforced; see EPadNotes.housing_pressure.
+    shaft_limit_hp: float
+    housing_pressure_limit_psi: float
+    source: str
+
+
+class EPadPoint(BaseModel):
+    """One flow on the constant-dP locus: the speed that holds the required dP
+    there and everything downstream of it.
+
+    `hz` and every field after it are null when no speed makes the dP at this
+    flow (past the capability wall, or off the digitized stage table).
+    `ror_lo` / `ror_hi` are the recommended range AT THAT SPEED, which is why
+    they move point to point.
+    """
+
+    q_bpd: float
+    hz: Optional[float]
+    dp_psid: Optional[float]
+    discharge_psi: Optional[float]
+    head_ft: Optional[float]
+    bhp: Optional[float]
+    amps: Optional[float]
+    amp_headroom_a: Optional[float]
+    eff_pct: Optional[float]
+    pct_of_bep: Optional[float]
+    ror_lo: Optional[float]
+    ror_hi: Optional[float]
+    in_ror: bool
+    amp_ok: bool
+    ok: bool
+    blocked_by: Optional[str]
+
+
+class EPadSpeedCurve(BaseModel):
+    """One iso-speed line. `points` are
+    [flow_bpd, dp_psid, bhp, amps, eff_pct], stopping where the digitized
+    stage table does at that speed."""
+
+    hz: float
+    label: str
+    points: list[list[float]]
+
+
+class EPadSpeedRow(BaseModel):
+    """One rung of the fixed-speed ladder: pin the drive at `hz` and this is
+    the flow that comes out at the required dP, checked against the
+    recommended range AT THAT SPEED.
+
+    This is the view that answers "I am going to run it at 55 Hz, what do I
+    get?", and the one that shows WHY the deliverable rate caps where it does:
+    past the duty speed the crossing flow runs off the right end of the range
+    faster than the range grows with speed. `q_bpd` and everything downstream
+    are null where that speed's whole curve sits below the required dP.
+    """
+
+    hz: float
+    # True on the solved duty speed - the row that explains the headline.
+    is_duty: bool
+    q_bpd: Optional[float]
+    discharge_psi: Optional[float]
+    ror_lo: float
+    ror_hi: float
+    pct_of_ror_hi: Optional[float]
+    in_ror: bool
+    bhp: Optional[float]
+    amps: Optional[float]
+    amp_ok: bool
+    eff_pct: Optional[float]
+    blocked_by: Optional[str]
+
+
+class EPadThrottled(BaseModel):
+    """The other operating policy: run flat out at the speed cap and choke the
+    surplus pressure off.
+
+    Holding the dP exactly means slowing the drive, and the recommended range
+    shrinks with the speed - that is what caps `EPadCandidate.duty`. Running
+    at `hz_max` passes more water for more shaft power plus a throttling loss.
+    Null when the speed cap cannot make the required dP in range at all.
+    """
+
+    q_bpd: float
+    hz: float
+    dp_made_psid: float
+    discharge_psi: float
+    throttle_psid: float
+    # Hydraulic HP burned across the choke: BPD x psi / 58,776.
+    throttle_hhp: float
+    bhp: float
+    amps: float
+    amp_headroom_a: Optional[float]
+    eff_pct: float
+    in_ror: bool
+
+
+class EPadCandidate(BaseModel):
+    """One candidate build's answer at the required dP.
+
+    `duty` is the MAX-flow feasible point reached by SLOWING the drive until
+    it makes exactly that dP; `min_duty` is the bottom of the same window (the
+    turndown); `throttled` is the run-flat-out-and-choke alternative. `duty`
+    and `min_duty` are null, with `infeasible_reason` set, when no flow
+    satisfies every constraint. `machine` is the 60 Hz vendor sheet in
+    PumpMachineCurve shape so the existing machine-chart renderer draws it
+    unchanged.
+    """
+
+    nameplate: EPadPumpNameplate
+    bep_60hz: float
+    ror_60hz: list[float]
+    max_valid_flow_60hz: float
+    # Hydraulic capability wall (BPD): past this the build cannot make the dP
+    # at hz_max, range and amps aside. The locus and charts end here.
+    q_ceiling: float
+    duty: Optional[EPadPoint]
+    min_duty: Optional[EPadPoint]
+    throttled: Optional[EPadThrottled]
+    window: Optional[list[float]]
+    limited_by: str
+    infeasible_reason: Optional[str]
+    locus: list[EPadPoint]
+    curves: list[EPadSpeedCurve]
+    speed_table: list[EPadSpeedRow]
+    machine: PumpMachineCurve
+
+
+class EPadBoosterResponse(BaseModel):
+    """POST /optimize/e-pad-booster - both candidates at one required dP,
+    installed build first."""
+
+    pad: str
+    target: EPadTarget
+    notes: EPadNotes
+    candidates: list[EPadCandidate]
 
 
 class CalibrateRequest(BaseModel):

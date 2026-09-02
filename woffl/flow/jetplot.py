@@ -17,21 +17,80 @@ Returns:
         grad_ray (np array): Gradient of tde/dp Array, ft2/(s2*psig)
 """
 
+from __future__ import annotations
+
+import importlib
 import os
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
-import matplotlib as mpl
-import matplotlib.pyplot as plt
 import numpy as np
-import scipy.optimize as opt
-from matplotlib.axes import Axes
-from matplotlib.figure import Figure
 
-from woffl.flow import jetflow as jf  # legacy
+if TYPE_CHECKING:  # annotations only - never imported at runtime
+    from matplotlib.axes import Axes
+    from matplotlib.figure import Figure
+
+
+class _LazyModule:
+    """Import-on-first-attribute proxy for a heavy, plot-only dependency.
+
+    [LIBRARY change -> upstream PR to kwellis/woffl] This module sits on the
+    solver's hot import chain (jetflow -> jetplot), yet matplotlib and
+    scipy.optimize are used ONLY by the plotting / annotation helpers. At
+    module scope they cost ~0.5 s per interpreter - paid by every process-
+    pool worker spawn on the 2-vCPU tier (review 2026-09-01, SOLV-P1).
+    Attribute access is unchanged (``plt.subplots``, ``mpl.colormaps``,
+    ``opt.curve_fit``); the import simply happens the first time a plot is
+    drawn. Guarded by tests/test_batchpump_lazy_imports.py.
+    """
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self._mod: Any = None
+
+    def __getattr__(self, attr: str) -> Any:
+        if self._mod is None:
+            self._mod = importlib.import_module(self._name)
+        return getattr(self._mod, attr)
+
+
+mpl = _LazyModule("matplotlib")
+plt = _LazyModule("matplotlib.pyplot")
+opt = _LazyModule("scipy.optimize")
+
+from woffl.flow import jetflow as jf  # legacy  # noqa: E402
 from woffl.flow import singlephase as sp
 from woffl.flow.errors import ConvergenceError, ThroatEntryNoSolution
 from woffl.flow.inflow import InFlow
 from woffl.pvt.resmix import ResMix
+
+# psig -> lbf/ft2 x g_c, the x-axis scale of the expansion-energy trapezoid
+# (kept as the same ``144 * 32.174`` expression jf.incremental_ee evaluates so
+# the inline two-point trapezoid in JetBook.append is bit-identical to it)
+_EE_PRS_SCALE = 144 * 32.174
+
+# FLOW-5: how far above zero the subsonic branch's tde minimum may sit (as a
+# fraction of the entry kinetic energy at psu) and still be accepted as the
+# choke point. Converged choke floors clamp at <= 0.5 % (E-41 sweep, marginal
+# and thin-band fixtures, 2026-09-02); a pump that cannot be fed at all sits at
+# 26-98 %. Small enough to reject every fabricated state, 4x above the worst
+# legitimate one.
+_CLAMP_TOL_FRAC = 0.02
+
+
+class ThroatEntryChoked(ThroatEntryNoSolution):
+    """The throat entry chokes before its energy balance closes at this suction.
+
+    [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-5. Raised by
+    ``JetBook._dete_zero`` when the subsonic branch never reaches zero total
+    differential energy and its minimum is more than ``_CLAMP_TOL_FRAC`` of
+    the entry kinetic energy - i.e. the suction is BELOW the choke floor by
+    more than the sweep's tolerance. It is a ``ThroatEntryNoSolution`` (and so
+    a ``ValueError`` / ``IndexError``) for every existing handler, but the
+    suction-pressure walk in ``solopump._residual_walk_inward`` treats it as
+    "step inward" rather than re-raising, because the remedy is a higher
+    suction, not a GOR change. (Defined here rather than in ``errors.py`` so
+    the patch stays inside the module that raises it.)
+    """
 
 
 class JetBook:
@@ -48,20 +107,63 @@ class JetBook:
             snd (float): Speed of Sound, ft/s
             kde (float): Kinetic Differential Energy, ft2/s2
         """
-        self.prs_ray = np.array([prs])
-        self.vel_ray = np.array([vel])
-        self.rho_ray = np.array([rho])
-        self.snd_ray = np.array([snd])
+        # [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-7: the sweep
+        # columns are plain Python LISTS while the book is being built; the
+        # ``*_ray`` numpy views are materialized lazily (and cached until the
+        # next append) by the properties below. The old ``append`` did eight
+        # ``np.append`` copies plus a scipy ``trapezoid`` on a two-element
+        # slice per step - ~37 % of every solve (review 2026-09-01). Every
+        # stored number is bit-identical: ``np.array(list)`` reproduces the
+        # exact float64 values ``np.append`` accumulated.
+        self.prs = [prs]
+        self.vel = [vel]
+        self.rho = [rho]
+        self.snd = [snd]
 
-        self.kde_ray = np.array([kde])
+        self.kde = [kde]
 
         ede = 0
         tde = kde + ede
 
-        self.ede_ray = np.array([ede])  # expansion energy array
-        self.tde_ray = np.array([tde])  # total differential energy
-        self.mach_ray = np.array([vel / snd])  # mach number
-        self.grad_ray = np.array([np.nan])  # gradient of tde vs prs
+        self.ede = [ede]  # expansion energy list
+        self.tde = [tde]  # total differential energy
+        self.mach = [vel / snd]  # mach number
+        self.grad = [np.nan]  # gradient of tde vs prs
+        self._arrays: dict[str, np.ndarray] = {}
+
+    # ---- numpy views (materialized on demand, cached until the next append) --
+    # Plot / analysis code keeps reading ``book.prs_ray`` etc.; the hot solver
+    # loops read the ``prs`` / ``tde`` / ``mach`` lists directly.
+    def _ray(self, name: str) -> np.ndarray:
+        arr = self._arrays.get(name)
+        if arr is None:
+            arr = np.array(getattr(self, name))
+            self._arrays[name] = arr
+        return arr
+
+    def _set_ray(self, name: str, value: Any) -> None:
+        arr = np.asarray(value)
+        setattr(self, name, list(arr))
+        self._arrays[name] = arr
+
+    prs_ray = property(lambda self: self._ray("prs"), lambda self, v: self._set_ray("prs", v))
+    vel_ray = property(lambda self: self._ray("vel"), lambda self, v: self._set_ray("vel", v))
+    rho_ray = property(lambda self: self._ray("rho"), lambda self, v: self._set_ray("rho", v))
+    snd_ray = property(lambda self: self._ray("snd"), lambda self, v: self._set_ray("snd", v))
+    kde_ray = property(lambda self: self._ray("kde"), lambda self, v: self._set_ray("kde", v))
+    ede_ray = property(lambda self: self._ray("ede"), lambda self, v: self._set_ray("ede", v))
+    tde_ray = property(lambda self: self._ray("tde"), lambda self, v: self._set_ray("tde", v))
+    mach_ray = property(lambda self: self._ray("mach"), lambda self, v: self._set_ray("mach", v))
+    grad_ray = property(lambda self: self._ray("grad"), lambda self, v: self._set_ray("grad", v))
+
+    def copy(self) -> "JetBook":
+        """Independent copy of the book (the sweep columns are copied, so
+        appending to the copy never touches the original)."""
+        new = JetBook.__new__(JetBook)
+        for name in ("prs", "vel", "rho", "snd", "kde", "ede", "tde", "mach", "grad"):
+            setattr(new, name, list(getattr(self, name)))
+        new._arrays = {}
+        return new
 
     # https://docs.python.org/3/library/string.html#formatspec
     def __repr__(self):
@@ -91,23 +193,34 @@ class JetBook:
             snd (float): Speed of Sound, ft/s
             kde (float): Kinetic Differential Energy, ft2/s2
         """
-        self.prs_ray = np.append(self.prs_ray, prs)
-        self.vel_ray = np.append(self.vel_ray, vel)
-        self.rho_ray = np.append(self.rho_ray, rho)
-        self.snd_ray = np.append(self.snd_ray, snd)
-        self.kde_ray = np.append(self.kde_ray, kde)
+        # [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-7: list appends
+        # + the two-point trapezoid written out inline, in EXACTLY the operation
+        # order scipy.integrate.trapezoid uses for a 2-element slice
+        # (``d * (y[1:] + y[:-1]) / 2.0`` with ``x = (144 * 32.174) * prs``), so
+        # every ede/tde/grad value is bit-identical to jf.incremental_ee's.
+        # Guarded by tests/test_jetplot_book.py.
+        prs_prev = self.prs[-1]
+        rho_prev = self.rho[-1]
+        tde_prev = self.tde[-1]
 
-        ede = self.ede_ray[-1] + jf.incremental_ee(self.prs_ray[-2:], self.rho_ray[-2:])
+        self.prs.append(prs)
+        self.vel.append(vel)
+        self.rho.append(rho)
+        self.snd.append(snd)
+        self.kde.append(kde)
+
+        d_x = _EE_PRS_SCALE * prs - _EE_PRS_SCALE * prs_prev
+        ee_inc = d_x * ((1 / rho) + (1 / rho_prev)) / 2.0
+        ede = self.ede[-1] + ee_inc
         tde = kde + ede
 
-        self.ede_ray = np.append(self.ede_ray, ede)
-        self.tde_ray = np.append(self.tde_ray, tde)
-        self.mach_ray = np.append(self.mach_ray, vel / snd)  # mach number
+        self.ede.append(ede)
+        self.tde.append(tde)
+        self.mach.append(vel / snd)  # mach number
 
-        grad = (self.tde_ray[-2] - self.tde_ray[-1]) / (
-            self.prs_ray[-2] - self.prs_ray[-1]
-        )
-        self.grad_ray = np.append(self.grad_ray, grad)  # gradient of tde vs prs
+        grad = (tde_prev - tde) / (prs_prev - prs)
+        self.grad.append(grad)  # gradient of tde vs prs
+        self._arrays.clear()
 
     def plot_te(self, pte_min=200, fig_path: str | os.PathLike | None = None) -> None:
         """Throat Entry Plots
@@ -275,6 +388,21 @@ class JetBook:
         # np.interp clamps to the lowest-tde point — the near-sonic limit. That
         # clamp is intentional: sonic evaluations at psu_min land exactly on
         # this boundary, where the zero crossing sits just past Mach 1.
+        #
+        # [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-5: the clamp is
+        # only right when that minimum IS (nearly) zero. Accepting it at any
+        # positive value fabricated a throat-entry state for pumps that cannot
+        # be fed at the given suction (a 9X on a 2,000 BOPD / 95 % WC well:
+        # the branch bottoms out at 26 % of kde and the solver reported
+        # "sonic, 30 BOPD"). Bound it; tde_ray[0] is kde at psu (ede = 0).
+        tde_min = tde_masked.min()
+        if tde_min > _CLAMP_TOL_FRAC * tde_ray[0]:
+            raise ThroatEntryChoked(
+                "throat entry chokes before its energy balance closes: the "
+                f"subsonic branch bottoms out at {tde_min:.0f} ft2/s2 "
+                f"({100 * tde_min / tde_ray[0]:.0f}% of the entry kinetic energy), "
+                "suction pressure is below the choke floor"
+            )
 
         tde_flipped = np.flip(tde_ray[mask])
 

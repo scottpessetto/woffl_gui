@@ -17,11 +17,12 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { usePadFitStatus, useWells } from "../api/hooks";
-import type { PadFitWell } from "../api/types";
+import type { PadFitWell, RunPad } from "../api/types";
 import { Card, ErrorNote, Spinner } from "../components/ui";
 import { useOptimizeStore } from "../state/optimize";
 import { useParamsStore } from "../state/params";
 
+import { EPadBoosterPanel } from "./optimize/EPadBoosterPanel";
 import { MatchHealthPanel } from "./optimize/MatchHealthPanel";
 import { usePadOffline, type ShutInfo } from "./optimize/offline";
 import { RunPanel } from "./optimize/RunPanel";
@@ -281,7 +282,7 @@ export default function OptimizePage() {
   const pad = useOptimizeStore((s) => s.pad);
   const setPad = useOptimizeStore((s) => s.setPad);
 
-  const [view, setView] = useState<"board" | "S" | "I" | "M" | "CFP">("board");
+  const [view, setView] = useState<"board" | RunPad | "CFP" | "E-boost">("board");
 
   const pads = useMemo(() => {
     const uniq = new Set((wells.data?.wells ?? []).map((w) => w.pad).filter(Boolean));
@@ -290,13 +291,23 @@ export default function OptimizePage() {
 
   const activePad = pad && pads.includes(pad) ? pad : (pads[0] ?? null);
 
-  const VIEW_TABS: { key: "board" | "S" | "I" | "M" | "CFP"; label: string }[] = [
+  const VIEW_TABS: { key: typeof view; label: string }[] = [
     { key: "board", label: "Pad review" },
     { key: "S", label: "S-Pad" },
     { key: "I", label: "I-Pad" },
     { key: "M", label: "M-Pad" },
+    { key: "E", label: "E-Pad" },
     { key: "CFP", label: "CFP run" },
+    // Pump selection, not a fit-driven run: it needs no readiness board and
+    // no saved fits, so it sits beside the run tabs rather than inside one.
+    { key: "E-boost", label: "E-Pad booster" },
   ];
+
+  // A pad RUN tab (S/I/M/E) drives the run panel plus its readiness board;
+  // the E-Pad booster tab is a pump-selection screen with neither.
+  const padRun =
+    view === "S" || view === "I" || view === "M" || view === "E" ? view : null;
+  const isRun = padRun !== null || view === "CFP";
 
   return (
     <div
@@ -306,7 +317,7 @@ export default function OptimizePage() {
         "space-y-4",
         // Run tabs run edge to edge - curves beside the readiness board need
         // every pixel. The review board is one table and reads better narrow.
-        view === "board" && "mx-auto max-w-6xl",
+        (view === "board" || view === "E-boost") && "mx-auto max-w-6xl",
       )}
     >
       <div>
@@ -333,30 +344,32 @@ export default function OptimizePage() {
         ))}
       </div>
 
-      {view !== "board" && (
+      {isRun && (
         <RunPanel
-          kind={view === "CFP" ? "cfp" : "pad"}
-          pad={view === "CFP" ? null : view}
+          kind={padRun === null ? "cfp" : "pad"}
+          pad={padRun}
           // Pad run tabs carry their own readiness board, scoped to the pad -
           // the same table the Pad review tab shows, minus the pad selector.
           aside={
-            view === "CFP" ? undefined : (
+            padRun === null ? undefined : (
               <div className="space-y-2">
                 <h2 className="text-sm font-semibold tracking-tight text-slate-700">
-                  {view}-Pad readiness
+                  {padRun}-Pad readiness
                 </h2>
-                <PadReadiness pad={view} />
+                <PadReadiness pad={padRun} />
               </div>
             )
           }
         />
       )}
 
-      {view !== "board" && view !== "CFP" && (
+      {padRun !== null && (
         // Sibling section below the run panel: the per-well model-vs-field
         // scorecard for the pad this tab runs. CFP has no single pad plant.
-        <MatchHealthPanel pad={view} />
+        <MatchHealthPanel pad={padRun} />
       )}
+
+      {view === "E-boost" && <EPadBoosterPanel />}
 
       {view === "board" && (
         <>

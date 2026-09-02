@@ -150,7 +150,11 @@ def test_volm_fractions() -> None:
 
 
 def test_mixture_density() -> None:
-    np.testing.assert_allclose(hymix["rho_mix"], pymix["rho_mix"], rtol=0.04)
+    # rtol 0.04 -> 0.05 on 2026-09-02 (PVT-F3, z-factor cubic -> DAK): only
+    # the 2,500 psig end point moved, -3.68 % -> -3.92 % vs Peng-Robinson
+    # (DAK z 0.818 vs cubic 0.811 vs PR 0.798 for the 0.55 SG gas at 80 degF).
+    # DAK is closer to PR over the sweep as a whole; see test_pvt_formgas.
+    np.testing.assert_allclose(hymix["rho_mix"], pymix["rho_mix"], rtol=0.05)
 
 
 def _dry_mix(wc: float) -> ResMix:
@@ -209,6 +213,139 @@ def test_water_mode_anchors_on_water() -> None:
     # doubling the water rate doubles the insitu water flow (linear anchor)
     _qoil2, qwat2, _qgas2 = mix.insitu_volm_flow(qoil_std=1000)
     assert abs(qwat2 - 2 * qwat) < 1e-9
+
+
+def _schrader_mix(wc: float, fgor: float) -> ResMix:
+    return ResMix(
+        wc=wc,
+        fgor=fgor,
+        oil=BlackOil.schrader(),  # Pb = 1750 psig
+        wat=FormWater.schrader(),
+        gas=FormGas.schrader(),
+    )
+
+
+@pytest.mark.parametrize("wc, fgor", [(0.8, 400), (0.3, 300)])
+def test_cmix_continuous_across_bubble_point(wc: float, fgor: float) -> None:
+    """PVT-F1 tripwire (docs/upstream_sync.md #17, upstream PR to kwellis/woffl).
+
+    cmix (Wood's equation) must use the ACOUSTIC oil compressibility. With the
+    material-balance ``compress`` the mixture sound speed was 1,244 ft/s at
+    1,749 psig vs 1,657 at 1,751 (WC 0.8 / GOR 400, +33 % across one psi of
+    the bubble point) and 895 vs 1,597 (WC 0.3 / GOR 300, +78 %). Goes red if
+    cmix reverts to ``comp_comp`` / ``oil.compress``.
+    """
+    mix = _schrader_mix(wc, fgor)
+    below = mix.condition(1749, 100).cmix()
+    above = mix.condition(1751, 100).cmix()
+    assert below == pytest.approx(above, rel=0.01), (below, above)
+    assert below > 1400  # the material-balance path sat at 895-1,244 here
+
+
+def test_cmix_above_bubble_point_unchanged_by_acoustic_patch() -> None:
+    """Above Pb the acoustic co equals the legacy Vasquez-Beggs ``compress``,
+    so cmix there is bit-identical to Wood's equation evaluated with the
+    material-balance ``comp_comp`` tuple (the pre-patch formula)."""
+    import math
+
+    mix = _schrader_mix(0.8, 400)
+    for press in (2000, 2500):
+        mix.condition(press, 100)
+        co, cw, cg = mix.comp_comp()  # material-balance tuple, unchanged API
+        yoil, ywat, ygas = mix.volm_fract()
+        cs = ResMix._homogenous_mixture(yoil, ywat, ygas, co, cw, cg)
+        legacy = math.sqrt(32.174 * 144 * (1 / cs) / mix.rho_mix())
+        assert mix.cmix() == legacy
+
+
+def test_cmix_does_not_raise_for_heavy_oil_at_low_temp() -> None:
+    """PVT-F2 tripwire: an oil whose Vasquez-Beggs co is negative (14 API,
+    60 degF) with no free gas used to put a negative bulk modulus into
+    cmix's sqrt (untyped ValueError). With the floor it returns a finite,
+    positive sound speed."""
+    mix = ResMix(
+        wc=0.0,
+        fgor=10,  # < Rs(p): no free gas, so the oil term is the whole modulus
+        oil=BlackOil(oil_api=14, bubblepoint=1500, gas_sg=0.65),
+        wat=FormWater.schrader(),
+        gas=FormGas.schrader(),
+    )
+    import math
+
+    c = mix.condition(2000, 60).cmix()
+    assert math.isfinite(c) and c > 0
+
+
+@pytest.mark.parametrize("wc", [-0.01, 1.05, 2.0])
+def test_watercut_out_of_range_raises(wc: float) -> None:
+    """PVT-F4 tripwire (docs/upstream_sync.md #20, upstream PR to kwellis/woffl).
+
+    ResMix silently accepted wc outside [0, 1] (wc 1.05 -> oil volume fraction
+    -0.055) while every child class validates its own inputs. WellConfig, CSV
+    stores and prop_hist.form_wc reach this constructor unguarded."""
+    with pytest.raises(ValueError, match="[Ww]atercut"):
+        _schrader_mix(wc, 400)
+
+
+@pytest.mark.parametrize("fgor", [-1, -500.0])
+def test_negative_fgor_raises(fgor: float) -> None:
+    with pytest.raises(ValueError, match="GOR"):
+        _schrader_mix(0.5, fgor)
+
+
+def test_watercut_and_fgor_boundaries_accepted() -> None:
+    """The guard is inclusive: 0 and 1 water cut and 0 GOR are legitimate
+    (dewatering / dead oil) and must still construct."""
+    _schrader_mix(0.0, 0)
+    _schrader_mix(1.0, 0)
+    _schrader_mix(0.5, 0.0)
+
+
+def test_undersaturated_stream_oil_carries_only_fgor() -> None:
+    """PVT-F5 tripwire (docs/upstream_sync.md #21, upstream PR to kwellis/woffl).
+
+    Schrader at fgor 150 / 1,400 psig / 100 degF: Rs(p) is ~198 scf/stb, so
+    the mass balance clamps free gas to zero — but the oil used to be
+    evaluated at Rs(p), carrying 48 scf/stb of gas the stream does not have
+    (-0.4 lbm/ft3 density, -18 % viscosity). The oil in the mixture must now
+    match the same oil evaluated at Rs = fgor exactly, and the mass fractions
+    must still close.
+    """
+    mix = _schrader_mix(0.5, 150).condition(1400, 100)
+    oil = mix.oil
+    assert BlackOil.solubility_kartoatmodjo(1400, 100, 22, 0.65) > 150
+    assert oil.gas_solubility() == 150
+
+    bo_ref = BlackOil.fvf_kartoatmodjo_below(100, 22, 0.65, 150)
+    rho_ref = BlackOil.live_oil_density(22, 0.65, 150, bo_ref)
+    uod = BlackOil.viscosity_dead_kartoatmodjo(100, 22)
+    visc_ref = BlackOil.viscosity_live_kartoatmodjo_below(uod, 150)
+    assert oil.density == rho_ref
+    assert oil.viscosity == visc_ref
+
+    xoil, xwat, xgas = mix.mass_fract()
+    assert xgas == 0.0
+    assert xoil + xwat + xgas == pytest.approx(1.0, abs=1e-12)
+    assert all(0 <= x <= 1 for x in (xoil, xwat, xgas))
+
+
+def test_saturated_stream_oil_is_bit_identical() -> None:
+    """fgor >= Rs(p) (the usual case) must not move: the mixture's oil equals a
+    standalone BlackOil at the same condition."""
+    mix = _schrader_mix(0.5, 600).condition(1400, 100)
+    solo = BlackOil.schrader().condition(1400, 100)
+    assert mix.oil.gas_solubility() == solo.gas_solubility()
+    assert mix.oil.density == solo.density
+    assert mix.oil.viscosity == solo.viscosity
+
+
+def test_standalone_blackoil_condition_unchanged() -> None:
+    """The child API is intact: condition() without rs_max caps nothing, and a
+    later plain condition() call drops a cap set earlier."""
+    oil = BlackOil.schrader()
+    rs_free = oil.condition(1400, 100).gas_solubility()
+    assert oil.condition(1400, 100, rs_max=150).gas_solubility() == 150
+    assert oil.condition(1400, 100).gas_solubility() == rs_free
 
 
 if __name__ == "__main__":

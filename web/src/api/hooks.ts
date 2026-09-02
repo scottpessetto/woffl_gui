@@ -9,6 +9,9 @@ import type {
   CombineRequest,
   CombineStarted,
   DepthLookupResponse,
+  EPadBoosterRequest,
+  EPadBoosterResponse,
+  EPadBuild,
   EquivalentsResponse,
   EventCalibrationRequest,
   IprFitRequest,
@@ -77,9 +80,17 @@ export const useWells = () =>
     staleTime: HOUR_1,
   });
 
+/**
+ * The well's seeding context. Keyed on the WELL ONLY: the lookback window
+ * and cap are read at first fetch and deliberately not part of the key -
+ * `setWindow` keeps `seededFor`, so a window change never re-applies the
+ * context, and re-fetching the heaviest per-well endpoint just to discard
+ * the result was pure waste (review 2026-09-01, WEB-6). The tests query
+ * and the IPR fit are what a window change refreshes.
+ */
 export const useWellContext = (well: string, months: number, cap: number) =>
   useQuery({
-    queryKey: ["well-context", well, months, cap],
+    queryKey: ["well-context", well],
     queryFn: ({ signal }) =>
       get<WellContext>(
         `/wells/${encodeURIComponent(well)}/context?months=${months}&cap=${cap}`,
@@ -420,19 +431,50 @@ export const useOptimizeJob = (jobId: string | null) =>
     retry: false,
   });
 
-/** Booster-pump curves for one pad's plant, for the S/I/M chart panels.
+/** Booster-pump curves for one pad's plant, for the S/I/M/E chart panels.
  * Pure static physics read off files on disk - nothing invalidates them,
- * hence staleTime Infinity. */
-export const usePumpCurve = (pad: string | null, nPumps: number | null) =>
-  useQuery({
-    queryKey: ["pump-curve", pad, nPumps],
+ * hence staleTime Infinity.
+ *
+ * `ePad` configures the E-Pad booster and is REJECTED (422) on other pads:
+ * none of those four values is a measured E-Pad tag, so the sheet beside a
+ * run form has to show the booster that run will assume. Omit it elsewhere. */
+export const usePumpCurve = (
+  pad: string | null,
+  nPumps: number | null,
+  ePad?: {
+    build: EPadBuild;
+    suctionPsi: number;
+    hzMax: number;
+    maxHeaderPsi: number;
+  },
+) => {
+  const knobs =
+    pad === "E" && ePad !== undefined
+      ? `&build=${ePad.build}&suction_psi=${ePad.suctionPsi}` +
+        `&hz_max=${ePad.hzMax}&max_header_psi=${ePad.maxHeaderPsi}`
+      : "";
+  return useQuery({
+    queryKey: ["pump-curve", pad, nPumps, knobs],
     queryFn: ({ signal }) =>
       get<PumpCurveResponse>(
-        `/optimize/pump-curve?pad=${pad}${nPumps !== null ? `&n_pumps=${nPumps}` : ""}`,
+        `/optimize/pump-curve?pad=${pad}${nPumps !== null ? `&n_pumps=${nPumps}` : ""}${knobs}`,
         signal,
       ),
     enabled: pad !== null,
     staleTime: Infinity,
+  });
+};
+
+/** E-Pad booster candidate capability at a required dP. Pure static physics
+ * off the catalog stage curves plus the request scalars - nothing behind it
+ * ever changes, so hold the result forever and keep the previous answer on
+ * screen while a slider drags (the panel debounces the request itself). */
+export const useEPadBooster = (req: EPadBoosterRequest) =>
+  useQuery({
+    queryKey: ["e-pad-booster", stableStringify(req)],
+    queryFn: () => post<EPadBoosterResponse>("/optimize/e-pad-booster", req),
+    staleTime: Infinity,
+    placeholderData: keepPreviousData,
   });
 
 // ---------------------------------------------------------------------------
@@ -652,6 +694,9 @@ export const useToolJob = (jobId: string | null) =>
     enabled: Boolean(jobId),
     refetchInterval: (q) =>
       q.state.data && q.state.data.status !== "running" ? false : 1500,
+    // Fleet-wide tool jobs run for minutes; the monitor must keep polling
+    // when the engineer alt-tabs (web/README.md contract; review WEB-7).
+    refetchIntervalInBackground: true,
     staleTime: 0,
     retry: false,
   });

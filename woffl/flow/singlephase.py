@@ -165,6 +165,13 @@ def serghide(reynolds: float, rel_ruff: float) -> float:
     return ff
 
 
+# Reynolds-number limits of the laminar / transition / turbulent friction
+# regimes (FLOW-12). Laminar holds to ~2300 in round pipe; fully turbulent
+# correlations are trusted from 4000 up.
+RE_LAMINAR = 2300.0
+RE_TURBULENT = 4000.0
+
+
 def ffactor_darcy(reynolds: float, rel_ruff: float) -> float:
     """Friction Factor Darcy Weisbach for Piping
 
@@ -187,10 +194,20 @@ def ffactor_darcy(reynolds: float, rel_ruff: float) -> float:
     if reynolds <= 0:
         return 0.0
 
-    # laminar / transistional flow
-    if reynolds < 4000:
+    # [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-12 (review
+    # 2026-09-01): the laminar law used to run all the way to Re 4000 and
+    # then step to Serghide (f 0.016 -> 0.041, a 2.5x jump in friction at one
+    # Reynolds number). Laminar flow ends near Re 2300; between 2300 and 4000
+    # the factor is blended linearly from 64/2300 to Serghide at 4000, so ff
+    # is continuous at both ends. Re < RE_LAMINAR and Re >= RE_TURBULENT are
+    # bit-identical to before.
+    if reynolds < RE_LAMINAR:
         ff = 64 / reynolds
-
+    elif reynolds < RE_TURBULENT:
+        ff_lam = 64 / RE_LAMINAR
+        ff_turb = serghide(RE_TURBULENT, rel_ruff)
+        frac = (reynolds - RE_LAMINAR) / (RE_TURBULENT - RE_LAMINAR)
+        ff = ff_lam + frac * (ff_turb - ff_lam)
     else:
         ff = serghide(reynolds, rel_ruff)
     return ff

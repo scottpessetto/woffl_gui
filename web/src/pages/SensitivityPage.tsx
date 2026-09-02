@@ -34,6 +34,7 @@ import { useDebounced } from "../lib/useDebounced";
 import { effectiveParams, useParamsStore } from "../state/params";
 import { DEFAULT_VIEW, NO_BOUNDS, useSensitivityStore } from "../state/sensitivity";
 import { withBound } from "./sensitivity/bounds";
+import { testKey } from "./solver/selection";
 import { CombinePanel } from "./sensitivity/CombinePanel";
 import { DetailSweep } from "./sensitivity/DetailSweep";
 import { KnobTable } from "./sensitivity/KnobTable";
@@ -90,11 +91,21 @@ export default function SensitivityPage() {
   const sentBounds = settled.well === well ? settled.map : NO_BOUNDS;
 
   const testsQ = useWellTests(well, months, cap);
+  // The Solver's comparison test when it has published one for this well
+  // (the IPR anchor's test, or the engineer's explicit pick), else the most
+  // recent test. Scoring "Match Sensitivities" against a different test than
+  // the one on the Solver page was a silent mismatch (review WEB-15).
+  const compareKey = useSensitivityStore((s) => s.compareKey[well] ?? null);
   const latestTest = useMemo<WellTestRow | null>(() => {
     const rows = testsQ.data?.tests ?? [];
     if (rows.length === 0) return null;
+    if (compareKey !== null) {
+      const picked = rows.find((t) => testKey(t) === compareKey);
+      if (picked) return picked;
+    }
     return [...rows].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))[0];
-  }, [testsQ.data]);
+  }, [testsQ.data, compareKey]);
+  const targetIsSolverPick = compareKey !== null && latestTest !== null && testKey(latestTest) === compareKey;
 
   const targets = useMemo(
     () => ({
@@ -195,7 +206,8 @@ export default function SensitivityPage() {
         </div>
         {latestTest !== null && (
           <p className="text-xs text-slate-500">
-            Test reference: {fmtDate(latestTest.date)}
+            Test reference: {fmtDate(latestTest.date)}{" "}
+            {targetIsSolverPick ? "(the Solver's comparison test)" : "(most recent test)"}
             {target === null ? ` (no measured ${spec.label.toLowerCase()})` : ""}
           </p>
         )}

@@ -192,6 +192,67 @@ def _preset_well_profile(field_model: Optional[str], jpump_tvd: Optional[float])
 # maxsize mirrors the Streamlit site: keyed on (well, jpump_tvd, field_model),
 # a ~130-well fleet needs headroom for several TVD variants per well and the
 # Nelder-Mead profile fit costs 12-412 ms per miss.
+# A measured pump MD counts as "at" the requested TVD when the survey's TVD at
+# that MD is within this many feet of it. Chars JP_TVD is itself interpolated
+# from JP_MD along the same survey, so the normal case matches to well under a
+# foot; a sidebar TVD override lands outside and falls back to the crossing.
+_JP_MD_MATCH_FT = 5.0
+
+
+def _chars_jp_md(well: str) -> Optional[float]:
+    """The well's measured pump MD (chars ``JP_MD``), or None on any failure."""
+    try:
+        df, _source = datasources.well_chars_safe()
+    except Exception:  # noqa: BLE001 - chars unavailable is a normal fallback
+        return None
+    if "JP_MD" not in df.columns:
+        return None
+    rows = df[df["Well"] == well]
+    if rows.empty:
+        return None
+    val = rows.iloc[0].get("JP_MD")
+    try:
+        num = float(val)
+    except (TypeError, ValueError):
+        return None
+    return num if np.isfinite(num) and num > 0 else None
+
+
+def resolve_jetpump_md(
+    well: Optional[str], jpump_tvd: float, md_list, vd_list
+) -> Optional[float]:
+    """Measured depth to place the jet pump on a survey (review 2026-09-01, #1).
+
+    Truth first: when the chars frame carries the MEASURED ``JP_MD`` and the
+    survey's TVD there agrees with the requested ``jpump_tvd`` (the normal
+    case - chars JP_TVD was interpolated from that very MD), the measured MD is
+    used verbatim. Otherwise (a sidebar TVD override, or no chars MD) the
+    shallowest survey crossing of ``jpump_tvd`` is used. Never ``np.interp``
+    over the full survey - see ``depth_interp.first_crossing_md``.
+
+    Args:
+        well: GUI well name, or None for Custom.
+        jpump_tvd: Requested jetpump true vertical depth, ft.
+        md_list: Survey station measured depths, ft.
+        vd_list: Survey station true vertical depths, ft.
+
+    Returns:
+        Jetpump MD, ft, or None when the survey never reaches ``jpump_tvd``.
+    """
+    from server.services.depth_interp import first_crossing_md
+
+    md = np.asarray(md_list, dtype=float)
+    vd = np.asarray(vd_list, dtype=float)
+    if well is not None:
+        measured = _chars_jp_md(well)
+        if measured is not None and md.size and md[0] <= measured <= md[-1]:
+            order = np.argsort(md, kind="stable")
+            vd_at_measured = float(np.interp(measured, md[order], vd[order]))
+            if abs(vd_at_measured - float(jpump_tvd)) <= _JP_MD_MATCH_FT:
+                return float(measured)
+    return first_crossing_md(md, vd, float(jpump_tvd))
+
+
 # mirrors woffl/gui/utils.py:create_well_profile_from_survey
 @ttl_cache(config.TTL_PROFILES, maxsize=512)
 def build_well_profile(well: Optional[str], jpump_tvd: float, field_model: str) -> WellProfile:
@@ -199,8 +260,10 @@ def build_well_profile(well: Optional[str], jpump_tvd: float, field_model: str) 
 
     Args:
         well: GUI well name, or None for Custom (always uses the preset).
-        jpump_tvd: Jetpump true vertical depth, ft. Converted to MD via
-            np.interp over the survey's TVD->MD columns.
+        jpump_tvd: Jetpump true vertical depth, ft. Converted to MD by
+            ``resolve_jetpump_md`` (measured chars JP_MD when it agrees, else
+            the shallowest survey crossing - never np.interp on a toe-up
+            survey).
         field_model: "Schrader" or "Kuparuk" preset used as fallback.
 
     Returns:
@@ -212,7 +275,12 @@ def build_well_profile(well: Optional[str], jpump_tvd: float, field_model: str) 
             try:
                 md_list = survey_data["meas_depth"].tolist()
                 tvd_list = survey_data["tvd_depth"].tolist()
-                jpump_md = float(np.interp(jpump_tvd, tvd_list, md_list))
+                jpump_md = resolve_jetpump_md(well, jpump_tvd, md_list, tvd_list)
+                if jpump_md is None:
+                    raise ValueError(
+                        f"survey never reaches {jpump_tvd:.0f} ft TVD "
+                        f"(max {max(tvd_list):.0f} ft)"
+                    )
                 return WellProfile(md_list=md_list, vd_list=tvd_list, jetpump_md=jpump_md)
             except Exception as exc:
                 log.warning(

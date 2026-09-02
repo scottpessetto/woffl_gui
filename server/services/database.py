@@ -247,6 +247,7 @@ _PROP_COLUMNS: dict[str, str] = {
     "prop_value": "prop_value",
     "entry_user": "entry_user",
     "entry_datetime": "entry_datetime",
+    "entry_datetime_ak": "entry_datetime_ak",  # labelled Alaska local, e.g. "2026-08-03 11:22 AKDT"
     "comment": "comment_text",
 }
 
@@ -285,6 +286,14 @@ def prop_history_payload(well: str) -> Optional[dict[str, Any]]:
     # Keep the full UTC timestamp: entry_datetime is the ordering key and the
     # client shows wall-clock time, but frames.records date-truncates
     # Timestamps - so pre-format to strings before projection.
+    # Stored UTC, DISPLAYED Alaska (AGENTS/CLAUDE "Timestamps" rule): the
+    # SPA showed the raw UTC string unlabelled, regressing the "19:22 - I
+    # don't know what that means" complaint the Streamlit page had fixed
+    # (review 2026-09-01, WEB-1). format_alaska leaves exact-midnight rows
+    # (the migrated DATE rows) unshifted, per the same rule.
+    from woffl.assembly.prop_hist_client import format_alaska
+
+    d["entry_datetime_ak"] = d["entry_datetime"].map(format_alaska)
     d["entry_datetime"] = d["entry_datetime"].dt.strftime("%Y-%m-%d %H:%M:%S")
     latest = d[is_current].sort_values(["category", "prop_name"]).reset_index(drop=True)
     return {

@@ -85,9 +85,17 @@ const agingColumns = (flagDays: number): Column<DbRow>[] => [
   },
 ];
 
-/** "YYYY-MM-DD HH:MM" from the UTC "YYYY-MM-DD HH:MM:SS" audit stamp. */
-function when(v: unknown): string {
-  return typeof v === "string" ? v.slice(0, 16) : "-";
+/**
+ * Save-history stamp for display. prop_hist stores UTC; the server renders
+ * `entry_datetime_ak` ("2026-08-03 11:22 AKDT") with the zone labelled, so the
+ * engineer never has to guess what "19:22" means. Falls back to the raw UTC
+ * stamp, labelled, for a payload that predates the field.
+ */
+function when(r: DbRow): string {
+  const ak = r.entry_datetime_ak;
+  if (typeof ak === "string" && ak.length > 0) return ak;
+  const v = r.entry_datetime;
+  return typeof v === "string" ? `${v.slice(0, 16)} UTC` : "-";
 }
 
 /** prop_value cells: integers plain, fractional values to 3 dp. */
@@ -103,11 +111,11 @@ const CURRENT_COLUMNS: Column<DbRow>[] = [
   { key: "units", label: "Units", render: (r) => str(r.units) },
   { key: "category", label: "Category", render: (r) => str(r.category) },
   { key: "entry_user", label: "By", render: (r) => str(r.entry_user) },
-  { key: "entry_datetime", label: "When", render: (r) => when(r.entry_datetime) },
+  { key: "entry_datetime", label: "When (AK)", render: (r) => when(r) },
 ];
 
 const HISTORY_COLUMNS: Column<DbRow>[] = [
-  { key: "entry_datetime", label: "When", render: (r) => when(r.entry_datetime) },
+  { key: "entry_datetime", label: "When (AK)", render: (r) => when(r) },
   { key: "prop_name", label: "Prop", render: (r) => str(r.prop_name) },
   { key: "prop_value", label: "Value", align: "right", render: (r) => propValue(r.prop_value) },
   { key: "entry_user", label: "By", render: (r) => str(r.entry_user) },
@@ -165,7 +173,8 @@ export default function WellDatabasePage() {
 
   const historySorted = useMemo(() => {
     const history = propQuery.data?.history ?? [];
-    return [...history].sort((a, b) => when(b.entry_datetime).localeCompare(when(a.entry_datetime)));
+    // Sort on the raw UTC stamp (the ordering key), never the display string.
+    return [...history].sort((a, b) => str(b.entry_datetime).localeCompare(str(a.entry_datetime)));
   }, [propQuery.data]);
 
   if (dbQuery.isError) {
@@ -381,7 +390,7 @@ export default function WellDatabasePage() {
               <DataTable
                 columns={HISTORY_COLUMNS}
                 rows={historySorted}
-                rowKey={(r, i) => `${when(r.entry_datetime)}-${str(r.prop_name)}-${i}`}
+                rowKey={(r, i) => `${str(r.entry_datetime)}-${str(r.prop_name)}-${i}`}
                 emptyLabel="No history rows"
               />
             </div>

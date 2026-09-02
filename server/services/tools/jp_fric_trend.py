@@ -115,26 +115,42 @@ def _calibrate_well(
                 qwf=float(test["WtOilVol"]), pwf=float(test["BHP"]), pres=wc.res_pres
             )
 
-            # Step 1: PF cal
-            pf = calibrate_pf_for_lift(
-                well_name=well_name,
-                target_lift=float(test["lift_wat"]),
-                pwh=pwh, tsu=wc.form_temp,
-                nozzle=nozzle, throat=throat,
-                knz=knz, ken=seed_ken, kth=seed_kth, kdi=seed_kdi,
-                wellbore=wellbore, wellprof=wellprof,
-                ipr_su=inflow, prop_su=res_mix, prop_pf=prop_pf,
-            )
+            # Step 1: the PF pressure to fit at. MEASURED test-day PF first
+            # (vw_pressure_daily join on the test row); only when the day has
+            # no valid reading is it back-solved from ALLOCATED lift water at
+            # seed coefficients. Inferring it when a gauge exists let nozzle
+            # wear show up as a PF error that the friction fit then absorbed
+            # (review 2026-09-01, EVID-F23).
+            pf_meas = test.get("pf_press")
+            pf = None
+            if pf_meas is not None and pd.notna(pf_meas) and float(pf_meas) >= 800.0:
+                ppf_star = float(pf_meas)
+                pf_source = "measured"
+            else:
+                pf = calibrate_pf_for_lift(
+                    well_name=well_name,
+                    target_lift=float(test["lift_wat"]),
+                    pwh=pwh, tsu=wc.form_temp,
+                    nozzle=nozzle, throat=throat,
+                    knz=knz, ken=seed_ken, kth=seed_kth, kdi=seed_kdi,
+                    wellbore=wellbore, wellprof=wellprof,
+                    ipr_su=inflow, prop_su=res_mix, prop_pf=prop_pf,
+                    jpump_direction=wc.jpump_direction,  # EVID-F22
+                )
+                ppf_star = float(pf.ppf_surf)
+                pf_source = "inferred from lift_wat"
             # Step 2: Coef cal at ppf_surf*
             coef = calibrate_friction_coefs(
                 well_name=well_name,
                 target_bhp=float(test["BHP"]),
                 pwh=pwh, tsu=wc.form_temp,
-                ppf_surf=float(pf.ppf_surf),
+                ppf_surf=ppf_star,
                 nozzle=nozzle, throat=throat,
                 knz=knz, ken=seed_ken,
                 wellbore=wellbore, wellprof=wellprof,
                 ipr_su=inflow, prop_su=res_mix, prop_pf=prop_pf,
+                jpump_direction=wc.jpump_direction,
+                seed_kth=seed_kth, seed_kdi=seed_kdi,
             )
             rows.append({
                 "WtDate": test["WtDate"],
@@ -150,11 +166,12 @@ def _calibrate_well(
                 "WHP": pwh,
                 "BHP": float(test["BHP"]),
                 "LiftWat": float(test["lift_wat"]),
-                "PpfSurfFound": pf.ppf_surf,
-                "LiftResidual": pf.lift_residual,
-                "PfConverged": pf.converged,
-                "PfBounded": pf.bounded,
-                "PfSonic": pf.sonic,
+                "PpfSurfFound": ppf_star,
+                "PfSource": pf_source,
+                "LiftResidual": pf.lift_residual if pf is not None else None,
+                "PfConverged": pf.converged if pf is not None else True,
+                "PfBounded": pf.bounded if pf is not None else False,
+                "PfSonic": pf.sonic if pf is not None else None,
                 "Ken": coef.best_ken,
                 "Kth": coef.best_kth,
                 "Kdi": coef.best_kdi,

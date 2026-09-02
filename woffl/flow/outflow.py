@@ -64,8 +64,16 @@ def beggs_diff_press(
     hpat, tran = tp.beggs_flow_pattern(nslh, NFr)
     incline = fm.horz_angle(length, height)
     slh = tp.beggs_holdup_inc(nslh, NFr, NLv, incline, hpat, tran)
-    slh = min(slh, 1)  # liquid holdup never above one (before or after payne?)
+    slh = min(slh, 1)  # liquid holdup never above one
     slh = tp.payne_correction(slh, incline)  # 1979 correction
+    # [LIBRARY change -> upstream PR to kwellis/woffl] Re-floor AFTER Payne.
+    # The canonical Beggs-Brill restriction HL >= lambda_L is applied inside
+    # beggs_holdup_base, but the Payne multiplier (0.924 uphill) ran after it
+    # with no floor, so a gas-free segment (lambda_L = 1) was modeled at
+    # HL = 0.924 - 7.6% of the liquid column replaced by gas that is not
+    # there. Low-GOR wells read 7-20% more oil than the physics gives
+    # (review 2026-09-01, FLOW-1). Guarded by tests/outflow_test.py.
+    slh = min(max(slh, nslh), 1.0)
     rho_slip = tp.density_slip(rho_liq, rho_gas, slh)
     dp_stat = tp.beggs_press_static(rho_slip, height)
 

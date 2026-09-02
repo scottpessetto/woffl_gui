@@ -110,6 +110,7 @@ export function ChartPanel({
     gridCount: number;
   }>({ xRefAxis: null, yAxes: [], gridCount: 1 });
 
+  const zoomKey = JSON.stringify([zoom.xAxisIndex ?? null, zoom.yAxisIndex ?? null]);
   const armedOption = useMemo<EChartsOption | null>(() => {
     if (!option) return null;
     const xs = resolveAxes(zoom.xAxisIndex, axisCount(option.xAxis));
@@ -145,7 +146,14 @@ export function ChartPanel({
     };
 
     return { ...option, dataZoom };
-  }, [option, zoom.xAxisIndex, zoom.yAxisIndex]);
+    // Memo on the zoom axes' VALUE, not their identity. Every caller passes
+    // `zoom={{ xAxisIndex: [0], ... }}` inline, so the arrays are fresh each
+    // render; keyed on identity this memo rebuilt armedOption on every parent
+    // render even when `option` was stable, which re-issued setOption for
+    // the whole chart (teardown + 200 ms animation) per keystroke and lost
+    // the engineer's zoom window (review 2026-09-01, WEB-2).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [option, zoomKey]);
 
   const onReady = useCallback((chart: EChart) => {
     const zr = chart.getZr();

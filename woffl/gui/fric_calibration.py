@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 from scipy.optimize import minimize
@@ -104,13 +104,25 @@ def _solve_at_coefs(
     prop_su,
     prop_pf,
     jpump_direction: str,
+    nozzle_area_factor: float = 1.0,
+    mach_crit: float = 1.0,
 ):
     """Solve once at a given (kth, kdi).
+
+    ``nozzle_area_factor`` / ``mach_crit`` are the well's persisted wear
+    factor and slip closure. The Solver page applies both to every solve, so
+    the calibration must fit against the SAME pump or the coefficients it
+    returns describe a different model than the page then runs (review
+    2026-09-01, SRV-6). Both default to 1.0 = catalog pump, bit-identical.
 
     Returns (modeled_bhp, oil, pf_rate, sonic_status, ok).
     """
     try:
         jp = JetPump(nozzle, throat, knz=knz, ken=ken, kth=kth, kdi=kdi)
+        if nozzle_area_factor and nozzle_area_factor != 1.0:
+            # dnz_eff = dnz_catalog * sqrt(factor) - the pf_calibration wear
+            # mechanics (server factories.apply_nozzle_area_factor).
+            jp.dnz = jp.dnz * float(np.sqrt(nozzle_area_factor))
         psu, sonic, qoil, _fwat, qnz, _mach = jetpump_solver(
             pwh=pwh,
             tsu=tsu,
@@ -122,6 +134,7 @@ def _solve_at_coefs(
             prop_su=prop_su,
             prop_pf=prop_pf,
             jpump_direction=jpump_direction,
+            mach_crit=float(mach_crit or 1.0),
         )
         if psu is None or np.isnan(psu):
             return np.nan, np.nan, np.nan, False, False
@@ -212,6 +225,10 @@ def calibrate_friction_coefs(
     prop_su,
     prop_pf,
     jpump_direction: str = "reverse",
+    seed_kth: float = NEUTRAL_KTH,
+    seed_kdi: float = NEUTRAL_KDI,
+    nozzle_area_factor: float = 1.0,
+    mach_crit: float = 1.0,
 ) -> FricCalibrationResult:
     """Find (ken, kth, kdi) that drives modeled BHP toward ``target_bhp``.
 
@@ -224,6 +241,13 @@ def calibrate_friction_coefs(
         knz: Held fixed at the passed value (typically 0.01).
         ken: Seed value (e.g. from Databricks ``jpfric_entry`` or sidebar).
             The optimizer will vary ken within ``KEN_BOUNDS``.
+        seed_kth / seed_kdi: The CALLER's current throat / diffuser
+            coefficients. Only the sonic "pinned" branch uses them - it
+            promises to hand back the coefficients the caller came in with,
+            and used to return NEUTRAL_KDI (0.30) to a caller whose default
+            is 0.40, which the save path then persisted as a "calibrated"
+            diffuser coefficient for a calibration that was refused
+            (review 2026-09-01, SOLV-F7).
 
     Returns:
         FricCalibrationResult with diagnostics:
@@ -253,6 +277,8 @@ def calibrate_friction_coefs(
         prop_su=prop_su,
         prop_pf=prop_pf,
         jpump_direction=jpump_direction,
+        nozzle_area_factor=nozzle_area_factor,
+        mach_crit=mach_crit,
     )
 
     # Seed with the caller's ken (clamped) so we start near current operating
@@ -306,7 +332,7 @@ def calibrate_friction_coefs(
         # writing calibration-day gauge BHP into the floor). Return the
         # seeds instead of the railed values and flag the run "pinned".
         s_psu, s_oil, s_pf, _s_sonic, s_ok = _solve_at_coefs(
-            NEUTRAL_KTH, NEUTRAL_KDI, ken=seed_ken, **solver_kwargs
+            seed_kth, seed_kdi, ken=seed_ken, **solver_kwargs
         )
         if s_ok:
             gap = s_psu - target_bhp
@@ -316,8 +342,8 @@ def calibrate_friction_coefs(
                 knz=knz,
                 seed_ken=ken,
                 best_ken=seed_ken,
-                best_kth=NEUTRAL_KTH,
-                best_kdi=NEUTRAL_KDI,
+                best_kth=seed_kth,
+                best_kdi=seed_kdi,
                 best_modeled_bhp=s_psu,
                 best_oil=s_oil,
                 best_pf_rate=s_pf,
@@ -325,7 +351,7 @@ def calibrate_friction_coefs(
                 converged=True,
                 iterations=total_iters,
                 match_quality="pinned",
-                bounded=_is_bounded(seed_ken, NEUTRAL_KTH, NEUTRAL_KDI),
+                bounded=_is_bounded(seed_ken, seed_kth, seed_kdi),
                 sonic=True,
                 starts_tried=starts_tried,
                 message=(
@@ -503,6 +529,15 @@ MP_HUBER_DELTA = 1.5
 # BatchPump kdi) with a clean nozzle and the standard sonic cutoff - tried
 # only when the first pass is poor.
 MP_ALT_START = (0.03, 0.30, MP_SEED_KDI, 1.0, 1.0)
+# Progress callback cadence, in cost evaluations (~every 2 s at 24 points).
+MP_PROGRESS_EVERY = 10
+# Names for the up-to-four Nelder-Mead passes, in the order they can run.
+MP_PASS_NAMES = {
+    "seed": "pass 1 - fit from the saved coefficients",
+    "alt": "pass 2 - retry from the library defaults",
+    "escape": "pass 3 - retry with the cavitation floor lifted",
+    "polish": "final pass - polishing the best fit",
+}
 
 
 @dataclass
@@ -640,8 +675,17 @@ def calibrate_multipoint(
     points: list[dict],
     *,
     seed: tuple = None,
+    progress: Optional[Callable[[str], None]] = None,
 ) -> MultipointResult:
     """Fit (ken, kth, kdi, fnz, mach_crit) against many measured points.
+
+    ``progress``, when given, receives a short plain-language status line
+    at the start of every Nelder-Mead pass and every MP_PROGRESS_EVERY
+    cost evaluations within it. A pass is ~100 iterations x ~1.7 solves
+    per iteration x every point, and a full run is up to four passes -
+    24 test points measured at 25-62 s PER PASS (MPE-35, 2026-09-01) - so
+    without it the caller's spinner sits on one string for minutes and
+    reads as hung. Exceptions raised by the callback are the caller's.
 
     ``points`` is the builder's point-dict list ({date, kind, ppf, bhp,
     pf_rate, pwh, qtot, oil, wc, fgor, weight}); passing the whole builder
@@ -804,7 +848,22 @@ def calibrate_multipoint(
                 out.append(None)
         return out
 
+    # Progress state: which pass is running and how many cost evaluations
+    # it has made. Reported through ``progress`` (no-op when None).
+    prog = {"stage": "", "evals": 0}
+
+    def _report():
+        if progress is None:
+            return
+        progress(
+            f"fitting {len(ctxs)} points - {prog['stage']}"
+            f" (evaluation {prog['evals']})"
+        )
+
     def _cost(x):
+        prog["evals"] += 1
+        if prog["evals"] % MP_PROGRESS_EVERY == 0:
+            _report()
         for v, (lo, hi) in zip(x, MP_BOUNDS):
             if not (lo <= v <= hi):
                 return SOLVER_FAIL_PENALTY * len(ctxs)
@@ -830,7 +889,10 @@ def calibrate_multipoint(
                 total += w_pair * _huber((d_model - d_meas) / MP_DBHP_SCALE)
         return total
 
-    def _run(x0):
+    def _run(x0, stage: str = "seed"):
+        prog["stage"] = MP_PASS_NAMES.get(stage, stage)
+        prog["evals"] = 0
+        _report()
         result = minimize(
             _cost,
             list(x0),
@@ -883,15 +945,21 @@ def calibrate_multipoint(
         )
         return rows, used, drops, rms_bhp, rms_pf, rms_dbhp, n_pairs
 
-    best_x, iters = _run(seed)
+    best_x, iters = _run(seed, "seed")
     rows, used, solve_drops, rms_bhp, rms_pf, rms_dbhp, n_pairs = _summarize(best_x)
     poor = (
         not used
         or rms_bhp > MULTISTART_THRESHOLD
         or rms_pf > MP_POOR_RMS_PF_PCT
     )
-    if poor:
-        alt_x, alt_iters = _run(MP_ALT_START)
+    # The alternate start only helps when it is a DIFFERENT start. A well
+    # with no saved ken/kth/kdi seeds at exactly the library defaults, which
+    # IS MP_ALT_START, and Nelder-Mead is deterministic - so this pass used
+    # to replay pass 1 to the same x at the same cost (MPE-35: 26 s of the
+    # 3-minute run, bit-identical result). Skip it in that case.
+    alt_is_seed = np.allclose(MP_ALT_START, seed, rtol=0.0, atol=1e-9)
+    if poor and not alt_is_seed:
+        alt_x, alt_iters = _run(MP_ALT_START, "alt")
         iters += alt_iters
         if _cost(alt_x) < _cost(best_x):
             best_x = alt_x
@@ -914,7 +982,7 @@ def calibrate_multipoint(
         diff_poor
         or (best_x[4] - MP_BOUNDS[4][0] < BOUND_TOL and rms_bhp > GOOD_PSI)
     ):
-        esc_x, esc_iters = _run((*best_x[:4], MP_BOUNDS[4][1]))
+        esc_x, esc_iters = _run((*best_x[:4], MP_BOUNDS[4][1]), "escape")
         iters += esc_iters
         if _cost(esc_x) < _cost(best_x):
             best_x = esc_x
@@ -926,7 +994,7 @@ def calibrate_multipoint(
     # rebuilds a fresh simplex around it and finishes the descent; kept only
     # when it actually improves the cost.
     if used:
-        pol_x, pol_iters = _run(tuple(best_x))
+        pol_x, pol_iters = _run(tuple(best_x), "polish")
         iters += pol_iters
         if _cost(pol_x) < _cost(best_x):
             best_x = pol_x

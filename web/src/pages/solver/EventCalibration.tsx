@@ -19,12 +19,13 @@
  */
 
 import { Activity } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 
 import { useOptimizeJob, useStartEventCalibration } from "../../api/hooks";
 import type { EventCalibrationResult } from "../../api/types";
 import { Button } from "../../components/ui";
 import { fmtNum } from "../../lib/format";
+import { useOptimizeStore } from "../../state/optimize";
 import { useParamsStore } from "../../state/params";
 
 /** Coefficient in the scorecard's shorthand: 3 decimals, trailing zeros and
@@ -195,19 +196,21 @@ function ResultBlock({ result }: { result: EventCalibrationResult }) {
 }
 
 export function EventCalibration({ well }: { well: string }) {
-  const [jobId, setJobId] = useState<string | null>(null);
+  // Persisted per WELL in the optimize store (it already persists run job
+  // ids): event calibration is a 1-3 minute job, and a Solver -> Batch ->
+  // Solver detour used to drop the id and orphan the fit (review
+  // 2026-09-01, WEB-8). Per-well keys keep one well's fit off another.
+  const jobKey = `event_cal:${well}`;
+  const jobId = useOptimizeStore((s) => s.lastJob[jobKey] ?? null);
+  const setLastJob = useOptimizeStore((s) => s.setLastJob);
+  const setJobId = (id: string | null) => setLastJob(jobKey, id);
   const start = useStartEventCalibration();
   const job = useOptimizeJob(jobId);
 
   // Expired job (server restart): drop the stale id quietly.
   useEffect(() => {
-    if (jobId && job.isError) setJobId(null);
-  }, [jobId, job.isError]);
-
-  // Fresh state per well - one well's fit must not render under another.
-  useEffect(() => {
-    setJobId(null);
-  }, [well]);
+    if (jobId && job.isError) setLastJob(jobKey, null);
+  }, [jobId, job.isError, jobKey, setLastJob]);
 
   // A bench with no named well has no era history to fit against.
   if (well === "Custom") return null;
@@ -227,7 +230,9 @@ export function EventCalibration({ well }: { well: string }) {
         busy={running}
         title={
           "Fits the pump model to this pump era's daily field history; " +
-          "young eras fall back to matching the latest test BHP."
+          "young eras fall back to matching the latest test BHP. " +
+          "A full fit is several passes over every point and typically takes 1-3 minutes - " +
+          "the line beside the button shows the pass and evaluation count."
         }
         onClick={() => {
           start.mutate({ well }, { onSuccess: (r) => setJobId(r.job_id) });
@@ -241,6 +246,11 @@ export function EventCalibration({ well }: { well: string }) {
       {running && (
         <span className="text-xs text-slate-500">
           {job.data?.progress ?? "Starting calibration..."}
+          {job.data?.seconds !== undefined && (
+            <span className="ml-1.5 tabular-nums text-slate-400">
+              {Math.round(job.data.seconds)}s
+            </span>
+          )}
         </span>
       )}
       {start.isError && (

@@ -25,6 +25,7 @@ runner's to touch.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 import uuid
@@ -37,6 +38,14 @@ log = logging.getLogger("woffl.web.jobs")
 _JOB_TTL_SECONDS = 3600.0
 _JOBS: dict[str, dict[str, Any]] = {}
 _JOBS_LOCK = threading.Lock()
+
+# How many jobs may RUN at once (the rest queue, with a progress line saying
+# so). 2 matches the deployed 2-vCPU tier; raise locally via WOFFL_MAX_JOBS.
+try:
+    _MAX_JOBS = max(1, int(os.getenv("WOFFL_MAX_JOBS", "2")))
+except ValueError:
+    _MAX_JOBS = 2
+_JOB_SLOTS = threading.BoundedSemaphore(_MAX_JOBS)
 
 Runner = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -115,6 +124,15 @@ def start(kind: str, run: Runner, progress: str = "starting...") -> str:
         _JOBS[job_id] = job
 
     def target() -> None:
+        # Bounded concurrency: every pad run / match-health / event
+        # calibration / combine study used to start immediately, each
+        # spawning its own solver processes beside the primed pool on the
+        # 2-vCPU tier - two engineers clicking Run meant 4+ solver processes
+        # and nothing queued (review 2026-09-01, SRV-12). Excess jobs wait
+        # here and say so.
+        if not _JOB_SLOTS.acquire(blocking=False):
+            job["progress"] = f"queued - waiting for a job slot (max {_MAX_JOBS} at once)"
+            _JOB_SLOTS.acquire()
         try:
             job["result"] = run(job)
             job["status"] = "done"
@@ -125,6 +143,7 @@ def start(kind: str, run: Runner, progress: str = "starting...") -> str:
             job["error"] = str(exc)
         finally:
             job["settled_mono"] = time.monotonic()
+            _JOB_SLOTS.release()
 
     threading.Thread(target=target, daemon=True, name=f"job-{kind}-{job_id}").start()
     return job_id

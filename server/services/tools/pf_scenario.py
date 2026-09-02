@@ -280,11 +280,17 @@ def _estimate_bhp(
     prop_pf,
     field_model="Schrader",
     psu_max=1800.0,
+    jpump_direction="reverse",
 ):
     """Estimate suction pressure (BHP) from known production + jet pump conditions.
 
     Binary-searches suction pressure until the jet pump discharge matches
-    the outflow requirement at the known oil rate.
+    the outflow requirement at the known oil rate. Returns None when the
+    bracket does not contain a root: the pump cannot lift the rate at any
+    suction, OR the residual is positive across the whole bracket. The latter
+    used to return the bracket EDGE (100 psi) as if it were a solved BHP,
+    and the caller then seeded a synthetic Vogel anchored at 100 psi
+    (review 2026-09-01, EVID-F25) - a wall is not an estimate.
     """
     oil, water, gas = create_pvt_components(field_model)
     prop_su = ResMix(wc=wc, fgor=fgor, oil=oil, wat=water, gas=gas)
@@ -304,6 +310,7 @@ def _estimate_bhp(
                 wellprof,
                 prop_su,
                 prop_pf,
+                jpump_direction=jpump_direction,
             )
         except Exception:
             return None
@@ -315,9 +322,10 @@ def _estimate_bhp(
     # Both negative → pump can't lift this rate at any psu
     if res_lo < 0 and res_hi < 0:
         return None
-    # Both positive → well is sonic, return low bound
+    # Both positive → no root in the bracket; the floor is psu_min from the
+    # throat-entry sweep, not this bracket's lower edge. Not an estimate.
     if res_lo > 0 and res_hi > 0:
-        return psu_lo
+        return None
 
     for _ in range(30):
         psu_mid = (psu_lo + psu_hi) / 2
@@ -468,6 +476,7 @@ def _estimate_gaugeless_ipr(
             prop_pf,
             field_model=fm,
             psu_max=psu_max,
+            jpump_direction=_common.detect_jpump_direction(wn),  # EVID-F22
         )
         if bhp_est is None:
             continue

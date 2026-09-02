@@ -86,7 +86,10 @@ def build_pump_eras(well_jp: pd.DataFrame, end_date=None) -> list[dict]:
     """
     if well_jp is None or well_jp.empty:
         return []
-    df = well_jp.dropna(subset=["Date Set"]).sort_values("Date Set")
+    from woffl.assembly.jp_history import order_installs
+
+    # Oldest first, same-day pull+set ordered deterministically (DATA-2).
+    df = order_installs(well_jp.dropna(subset=["Date Set"]), ascending=True)
     if df.empty:
         return []
     end_date = pd.Timestamp(end_date) if end_date is not None else pd.Timestamp.now()

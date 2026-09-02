@@ -239,7 +239,9 @@ def fleet_targets() -> list[tuple[str, Callable[[], Any]]]:
         # The /api/wells payload itself, not just the frame behind it: it is
         # cached now, and a plain call would leave it on the 2 x TTL grace
         # instead of the warm retention floor.
-        ("well_list", refresher(wells_svc.list_wells)),
+        # The Databricks-backed entry only: list_wells() itself is a plain
+        # function now, so a CSV fallback is never cached (DATA-15).
+        ("well_list", refresher(wells_svc._list_wells_databricks)),
         ("surveyed_wells", refresher(datasources.surveyed_wells)),
         ("pf_latest", refresher(datasources.pf_latest)),
         # Also the input the per-well pass needs to find each well's installs.

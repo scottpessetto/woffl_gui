@@ -106,6 +106,12 @@ function persist(state: SensitivityState): void {
 }
 
 interface SensitivityState extends Persisted {
+  /** well -> testKey of the Solver's CURRENT comparison test. The sensitivity
+   *  targets follow it, so "Match Sensitivities" scores against the test the
+   *  engineer is looking at, not silently the most recent one (review
+   *  2026-09-01, WEB-15). Session-only: the Solver republishes it on mount. */
+  compareKey: Record<string, string | null>;
+  setCompareKey: (well: string, key: string | null) => void;
   setBounds: (well: string, map: BoundsMap) => void;
   /** Back to the default sweep on one well, without touching the others. */
   resetBounds: (well: string) => void;
@@ -119,6 +125,10 @@ const initial = restore();
 
 export const useSensitivityStore = create<SensitivityState>((set, get) => ({
   ...initial,
+  compareKey: {},
+
+  setCompareKey: (well, key) =>
+    set((s) => (s.compareKey[well] === key ? s : { compareKey: { ...s.compareKey, [well]: key } })),
 
   setBounds: (well, map) => {
     set((s) => ({ bounds: { ...s.bounds, [well]: map } }));

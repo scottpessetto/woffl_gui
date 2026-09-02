@@ -104,6 +104,11 @@ def _oauth_token() -> str:
         return _TOKEN_CACHE["token"]
 
 
+# Keys .env is never allowed to inject into the process environment: the
+# production write gate and the delete gate. See _new_connection.
+_ENV_GATE_KEYS = frozenset({"ALLOW_DATABRICKS_WRITES", "ALLOW_PROP_HIST_DELETE"})
+
+
 def _new_connection():
     from databricks import sql
 
@@ -116,9 +121,19 @@ def _new_connection():
             access_token=_oauth_token(),
         )
 
-    from dotenv import load_dotenv
+    from dotenv import dotenv_values
 
-    load_dotenv()
+    # Load .env for CREDENTIALS ONLY. load_dotenv() exported every key, and a
+    # dev .env also carries ALLOW_DATABRICKS_WRITES, so the first connection
+    # any code path opened (the FastAPI warm loop does it seconds after
+    # startup, unprompted) flipped the production write gate ON for the rest
+    # of the process (review 2026-09-01, DATA-1). The gates must now be set
+    # in the shell / app environment explicitly; they are never read from
+    # .env. Existing environment values still win (same as load_dotenv).
+    for key, val in (dotenv_values() or {}).items():
+        if key in _ENV_GATE_KEYS or val is None or key in os.environ:
+            continue
+        os.environ[key] = val
 
     host = os.getenv("bricks_host")
     token = os.getenv("bricks_token")
@@ -168,6 +183,15 @@ def _execute_via_connector(runner: Callable[[Any], Any]) -> Any:
                 cursor.close()
         except Exception as e:
             last_err = e
+            if _is_statement_error(e):
+                # The STATEMENT failed (analysis error, missing column, denied
+                # object): the session is fine. Re-raise at once instead of
+                # closing the connection and nulling the OAuth token for every
+                # thread - the hosted app's permanently failing historian
+                # query was paying a reconnect + token mint every 5 minutes
+                # and invalidating the token others were using (review
+                # 2026-09-01, DATA-11).
+                raise
             _CONN_LOCAL.conn = None
             if conn is not None:
                 try:
@@ -177,6 +201,21 @@ def _execute_via_connector(runner: Callable[[Any], Any]) -> Any:
             with _TOKEN_LOCK:
                 _TOKEN_CACHE["token"] = None  # force refresh on the retry
     raise last_err  # type: ignore[misc]
+
+
+def _is_statement_error(exc: Exception) -> bool:
+    """True for a Databricks SQL error that is about the STATEMENT, not the
+    session/connection - the class that a reconnect cannot fix."""
+    try:
+        from databricks.sql.exc import ServerOperationError
+    except Exception:  # noqa: BLE001 - connector absent (tests) -> retry path
+        return False
+    if not isinstance(exc, ServerOperationError):
+        return False
+    # Session-level failures also surface as ServerOperationError; keep the
+    # retry for those by sniffing the well-known session/handle wording.
+    msg = str(exc).lower()
+    return not any(k in msg for k in ("session", "handle", "invalid_state", "expired"))
 
 
 def _query_via_connector(query: str) -> pd.DataFrame:
@@ -410,6 +449,13 @@ def _merge_local_overrides(df: pd.DataFrame) -> pd.DataFrame:
     new_rows = overrides[~overrides["Well"].astype(str).isin(existing)].copy()
     if new_rows.empty:
         return df
+    # Provenance: an override row's numbers are PLACEHOLDERS an engineer typed
+    # into a CSV, not prop_hist measurements. Downstream must not render them
+    # as measured / lock them as as-built (review 2026-09-01, DATA-7).
+    new_rows["local_override"] = True
+    if "local_override" not in df.columns:
+        df = df.copy()
+        df["local_override"] = False
 
     # Derive the same downstream columns fetch_well_props computes from the
     # raw mech/resvr columns. NaN-safe: missing inputs leave outputs as NaN.
@@ -458,6 +504,11 @@ def _interp_tvd(survey: Optional[pd.DataFrame], jp_md: float) -> Optional[float]
         return None
     s = survey.dropna(subset=["meas_depth", "tvd_depth"]).sort_values("meas_depth")
     if s.empty:
+        return None
+    if float(jp_md) > float(s["meas_depth"].max()) + 1.0:
+        # Below the surveyed interval: np.interp would silently return the
+        # LAST station's TVD as if measured (review 2026-09-01, DATA-8).
+        # None -> the pad-ratio estimate path, which is flagged tvd_estimated.
         return None
     return float(np.interp(jp_md, s["meas_depth"], s["tvd_depth"]))
 
@@ -519,7 +570,14 @@ def enrich_with_tvd(
     df = df.copy()
     df["JP_TVD"] = pd.Series(jp_tvd, index=df.index)
     df["tvd_estimated"] = pd.Series(estimated, index=df.index)
-    df["is_sch"] = df["JP_TVD"].fillna(0) < SCHRADER_TVD_CUTOFF
+    # None (not Schrader) when there is no pump depth at all: fillna(0) made
+    # every depth-less well "Schrader" by construction (review DATA-6). The
+    # consumers default a None to Schrader explicitly, with provenance.
+    df["is_sch"] = df["JP_TVD"].map(
+        lambda v: None if pd.isna(v) else bool(float(v) < SCHRADER_TVD_CUTOFF)
+    )
+    # A field model decided by an ESTIMATED depth is itself an estimate.
+    df["is_sch_estimated"] = df["tvd_estimated"] | df["JP_TVD"].isna()
     return df, missing
 
 

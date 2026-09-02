@@ -42,6 +42,11 @@ log = logging.getLogger("woffl.web.tools.washout")
 # problem. The tab exposed it as an editable threshold; so does the page.
 DEFAULT_PPF_LIMIT = 3400.0
 
+# Required-PF over test-day-PF above which a pump is flagged as washed
+# (needs this much more pressure than it actually ran at to make its lift
+# water). 15% clears allocation noise on lift_wat and PF gauge scatter.
+WASHOUT_RATIO = 1.15
+
 DEFAULT_MONTHS = 6
 
 
@@ -104,6 +109,14 @@ def _build_scan_input(months_back: int) -> Optional[pd.DataFrame]:
                 "LiftWat": float(t["lift_wat"]),
                 "WHP": whp,
                 "BHP": float(t["BHP"]) if pd.notna(t.get("BHP")) else None,
+                # The PF pressure the pump ACTUALLY ran at on test day (test-
+                # day vw_pressure_daily join; PF_MIN_VALID filter). The
+                # washout verdict compares required-vs-actual (EVID-F24).
+                "PfAtTest": (
+                    float(t["pf_press"])
+                    if pd.notna(t.get("pf_press")) and float(t["pf_press"]) >= 800.0
+                    else None
+                ),
                 "_chars": chars,
             }
         )
@@ -158,6 +171,7 @@ def calibrate_one(row_dict: dict) -> dict:
             ipr_su=inflow,
             prop_su=res_mix,
             prop_pf=prop_pf,
+            jpump_direction=wc.jpump_direction,  # EVID-F22
         )
         return {
             **base,
@@ -215,9 +229,27 @@ def scan(months_back: int = DEFAULT_MONTHS, ppf_limit: float = DEFAULT_PPF_LIMIT
     rows = frames.records(pd.DataFrame(results))
     for r in rows:
         ppf = r.get("PpfRequired")
-        r["Flagged"] = bool(
-            r.get("Status") == "ok" and ppf is not None and float(ppf) > ppf_limit
+        ok = r.get("Status") == "ok" and ppf is not None
+        pf_at_test = r.get("PfAtTest")
+        # Required-over-actual: the washout signal is a pump that needs MORE
+        # PF than it was actually fed to make the lift water the test
+        # allocated it. Flagging against a fixed 3,400 psi cap missed a
+        # 2,200-psi-pad pump needing 3,000 (+36%) and flagged an M-pad pump
+        # needing 3,450 (+1.5%) - review 2026-09-01, EVID-F24. The cap is
+        # kept as its own column (infrastructure feasibility), not the flag.
+        ratio = (
+            float(ppf) / float(pf_at_test)
+            if ok and pf_at_test not in (None, 0) and float(pf_at_test) > 0
+            else None
         )
+        r["PpfRatio"] = round(ratio, 3) if ratio is not None else None
+        r["OverLimit"] = bool(ok and float(ppf) > ppf_limit)
+        if ratio is not None:
+            r["Flagged"] = bool(ratio > WASHOUT_RATIO)
+            r["FlagBasis"] = "vs measured PF"
+        else:
+            r["Flagged"] = bool(r["OverLimit"])
+            r["FlagBasis"] = "vs limit (no test-day PF)"
     rows.sort(
         key=lambda r: (r.get("PpfRequired") is None, -(r.get("PpfRequired") or 0.0))
     )

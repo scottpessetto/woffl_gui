@@ -10,12 +10,13 @@
  */
 
 import { HeartPulse } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 
 import { useOptimizeJob, useStartMatchHealth } from "../../api/hooks";
-import type { MatchHealthResult, MatchHealthRow, MatchHealthVerdict } from "../../api/types";
+import type { MatchHealthResult, MatchHealthRow, MatchHealthVerdict, RunPad } from "../../api/types";
 import { Badge, Card, Spinner, WarnNote } from "../../components/ui";
 import { fmtNum } from "../../lib/format";
+import { useOptimizeStore } from "../../state/optimize";
 
 const TH_CLS = "px-2 py-1.5 text-left font-semibold";
 const TD_CLS = "px-2 py-1 tabular-nums";
@@ -114,20 +115,22 @@ function FrictionCell({ row }: { row: MatchHealthRow }) {
   );
 }
 
-export function MatchHealthPanel({ pad }: { pad: "S" | "I" | "M" }) {
-  const [jobId, setJobId] = useState<string | null>(null);
+export function MatchHealthPanel({ pad }: { pad: RunPad }) {
+  // The job id lives in the persisted optimize store, keyed PER PAD, so a
+  // tab switch or a page change mid-scorecard no longer orphans a running
+  // job and its result (review 2026-09-01, WEB-8). Per-pad keys also mean a
+  // stale M scorecard can never render under S.
+  const jobKey = `match_health:${pad}`;
+  const jobId = useOptimizeStore((s) => s.lastJob[jobKey] ?? null);
+  const setLastJob = useOptimizeStore((s) => s.setLastJob);
+  const setJobId = (id: string | null) => setLastJob(jobKey, id);
   const start = useStartMatchHealth();
   const job = useOptimizeJob(jobId);
 
   // Expired job (server restart): drop the stale id quietly.
   useEffect(() => {
-    if (jobId && job.isError) setJobId(null);
-  }, [jobId, job.isError]);
-
-  // Fresh panel per pad tab - a stale M scorecard must not render under S.
-  useEffect(() => {
-    setJobId(null);
-  }, [pad]);
+    if (jobId && job.isError) setLastJob(jobKey, null);
+  }, [jobId, job.isError, jobKey, setLastJob]);
 
   const running = job.data?.status === "running" || start.isPending;
   const result =

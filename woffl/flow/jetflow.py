@@ -4,6 +4,8 @@ Functions that are used for solving the fluid dynamics inside a jet pump. The ac
 jet pump geometry is accomplished in a seperate module.
 """
 
+from __future__ import annotations  # jetplot <-> jetflow import cycle: defer annotations
+
 import math
 
 import numpy as np
@@ -11,7 +13,7 @@ from scipy.integrate import trapezoid
 
 from woffl.flow import jetplot as jp
 from woffl.flow import singlephase as sp
-from woffl.flow.errors import ConvergenceError, JetPumpError
+from woffl.flow.errors import ConvergenceError, JetPumpError, ThroatEntryNoSolution
 from woffl.flow.inflow import InFlow
 from woffl.pvt.resmix import ResMix
 
@@ -54,8 +56,44 @@ def incremental_ee(prs_ray: np.ndarray, rho_ray: np.ndarray) -> float:
 
 # change this to a function that just creates the book?
 # this only goes past crossing the zero tde line
+# throat-entry sweep step and floor, shared by BOTH walks below so a book
+# built by one can seed the other (see throat_entry_zero_tde's ``seed_book``)
+_TE_PDEC = 25  # pressure decrease per step, psi
+_TE_PMIN = 50  # sweep floor, psig
+
+
+def _seed_zero_tde_book(seed_book: jp.JetBook) -> jp.JetBook:
+    """Copy of ``seed_book`` truncated where the zero-tde walk would have stopped.
+
+    [LIBRARY change -> upstream PR to kwellis/woffl] SOLV-F9: the zero-tde walk
+    and the Mach-one walk start from the same psu, take the same 25-psi steps
+    and evaluate the same PVT at each step - only their STOP rules differ. So a
+    Mach-one book (what ``psu_minimize`` hands back) already contains every
+    point the zero-tde walk would compute, up to the first point where
+    ``tde <= 0`` or ``prs <= _TE_PMIN``; anything past that is dropped, and
+    ``throat_entry_zero_tde`` extends from the last kept point if the stop was
+    never reached. The result is bit-identical to a fresh walk.
+    """
+    book = seed_book.copy()
+    for i, (tde, prs) in enumerate(zip(book.tde, book.prs)):
+        if not (tde > 0 and prs > _TE_PMIN):
+            keep = i + 1
+            for name in ("prs", "vel", "rho", "snd", "kde", "ede", "tde", "mach", "grad"):
+                del getattr(book, name)[keep:]
+            book._arrays.clear()
+            break
+    return book
+
+
 def throat_entry_zero_tde(
-    psu: float, tsu: float, ken: float, ate: float, ipr_su: InFlow, prop_su: ResMix
+    psu: float,
+    tsu: float,
+    ken: float,
+    ate: float,
+    ipr_su: InFlow,
+    prop_su: ResMix,
+    *,
+    seed_book: jp.JetBook | None = None,
 ) -> tuple[float, jp.JetBook]:
     """Throat Entry Differential Energy at Zero
 
@@ -70,6 +108,12 @@ def throat_entry_zero_tde(
         ate (float): Throat Entry Area, ft2
         ipr_su (InFlow): IPR of Reservoir
         prop_su (ResMix): Properties of Suction Fluid
+        seed_book (JetBook | None): Optional UNSCALED (mach_crit = 1) throat
+            entry book already swept from this same psu (e.g. the one
+            ``psu_minimize`` returns). Reused only when its first pressure is
+            exactly ``psu``; otherwise ignored. Keyword-only.
+            [LIBRARY change -> upstream PR to kwellis/woffl] SOLV-F9: skips
+            re-sweeping the throat entry the solver just computed.
 
     Returns:
         qoil_std (float): Oil Rate, STBOPD
@@ -80,16 +124,19 @@ def throat_entry_zero_tde(
     # sync clobbered).
     qoil_std = ipr_su.oil_flow(psu, method="vogel")  # oil standard flow, bopd
 
-    prop_su = prop_su.condition(psu, tsu)
-    qtot = sum(prop_su.insitu_volm_flow(qoil_std))
-    vte = sp.velocity(qtot, ate)
+    if seed_book is not None and len(seed_book.prs) > 0 and seed_book.prs[0] == psu:
+        te_book = _seed_zero_tde_book(seed_book)
+    else:
+        prop_su = prop_su.condition(psu, tsu)
+        qtot = sum(prop_su.insitu_volm_flow(qoil_std))
+        vte = sp.velocity(qtot, ate)
 
-    te_book = jp.JetBook(
-        psu, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte)
-    )
+        te_book = jp.JetBook(
+            psu, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte)
+        )
 
-    pdec = 25  # pressure decrease
-    pmin = 50
+    pdec = _TE_PDEC  # pressure decrease
+    pmin = _TE_PMIN
 
     while (te_book.tde_ray[-1] > 0) and (te_book.prs_ray[-1] > pmin):
         pte = te_book.prs_ray[-1] - pdec
@@ -177,8 +224,8 @@ def throat_entry_mach_one(
         psu, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte) * ke_scale
     )
 
-    pdec = 25  # pressure decrease
-    pmin = 50  # minimum pressure
+    pdec = _TE_PDEC  # pressure decrease
+    pmin = _TE_PMIN  # minimum pressure
 
     # keep mach under the critical threshold, and pte above pmin, so it doesn't go negative
     while (te_book.mach_ray[-1] <= mach_crit) and (te_book.prs_ray[-1] > pmin):
@@ -193,14 +240,38 @@ def throat_entry_mach_one(
         )
 
     # the length clause was added because some throats were too small and the jp was mach'in out on the first run
-    if (
-        te_book.mach_ray[-1] >= mach_crit and len(te_book.mach_ray) > 1
-    ):  # return nearest value instead of interpolating
-        tde_fin = te_book.tde_ray[-2]
+    if te_book.mach_ray[-1] >= mach_crit and len(te_book.mach_ray) > 1:
+        # [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-9: interpolate
+        # tde AT Mach = mach_crit between the last sub-threshold point and the
+        # first point past it. The old "nearest value" (tde_ray[-2]) sat ABOVE
+        # the true Mach-crit minimum by the 25-psi step's discretization gap
+        # (~0.5-2 % of the entry kinetic energy), so psu_minimize solved
+        # tde = 0 against a biased residual and pinned the choke floor high.
+        tde_fin = _tde_at_mach(te_book, mach_crit)
     else:
         tde_fin = te_book.tde_ray[-1]
 
     return tde_fin, qoil_std, te_book  # type: ignore
+
+
+def _tde_at_mach(te_book: jp.JetBook, mach_crit: float) -> float:
+    """Linear interpolation of tde at ``mach_crit`` between the last two sweep points.
+
+    [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-9 helper. The sweep
+    stops at the first point whose Mach exceeds ``mach_crit``, so the last two
+    points bracket the threshold: ``mach[-2] <= mach_crit <= mach[-1]``. A
+    degenerate (equal-Mach) pair falls back to the sub-threshold value.
+    """
+    m1, m2 = te_book.mach_ray[-2], te_book.mach_ray[-1]
+    t1, t2 = te_book.tde_ray[-2], te_book.tde_ray[-1]
+    if m2 == m1:
+        return float(t1)
+    return float(t1 + (t2 - t1) * (mach_crit - m1) / (m2 - m1))
+
+
+# FLOW-9: psu_minimize also requires the choke residual itself to be small -
+# |tee| within this fraction of the entry kinetic energy at psu (kde_ray[0]).
+_TEE_TOL_FRAC = 0.01
 
 
 def psu_minimize(
@@ -233,26 +304,62 @@ def psu_minimize(
     Returns:
         psu_min (float): Suction Pressure Minimized, psig
         qoil_std (float): Oil Rate, STBOPD
-        pte (float): Throat Entry Pressure, psig
-        rho_te (float): Throat Entry Density, lbm/ft3
-        vte (float): Throat Entry Velocity, ft/s
+        te_book (JetBook): Throat entry book of the converged psu_min
+
+    Raises:
+        ThroatEntryNoSolution: the throat entry chokes before its energy
+            balance closes even at the reservoir-pressure bound (``pres - 10``)
+            - the pump cannot be fed at any admissible suction. [LIBRARY
+            change -> upstream PR to kwellis/woffl] FLOW-9: this used to exit
+            "converged" after clamping to the bound twice, and the solver then
+            fabricated a choked operating point there.
+        ConvergenceError: the secant did not settle within 15 iterations.
     """
     # seeds floored so low-pressure reservoirs can't produce negative psu guesses
     psu_list = [max(ipr_su.pres - 200, 60.0), max(ipr_su.pres - 300, 50.0)]
     # store values of tee near the mach=mach_crit pressure
-    tee_list = [
-        throat_entry_mach_one(psu_list[0], tsu, ken, ate, ipr_su, prop_su, mach_crit)[0],
-        throat_entry_mach_one(psu_list[1], tsu, ken, ate, ipr_su, prop_su, mach_crit)[0],
-    ]
+    seed_a = throat_entry_mach_one(psu_list[0], tsu, ken, ate, ipr_su, prop_su, mach_crit)
+    seed_b = throat_entry_mach_one(psu_list[1], tsu, ken, ate, ipr_su, prop_su, mach_crit)
+    tee_list = [seed_a[0], seed_b[0]]
+    qoil_std, te_book = seed_b[1], seed_b[2]
 
     psu_diff = 5  # criteria for when you've converged to an answer
+    psu_hi = ipr_su.pres - 10  # upper clamp
     n = 0  # loop counter
-    while abs(psu_list[-2] - psu_list[-1]) > psu_diff:
+
+    def _choke_residual_ok(tee: float, book: jp.JetBook) -> bool:
+        # The residual is a CHOKE residual only when the sweep actually crossed
+        # mach_crit. A sweep that ran into the 50-psig floor first (pure water:
+        # Mach 0.04 at 4,800 ft/s) returns tde at the floor - a numerical guard
+        # whose floor pressure jumps between iterates - so the historic
+        # |dpsu| exit stays the rule there (bit-identical for those solves).
+        crossed = book.mach_ray[-1] >= mach_crit and len(book.mach_ray) > 1
+        return (not crossed) or abs(tee) <= _TEE_TOL_FRAC * book.kde_ray[0]
+
+    # [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-9: converged means
+    # BOTH successive suctions within psu_diff AND the choke residual itself
+    # within _TEE_TOL_FRAC of the entry kinetic energy - |dpsu| alone let two
+    # clamps at a bound exit "converged" with a residual nowhere near zero.
+    while abs(psu_list[-2] - psu_list[-1]) > psu_diff or not _choke_residual_ok(
+        tee_list[-1], te_book
+    ):
+        if psu_list[-1] == psu_list[-2]:
+            # clamped onto the same bound twice: the residual cannot move
+            if psu_list[-1] >= psu_hi:
+                raise ThroatEntryNoSolution(
+                    "throat entry chokes before its energy balance closes at every "
+                    f"suction up to {psu_hi:.0f} psig (tde at Mach {mach_crit:g} is "
+                    f"{tee_list[-1]:.0f} ft2/s2, {100 * tee_list[-1] / te_book.kde_ray[0]:.0f}% "
+                    "of the entry kinetic energy): the pump cannot be fed at any suction"
+                )
+            # pinned at the 50-psig lower clamp with tee < 0: the choke floor is
+            # below the admissible range, and 50 is the floor (historic result)
+            break
         # keep suction pressure above 50 and below the reservoir pressure so a
         # secant overshoot can't feed a non-physical psu into the IPR
         psu_nxt = min(
             max(psu_secant(psu_list[-2], psu_list[-1], tee_list[-2], tee_list[-1]), 50),
-            ipr_su.pres - 10,
+            psu_hi,
         )
         tee_nxt, qoil_std, te_book = throat_entry_mach_one(
             psu_nxt, tsu, ken, ate, ipr_su, prop_su, mach_crit
@@ -644,6 +751,33 @@ def _throat_discharge_bracketed(bal_fn, pte: float) -> float:
                     brentq(bal_fn, p, prev_p, xtol=1e-2, rtol=1e-8, maxiter=200)
                 )
             prev_p, prev_v = p, v
+
+    # [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-6: the 60-point
+    # scan (step ~0.1 pte) steps clean over a positive hump narrower than one
+    # step - exactly the marginal pumps this fallback exists for - and used to
+    # raise here. Locate the hump's peak with a bounded scalar maximization
+    # (~20 evaluations); if the peak is positive the physical HIGH root lies in
+    # [peak, hi] where the balance is negative, and Brent finishes it.
+    # Guarded by tests/test_jetflow_bracketed.py.
+    from scipy.optimize import minimize_scalar
+
+    hi = max(15.0 * pte, 1500.0)
+    v_hi = bal_fn(hi)
+    for _ in range(3):
+        if v_hi < 0.0:
+            break
+        hi *= 4.0  # hump extends past the scan range: push the top end out
+        v_hi = bal_fn(hi)
+    if v_hi < 0.0:
+        peak = minimize_scalar(
+            lambda p: -bal_fn(p),
+            bounds=(lo, hi),
+            method="bounded",
+            options={"maxiter": 20, "xatol": 0.5},
+        )
+        p_peak = float(peak.x)
+        if bal_fn(p_peak) > 0.0:
+            return float(brentq(bal_fn, p_peak, hi, xtol=1e-2, rtol=1e-8, maxiter=200))
     raise ConvergenceError("throat mixture did not converge")
 
 

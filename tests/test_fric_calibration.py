@@ -452,3 +452,80 @@ def test_multipoint_mach_crit_railed_at_upper_bound(monkeypatch):
     assert "mach_crit" in r.railed
     assert r.bounded is True
     assert r.best_mach_crit <= fc.MACH_CRIT_BOUNDS[1] + 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Runtime / feedback regressions (MPE-35, 2026-09-01: 3.2-minute fit behind a
+# frozen "fitting 24 points..." label; pass 2 was a bit-identical replay of
+# pass 1 because the well had no saved coefficients, so its seed WAS the
+# alternate start).
+# ---------------------------------------------------------------------------
+
+
+def _spy_minimize(monkeypatch):
+    """Record the x0 of every Nelder-Mead pass; run the real minimizer."""
+    starts = []
+    real_min = fc.minimize
+
+    def spy(fun, x0, **kw):
+        starts.append(tuple(round(float(v), 9) for v in x0))
+        return real_min(fun, x0, **kw)
+
+    monkeypatch.setattr(fc, "minimize", spy)
+    return starts
+
+
+def test_multipoint_skips_alt_start_when_it_equals_the_seed(monkeypatch):
+    _patch_mp(monkeypatch)
+    # Force the first pass to count as "poor" so the alt start WOULD fire.
+    monkeypatch.setattr(fc, "MULTISTART_THRESHOLD", -1.0)
+    starts = _spy_minimize(monkeypatch)
+    pts = _mp_points(PPFS, **TRUE)
+
+    fc.calibrate_multipoint(_mp_config(), "12", "B", pts, seed=fc.MP_ALT_START)
+
+    alt = tuple(round(float(v), 9) for v in fc.MP_ALT_START)
+    assert starts[0] == alt
+    # Pass 1 ran from the alt start; the alt pass must NOT replay it.
+    assert starts.count(alt) == 1
+
+
+def test_multipoint_alt_start_still_runs_from_a_different_seed(monkeypatch):
+    _patch_mp(monkeypatch)
+    monkeypatch.setattr(fc, "MULTISTART_THRESHOLD", -1.0)
+    starts = _spy_minimize(monkeypatch)
+    pts = _mp_points(PPFS, **TRUE)
+
+    fc.calibrate_multipoint(
+        _mp_config(), "12", "B", pts, seed=(0.10, 0.50, 0.50, 1.0, 1.0)
+    )
+
+    alt = tuple(round(float(v), 9) for v in fc.MP_ALT_START)
+    assert starts[0] != alt
+    assert starts.count(alt) == 1
+
+
+def test_multipoint_reports_progress_per_pass_and_within_passes(monkeypatch):
+    _patch_mp(monkeypatch)
+    msgs = []
+    pts = _mp_points(PPFS, **TRUE)
+
+    r = fc.calibrate_multipoint(_mp_config(), "12", "B", pts, progress=msgs.append)
+
+    assert r.refusal is None
+    assert msgs, "progress callback never fired"
+    assert all(f"fitting {len(pts)} points" in m for m in msgs)
+    assert any(fc.MP_PASS_NAMES["seed"] in m for m in msgs)
+    assert any(fc.MP_PASS_NAMES["polish"] in m for m in msgs)
+    # Periodic updates WITHIN a pass, not just one header per pass.
+    assert any("(evaluation 20)" in m for m in msgs)
+
+
+def test_multipoint_without_progress_callback_is_unchanged(monkeypatch):
+    _patch_mp(monkeypatch)
+    pts = _mp_points(PPFS, **TRUE)
+    quiet = fc.calibrate_multipoint(_mp_config(), "12", "B", pts)
+    loud = fc.calibrate_multipoint(_mp_config(), "12", "B", pts, progress=lambda m: None)
+    assert (quiet.best_ken, quiet.best_kth, quiet.best_kdi, quiet.best_fnz,
+            quiet.best_mach_crit) == (loud.best_ken, loud.best_kth, loud.best_kdi,
+                                      loud.best_fnz, loud.best_mach_crit)

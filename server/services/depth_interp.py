@@ -319,6 +319,44 @@ def trajectory(well: str, field_model: str) -> Trajectory:
     return Trajectory(well_prof.md_ray, well_prof.vd_ray, has_survey=False)
 
 
+def first_crossing_md(md_ray, vd_ray, vd_target: float) -> Optional[float]:
+    """Shallowest measured depth at which a survey reaches a true vertical depth.
+
+    Linear between stations, i.e. the same chord ``WellProfile`` uses for the
+    solver, so the pump lands on the profile the solver will traverse. This is
+    the ONLY sanctioned TVD->MD conversion for placing a jet pump. Never use
+    ``np.interp(tvd, vd_ray, md_ray)``: it requires ``vd_ray`` to be
+    increasing, and 77 of the 91 local surveys are toe-up (TVD decreases again
+    along the lateral), where numpy's bisection silently returns garbage -
+    MPH-31 came back at 21,180 ft MD (the last station, inclination 92 deg)
+    against a measured 5,144 (review 2026-09-01, finding 1).
+
+    Args:
+        md_ray (array-like): Station measured depths, feet
+        vd_ray (array-like): Station true vertical depths, feet
+        vd_target (float): True vertical depth to reach, feet
+
+    Returns:
+        md (float): Shallowest MD reaching ``vd_target``, or None when the
+            survey never reaches it.
+    """
+    md = np.asarray(md_ray, dtype=float)
+    vd = np.asarray(vd_ray, dtype=float)
+    if md.size == 0 or md.size != vd.size:
+        return None
+    target = float(vd_target)
+    hit = np.flatnonzero(np.abs(vd - target) <= _TOL_FT)
+    if hit.size:
+        return float(md[hit[0]])
+    lo, hi = vd[:-1], vd[1:]
+    cross = np.flatnonzero(((lo < target) & (hi > target)) | ((lo > target) & (hi < target)))
+    if cross.size == 0:
+        return None
+    k = int(cross[0])
+    frac = (target - vd[k]) / (vd[k + 1] - vd[k])
+    return float(md[k] + frac * (md[k + 1] - md[k]))
+
+
 def depth_lookup(
     well: str,
     md: Optional[float] = None,

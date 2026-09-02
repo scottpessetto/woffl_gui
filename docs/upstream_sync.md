@@ -333,6 +333,404 @@ asserting `qoil_std == ipr.oil_flow(psu, "vogel")` AND
 
 ---
 
+### 16. `woffl/flow/outflow.py` — re-floor slip holdup AFTER the Payne correction (FLOW-1, 2026-09-01)
+`beggs_diff_press` applies the canonical Beggs-Brill restriction `HL >= lambda_L`
+inside `beggs_holdup_base`, then multiplies by the Payne (1979) inclination factor
+(0.924 uphill) with no floor afterwards. A gas-free segment (`fgor < Rs(p)`,
+`lambda_L = 1`) was therefore modeled at `HL = 0.924` — 7.6 % of the liquid
+column replaced by gas density that is not there. Measured on the E-41 fixture at
+PF 2,300: fgor 300 moved 12B from 240 to 208 BOPD (−13 %) and 11C from 212 to
+170 (−20 %); fgor 250 shifted psu by 101–125 psi; fgor 800 wells moved 0 to −7 %.
+The model was optimistic on low-GOR wells and friction calibration had been
+absorbing the error. One line: `slh = min(max(slh, nslh), 1.0)` after the Payne
+call. Gassy segments where Payne leaves `HL` above `lambda_L` are bit-identical.
+
+**Guarded by:** `tests/outflow_test.py::test_gas_free_segment_holds_full_liquid_holdup`
+(a gas-free segment must return `slh == 1.0`) and
+`::test_slip_holdup_never_below_no_slip_after_payne`. `test_bottom_pressure` was
+re-pinned for the 600-scf/stb fixture if it moved.
+
+### 17. `woffl/pvt/blackoil.py` + `resmix.py` — ACOUSTIC oil compressibility in the sound-speed path (PVT-F1, 2026-09-02)
+`ResMix.cmix` is Wood's (1930) equation, but it consumed `BlackOil.compress`, which
+BELOW the bubble point is the McCain-Rollins-Villena total compressibility — a
+material-balance quantity that includes the volume of gas liberated as pressure
+drops, 1-2 orders of magnitude above the liquid-phase value. Fed into Wood's
+equation it gave pure-oil "sound speeds" of 344-877 ft/s below Pb (real: ~4,000)
+and a 4.4x jump across Pb: Schrader 100 °F, WC 0.8 / GOR 400 → cmix 1,244 ft/s at
+1,749 psig vs 1,657 at 1,751 (+33 % across two psi); WC 0.3 / GOR 300 → 895 vs
+1,597 (+78 %). Consumers: `mach_te`, `sonic_status`, the throat-entry subsonic
+mask, Header Impact "sonic-decoupled", the optimizer's never-swap-for-sonic rule.
+
+The patch adds `BlackOil.compress_acoustic` — Vasquez-Beggs evaluated with the gas
+actually in solution at the current pressure (`gas_solubility()`, i.e. Rs(p) below
+Pb and Rsb above) — and `cmix` reads that instead of `compress`. Above Pb the two
+are the SAME call, so above-Pb cmix is bit-identical and the value is continuous
+across Pb (0.14 % / 0.20 % on the two cases above). `compress` and `comp_comp`
+keep their material-balance meaning and names; nothing else consumed them. After
+the patch pure-oil c is 3,816-5,211 ft/s below Pb (V-B extrapolates low on co at
+low Rs / low pressure, so the low-pressure end runs somewhat HIGH; the gas term
+dominates cmix there whenever free gas exists). `mach_te` in `batch_test.py`
+dropped 7-11 % on every row; rates, psu and the sonic set did not move. The cmix
+docstring now states that the isothermal gas compressibility is deliberate
+(Wood's bubbly-liquid heat-bath argument, what Himr 2009 fits) — do not "fix" it
+to adiabatic.
+
+**Guarded by:** `tests/test_pvt_resmix.py::test_cmix_continuous_across_bubble_point`
+(both cases within 1 % across Pb; red at +33 % / +78 % if cmix reverts),
+`::test_cmix_above_bubble_point_unchanged_by_acoustic_patch`,
+`tests/test_pvt_blackoil.py::test_compress_acoustic_continuous_across_bubble_point`
+and `::test_pure_oil_acoustic_sound_speed_is_physical_below_pb`. `batch_test.py`
+`mach_te` pins re-baselined (dated comment there).
+
+### 18. `woffl/pvt/blackoil.py` — floor on the Vasquez-Beggs compressibility (PVT-F2, 2026-09-02)
+The V-B numerator `5 Rs + 17.2 T − 1180 γg + 12.61 API − 1433` goes negative for
+~10-14 API at 60-80 °F (Ugnu): 14 API / 0.65 / Pb 1,500 / 60 °F returned
+−1.6e-6 psi⁻¹ above Pb, so `Bo` ROSE with pressure and, with no free gas, `cmix`
+put a negative bulk modulus into `sqrt` (untyped `ValueError`). It also dips
+below 1e-6 for mid-API oil at 80 °F below ~900 psig with little gas in solution.
+`BlackOil._floor_compressibility` clamps both the material-balance above-Pb branch
+and the acoustic helper at `_CO_FLOOR = 1e-6 psi⁻¹` (below any real oil; water is
+3.1e-6) and warns ONCE per process (`RuntimeWarning`, class flag
+`_co_floor_warned`). No-op on every in-range input.
+
+**Guarded by:** `tests/test_pvt_blackoil.py::test_compressibility_floor_heavy_oil_low_temp`
+(co ≥ 1e-6 on both paths, warning fires once, Bo falls with pressure),
+`::test_compressibility_floor_is_noop_in_range`, and
+`tests/test_pvt_resmix.py::test_cmix_does_not_raise_for_heavy_oil_at_low_temp`.
+
+### 19. `woffl/pvt/formgas.py` — z-factor is Dranchuk-Abu-Kassem, not the "grad school" cubic (PVT-F3, 2026-09-02)
+`_compute_zfactor` used the unattributed cubic, which drifts −10 % at ppr 4.5
+(γg 0.65, 80 °F: 0.700 vs DAK 0.779), −20 % at ppr 6, and returned 0.143 vs DAK
+0.686 for γg 1.0 at 3,015 psia — inside the accepted input range and above the
+clamp — with the WRONG SIGN of dz/dp beyond ppr ≈ 3, so `compress` (cg) was
+overstated and `cmix` understated (compounding #17). The already-implemented
+`_zfactor_dak` was verified to converge over tpr 1.05-3 / ppr 0-15 (0 failures on
+a 0.05 × 0.25 grid). New `FormGas._zfactor` = DAK, clamped to
+`[_ZFACTOR_MIN, _ZFACTOR_MAX]` (the P1-10 crash guard stays), with the cubic as
+the fallback ONLY if Newton raises; `compress` differentiates the same
+correlation; DAK's Newton tolerance tightened 1e-3 → 1e-7 so the +10 psi forward
+difference is not dominated by stopping error. Against the 42-point Peng-Robinson
+sweep DAK is closer than the cubic (mean |z err| 2.55 % vs 3.53 %, max 2.95 % vs
+4.78 %); the single 2,500-psig end point moved the other way and two hysys
+comparison tolerances were widened by one point (`test_gas_viscosity` 3 → 4 %,
+`test_mixture_density` 4 → 5 %, documented in-test). `batch_test.py` pins moved
+< 1 % (`mach_te` 9X −0.8 %, rates −0.04 %, psu +0.01 %) and were refreshed.
+`_zfactor_grad_school` itself is untouched.
+
+**Guarded by:** `tests/test_pvt_formgas.py::test_zfactor_property_is_dak` (pins
+0.779 / 0.686 at 3,015 psia / 80 °F, asserts the cubic's 0.143 no longer reaches
+the property, and that cg < 1/p where dz/dp > 0) and
+`::test_zfactor_dak_converges_over_validity_range`.
+
+### 20. `woffl/pvt/resmix.py` — `ResMix.__init__` validates wc and fgor (PVT-F4, 2026-09-02)
+Every child class range-checks its inputs; the mixture did not. wc 1.05 gave an
+oil volume fraction of −0.055 silently; a negative fgor a negative gas mass
+fraction. `WellConfig`, the CSV stores and `prop_hist.form_wc` reach this
+constructor unguarded. Now `ValueError` for wc ∉ [0, 1] or fgor < 0 (inclusive:
+0 / 1 / 0 remain legal — dewatering and dead oil).
+
+**Guarded by:** `tests/test_pvt_resmix.py::test_watercut_out_of_range_raises`,
+`::test_negative_fgor_raises`, `::test_watercut_and_fgor_boundaries_accepted`.
+
+### 21. `woffl/pvt/blackoil.py` + `resmix.py` — an undersaturated stream's oil carries only fgor (PVT-F5, 2026-09-02)
+When `fgor < Rs(p)` the mass balance (`_owg_mass_fraction`) clamps free gas to
+zero, but the oil was still evaluated at the correlation's Rs(p): Schrader at
+fgor 150 / 1,400 psig / 100 °F carried 48 scf/stb of phantom dissolved gas
+(density 54.65 vs 55.03 lbm/ft³, viscosity 13.6 vs 16.5 cP). `BlackOil.condition`
+gains an optional `rs_max` (default None — standalone API unchanged, and a later
+plain `condition()` drops the cap); `_compute_gas_solubility` returns
+`min(Rs(p), rs_max)`; `ResMix.condition` passes `rs_max=self.fgor`. Every
+derived oil property (Bo, density, viscosity, tension, acoustic co, above-Pb co)
+reads `gas_solubility()`, so one cap fixes them all, and the mass balance's
+`xrs` now lands on exactly zero free gas instead of clipping a negative. The
+standard-condition densities in `__init__` are deliberately NOT capped (stock-
+tank oil is a property of the oil, not the stream), so every saturated stream
+(`fgor ≥ Rs(p)`, the normal case, including the E-41 fixture) is bit-identical.
+
+**Guarded by:** `tests/test_pvt_resmix.py::test_undersaturated_stream_oil_carries_only_fgor`
+(oil density/viscosity equal the Rs = 150 evaluation exactly, xgas == 0, fractions
+close), `::test_saturated_stream_oil_is_bit_identical`,
+`::test_standalone_blackoil_condition_unchanged`.
+
+Housekeeping in the same pass: `woffl/pvt/deadoil.py` (a 17-line `DeadOil` stub
+with zero imports anywhere in `woffl/`, `server/` or `tests/`) was deleted. If an
+upstream sync brings it back, it is safe to delete again.
+
+---
+
+### 22. Lazy matplotlib / scipy.optimize imports on the solver import chain (SOLV-P1, 2026-09-01)
+`woffl/assembly/batchpump.py`, `woffl/flow/jetplot.py`, `woffl/geometry/wellprofile.py`
+and `woffl/flow/jetgraphs.py` imported `matplotlib` (and `batchpump`/`jetplot`
+`scipy.optimize`) at module scope although only their plotting / curve-fit /
+annotation helpers use them. `jetplot` sits on the solver's hot import chain
+(`jetflow -> jetplot`), so every ProcessPool worker spawn and the FastAPI process
+paid ~0.5-1.0 s for code `batch_run` never runs; a 20-well pad on the 2-worker tier
+spent ~2 s spawning to save ~3 s of solves. `batchpump` imports lazily inside the
+methods; `jetplot` / `jetgraphs` / `wellprofile` go through a `_LazyModule` /
+`_LazyPyplot` proxy so `plt.`/`mpl.`/`opt.` attribute access is unchanged.
+`scipy.optimize` stayed eager in `wellprofile` until patch 23 (FLOW-2) moved the
+survey fit off the physics path; it is now imported inside `segments_fit`.
+Behaviour is bit-identical; only import time moves.
+
+**Guarded by:** `tests/test_batchpump_lazy_imports.py` (a fresh interpreter imports
+`batchpump`, `network_optimizer`, `solopump` and asserts no `matplotlib*` module is
+loaded; a second test exercises the lazy curve-fit path).
+
+---
+
+### 23. `woffl/geometry/wellprofile.py` — the production traverse reads the RAW survey (FLOW-2 / FLOW-8, 2026-09-02)
+`WellProfile.outflow_spacing` interpolated the traverse's node TVDs from
+`md_fit`/`vd_fit`, the greedy AIC/BIC piecewise fit `segments_fit` builds in
+`__init__`. The fit's loop breaks at the first count that fails to improve, and
+Nelder-Mead reports `success=False` for every count >= 4 on real surveys, so the
+fitted TVD at the pump sat off the raw survey by a fleet median of 14 ft, p90 111
+ft, max 240 ft (MPE-48; 22 of 91 surveys > 60 ft) — while the power-fluid
+hydrostatic on the other side of the pump (`solopump.discharge_residual` via
+`wellprof.jetpump_vd`) used the RAW survey. The two sides of the pump now see the
+same TVD: `_outflow_spacing` takes `md_ray`/`vd_ray`, evenly spaced surface ->
+pump with the pre-existing `max(ceil(L/seg_len), 3)` node rule (a straight-line
+profile, whose fit was one segment, is bit-identical — `tests/outflow_test.py`
+did not move). Fleet probe after: |vd_traverse − vd_raw| at the pump = 0.0 for
+all 86 constructible surveys. `segments_fit` / `filter()` / `md_fit` / `vd_fit` /
+`hd_fit` stay (upstream API, used by the profile plot) but are now LAZY
+properties computed on first access, so construction no longer pays 11-161 ms
+(measured median 83 ms, max 620 ms -> 0.1 ms) and `scipy.optimize` is imported
+inside `segments_fit` rather than at module scope. Pins: `tests/batch_test.py`
+9D/12B/16E moved (the Schrader preset's fit sat 6.65 ft deep at the 6693 ft pump
+-> ~2.9 psi of production hydrostatic; 16E 36.45 -> 38.37 BOPD).
+
+**Guarded by:** `tests/test_wellprofile_validation.py`
+(`test_traverse_pump_tvd_equals_raw_survey_tvd_fleetwide`,
+`test_outflow_spacing_follows_survey_kinks_not_fit`,
+`test_outflow_spacing_node_rule_unchanged`,
+`test_segments_fit_not_run_by_construction_or_traverse`,
+`test_schrader_preset_traverse_uses_raw_pump_tvd`,
+`test_wellprofile_imports_scipy_optimize_lazily`) and the re-pinned
+`tests/batch_test.py` reference rows.
+
+---
+
+### 24. `woffl/geometry/wellprofile.py` — reject corrupt surveys at construction (FLOW-3, 2026-09-02)
+`WellProfile.__init__` accepted anything. `MPC-05 Deviation Survey.csv` carries
+179 duplicated MDs whose TVDs alternate (6090 -> 0 / 4547 ft); `sort_profile`'s
+unstable argsort interleaved them and the `_horz_dist` |dvd| <= |dmd| clip turned
+the impossible steps into silent zeros, putting the pump 281 ft too deep (~100
+psi). New `validate_survey(md_ray, vd_ray, tol_ft=SURVEY_STEP_TOL_FT)` runs after
+a now-STABLE sort: exact duplicate rows are dropped; duplicate MDs whose TVDs
+agree within `tol_ft` coalesce to the first-seen row (survey files that merge two
+runs are common — MPH-31 has 157); duplicate MDs that disagree by more, or any
+|dTVD| > |dMD| + `tol_ft`, raise `ValueError` naming the station. `tol_ft` = 5.0,
+calibrated on the 91 local surveys: run-merge disagreement tops out at 3.9 ft
+(MPR-111), the corrupt files sit at 9.5 (MPI-11, one 2.4 ft step at 84 deg
+inclination), 17.9 (MPM-64), 32.6 (MPL-20), 49 (MPC-40, subsea datum in the TVD
+column) and 4,547 ft (MPC-05). Those five now raise and every caller
+(`network_optimizer.load_well_profile`, `server/services/factories.build_well_profile`,
+`server/services/wells.py` profile endpoint) already falls back to the field
+preset with a logged warning — re-pull the five CSVs from Oracle PDB. The
+`_horz_dist` clip (patch 12) stays for sub-tolerance noise. Clean surveys are
+bit-identical (`validate_survey` is an identity on them).
+
+**Guarded by:** `tests/test_wellprofile_validation.py`
+(`test_mpc05_corrupt_survey_raises_naming_station`,
+`test_mph31_toe_up_survey_constructs_and_coalesces_duplicates`,
+`test_duplicate_md_conflicting_tvd_raises`,
+`test_impossible_step_raises_naming_stations`,
+`test_fleet_only_the_known_corrupt_surveys_raise`, plus the exact-duplicate /
+within-tolerance / identity cases).
+
+---
+
+### 25. `woffl/geometry/wellprofile.py` — depth lookups: a range check that raises, shallowest-crossing `md_interp` (FLOW-10, 2026-09-02)
+`_depth_interp`'s guard was `(min < x < max) is False` — a numpy bool is never
+the `False` singleton, so it never raised and `vd_interp(TD + 5000)` returned the
+clamped end value. Now `if not (lo <= x <= hi): raise ValueError` (inclusive, so a
+pump AT total depth no longer raises). `md_interp` fed a non-monotonic `vd_ray`
+as `xp` to `np.interp` (77 of 91 surveys are toe-up; MPH-31's pump TVD mapped to
+the 21,180 ft toe instead of 5,144 ft) — it now takes the SHALLOWEST crossing via
+the new `first_crossing` helper (same logic as
+`server/services/depth_interp.first_crossing_md`). Monotonic surveys are
+bit-identical. Every caller in `woffl/` and `server/` already wraps these in
+`try/except ValueError`.
+
+**Guarded by:** `tests/test_wellprofile_validation.py`
+(`test_vd_interp_out_of_range_raises`, `test_interp_inclusive_at_both_ends`,
+`test_md_interp_toe_up_takes_shallowest_crossing`, `test_first_crossing_helper`,
+`test_mph31_md_interp_matches_measured_pump_depth`).
+
+---
+
+### 26. `woffl/flow/twophase.py` — zero-flow holdup returns the no-slip holdup (FLOW-11, 2026-09-02)
+`vmix == 0` gives `froude == 0`; `beggs_holdup_base` divides by `froude**c` and
+`beggs_cf_base` takes `log(froude**h)`, raising a bare `ZeroDivisionError` /
+`ValueError("math domain error")` that escaped every `except ValueError` in the
+solvers (patch 14 only guarded the friction factor). `beggs_holdup_inc` now
+short-circuits `froude <= 0 -> nslh` (no flow, no slip). `froude > 0` is
+bit-identical.
+
+**Guarded by:** `tests/test_multiphase.py::test_beggs_holdup_inc_zero_flow_returns_no_slip`
+and `tests/outflow_test.py::test_zero_flow_traverse_does_not_raise`.
+
+---
+
+### 27. `woffl/flow/singlephase.py` — laminar cutoff at Re 2300 with a linear blend to Serghide at 4000 (FLOW-12, 2026-09-02)
+`ffactor_darcy` ran `64/Re` all the way to Re 4000 and then stepped to Serghide
+(f 0.016 -> 0.041, a 2.5x jump in friction at one Reynolds number). Laminar now
+ends at `RE_LAMINAR = 2300`; between 2300 and `RE_TURBULENT = 4000` the factor is
+blended linearly from `64/2300` to `serghide(4000, rel_ruff)`, continuous at both
+ends. `Re < 2300` and `Re >= 4000` are bit-identical; the E-41 / Schrader
+fixtures are fully turbulent, so no pin moved.
+
+**Guarded by:** `tests/test_multiphase.py::test_ffactor_darcy_laminar_ends_at_2300_and_blends_to_4000`.
+
+---
+
+### 28. `woffl/geometry/pipe.py` — a wall of half the OD or more is rejected (review section 5, 2026-09-02)
+`Pipe.__init__` checked `thick > out_dia`, so a 0.6 in wall on a 1.0 in OD was
+accepted and `inn_dia` came out negative. Now `2 * thick >= out_dia` raises.
+
+**Guarded by:** `tests/outflow_test.py::test_pipe_wall_must_leave_an_inner_diameter`.
+
+---
+
+### 29. `woffl/assembly/solopump.py` — suction walk bisects to the feasibility edge; "sonic" = at the choke floor (SOLV-F2, 2026-09-02)
+`_residual_walk_inward` probes a fixed fraction grid whose gaps reach 14 % of
+the bracket span (~140 psi on a 1,000 psi bracket). When the first FEASIBLE
+probe already carried the far end's residual sign it was returned as-is and
+`jetpump_solver` reported it as `sonic_status=True` — the marginal 11A fixture
+(94 % WC, 2,000 psi): floor 1,877.1, first feasible probe 1,885.0, residual
++35 psid, "sonic" at Mach 0.50, the true root in the unprobed gap. Downstream,
+`fric_calibration` refused such wells as "pinned" and Header Impact called them
+sonic-decoupled. Now `_refine_feasibility_edge` bisects on FEASIBILITY between
+the last infeasible and first feasible fraction until the residual flips sign
+(root bracketed) or the edge is pinned to within `_EDGE_TOL_PSI` (2 psi), 2-4
+extra evaluations; 11A solves to 1,883.3 psig, residual −8 psid, `sonic=False`.
+`sonic_status` is now "the returned suction is (within 2 psi of) the Mach =
+mach_crit floor `psu_minimize` solved for", not "which branch returned"; a
+mach_te threshold was rejected because at the floor the reported `mach_te` is
+the last discrete subsonic sweep point (E-41 9X/10X/11X read 0.85-0.89 while
+choked). A feasible endpoint still returns from the first probe — the E-41 48
+rows and the other marginal fixtures are bit-identical.
+
+**Guarded by:** `tests/test_asm_solopump.py::TestWalkInwardFeasibilityEdge`
+(`test_marginal_11a_is_bracketed_not_sonic` is the real case).
+
+---
+
+### 30. `woffl/assembly/solopump.py` — `_bisection_solve` guards its first probe and returns rates from the returned suction (SOLV-F3, 2026-09-02)
+The initial midpoint's `discharge_residual` sat outside the `try`, so a
+`JetPumpError` there escaped as "solver failed" on a well whose root IS
+bracketed; and an interior exception set `res_mid` negative but left the rates
+from the previous midpoint, so a width exit could return psu 469.5 with the
+rates of 470.3. The first probe now gets the loop's "too-low side" treatment
+and a `rates_at` guard (mirroring `_secant_solve`) re-evaluates at the returned
+psu — falling back to the feasible upper end `psu_hi` when the final midpoint
+itself has no throat solution. Normal-path solves are unchanged.
+
+**Guarded by:** `tests/test_asm_solopump.py::TestBisectionSolveConsistency`.
+
+---
+
+### 31. `woffl/flow/jetplot.py` — `_dete_zero` bounds the positive-tde clamp (FLOW-5, 2026-09-02)
+When tde stays positive along the subsonic branch `_dete_zero` clamps to the
+minimum-tde point. That is right only when the minimum is (nearly) zero — the
+Mach-1 choke that `psu_minimize` places the floor on. Accepting ANY positive
+minimum fabricated a throat-entry state for pumps that cannot be fed at that
+suction (a 9X on a 2,000 BOPD / 95 % WC well bottoms out at 26 % of the entry
+kinetic energy and reported "sonic, 30 BOPD"). The clamp is now accepted only
+when the minimum is within `_CLAMP_TOL_FRAC` = 2 % of `kde_ray[0]`; otherwise
+`ThroatEntryChoked` (a `ThroatEntryNoSolution` subclass, defined next to the
+raise) is raised. Tolerance justified by measurement: converged floors clamp at
+<= 0.5 % (E-41 sweep, marginal, thin-band fixtures) after #32; fabricated ones
+sit at 26-98 %. `_residual_walk_inward` steps PAST `ThroatEntryChoked` (the
+remedy is a higher suction — the feasible region is above), so at
+`mach_crit = 1.0` nothing changes and `mach_crit > 1` diagnostic solves, whose
+scaled floor sits below the unscaled Mach-1 choke, walk up to the first real
+zero crossing instead of dying (E-41 12B at 1.15 / 1.5 still converges).
+Plain `ThroatEntryNoSolution` still propagates for the GOR auto-recovery.
+
+**Guarded by:** `tests/test_jetplot_book.py` (`test_clamp_rejected_when_the_branch_never_closes`,
+`test_clamp_accepted_when_minimum_is_within_tolerance`) and
+`tests/test_asm_solopump.py::TestWalkInwardFeasibilityEdge::test_throat_entry_choked_is_walked_past`.
+
+---
+
+### 32. `woffl/flow/jetflow.py` — `psu_minimize` checks the choke residual and interpolates tde at Mach = mach_crit (FLOW-9, 2026-09-02)
+`psu_minimize` exited on |Δpsu| <= 5 alone, so two clamps at a bound exited
+"converged" with a residual nowhere near zero, and `throat_entry_mach_one`
+returned the NEAREST subsonic sweep point (`tde_ray[-2]`), which sits above the
+true Mach-crit minimum by the 25-psi step's discretization gap. Now: (a) tde is
+linearly interpolated AT Mach = mach_crit between the two bracketing sweep
+points (`_tde_at_mach`); (b) convergence also requires |tee| <= `_TEE_TOL_FRAC`
+= 1 % of `kde_ray[0]` — but ONLY when the sweep actually crossed mach_crit; a
+sweep that hit the 50-psig floor first (pure water: Mach 0.04) returns tde at
+the floor, a numerical guard whose floor pressure jumps between iterates, so
+those keep the historic |Δpsu| exit bit-identically (the water-pump fixtures);
+(c) two clamps at the `pres − 10` bound with the choke residual still positive
+raise `ThroatEntryNoSolution` ("cannot be fed at any suction") instead of
+letting the solver fabricate a choked point there; two clamps at the 50-psig
+floor keep returning 50 as before. Every choke floor moved by < 1.2 psi on the
+48 E-41 pumps and < 0.2 psi on the marginal fixture; `tests/batch_test.py` 9X
+re-pinned (see its dated comment — the mach_te pin is quantized at the choke).
+
+**Guarded by:** `tests/test_asm_solopump.py::TestPsuMinimizeChokeResidual`,
+`tests/test_jetflow_bracketed.py::test_throat_entry_mach_one_returns_the_interpolated_value`,
+and `tests/test_asm_solopump.py::TestWaterPumpMode` (the non-crossing branch).
+
+---
+
+### 33. `woffl/flow/jetflow.py` — `_throat_discharge_bracketed` finds a hump narrower than its scan step (FLOW-6, 2026-09-02)
+The 60-point downward scan (step ~0.1·pte) stepped clean over a positive
+momentum-balance hump narrower than one step and raised `ConvergenceError` for
+exactly the marginal pumps the fallback (#2, #11) exists for. When the scan
+sees no sign change it now maximizes the balance over [15, hi] with a bounded
+`scipy.optimize.minimize_scalar` (~20 evaluations; hi pushed out ×4 up to three
+times if the balance is still positive there); a positive peak brackets the
+physical HIGH root in [peak, hi] for `brentq`. Only the previously-raising path
+changes.
+
+**Guarded by:** `tests/test_jetflow_bracketed.py::test_narrow_hump_missed_by_the_scan_is_still_found`.
+
+---
+
+### 34. `woffl/flow/jetplot.py` — `JetBook` sweeps on Python lists with an inline trapezoid (FLOW-7, 2026-09-02)
+`JetBook.append` did eight `np.append` copies plus a scipy `trapezoid` on a
+two-element slice per sweep step — ~37 % of every solve. The columns are now
+lists (`book.prs`, `book.tde`, ...) with the `*_ray` numpy views materialized
+lazily by properties (cached until the next append; setter kept for the tests
+that assign whole arrays); the expansion-energy increment is computed inline in
+scipy's exact operation order (`d * (y[1:] + y[:-1]) / 2.0`, `x = (144·32.174)·p`).
+The sweep loops in `jetflow` deliberately keep reading `prs_ray[-1]` /
+`tde_ray[-1]`: the SCALAR TYPE fed back into the PVT (np.float64 / np.int64,
+not a Python float) is part of bit-identity — the PVT's `**` / `exp` paths round
+differently for Python floats, which shifted three E-41 rows by one ULP when the
+loops read the lists directly. Verified bit-identical on all 48 E-41 rows and
+the marginal fixtures. E-41 sonic solve 16.6 → 7.5 ms, secant 36 → 20 ms,
+28-pump batch 1.25 → 0.92 s (with #35).
+
+**Guarded by:** `tests/test_jetplot_book.py` (`test_append_expansion_energy_bit_identical_to_incremental_ee`,
+`test_integer_psu_keeps_the_integer_element_type`, `test_zero_tde_walk_bit_identical_to_manual_sweep`).
+
+---
+
+### 35. `woffl/assembly/solopump.py` + `woffl/flow/jetflow.py` — throat-entry seed reuse and secant known-point reuse (SOLV-F9 / SOLV-P3, 2026-09-02)
+(a) `discharge_residual` re-swept the throat entry `psu_minimize` had just
+computed. `throat_entry_zero_tde(..., seed_book=)` now accepts the Mach-one
+book: both walks start at the same psu with the same 25-psi steps, so the seed
+is truncated where the zero-tde stop rule would have fired (`_seed_zero_tde_book`,
+on a copy) and extended only if needed — the same points, bit-identical.
+`jetpump_solver` passes it only for the endpoint probe and only at
+`mach_crit = 1.0` (the Mach-one walk scales kde otherwise). (b) `_secant_solve`
+keeps every evaluated suction in `known`; a clamp back onto an evaluated point
+(typically a bracket end) is served from memory, and a clamp that pins the
+iterate on the point it already stands on with |res| > res_tol raises at once —
+the next `psu_secant` would have raised on equal residuals anyway. Both
+bit-identical by construction (`discharge_residual` is a pure function of psu).
+
+**Guarded by:** `tests/test_asm_solopump.py::TestSeedBookReuse` and
+`tests/test_asm_solopump.py::TestSecantSolveReusesKnownPoints`.
+
+---
+
 ## Dead-code deletions from `woffl/assembly/` (R-10, 2026-07-06)
 
 Not patches — these are GUI-fork-only removals of confirmed-zero-caller code

@@ -17,8 +17,15 @@ class Pipe:
             Self
         """
 
-        if thick > out_dia:
-            raise ValueError("Pipe thickness is greater than outer diameter")
+        # [LIBRARY change -> upstream PR to kwellis/woffl] review 2026-09-01
+        # (section 5): the wall is on BOTH sides, so a thickness of half the
+        # OD or more leaves no bore - the old `thick > out_dia` accepted a
+        # 0.6 in wall on a 1.0 in OD and returned a negative inner diameter.
+        if 2 * thick >= out_dia:
+            raise ValueError(
+                f"Pipe wall thickness {thick} in leaves no inner diameter on a "
+                f"{out_dia} in outer diameter (need 2 * thick < out_dia)"
+            )
 
         self.out_dia = out_dia
         self.thick = thick

@@ -10,6 +10,7 @@ JSON response (the SPA applies ``seeds`` wholesale over SimParams defaults).
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 from typing import Any, Optional
 
 import numpy as np
@@ -106,16 +107,29 @@ _PROFILE_MAX_POINTS = 1500
 # ---------------------------------------------------------------------------
 
 
+_CLAMP_LOG: "ContextVar[Optional[list[str]]]" = ContextVar("woffl_seed_clamp_log", default=None)
+
+
 def _clamp(key: str, value: float) -> float:
     """Clamp a programmatic seed into its widget's bounds.
 
+    A clamp that fires is RECORDED (when a well_context call has armed
+    ``_CLAMP_LOG``) so the response can say which seeds were altered. A
+    silent clamp presented a replaced number as the well's own value - the
+    same class of bug as the auto-matched-PF-4,300 incident (review
+    2026-09-01, SRV-9).
     # mirrors woffl/gui/sidebar.py:clamp_seed
     """
     lo, hi = _SEED_BOUNDS.get(key, (None, None))
+    raw = value
     if lo is not None:
         value = max(value, lo)
     if hi is not None:
         value = min(value, hi)
+    if value != raw:
+        log_list = _CLAMP_LOG.get()
+        if log_list is not None:
+            log_list.append(f"{key}: {raw:g} -> {value:g} (widget bounds {lo}..{hi})")
     return value
 
 
@@ -246,16 +260,16 @@ def _live_pf_seed(well: str, tests_df: Optional[pd.DataFrame]) -> Optional[dict[
 # ---------------------------------------------------------------------------
 
 
-@ttl_cache(config.TTL_CHARS, maxsize=2)
 def list_wells() -> dict[str, Any]:
     """All known wells from the characteristics frame (WellsResponse shape).
 
-    Cached: this is on every page load, and it re-walked the ~90-row chars
-    frame and stat'd the survey directory once PER WELL to answer
-    ``has_survey``. Both inputs (the chars frame, the survey CSVs on disk)
-    change no more often than TTL_CHARS, so rebuilding the payload per
-    request bought nothing. maxsize 2 covers the Databricks and
-    csv_fallback shapes.
+    The Databricks-backed payload is cached (``_list_wells_databricks``);
+    the CSV fallback is rebuilt on EVERY call so Databricks is re-probed,
+    exactly as ``datasources.well_chars_safe`` promises. Until 2026-09-01
+    this function cached whichever shape it got first, so one blip left the
+    fleet on ``jp_chars.csv`` (no casing, PVT, friction; every casing
+    defaulted to 6.875/0.5) for an hour, 12 under warm retention (review
+    DATA-15).
 
     Returns:
         {"wells": [WellListItem...], "source": "databricks"|"csv_fallback"}.
@@ -263,8 +277,25 @@ def list_wells() -> dict[str, Any]:
     Raises:
         RuntimeError: when both Databricks and the CSV fallback fail.
     """
+    try:
+        return _list_wells_databricks()
+    except Exception as exc:  # noqa: BLE001 - fall through to the uncached CSV
+        log.warning("well list: Databricks unavailable (%s); serving CSV fallback", exc)
     df, source = datasources.well_chars_safe()
-    # One directory listing instead of a stat per well.
+    return _build_well_list(df, source)
+
+
+@ttl_cache(config.TTL_CHARS, maxsize=1)
+def _list_wells_databricks() -> dict[str, Any]:
+    """The cached, Databricks-only well list. Raises on any failure so a
+    blip is never cached; the warm loop refreshes THIS entry."""
+    df, _estimated = datasources.well_chars()
+    return _build_well_list(df, "databricks")
+
+
+def _build_well_list(df: pd.DataFrame, source: str) -> dict[str, Any]:
+    """WellsResponse payload from a chars frame. One directory listing
+    instead of a stat per well for ``has_survey``."""
     surveyed = datasources.surveyed_wells()
     wells: list[dict[str, Any]] = []
     for _, row in df.iterrows():
@@ -316,6 +347,23 @@ def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
     row: dict[str, Any] = matches.iloc[0].to_dict()
 
     seeds: dict[str, Any] = {}
+    clamped: list[str] = []
+    _clamp_token = _CLAMP_LOG.set(clamped)
+    try:
+        return _well_context_body(well, months, cap, row, chars_source, seeds, clamped)
+    finally:
+        _CLAMP_LOG.reset(_clamp_token)
+
+
+def _well_context_body(
+    well: str,
+    months: int,
+    cap: int,
+    row: dict[str, Any],
+    chars_source: str,
+    seeds: dict[str, Any],
+    clamped: list[str],
+) -> dict[str, Any]:
 
     # -- (a) chars seeds -----------------------------------------------------
     # mirrors woffl/gui/sidebar.py:_update_well_parameters_from_data
@@ -327,6 +375,11 @@ def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
     _seed(seeds, "form_temp", row.get("form_temp"), 70, cast=int)
     _seed(seeds, "jpump_tvd", row.get("JP_TVD"), 4065, cast=int)
     _seed(seeds, "pres", row.get("res_pres"), 1700, cast=int)
+    # Measured pump MD for the optimizer's WellConfig (review 2026-09-01,
+    # finding 2). Deliberately NOT a seed: the client lays every seed key
+    # over its SimParams form, and jpump_md is not a SimParams field (the
+    # single-well path re-resolves it from TVD in build_well_profile).
+    jpump_md_ctx = _resolve_seed_jpump_md(well, float(seeds["jpump_tvd"]))
 
     is_sch_val = _opt_bool(row.get("is_sch"))
     is_sch = True if is_sch_val is None else is_sch_val
@@ -365,6 +418,10 @@ def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
                 "throat_ratio": throat_str,
                 "tubing_od": frames.opt_float(current.get("tubing_od")),
                 "date_set": frames.json_value(current.get("date_set")),
+                # Where the identity came from. "excel_fallback" is the
+                # bundled 2026-03 spreadsheet: a MONTHS-old pump presented
+                # as installed unless the client says so (DATA-5).
+                "source": _jp_src,
             }
 
     # -- (c) IPR from well tests ----------------------------------------------
@@ -386,7 +443,9 @@ def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
                 estimate_reservoir_pressure,
             )
 
-            merged_with_rp = estimate_reservoir_pressure(tests_df)
+            # The well's own chars row carries is_sch: the RP cap must be the
+            # FIELD's (Kuparuk ~3,000), not the Schrader 1,800 default (SOLV-F5).
+            merged_with_rp = estimate_reservoir_pressure(tests_df, jp_chars=pd.DataFrame([row]))
             vogel_coeffs = compute_vogel_coefficients(merged_with_rp)
             usable = (
                 vogel_coeffs is not None
@@ -418,9 +477,16 @@ def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
                 date_str = frames.json_value(coeff["most_recent_date"]) or str(
                     coeff["most_recent_date"]
                 )
+                rp_fallback = str(coeff.get("RP_source") or "fit") == "floor_fallback"
                 ipr_info = (
                     f"IPR values loaded from {num_tests} well tests "
                     f"(most recent: {date_str})"
+                    + (
+                        " - RESERVOIR PRESSURE IS A FLOOR FALLBACK (max test BHP + 50), "
+                        "not a fit: decide it in the sidebar"
+                        if rp_fallback
+                        else ""
+                    )
                 )
                 vogel_seeded = True
                 ipr_source = "vogel"
@@ -599,12 +665,18 @@ def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
 
     # -- as-built locks + raw chars ------------------------------------------------
     # mirrors woffl/gui/sidebar.py:as_built_from_props
+    # A local-override row (jp_data/local_well_overrides.csv) carries typed
+    # placeholders, not prop_hist measurements: nothing on it is as-built,
+    # so nothing on it locks (DATA-7).
+    is_override = bool(_opt_bool(row.get("local_override")) or False)
     as_built_locks = {
-        "tubing": frames.opt_float(row.get("out_dia")) is not None
+        "tubing": not is_override
+        and frames.opt_float(row.get("out_dia")) is not None
         and frames.opt_float(row.get("thick")) is not None,
-        "casing": frames.opt_float(row.get("casing_out_dia")) is not None
+        "casing": not is_override
+        and frames.opt_float(row.get("casing_out_dia")) is not None
         and frames.opt_float(row.get("casing_inn_dia")) is not None,
-        "jpump_tvd": frames.opt_float(row.get("JP_TVD")) is not None,
+        "jpump_tvd": not is_override and frames.opt_float(row.get("JP_TVD")) is not None,
     }
     chars_json = {key: frames.json_value(row.get(key)) for key in _CHARS_KEYS}
 
@@ -613,6 +685,10 @@ def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
         "chars": chars_json,
         "chars_source": chars_source,
         "seeds": seeds,
+        "jpump_md": None if jpump_md_ctx is None else round(jpump_md_ctx, 1),
+        # Seeds the widget bounds ALTERED on the way in (empty = none). The
+        # client shows these; a clamped seed is not the well's value.
+        "clamped": list(clamped),
         "as_built_locks": as_built_locks,
         "prop_locks": prop_locks,
         "pump": pump,
@@ -635,6 +711,32 @@ def _even_indices(size: int, cap: int = _PROFILE_MAX_POINTS) -> np.ndarray:
     if size <= cap:
         return np.arange(size)
     return np.unique(np.linspace(0, size - 1, cap).round().astype(int))
+
+
+def _resolve_seed_jpump_md(well: str, jpump_tvd: float) -> Optional[float]:
+    """Pump MD for the context seeds: measured chars JP_MD, else the survey's
+    shallowest crossing of ``jpump_tvd``; None when neither is available."""
+    from server.services.factories import resolve_jetpump_md
+
+    try:
+        survey_df = datasources.survey(well)
+    except Exception:  # noqa: BLE001 - no survey is a normal state
+        survey_df = None
+    if survey_df is None or survey_df.empty:
+        # No survey: the measured MD alone is still the truth if chars has it.
+        from server.services.factories import _chars_jp_md
+
+        return _chars_jp_md(well)
+    try:
+        return resolve_jetpump_md(
+            well,
+            jpump_tvd,
+            survey_df["meas_depth"].tolist(),
+            survey_df["tvd_depth"].tolist(),
+        )
+    except Exception as exc:  # noqa: BLE001 - never block the context on this
+        log.warning("jpump_md seed failed for %s: %s", well, exc)
+        return None
 
 
 def _chars_jp_tvd(well: str) -> Optional[float]:
@@ -685,7 +787,14 @@ def well_profile_payload(
         try:
             md_list = [float(v) for v in survey_df["meas_depth"].tolist()]
             vd_list = [float(v) for v in survey_df["tvd_depth"].tolist()]
-            jetpump_md = float(np.interp(tvd_eff, vd_list, md_list))
+            # Measured chars JP_MD when it agrees with tvd_eff, else the
+            # shallowest crossing - never np.interp on a toe-up survey
+            # (review 2026-09-01, finding 1: MPH-31 drew the pump at the toe).
+            from server.services.factories import resolve_jetpump_md
+
+            jetpump_md = resolve_jetpump_md(well, tvd_eff, md_list, vd_list)
+            if jetpump_md is None:
+                raise ValueError(f"survey never reaches {tvd_eff:.0f} ft TVD")
             wp = WellProfile(md_list=md_list, vd_list=vd_list, jetpump_md=jetpump_md)
             has_survey = True
         except Exception as exc:

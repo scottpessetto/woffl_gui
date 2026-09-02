@@ -104,10 +104,37 @@ class FormGas:
         self._cache = {}
         return self
 
+    @staticmethod
+    def _zfactor(ppr: float, tpr: float) -> float:
+        """Z-factor used by every property: Dranchuk-Abu-Kassem, clamped.
+
+        [LIBRARY change -> upstream PR to kwellis/woffl] PVT-F3: the
+        "grad school" cubic drifts -10 % at ppr 4.5 (0.65 SG, 80 degF), -20 %
+        at ppr 6, and returned 0.143 vs DAK 0.686 for a 1.0 SG gas at 3,000
+        psia — inside the accepted input range and above the clamp — with the
+        WRONG SIGN of dz/dp beyond ppr ~3, so cg was overstated and cmix
+        understated. DAK (verified to converge for tpr 1.05-3, ppr 0-15) is
+        the standard. The [_ZFACTOR_MIN, _ZFACTOR_MAX] clamp stays as the
+        crash guard, and the cubic remains the fallback ONLY if Newton fails
+        to converge (never observed in range).
+
+        Args:
+            ppr (float): Pseudo Reduced Pressure, unitless
+            tpr (float): Pseudo Reduced Temperature, unitless
+
+        Returns:
+            zfactor (float): Compressibility of Natural Gas, unitless
+        """
+        try:
+            zfactor = FormGas._zfactor_dak(ppr, tpr)
+        except (ValueError, ZeroDivisionError, OverflowError):
+            return FormGas._zfactor_grad_school(ppr, tpr)  # already clamped
+        return min(max(zfactor, FormGas._ZFACTOR_MIN), FormGas._ZFACTOR_MAX)
+
     def _compute_zfactor(self) -> float:
-        zfactor = self._zfactor_grad_school(self.ppr, self.tpr)
-        # zfactor = self._zfactor_dak(self.ppr, self.tpr)
-        return zfactor
+        # [LIBRARY change -> upstream PR to kwellis/woffl] PVT-F3: DAK, not
+        # the cubic (see _zfactor).
+        return self._zfactor(self.ppr, self.tpr)
 
     @property
     def zfactor(self) -> float:
@@ -184,7 +211,9 @@ class FormGas:
         dp = 10.0
         p1 = self.pabs  # absolute pressure, psia
         z1 = self.zfactor
-        z2 = self._zfactor_grad_school((p1 + dp) / self.ppc, self.tpr)
+        # [LIBRARY change -> upstream PR to kwellis/woffl] PVT-F3: the
+        # derivative must come from the SAME correlation as z1 (DAK).
+        z2 = self._zfactor((p1 + dp) / self.ppc, self.tpr)
 
         cg = 1 / p1 - (z2 - z1) / (z1 * dp)
         return cg
@@ -281,8 +310,12 @@ class FormGas:
         c3 = FormGas._dak_c3(tpr, a7, a8, a9)
 
         # need to loop this section for z-factor convergence
+        # [LIBRARY change -> upstream PR to kwellis/woffl] PVT-F3: tolerance
+        # tightened 1e-3 -> 1e-7 so the +10 psi forward difference in
+        # `compress` (dz ~ 1e-3) is not dominated by Newton's stopping error.
+        # Quadratic convergence makes this one extra iteration at most.
         n = 0
-        while abs(z_ray[-2] - z_ray[-1]) > 0.001:
+        while abs(z_ray[-2] - z_ray[-1]) > 1e-7:
             rho_pr = FormGas._dak_rho_pr(z_ray[-1], ppr, tpr)
             c4 = FormGas._dak_c4(rho_pr, tpr, a10, a11)
             zfun = FormGas._dak_zfun(z_ray[-1], rho_pr, c1, c2, c3, c4)

@@ -119,6 +119,31 @@ def _f(value) -> Optional[float]:
     return None if pd.isna(val) else val
 
 
+def _vogel_scale(
+    bhp_test: Optional[float], bhp_day: Optional[float], res_pres: Optional[float]
+) -> Optional[float]:
+    """Ratio of Vogel deliverability at ``bhp_day`` to that at ``bhp_test``
+    on the same curve (same reservoir pressure), i.e. the factor that moves
+    the test's rate along ITS OWN inflow curve to the day's drawdown. None
+    when any input is missing or the day is at/above reservoir pressure
+    (the caller keeps the raw test rate; that point is filtered anyway).
+    Floored at 0 (EVID-F6)."""
+    if bhp_test is None or bhp_day is None or res_pres is None:
+        return None
+    try:
+        pr = float(res_pres)
+        if pr <= 0 or float(bhp_test) >= pr or float(bhp_day) >= pr:
+            return None
+        rt = float(bhp_test) / pr
+        rd = float(bhp_day) / pr
+        denom = 1.0 - 0.2 * rt - 0.8 * rt * rt
+        if denom <= 0:
+            return None
+        return max(0.0, (1.0 - 0.2 * rd - 0.8 * rd * rd) / denom)
+    except (TypeError, ValueError):
+        return None
+
+
 def _test_wc(row: Any, fallback_wc: Optional[float]) -> Optional[float]:
     """form_wc, else computed WtWaterVol/(WtOilVol+WtWaterVol), else fallback.
 
@@ -297,6 +322,7 @@ def points_for_well(
                 vol.dropna(subset=["date"])[["date", "pwr_fld_net"]], on="date", how="inner"
             )
             merged = merged[merged["date"] >= era_start].sort_values("date")
+            # (see _vogel_scale for the per-point rate re-anchoring)
             # Steady-state filter (STEADY_STATE_TOL_PSI): drop transient /
             # recovery days before selection. NaN medians (window < 3 days)
             # and NaN BHPs compare False -> kept for the later row filters.
@@ -310,9 +336,20 @@ def points_for_well(
                     continue
                 if res_pres is not None and float(res_pres) > 0 and bhp >= float(res_pres):
                     continue  # shut-in buildup, not flowing (evidence.py guard)
-                ppf = _f(resolve_pf_pressure(row.get("tubing_prs"), row.get("inn_ann_prs"))[0])
+                ppf, pf_src = resolve_pf_pressure(row.get("tubing_prs"), row.get("inn_ann_prs"))
+                ppf = _f(ppf)
                 if ppf is None or not (ppf_lo <= ppf <= ppf_hi):
                     continue
+                # The day's MEASURED wellhead pressure: on a reverse-circ day
+                # the tubing gauge IS the production WHP (PF is in the
+                # annulus), and vice versa. Holding every daily point at the
+                # default WHP dumped 50-150 psi of real variance into the
+                # friction coefficients (review 2026-09-01, EVID-F7).
+                pwh_day = pwh_default
+                prod_side = row.get("tubing_prs") if pf_src == "annulus" else row.get("inn_ann_prs")
+                prod_side = _f(prod_side)
+                if prod_side is not None and 10.0 <= prod_side <= 600.0:
+                    pwh_day = prod_side
                 rate = _f(row.get("pwr_fld_net"))
                 if rate is None or rate <= PF_RATE_MIN_BPD:
                     continue
@@ -323,6 +360,18 @@ def points_for_well(
                     wc = _test_wc(anchor, fallback_wc)
                     fgor = _f(anchor.get("fgor"))
                     fgor = fgor if fgor is not None else fallback_fgor
+                    # Move the test's rate along ITS OWN Vogel curve to the
+                    # day's BHP. The fitter builds an InFlow per point at
+                    # (oil, bhp); handing every daily point the raw test oil
+                    # at a different BHP asserted a different inflow curve
+                    # per day, gave the residual a systematic sign against
+                    # PF, and biased the fit toward a pinned (unresponsive)
+                    # pump (review 2026-09-01, EVID-F6). Scaled this way,
+                    # every point's anchor lies on ONE curve: the test's.
+                    scale = _vogel_scale(_f(anchor.get("BHP")), bhp, res_pres)
+                    if scale is not None:
+                        oil = oil * scale if oil is not None else None
+                        qtot = qtot * scale if qtot is not None else None
                 else:
                     qtot = fallback_qtot
                     wc = fallback_wc
@@ -335,7 +384,7 @@ def points_for_well(
                         "ppf": ppf,
                         "bhp": bhp,
                         "pf_rate": rate,
-                        "pwh": pwh_default,
+                        "pwh": pwh_day,
                         "qtot": qtot,
                         "oil": oil,
                         "wc": wc,

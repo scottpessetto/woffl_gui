@@ -1,4 +1,5 @@
 import math
+import warnings
 
 import numpy as np
 
@@ -8,6 +9,23 @@ class BlackOil:
 
     Set a condition and calculate density, viscosity or compressibility
     """
+
+    # [LIBRARY change -> upstream PR to kwellis/woffl] PVT-F2: physical floor on
+    # the Vasquez-Beggs oil compressibility. Its numerator
+    # (5 Rs + 17.2 T - 1180 gamma_g + 12.61 API - 1433) goes NEGATIVE for heavy
+    # oil at low temperature (~10-14 API at 60-80 degF, the Ugnu range), which
+    # made Bo RISE with pressure above the bubble point and put a negative
+    # bulk modulus into ResMix.cmix's sqrt. 1e-6 psi^-1 is below any real oil
+    # (water is 3.1e-6) so the floor is a no-op on every in-range input.
+    _CO_FLOOR = 1e-6
+    _co_floor_warned = False
+    # Floor for the ACOUSTIC path only (PVT-F1): Vasquez-Beggs extrapolates
+    # low on co at low Rs / low pressure (below ~900 psig for a 22 API oil at
+    # 80 degF), which with the 1e-6 material-balance floor gave pure-oil
+    # sound speeds up to ~9,000 ft/s. A dead-oil isothermal compressibility
+    # of ~4e-6 psi^-1 is c ~ 4,600 ft/s at 55 lbm/ft3 - the physical ceiling
+    # on a liquid hydrocarbon's sound speed. Silent: expected, not an error.
+    _CO_ACOUSTIC_FLOOR = 4.0e-6
 
     def __init__(self, oil_api: float, bubblepoint: float, gas_sg: float) -> None:
         """Initialize a Black Oil Stream
@@ -116,18 +134,25 @@ class BlackOil:
             self._cache[key] = fn()
         return self._cache[key]
 
-    def condition(self, press: float, temp: float):
+    def condition(self, press: float, temp: float, rs_max: float | None = None):
         """Set condition of evaluation
 
         Args:
             press (float): Pressure of the oil, psig
             temp (float): Temperature of the oil, deg F
+            rs_max (float | None): Cap on the solution GOR, scf/stb. A stream
+                that carries only ``fgor`` scf/stb of gas in total cannot hold
+                more than that in solution, whatever the correlation says
+                Rs(p) would be; ``ResMix.condition`` passes its ``fgor`` here.
+                None (default) leaves the standalone BlackOil API unchanged.
+                [LIBRARY change -> upstream PR to kwellis/woffl] PVT-F5.
 
         Returns:
             self
         """
         self.press = press
         self.temp = temp
+        self._rs_max = rs_max
         self._cache = {}
         return self
 
@@ -137,6 +162,16 @@ class BlackOil:
         else:
             press = self.press
         rs = self.solubility_kartoatmodjo(press, self.temp, self.oil_api, self.gas_sg)
+        # [LIBRARY change -> upstream PR to kwellis/woffl] PVT-F5: an oil in a
+        # stream with fgor < Rs(p) is UNDERSAturated at fgor — it carries only
+        # the gas the stream has. ResMix used to clamp the free gas to zero
+        # but still evaluate Bo / density / viscosity / tension at Rs(p):
+        # 48 scf/stb of phantom dissolved gas for Schrader at fgor 150 /
+        # 1,400 psig (~0.5 lbm/ft3 density, 5-10 % viscosity). Every derived
+        # property reads gas_solubility(), so capping it here fixes them all.
+        rs_max = getattr(self, "_rs_max", None)
+        if rs_max is not None:
+            rs = min(rs, rs_max)
         return rs
 
     def gas_solubility(self) -> float:
@@ -152,6 +187,37 @@ class BlackOil:
         """
         return self._cached("gas_solubility", self._compute_gas_solubility)
 
+    @classmethod
+    def _floor_compressibility(cls, co: float, press: float, temp: float) -> float:
+        """Floor an oil compressibility at the physical minimum ``_CO_FLOOR``.
+
+        Warns ONCE per process the first time the floor engages (a negative or
+        sub-physical Vasquez-Beggs co) so the condition is visible without
+        spamming a batch sweep.
+        [LIBRARY change -> upstream PR to kwellis/woffl] PVT-F2.
+
+        Args:
+            co (float): raw correlation compressibility, psi**-1
+            press (float): evaluation pressure, psig (for the message only)
+            temp (float): evaluation temperature, deg F (for the message only)
+
+        Returns:
+            co (float): compressibility, psi**-1, >= _CO_FLOOR
+        """
+        if co >= cls._CO_FLOOR:
+            return co
+        if not cls._co_floor_warned:
+            cls._co_floor_warned = True
+            warnings.warn(
+                f"Vasquez-Beggs oil compressibility returned {co:.3e} psi^-1 at "
+                f"{press:.0f} psig / {temp:.0f} degF (low temperature and/or "
+                f"little gas in solution); floored at {cls._CO_FLOOR:.0e} "
+                "psi^-1. Further occurrences are silent.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+        return cls._CO_FLOOR
+
     def _compute_compressibility(self) -> float:
         if self.press > self.pbp:  # above bubblepoint
             # Vasquez above-bubble takes Rs at the bubble point (Rsb), which is
@@ -161,6 +227,8 @@ class BlackOil:
             co = self.compressibility_vasquez_above(
                 self.press, self.temp, self.oil_api, self.gas_sg, rs
             )
+            # [LIBRARY change -> upstream PR to kwellis/woffl] PVT-F2 floor.
+            co = self._floor_compressibility(co, self.press, self.temp)
         else:  # below the bubblepoint
             # [LIBRARY change -> upstream PR to kwellis/woffl] McCain-Rollins-
             # Villena (1988) below-bubble correlation is defined with Rsb — the
@@ -178,9 +246,15 @@ class BlackOil:
 
     @property
     def compress(self) -> float:
-        """Oil Compressibility Isothermal
+        """Oil Compressibility Isothermal (material balance)
 
-        Calculate isothermal oil compressibility.
+        Calculate isothermal oil compressibility. Above the bubble point this
+        is Vasquez-Beggs (single-phase liquid). BELOW the bubble point it is
+        the McCain-Rollins-Villena (1988) total compressibility, which
+        INCLUDES the volume of gas liberated as pressure drops — a material-
+        balance quantity (reservoir depletion, Bo slope), NOT the compressibility
+        of the liquid phase itself. For anything acoustic (speed of sound,
+        Wood's equation) use ``compress_acoustic``.
 
         Args:
             None
@@ -189,6 +263,48 @@ class BlackOil:
             co (float): oil compressibility, psi**-1
         """
         return self._cached("compressibility", self._compute_compressibility)
+
+    def _compute_compress_acoustic(self) -> float:
+        # Vasquez-Beggs evaluated with the gas ACTUALLY in solution at the
+        # current pressure (gas_solubility() returns Rs(p) below the bubble
+        # point and Rsb above it). Above the bubble point this is exactly the
+        # same call as _compute_compressibility, so the two are bit-identical
+        # there and the value is continuous across Pb.
+        rs = self.gas_solubility()
+        co = self.compressibility_vasquez_above(
+            self.press, self.temp, self.oil_api, self.gas_sg, rs
+        )
+        co = self._floor_compressibility(co, self.press, self.temp)
+        return max(co, self._CO_ACOUSTIC_FLOOR)
+
+    @property
+    def compress_acoustic(self) -> float:
+        """Oil Compressibility for the Sound-Speed Path (liquid phase only)
+
+        Isothermal compressibility of the LIVE OIL LIQUID at the current
+        (press, temp), with no mass transfer to a gas phase: the quantity
+        Wood's equation needs for the mixture speed of sound. Vasquez-Beggs
+        form evaluated with Rs at the current pressure, so it is continuous
+        across the bubble point (above Pb it equals ``compress`` exactly).
+
+        Why not ``compress``: below Pb that property is the McCain material-
+        balance co, which includes the liberated-gas volume and is 1-2 orders
+        of magnitude larger. Fed into Wood's equation it gave pure-oil "sound
+        speeds" of 100-900 ft/s below Pb (real: ~4,000 ft/s) and a 4x jump
+        across Pb, which drove mach_te / sonic_status in the jet-pump solver.
+        [LIBRARY change -> upstream PR to kwellis/woffl] PVT-F1.
+
+        Args:
+            None
+
+        Returns:
+            co (float): acoustic oil compressibility, psi**-1 (>= _CO_FLOOR)
+
+        References:
+            - Wood, A.B. (1930) A Textbook of Sound — bubbly-liquid mixture
+            - Correlations for Fluid Physical Property... Vasquez and Beggs (1980)
+        """
+        return self._cached("compress_acoustic", self._compute_compress_acoustic)
 
     def _compute_oil_fvf(self) -> float:
         rs = self.gas_solubility()

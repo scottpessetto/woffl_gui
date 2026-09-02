@@ -211,6 +211,7 @@ def estimate_reservoir_pressure(
     df = merged_data.copy()
     unique_wells = df["well"].unique()
     optimal_pres = {}
+    rp_sources: dict = {}
 
     # Build lookup for field model
     is_schrader = {}
@@ -242,10 +243,12 @@ def estimate_reservoir_pressure(
         start_pres = int(max_bhp) + 10
         end_pres = max_pres
 
+        rp_source = "fit"
         if start_pres >= end_pres:
             # Clamp to the field cap — int(max_bhp)+50 could exceed max_pres
             # (e.g. a Schrader well with max BHP ~1795 -> 1845 > the 1800 cap).
             best_pres = min(int(max_bhp) + 50, max_pres)
+            rp_source = "floor_fallback"
         else:
             # Search with fine resolution near max_bhp, coarser further out
             for pres in range(start_pres, end_pres, 5):
@@ -259,10 +262,15 @@ def estimate_reservoir_pressure(
         # out downstream. Fall back to a sensible RP just above max BHP instead.
         if best_pres is None:
             best_pres = min(int(max_bhp) + 50, max_pres)
+            rp_source = "floor_fallback"
 
         optimal_pres[well] = best_pres
+        rp_sources[well] = rp_source
 
     df["Optimal_RP"] = df["well"].map(optimal_pres)
+    # Provenance: a floor fallback is NOT a fit. RP = max BHP + 50 makes Vogel
+    # qmax 11-28x the test rate at pwf/pres 0.95-0.98 (review SOLV-F5).
+    df["RP_source"] = df["well"].map(rp_sources).fillna("fit")
 
     # Calculate productivity index
     def calc_pi(row):
@@ -367,10 +375,17 @@ def compute_vogel_coefficients(
                 if total > 0:
                     wc = water / total
 
-            # Calculate R² fit quality using the median anchor
+            # R2 of the curve this row RETURNS (qwf/pwf = the most recent
+            # test). It used to be computed with the MEDIAN anchor - a
+            # different curve - and the server's weak-IPR warning gated on it
+            # (review 2026-09-01, SOLV-F4). The median-anchor R2 is kept as
+            # its own column for the anchor selector.
             bhp_vals = well_data["BHP"].values.astype(float)
             fluid_vals = well_data["WtTotalFluid"].values.astype(float)
             r_squared = _calculate_r_squared(
+                bhp_vals, fluid_vals, optimal_res_p, recent_bhp, recent_fluid
+            )
+            r_squared_median = _calculate_r_squared(
                 bhp_vals, fluid_vals, optimal_res_p, median_bhp, median_fluid
             )
 
@@ -393,6 +408,14 @@ def compute_vogel_coefficients(
                     "num_tests": len(well_data),
                     "most_recent_date": well_data["date"].iloc[0],
                     "R2": round(r_squared, 3),
+                    "R2_median": round(r_squared_median, 3),
+                    # "fit" when the RP grid search found an interior optimum;
+                    # "floor_fallback" when RP is just max BHP + 50 (or the
+                    # field cap) - a curve that manufactures 10-30x qmax and
+                    # must be flagged weak downstream (SOLV-F5).
+                    "RP_source": well_data["RP_source"].iloc[0]
+                    if "RP_source" in well_data.columns
+                    else "fit",
                 }
             )
         except (ValueError, ZeroDivisionError, KeyError, IndexError) as e:

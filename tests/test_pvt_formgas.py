@@ -86,6 +86,40 @@ def test_zfactor_dranchuk() -> None:
     assert dak_zf == pytest.approx(blasing_zf, rel=0.01)
 
 
+def test_zfactor_property_is_dak() -> None:
+    """PVT-F3 tripwire (docs/upstream_sync.md #19, upstream PR to kwellis/woffl).
+
+    The public zfactor (hence density, compress, cmix) must come from
+    Dranchuk-Abu-Kassem, not the "grad school" cubic, which drifts -10 % at
+    ppr 4.5 and returned 0.143 (-79 %) for a 1.0 SG gas at 3,015 psia / 80 degF
+    -- inside the accepted input range and above the clamp. Two Standing-Katz
+    anchor points; goes red if _compute_zfactor reverts to the cubic.
+    """
+    gas = FormGas(gas_sg=0.65).condition(3015 - 14.7, 80)
+    assert gas.zfactor == pytest.approx(0.779, abs=0.003)
+    assert gas.zfactor == FormGas._zfactor_dak(gas.ppr, gas.tpr)
+
+    heavy = FormGas(gas_sg=1.0).condition(3015 - 14.7, 80)
+    assert heavy.zfactor == pytest.approx(0.686, abs=0.003)
+    # the cubic's -79 % failure on this point must not reach the property
+    cubic = FormGas._zfactor_grad_school(heavy.ppr, heavy.tpr)
+    assert cubic < 0.2  # documents the failure the switch fixes
+    assert heavy.zfactor > 0.6
+
+    # compress must differentiate the SAME correlation (sign of dz/dp is
+    # positive beyond ppr ~3, so cg < 1/p there)
+    assert heavy.compress < 1 / heavy.pabs
+
+
+def test_zfactor_dak_converges_over_validity_range() -> None:
+    """DAK Newton must converge (no ValueError) and stay physical across
+    tpr 1.05-3.0 / ppr 0-15, the range the switch was verified on."""
+    for tpr in np.arange(1.05, 3.01, 0.25):
+        for ppr in np.arange(0.0, 15.01, 1.0):
+            zf = FormGas._zfactor_dak(float(ppr), float(tpr))
+            assert 0.2 < zf < 3.0, (ppr, tpr, zf)
+
+
 def test_gas_compressibility() -> None:
     # properties of petroleum fluids, 2nd Edition, McCain, Pag 174
     # book example is at 1000 psia; condition() takes psig. The old
@@ -115,7 +149,13 @@ def test_gas_density() -> None:
 
 
 def test_gas_viscosity() -> None:
-    np.testing.assert_allclose(hygas["visc_gas"], pygas["visc_gas"], rtol=0.03)
+    # rtol 0.03 -> 0.04 on 2026-09-02 (PVT-F3, z-factor cubic -> DAK). Over
+    # the 42-point sweep DAK is CLOSER to the Peng-Robinson reference than the
+    # cubic (mean |z err| 2.55 % vs 3.53 %, max 2.95 % vs 4.78 %), but at the
+    # single 2,500 psig end point the cubic happened to land nearer (0.8105
+    # vs DAK 0.8184; PR 0.798, NIST methane ~0.816), and the Lee viscosity
+    # exponent turned that into a -3.08 % miss against a 3 % gate.
+    np.testing.assert_allclose(hygas["visc_gas"], pygas["visc_gas"], rtol=0.04)
 
 
 def test_gas_zfactor() -> None:

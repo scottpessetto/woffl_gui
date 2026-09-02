@@ -366,6 +366,16 @@ def beggs_holdup_inc(
     Return:
         ilh (float): Inclined Liquid Holdup
     """
+    # [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-11 (review
+    # 2026-09-01): zero mixture velocity gives froude == 0, and the holdup
+    # base divides by froude**c (and beggs_cf_base takes log(froude**h)),
+    # raising a bare ZeroDivisionError / math-domain error that escaped every
+    # `except ValueError` in the solvers. The zero-flow guard had only been
+    # added to the friction factor. With no flow there is no slip, so the
+    # liquid holdup is the no-slip holdup. froude > 0 is bit-identical.
+    if froude <= 0:
+        return nslh
+
     hlh_seg, hlh_int, hlh_dis = beggs_holdup_horz(nslh, froude)
     c_list = list(beggs_cf(nslh, froude, ros_nlv))
     phi_seg, phi_int, phi_dis, phi_down = [beggs_phi(c, incline) for c in c_list]

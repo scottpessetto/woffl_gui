@@ -636,7 +636,16 @@ def pressure_profile(well: str, sp: schemas.SimParams) -> dict[str, Any]:
     # discharge_residual.
     prop_pf = factories.power_fluid(p.field_model)
     wc_tm, _ = jf.throat_wc(qoil_std, res_mix.wc, qnz_bwpd)
-    prop_tm = ResMix(wc_tm, res_mix.fgor, res_mix.oil, res_mix.wat, res_mix.gas)
+    # Third throat-mixture construction site: the water-pump flag must
+    # propagate here too (settled decision, AGENTS.md §8; review SRV-7).
+    prop_tm = ResMix(
+        wc_tm,
+        res_mix.fgor,
+        res_mix.oil,
+        res_mix.wat,
+        res_mix.gas,
+        model_as_water=res_mix.model_as_water,
+    )
 
     # Production pressure profile (top-down from wellhead)
     md_seg, prod_prs, _slh = of.production_top_down_press(
@@ -701,6 +710,15 @@ def calibrate(req: schemas.CalibrateRequest) -> dict[str, Any]:
         throat=p.area_ratio,
         knz=0.01,
         ken=float(p.ken),
+        # The pinned (sonic) branch returns these verbatim; without them it
+        # returned the library's 0.30 diffuser default to a 0.40 caller and
+        # the save path persisted the difference (SOLV-F7).
+        seed_kth=float(p.kth),
+        seed_kdi=float(p.kdi),
+        # Fit against the SAME pump the page solves with: wear factor and
+        # slip closure included (SRV-6). 1.0 = catalog, bit-identical.
+        nozzle_area_factor=float(getattr(p, "nozzle_area_factor", None) or 1.0),
+        mach_crit=float(getattr(p, "mach_crit", None) or 1.0),
         wellbore=wellbore,
         wellprof=wp,
         ipr_su=inflow,

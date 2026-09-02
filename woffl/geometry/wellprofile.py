@@ -1,9 +1,41 @@
+import importlib
 import json
 from pathlib import Path
+from typing import Any
 
-import matplotlib.pyplot as plt
 import numpy as np
-from scipy import optimize
+
+# [LIBRARY change -> upstream PR to kwellis/woffl] scipy.optimize is imported
+# inside segments_fit (plot-only since FLOW-2) so the solver import chain and
+# every ProcessPool worker stop paying for it. Guarded by
+# tests/test_batchpump_lazy_imports.py.
+
+# Tolerance, feet, on (a) the physical bound |dTVD| <= |dMD| between survey
+# stations (measured depth is arc length) and (b) the TVD disagreement two
+# rows at the SAME MD may carry. Calibrated on the 91 local surveys
+# (2026-09-02): files that merge two survey runs disagree by up to 3.9 ft
+# (MPH-31 3.7, MPR-111 3.9, MPI-31 2.4); the corrupt files sit far above it
+# (MPI-11 9.5 ft in one 2.4 ft step at 84 deg inclination, MPM-64 17.9 and
+# MPL-20 32.6 at one MD, MPC-40 49, MPC-05 4,547). 5 ft clears every
+# run-merge artifact and catches every corrupt row.
+SURVEY_STEP_TOL_FT = 5.0
+
+
+class _LazyPyplot:
+    """[LIBRARY change -> upstream PR to kwellis/woffl] matplotlib.pyplot
+    imported on first use - only ``plot_profile`` draws, but every solver
+    process constructs a WellProfile. See jetplot._LazyModule; guarded by
+    tests/test_batchpump_lazy_imports.py."""
+
+    _mod: Any = None
+
+    def __getattr__(self, attr: str) -> Any:
+        if _LazyPyplot._mod is None:
+            _LazyPyplot._mod = importlib.import_module("matplotlib.pyplot")
+        return getattr(_LazyPyplot._mod, attr)
+
+
+plt = _LazyPyplot()
 
 
 class WellProfile:
@@ -39,7 +71,9 @@ class WellProfile:
         if jetpump_md > max(md_list):
             raise ValueError("Jet pump not inside well profile measured depth")
 
-        md_ray, vd_ray = sort_profile(np.array(md_list), np.array(vd_list))
+        md_ray, vd_ray = sort_profile(
+            np.array(md_list, dtype=float), np.array(vd_list, dtype=float)
+        )
 
         # [LIBRARY change -> upstream PR to kwellis/woffl] P1-6: cheap input
         # validation — NaN depths would silently corrupt every interpolation
@@ -47,14 +81,47 @@ class WellProfile:
         if np.isnan(md_ray).any() or np.isnan(vd_ray).any():
             raise ValueError("Well survey contains NaN measured or vertical depths")
 
+        # [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-3 (review
+        # 2026-09-01): reject a corrupt survey instead of silently absorbing
+        # it. MPC-05's CSV carried 179 duplicated MDs whose TVDs alternated
+        # (6090 -> 0 / 4547); the unstable sort plus the _horz_dist clip turned
+        # the impossible steps into zeros and put the pump 281 ft too deep.
+        # Exact duplicate rows are harmless and dropped; duplicate MDs that
+        # DISAGREE on TVD, or any |dTVD| > |dMD| + tol, name the station.
+        md_ray, vd_ray = validate_survey(md_ray, vd_ray)
+
         self.md_ray = md_ray
         self.vd_ray = vd_ray
         self.hd_ray = self._horz_dist(self.md_ray, self.vd_ray)
         self.jetpump_md = jetpump_md
 
-        # here is the real question, do I even need the raw data? just filter the data
-        # at the __init__ and be done? Is the raw data just more stuff to wade through?
-        self.hd_fit, self.vd_fit, self.md_fit = self.filter()  # run the method
+        # [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-2: the
+        # segments fit (md_fit / vd_fit / hd_fit) is plot-only now and is
+        # computed lazily on first attribute access (see the properties
+        # below). The physics reads the raw survey, so construction no longer
+        # pays 11-161 ms of Nelder-Mead per well (FLOW-8).
+        self._fit_cache: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+
+    @property
+    def _fit(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if self._fit_cache is None:
+            self._fit_cache = self.filter()
+        return self._fit_cache
+
+    @property
+    def hd_fit(self) -> np.ndarray:
+        """Horizontal Distance of the piecewise-linear FIT, feet (plotting only)"""
+        return self._fit[0]
+
+    @property
+    def vd_fit(self) -> np.ndarray:
+        """Vertical Depth of the piecewise-linear FIT, feet (plotting only)"""
+        return self._fit[1]
+
+    @property
+    def md_fit(self) -> np.ndarray:
+        """Measured Depth of the piecewise-linear FIT, feet (plotting only)"""
+        return self._fit[2]
 
     def __repr__(self):
         final_md = round(self.md_ray[-1], 0)
@@ -93,7 +160,18 @@ class WellProfile:
         Returns:
             md_dpth (float): Measured Depth, feet
         """
-        return self._depth_interp(vd_dpth, self.vd_ray, self.md_ray)
+        # [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-10: TVD is
+        # not monotonic in MD once a well builds past horizontal (77 of the
+        # 91 local surveys are toe-up), and np.interp with a non-increasing
+        # xp silently returns garbage. Take the SHALLOWEST crossing, which is
+        # where a pump sits on the profile the solver traverses.
+        lo, hi = float(self.vd_ray.min()), float(self.vd_ray.max())
+        if not (lo <= vd_dpth <= hi):
+            raise ValueError(f"{vd_dpth} feet is not inside survey boundary")
+        md_dpth = first_crossing(self.vd_ray, self.md_ray, vd_dpth)
+        if md_dpth is None:  # unreachable once the range check passes
+            raise ValueError(f"{vd_dpth} feet is not inside survey boundary")
+        return md_dpth
 
     @property
     def jetpump_vd(self) -> float:
@@ -171,20 +249,33 @@ class WellProfile:
             md_seg (np array): Measured depth Broken into segments
             vd_seg (np array): Vertical depth broken into segments
         """
-        return self._outflow_spacing(self.md_fit, self.vd_fit, self.jetpump_md, seg_len)
+        return self._outflow_spacing(self.md_ray, self.vd_ray, self.jetpump_md, seg_len)
 
     @staticmethod
     def _outflow_spacing(
-        md_fit: np.ndarray, vd_fit: np.ndarray, outflow_md: float, seg_len: float
+        md_ray: np.ndarray, vd_ray: np.ndarray, outflow_md: float, seg_len: float
     ) -> tuple[np.ndarray, np.ndarray]:
         """Outflow Piping Spacing
 
         Break the outflow piping into nodes that can be fed  with piping dimension
         flowrates and etc to calculate differential pressure across them.
 
+        [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-2 (review
+        2026-09-01): the node TVDs are interpolated from the RAW survey, not
+        from the greedy AIC/BIC segments fit. The fit stops at the first count
+        that fails to improve (Nelder-Mead reports success=False for every
+        count >= 4 on real surveys) and put the production traverse's pump
+        TVD off the raw survey by a fleet median of 14 ft, p90 111 ft, max
+        240 ft (MPE-48) - while the power-fluid hydrostatic on the other side
+        of the pump read ``jetpump_vd`` from the raw survey. The two sides now
+        see the same TVD at the pump. The node rule is unchanged: evenly
+        spaced from surface to ``outflow_md`` with the pre-existing
+        ``max(ceil(L / seg_len), 3)`` count, so a profile whose fit was a
+        single segment (a straight line) is bit-identical.
+
         Args:
-            md_fit (np array): Filtered Measured Depth Data, feet
-            vd_fit (np array): Filtered Vertical Depth Data, feet
+            md_ray (np array): Survey Measured Depth, feet (sorted, unique)
+            vd_ray (np array): Survey Vertical Depth, feet
             outflow_md (float): Depth the outflow node ends, feet
             seg_len (float): Segment Length of Outflow Piping, feet
 
@@ -192,24 +283,10 @@ class WellProfile:
             md_seg (np array): Measured depth Broken into segments
             vd_seg (np array): Vertical depth broken into segments
         """
-        # need to break it up
-        outflow_vd = np.interp(outflow_md, md_fit, vd_fit)
-        vd_fit = vd_fit[md_fit <= outflow_md]
-        md_fit = md_fit[md_fit <= outflow_md]  # keep values less than outflow_md
-        md_fit = np.append(md_fit, outflow_md)  # add the final outflow md to end
-        vd_fit = np.append(vd_fit, outflow_vd)
-        md1 = md_fit[:-1]  # everything but the last character
-        md2 = md_fit[1:]  # everything but the first character
-        dist = md2 - md1  # distance between points
-        md_seg = np.array([])
-        for i, dis in enumerate(dist):
-            # force there to always be at least three (?) spaces?
-            dis = max(int(np.ceil(dis / seg_len)), 3)  # evenly space out the spaces
-            md_seg = np.append(
-                md_seg, np.linspace(md1[i], md2[i], dis)
-            )  # double counting
-        md_seg = np.unique(md_seg)  # get rid of weird double counts from linspace
-        vd_seg = np.interp(md_seg, md_fit, vd_fit)
+        md_top = float(md_ray[0])
+        n_pts = max(int(np.ceil((outflow_md - md_top) / seg_len)), 3)
+        md_seg = np.linspace(md_top, outflow_md, n_pts)
+        vd_seg = np.interp(md_seg, md_ray, vd_ray)
         return md_seg, vd_seg
 
     @staticmethod
@@ -224,7 +301,12 @@ class WellProfile:
         Returns:
             out_dpth (float): Unknown Depth, Feet
         """
-        if (min(in_ray) < in_dpth < max(in_ray)) is False:
+        # [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-10: the old
+        # check compared a numpy bool to the ``False`` singleton with ``is``,
+        # which is never true, so it never raised and vd_interp(TD + 5000)
+        # returned the clamped end value. Inclusive at both ends.
+        lo, hi = float(np.min(in_ray)), float(np.max(in_ray))
+        if not (lo <= in_dpth <= hi):
             raise ValueError(f"{in_dpth} feet is not inside survey boundary")
 
         out_dpth = np.interp(in_dpth, in_ray, out_ray)
@@ -250,6 +332,9 @@ class WellProfile:
         # then propagated through the whole hd_ray (and jetpump_hd / incline
         # downstream). Clamp the Δvd magnitude to Δmd; clean surveys already
         # satisfy the bound, so the clip is an identity there (bit-identical).
+        # Since FLOW-3, validate_survey rejects any excess beyond
+        # SURVEY_STEP_TOL_FT in __init__, so this clip only ever absorbs
+        # sub-tolerance gauge noise.
         vd_diff = np.clip(vd_diff, -np.abs(md_diff), np.abs(md_diff))
         hd_diff = np.zeros(
             1
@@ -367,10 +452,107 @@ def sort_profile(
         md_sort (np array): Sorted Measured Depth array, feet
         vd_sort (np array): Sorted Vertical Depth array, feet
     """
-    sort_idxs = np.argsort(md_ray)
+    # [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-3: stable sort so
+    # duplicated MDs keep file order and validate_survey names the right row.
+    sort_idxs = np.argsort(md_ray, kind="stable")
     md_sort = md_ray[sort_idxs]
     vd_sort = vd_ray[sort_idxs]
     return md_sort, vd_sort
+
+
+def validate_survey(
+    md_ray: np.ndarray, vd_ray: np.ndarray, tol_ft: float = SURVEY_STEP_TOL_FT
+) -> tuple[np.ndarray, np.ndarray]:
+    """Validate a Sorted Survey
+
+    [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-3 (review
+    2026-09-01). Drops exact duplicate (md, vd) stations, then rejects the
+    two things a real wellbore cannot do: report two different vertical
+    depths at one measured depth, or gain more vertical depth than measured
+    depth between stations (MD is arc length, so |dTVD| <= |dMD|).
+
+    Args:
+        md_ray (np array): Measured Depth array, feet, sorted ascending
+        vd_ray (np array): Vertical Depth array, feet, mirrored on md_ray
+        tol_ft (float): Allowed |dTVD| - |dMD| excess for gauge noise, feet
+
+    Returns:
+        md_ray (np array): Measured Depth with exact duplicates removed
+        vd_ray (np array): Vertical Depth with exact duplicates removed
+
+    Raises:
+        ValueError: naming the first offending station
+    """
+    if md_ray.size == 0:
+        return md_ray, vd_ray
+
+    # exact duplicate rows (same md AND same vd) are harmless - keep the first
+    same_md = np.diff(md_ray) == 0
+    same_vd = np.diff(vd_ray) == 0
+    keep = np.append(True, ~(same_md & same_vd))
+    md_ray, vd_ray = md_ray[keep], vd_ray[keep]
+
+    # duplicate MDs (two survey runs merged into one file are common - MPH-31
+    # has 157 of them, agreeing to within 4 ft): keep the first-seen station
+    # when the TVDs agree within tol_ft, raise when they do not.
+    same_md = np.diff(md_ray) == 0
+    conflict = np.flatnonzero(same_md & (np.abs(np.diff(vd_ray)) > tol_ft))
+    if conflict.size:
+        k = int(conflict[0])
+        raise ValueError(
+            f"Well survey has conflicting vertical depths at {md_ray[k]:.2f} ft MD: "
+            f"{vd_ray[k]:.2f} and {vd_ray[k + 1]:.2f} ft TVD"
+        )
+    keep = np.append(True, ~same_md)
+    md_ray, vd_ray = md_ray[keep], vd_ray[keep]
+
+    md_diff = np.diff(md_ray)
+    vd_diff = np.diff(vd_ray)
+    bad = np.flatnonzero(np.abs(vd_diff) > np.abs(md_diff) + tol_ft)
+    if bad.size:
+        k = int(bad[0])
+        raise ValueError(
+            f"Well survey gains {abs(vd_diff[k]):.2f} ft of vertical depth over "
+            f"{md_diff[k]:.2f} ft of measured depth between {md_ray[k]:.2f} and "
+            f"{md_ray[k + 1]:.2f} ft MD, which is physically impossible"
+        )
+    return md_ray, vd_ray
+
+
+def first_crossing(
+    x_ray: np.ndarray, y_ray: np.ndarray, x_target: float, tol: float = 1e-6
+) -> float | None:
+    """First Crossing Interpolation
+
+    [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-10. ``y`` at the
+    FIRST index where the piecewise-linear ``x_ray`` reaches ``x_target``,
+    for an ``x_ray`` that need not be monotonic (a toe-up survey's TVD).
+    Mirrors ``server/services/depth_interp.first_crossing_md``.
+
+    Args:
+        x_ray (np array): Known values in station order (may fold back)
+        y_ray (np array): Values to interpolate, same order
+        x_target (float): Value of ``x_ray`` to reach
+        tol (float): Exact-station match tolerance
+
+    Returns:
+        y (float): ``y_ray`` at the shallowest crossing, or None if never reached
+    """
+    x = np.asarray(x_ray, dtype=float)
+    y = np.asarray(y_ray, dtype=float)
+    if x.size == 0 or x.size != y.size:
+        return None
+    target = float(x_target)
+    hit = np.flatnonzero(np.abs(x - target) <= tol)
+    if hit.size:
+        return float(y[hit[0]])
+    lo, hi = x[:-1], x[1:]
+    cross = np.flatnonzero(((lo < target) & (hi > target)) | ((lo > target) & (hi < target)))
+    if cross.size == 0:
+        return None
+    k = int(cross[0])
+    frac = (target - x[k]) / (x[k + 1] - x[k])
+    return float(y[k] + frac * (y[k + 1] - y[k]))
 
 
 def segments_fit(
@@ -395,6 +577,8 @@ def segments_fit(
         - https://discovery.ucl.ac.uk/id/eprint/10070516/1/AIC_BIC_Paper.pdf
         - Comment from user: dankoc
     """
+    from scipy import optimize  # plot-only since FLOW-2; keep off the solver chain
+
     xmin, xmax = X.min(), X.max()
 
     n = len(X)

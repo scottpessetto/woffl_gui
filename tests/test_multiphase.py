@@ -199,3 +199,55 @@ def test_beggs_press_friction() -> None:
 def test_beggs_press_static() -> None:
     calc_stat = tp.beggs_press_static(book_rho_slip, pipe_len)
     assert calc_stat == pytest.approx(book_stat, rel=0.01)
+
+
+def test_beggs_holdup_inc_zero_flow_returns_no_slip() -> None:
+    """Guards upstream_sync.md #26 (review 2026-09-01, FLOW-11).
+
+    froude == 0 (zero mixture velocity) divides by froude**c in the holdup
+    base and takes log(froude**h) in the C factor, which raised a bare
+    ZeroDivisionError / math-domain error that escaped every
+    ``except ValueError`` in the solvers. With no flow there is no slip, so
+    HL = lambda_L. Goes red if the short-circuit is lost.
+    """
+    for nslh in (0.05, 0.5, 0.95):
+        for incline in (-90.0, 0.0, 90.0):
+            hpat, tran = tp.beggs_flow_pattern(nslh, 0.0)
+            assert tp.beggs_holdup_inc(nslh, 0.0, 0.0, incline, hpat, tran) == nslh
+    # the froude > 0 path is untouched (book value still reproduces)
+    calc_ilh = tp.beggs_holdup_inc(
+        book_nslh, book_NFr, book_Nlv, 90, book_hpat, book_tparm
+    )
+    assert calc_ilh == pytest.approx(book_ilh, rel=0.01)
+
+
+def test_ffactor_darcy_laminar_ends_at_2300_and_blends_to_4000() -> None:
+    """Guards upstream_sync.md #27 (review 2026-09-01, FLOW-12).
+
+    The laminar law used to run to Re 4000 and step to Serghide there
+    (f 0.016 -> 0.041). Now laminar ends at 2300 and the factor is blended
+    linearly to Serghide at 4000, so ff is continuous at BOTH ends and
+    monotonic through the transition.
+    """
+    rr = sp.relative_roughness(book_dhyd, 0.004)
+    assert sp.RE_LAMINAR == 2300.0 and sp.RE_TURBULENT == 4000.0
+    # laminar below 2300, bit-identical to 64/Re
+    assert sp.ffactor_darcy(1000.0, rr) == 64 / 1000.0
+    assert sp.ffactor_darcy(2299.0, rr) == 64 / 2299.0
+    # continuity at the laminar end
+    assert sp.ffactor_darcy(2300.0 - 1e-6, rr) == pytest.approx(
+        sp.ffactor_darcy(2300.0 + 1e-6, rr), rel=1e-6
+    )
+    # continuity at the turbulent end, and Serghide from 4000 up
+    assert sp.ffactor_darcy(4000.0 - 1e-6, rr) == pytest.approx(
+        sp.ffactor_darcy(4000.0, rr), rel=1e-6
+    )
+    assert sp.ffactor_darcy(4000.0, rr) == sp.serghide(4000.0, rr)
+    assert sp.ffactor_darcy(8450.0, rr) == sp.serghide(8450.0, rr)
+    # no more 2.5x step: the old code gave 64/3999 just below 4000
+    assert sp.ffactor_darcy(3999.0, rr) != pytest.approx(64 / 3999.0, rel=0.05)
+    # linear in Re across the blend
+    f_mid = sp.ffactor_darcy(3150.0, rr)
+    assert f_mid == pytest.approx(
+        0.5 * (64 / 2300.0 + sp.serghide(4000.0, rr)), rel=1e-9
+    )

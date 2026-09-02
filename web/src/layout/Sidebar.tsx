@@ -189,13 +189,57 @@ function PfProvenance() {
     );
   }
 
+  // Only the SERVER's seed is the pad default; the current field value may
+  // be the engineer's edit and must not be captioned as the default (WEB-17).
+  const seeded = pf?.ppf_surf ?? null;
   return (
     <p className="mt-1 text-[11px] text-slate-400">
-      {`No live PF reading - seeded pad default ${Math.round(
-        pf?.ppf_surf ?? ppfSurf,
-      ).toLocaleString("en-US")} psi`}
+      {seeded !== null
+        ? `No live PF reading - seeded pad default ${Math.round(seeded).toLocaleString("en-US")} psi`
+        : ppfSurf !== undefined
+          ? "No live PF reading - pad default seeded; value shown is the current entry"
+          : "No live PF reading"}
     </p>
   );
+}
+
+/**
+ * Seeds the server's widget bounds ALTERED on the way in. A clamped seed is
+ * not the well's value and must never pass as one (review 2026-09-01, SRV-9).
+ */
+function SeedClampNotes() {
+  const context = useParamsStore((s) => s.context);
+  const clamped = context?.clamped ?? [];
+  if (clamped.length === 0) return null;
+  return (
+    <p className="mb-1 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+      {`Seed${clamped.length > 1 ? "s" : ""} clamped to the input bounds: ${clamped.join("; ")}`}
+    </p>
+  );
+}
+
+/**
+ * Where the installed-pump identity came from. The tracker is live; the
+ * bundled spreadsheet is a dated snapshot, so a pump seeded from it may be
+ * months out of date and must say so (review 2026-09-01, DATA-5).
+ */
+function PumpProvenance() {
+  const context = useParamsStore((s) => s.context);
+  if (!context) return null;
+  const pump = context.pump;
+  if (!pump || (!pump.nozzle_no && !pump.throat_ratio)) {
+    return <p className="mt-1 text-[11px] text-slate-400">No install on record for this well</p>;
+  }
+  const code = `${pump.nozzle_no ?? "?"}${pump.throat_ratio ?? "?"}`;
+  const when = pump.date_set ? ` set ${pump.date_set}` : "";
+  if (pump.source === "excel_fallback") {
+    return (
+      <p className="mt-1 text-[11px] text-amber-700">
+        {`Installed ${code}${when} per the BUNDLED SPREADSHEET SNAPSHOT (tracker unavailable) - may be stale`}
+      </p>
+    );
+  }
+  return <p className="mt-1 text-[11px] text-slate-400">{`Installed ${code}${when} (JP tracker)`}</p>;
 }
 
 export function Sidebar() {
@@ -281,6 +325,7 @@ export function Sidebar() {
               <SelectField label="Nozzle" field="nozzle_no" options={NOZZLE_OPTIONS} />
               <SelectField label="Throat" field="area_ratio" options={THROAT_OPTIONS} />
             </div>
+            <PumpProvenance />
           </div>
         </section>
 
@@ -305,6 +350,7 @@ export function Sidebar() {
               Inflow &amp; Formation
             </summary>
             <div className="mt-2 space-y-2">
+              <SeedClampNotes />
               <NumberField
                 label="Total Liquid Rate at FBHP (qwf, BLPD)"
                 field="qwf"

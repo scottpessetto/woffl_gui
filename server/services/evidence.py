@@ -47,6 +47,12 @@ log = logging.getLogger("woffl.web.evidence")
 
 FLOOR_PCTL = 5              # flowing-BHP percentile taken as the measured floor
 MIN_PAIRS = 5               # pairs needed before a well's own beta is trusted
+MIN_EVENTS = 2              # DISTINCT PF moves those pairs must span (EVID-F1):
+                            # one step with 3 flowing days each side is 9
+                            # overlapping pairs - still one event
+MIN_ERA_DAYS = 10           # flowing days on the CURRENT pump before its own
+                            # floor is trusted; fewer -> all-era floor, flagged
+                            # "prior_era" and never used to falsify (EVID-F2)
 PAIR_WINDOW_DAYS = (3, 30)  # beta pair spacing: close enough to be one regime,
                             # far enough apart to not be gauge noise
 DPF_MIN_PSI = 100.0         # minimum |dPpf| for a pair to carry signal
@@ -212,20 +218,44 @@ def well_evidence(
     ppfs = [float(v) for v in df["ppf"]]
     n_days = len(df)
 
-    floor = float(df["btmhole_prs"].quantile(FLOOR_PCTL / 100.0))
-    if min_test_bhp is not None:
-        floor = min(floor, float(min_test_bhp))
-
-    psu_ref = float(median(bhps[-PSU_REF_DAYS:]))
-
     installs: list[pd.Timestamp] = []
     for when in install_dates or ():
         stamp = pd.to_datetime(when, errors="coerce")
         if not pd.isna(stamp):
             installs.append(stamp.normalize())
 
+    # The measured floor is a property of the CURRENT pump (its throat area,
+    # entrance loss, fluid and IPR). A lower BHP reached under a bigger
+    # nozzle last winter says nothing about today's 14B, yet the floor gate
+    # is the stronger of the two evidence gates. Floor on the current era
+    # when it has enough flowing days; otherwise fall back to every day in
+    # the window but say so ("prior_era"), and the gates refuse to falsify a
+    # model on it (review 2026-09-01, EVID-F2).
+    era_start = max((ins for ins in installs if ins <= dates[-1]), default=None)
+    era = df[df["sample_date"] >= era_start] if era_start is not None else df
+    if era_start is not None and len(era) >= MIN_ERA_DAYS:
+        floor_df, floor_source = era, "era"
+    else:
+        floor_df, floor_source = df, ("prior_era" if era_start is not None else "all")
+    floor = float(floor_df["btmhole_prs"].quantile(FLOOR_PCTL / 100.0))
+    if min_test_bhp is not None and floor_source != "era":
+        # Test BHPs are only mixed in when the floor is already cross-era;
+        # on the current era the daily series is the same instrument.
+        floor = min(floor, float(min_test_bhp))
+
+    psu_ref = float(median(bhps[-PSU_REF_DAYS:]))
+
+    # PF "events": days where the resolved PF moved by >= DPF_MIN_PSI from
+    # the previous flowing day. A beta is only "well-earned" when its pairs
+    # span at least MIN_EVENTS distinct moves - nine overlapping pairs
+    # around one step are one observation, not nine (EVID-F1).
+    event_days: list[pd.Timestamp] = [
+        dates[k] for k in range(1, n_days) if abs(ppfs[k] - ppfs[k - 1]) >= DPF_MIN_PSI
+    ]
+
     lo_days, hi_days = PAIR_WINDOW_DAYS
     slopes: list[float] = []
+    events_spanned: set[pd.Timestamp] = set()
     for i in range(n_days):
         for j in range(i + 1, n_days):
             span = (dates[j] - dates[i]).days
@@ -239,10 +269,13 @@ def well_evidence(
             if any(dates[i] < ins <= dates[j] for ins in installs):
                 continue  # pair spans a JPCO - it measures the pump, not PF
             slopes.append((bhps[j] - bhps[i]) / dppf)
+            events_spanned.update(ev for ev in event_days if dates[i] < ev <= dates[j])
 
     n_pairs = len(slopes)
-    if n_pairs >= MIN_PAIRS:
-        beta = _clamp_beta(-median(slopes))
+    n_events = len(events_spanned)
+    beta_raw: Optional[float] = -median(slopes) if slopes else None
+    if n_pairs >= MIN_PAIRS and n_events >= MIN_EVENTS:
+        beta = _clamp_beta(beta_raw if beta_raw is not None else BETA_DEFAULT)
         beta_source = "well"
     else:
         beta = BETA_DEFAULT
@@ -250,11 +283,16 @@ def well_evidence(
 
     return {
         "floor": floor,
+        "floor_source": floor_source,
         "psu_ref": psu_ref,
         "beta": beta,
+        # Unclamped median slope: a NEGATIVE value (BHP rising with PF) is a
+        # data-quality / pump-identity signal that the clamp hid (EVID-F5).
+        "beta_raw": beta_raw,
         "beta_source": beta_source,
         "n_days": n_days,
         "n_pairs": n_pairs,
+        "n_events": n_events,
         "window": [dates[0].date().isoformat(), dates[-1].date().isoformat()],
     }
 

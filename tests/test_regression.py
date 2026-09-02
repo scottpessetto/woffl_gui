@@ -113,9 +113,13 @@ class TestBatchRunRegression:
         assert len(bp.df) == 28
 
     def test_e41_some_sonic(self, e41):
+        # "X" is the tightest throat and the one that chokes on E-41. After
+        # the 2026-09-01 Payne re-floor (upstream_sync.md #16) raised the
+        # discharge back-pressure, 9A came off the choke and only the X
+        # throats (9X, 10X, 11X) remain sonic - see tests/batch_test.py.
         jp_list = BatchPump.jetpump_list(
             ["9", "10", "11", "12", "13", "14", "15"],
-            ["A", "B", "C", "D"],
+            ["X", "A", "B", "C", "D"],
         )
         bp = BatchPump(
             pwh=e41["surf_pres"],

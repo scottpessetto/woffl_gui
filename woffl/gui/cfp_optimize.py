@@ -73,18 +73,22 @@ def delivered_by_pad(
     *,
     c_pad_pf_psi: float,
     measured_pad_pf: Optional[dict] = None,
+    anchor_disch_p: Optional[float] = None,
 ) -> tuple[dict, list]:
     """Delivered PF per pad at a plant discharge.
 
     Returns ``(per_pad_psi, clamped_pads)``. Pads the plant supplies (B/G/J) get
     the measured-anchor delivery when a measurement is available and the line-dP
     table otherwise; every other pad — C-Pad, and any pad added later that turns
-    out to be boosted on-pad — gets ``c_pad_pf_psi``.
+    out to be boosted on-pad — gets ``c_pad_pf_psi``. ``anchor_disch_p`` is the
+    discharge the pad measurements were taken at (today's p0 for a live run).
     """
     measured = measured_pad_pf or {}
     out, clamped = {}, []
     for pad in pads:
-        psi = plant.delivered_pf_for_pad(pad, disch_p, measured.get(pad))
+        psi = plant.delivered_pf_for_pad(
+            pad, disch_p, measured.get(pad), anchor_disch_p=anchor_disch_p
+        )
         if psi is None:  # not plant-supplied — its own booster holds the pressure
             psi = float(c_pad_pf_psi)
         psi, was_clamped = _clamp_pf(psi)
@@ -423,6 +427,10 @@ def cfp_match_check(
     per_pad, _clamped = delivered_by_pad(
         plant, discharge_psi, pads,
         c_pad_pf_psi=c_pad_pf_psi, measured_pad_pf=measured_pad_pf,
+        # The match check runs AT the measured discharge, so a measured pad
+        # reading is used verbatim (zero offset), not shifted by the July
+        # constant (OPT-A2).
+        anchor_disch_p=float(discharge_psi),
     )
     _assign_well_pressures(wells, per_pad, fallback=c_pad_pf_psi)
 

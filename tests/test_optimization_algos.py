@@ -293,6 +293,30 @@ class TestMckpOptimization:
         for r in results:
             assert r.predicted_oil_rate > 0
 
+    def test_tight_budget_sheds_wells_instead_of_raising(self):
+        """OPT-A4 (review 2026-09-01): MCKP runs with shut-in allowed, so a
+        budget below one well's minimum draw sheds that well (MILP's
+        at-most-one semantics) rather than raising an uncaught RuntimeError
+        that killed the whole pressure sweep."""
+        opt = _make_optimizer_with_results()
+        opt.power_fluid.total_rate = 400.0  # WellA's cheapest option alone
+        results = mckp_optimization(opt)
+        assert len(results) <= 1
+        assert sum(r.allocated_power_fluid for r in results) <= 400.0 + 1
+
+    def test_solver_runtime_error_returns_empty_trial(self, monkeypatch):
+        import woffl.assembly.network as network_mod
+
+        opt = _make_optimizer_with_results()
+
+        def boom(**kw):
+            raise RuntimeError("MCKP infeasible")
+
+        # mckp_optimization imports the solver locally from woffl.assembly.network
+        monkeypatch.setattr(network_mod, "optimize_jet_pumps", boom)
+        assert mckp_optimization(opt) == []
+        assert opt.optimization_results == []
+
     def test_one_pump_per_well(self):
         """MCKP should assign at most one pump config per well."""
         opt = _make_optimizer_with_results()

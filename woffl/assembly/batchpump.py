@@ -5,15 +5,26 @@ current conditions. Code outputs a formatted list of python dictionaries that
 can be converted to a Pandas Dataframe or equivalent for analysis.
 """
 
+from __future__ import annotations
+
 import os
 from itertools import product
+from typing import TYPE_CHECKING
 
-import matplotlib.colors as mcolors
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.axes import Axes
-from scipy.optimize import curve_fit, minimize
+
+# [LIBRARY change -> upstream PR to kwellis/woffl] matplotlib and
+# scipy.optimize are imported LAZILY inside the plotting / curve-fit /
+# search methods that use them. At module scope they cost ~0.98 s per
+# import (pyplot 0.18 s, scipy.optimize 0.35 s, plus their trees), paid by
+# every ProcessPool worker spawn and by the FastAPI process, for code the
+# hot path (batch_run) never touches. A 20-well pad on the 2-worker tier
+# spent ~2 s spawning to save ~3 s of solves (review 2026-09-01, SOLV-P1).
+# Guarded by tests/test_batchpump_lazy_imports.py.
+if TYPE_CHECKING:  # annotations only - never imported at runtime
+    import matplotlib.colors as mcolors
+    from matplotlib.axes import Axes
 
 import woffl.assembly.solopump as so
 from woffl.flow.inflow import InFlow
@@ -295,6 +306,8 @@ class BatchPump:
             (JetPump.throat_dia[0], JetPump.throat_dia[-1]),
         ]
 
+        from scipy.optimize import minimize  # lazy: see module header
+
         result = minimize(objective, x0, method="Nelder-Mead", bounds=bounds)
         dnz_opt, dth_opt = result.x
 
@@ -385,6 +398,8 @@ class BatchPump:
         coeff = self.coeff_lift if water == "lift" else self.coeff_totl  # type: ignore
         coeff = coeff if curve else None
 
+        import matplotlib.pyplot as plt  # lazy: see module header
+
         hold = 1  # define the variable with anything, need to trade
         if ax is None:
             hold = None  # transfer None value to something not used
@@ -427,6 +442,8 @@ class BatchPump:
         marg_semi = df_semi["molwr"] if water == "lift" else df_semi["motwr"]
         qwat_semi = df_semi["lift_wat"] if water == "lift" else df_semi["totl_wat"]
         coeff = self.coeff_lift if water == "lift" else self.coeff_totl
+
+        import matplotlib.pyplot as plt  # lazy: see module header
 
         fig, ax = plt.subplots(figsize=(5.5, 4))
 
@@ -570,7 +587,7 @@ def batch_plot_data(
     semi: pd.Series,
     wellname: str,
     coeff: tuple[float, float, float] | None,
-    ax: plt.Axes,  # type: ignore
+    ax: Axes,
 ) -> None:
     """Batch Plot Data
 
@@ -843,5 +860,7 @@ def batch_curve_fit(
         qwat_filt = np.append(qwat_filt, 0.0)
 
     initial_guesses = [max(qoil_filt), max(qoil_filt), 0.001]
+    from scipy.optimize import curve_fit  # lazy: see module header
+
     coeff, _ = curve_fit(exp_model, qwat_filt, qoil_filt, p0=initial_guesses)
     return coeff

@@ -920,7 +920,15 @@ def match_check(
     total_pf = sum(cur_pf.values())
     header = plant.match_check_header(total_pf, n_pumps)
     for wc in well_configs:
-        wc.ppf_surf_well = header
+        # The match check asks "does the model reproduce the well's TEST?",
+        # so each well runs at the PF it was MEASURED at when the context
+        # carried one (the live per-well seed); the plant's derived header
+        # is only the fallback. Overwriting the measurement compared every
+        # well to its test at a pressure the test was not taken at (review
+        # 2026-09-01, OPT-A6). The optimization runs still use the header.
+        measured = getattr(wc, "ppf_surf_well", None)
+        if measured is None or not (measured == measured) or float(measured) <= 0:
+            wc.ppf_surf_well = header
     pf = PowerFluidConstraint(
         total_rate=plant.match_check_budget_bpd(total_pf, n_pumps),
         pressure=header,
@@ -1337,9 +1345,12 @@ def _apply_suction_evidence(
         if sonic is not True:
             continue  # model suction already responsive
         floor = ev.get("floor")
+        # A floor measured under a PREVIOUS pump cannot falsify this pump's
+        # model (evidence.well_evidence flags it "prior_era"; EVID-F2).
         floor_violated = (
             floor is not None
             and psu_model is not None
+            and ev.get("floor_source", "era") != "prior_era"
             and psu_model - float(floor) > _EVIDENCE_VIOLATION_MIN_PSI
         )
         beta = ev.get("beta")

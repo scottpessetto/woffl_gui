@@ -29,6 +29,8 @@ and never shared between jobs.
 
 from __future__ import annotations
 
+import logging
+
 import math
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
@@ -94,7 +96,13 @@ def _plain(v: Any) -> Any:
 # Well-model hydration from saved fits
 # ---------------------------------------------------------------------------
 
-# WellConfig hard-raises above this (well_review_store.MAX_MODELABLE_WC).
+log = logging.getLogger("woffl.web.optimizer_runs")
+
+# Above this the oil rate collapses to allocation noise and the solver's oil
+# IPR is meaningless. Such a well is REFUSED here (the caller records it as an
+# invalid model), never silently capped: capping to 0.99 entered a dewatering
+# well as a 1%-oil producer and handed it a pump recommendation (review
+# 2026-09-01, SRV-3; AGENTS.md §8 "silently zeroing is the worst option").
 _MAX_MODELABLE_WC = 0.99
 
 
@@ -114,16 +122,28 @@ def _config_from_seeds(name: str, pad: str, seeds: dict[str, Any]):
         v = seeds.get(key)
         return str(v) if v else None
 
+    wc_seed = f("form_wc", 0.5)
+    if wc_seed >= _MAX_MODELABLE_WC:
+        raise ValueError(
+            f"water cut {wc_seed:.2f} >= {_MAX_MODELABLE_WC} - not modelable as an "
+            "oil producer; mark the well offline (bring-online candidate) instead"
+        )
+
     return WellConfig(
         well_name=name,
         res_pres=f("pres", 1700.0),
         form_temp=f("form_temp", 120.0),
         jpump_tvd=f("jpump_tvd", 4065.0),
+        # Measured pump MD from the context (chars JP_MD, else the survey's
+        # shallowest crossing). Without it WellConfig.__post_init__ sets
+        # jpump_md = jpump_tvd and every optimizer well was traversed as a
+        # VERTICAL hole to the pump (review 2026-09-01, finding 2).
+        jpump_md=f("jpump_md"),
         tubing_od=f("tubing_od", 4.5),
         tubing_thickness=f("tubing_thickness", 0.271),
         casing_od=f("casing_od", 6.875),
         casing_thickness=f("casing_thickness", 0.5),
-        form_wc=min(f("form_wc", 0.5), _MAX_MODELABLE_WC),
+        form_wc=wc_seed,
         form_gor=f("form_gor", 250.0),
         field_model=str(seeds.get("field_model") or "Schrader"),
         surf_pres=f("surf_pres", 210.0),
@@ -156,12 +176,18 @@ def _build_configs(
     future: list[schemas.FutureWellSpec],
     note: list[str],
     prov: Optional[dict[str, dict[str, Any]]] = None,
+    include_offline: bool = False,
 ) -> list[Any]:
     """WellConfigs for every ACTIVE well on ``pads`` + the future wells.
 
     Seeds come from the context pipeline per well (chars + saved-fit
     overlay), so a run models each well exactly as the Solver opens it.
     Hydration failures are skipped with a note, never fatal.
+
+    ``include_offline=True`` also hydrates the board-offline wells (the CFP
+    engine needs them: a store entry flagged offline IS a bring-online
+    candidate - review 2026-09-01, SRV-4/OPT-A10). The caller marks them
+    ``online=False``; the pad runs keep the default and exclude them.
     """
     universe = wells_svc.list_wells()["wells"]
     by_pad = [w["name"] for w in universe if w.get("pad") in pads]
@@ -169,11 +195,16 @@ def _build_configs(
 
     seeds_by_well: dict[str, dict[str, Any]] = {}
     for name in sorted(set(by_pad) | donors):
-        if name in offline and name not in donors:
+        if name in offline and name not in donors and not include_offline:
             continue
         try:
             ctx = wells_svc.well_context(name, 6, 0)
-            seeds_by_well[name] = ctx["seeds"]
+            seeds = dict(ctx["seeds"])
+            # Measured pump MD rides beside the seeds (not a SimParams field);
+            # without it WellConfig models MD = TVD (review 2026-09-01, #2).
+            if ctx.get("jpump_md") is not None:
+                seeds["jpump_md"] = ctx["jpump_md"]
+            seeds_by_well[name] = seeds
             if prov is not None:
                 # Where this well's inflow curve came from. The pump the
                 # optimizer picks is only as trustworthy as this.
@@ -190,7 +221,7 @@ def _build_configs(
     configs: list[Any] = []
     pad_of = {w["name"]: w.get("pad", "") for w in universe}
     for name in by_pad:
-        if name in offline:
+        if name in offline and not include_offline:
             continue
         seeds = seeds_by_well.get(name)
         if seeds is None:
@@ -206,7 +237,11 @@ def _build_configs(
             note.append(f"{fw.name}: donor {fw.match} could not be seeded - skipped")
             continue
         try:
-            cfg = _config_from_seeds(fw.name, pads[0], seeds)
+            # A hypothetical well has no survey: it runs on the field preset
+            # profile, so the donor's MEASURED MD does not transfer.
+            cfg = _config_from_seeds(
+                fw.name, pads[0], {k: v for k, v in seeds.items() if k != "jpump_md"}
+            )
             configs.append(cfg)
             note.append(f"{fw.name}: future well modeled on {fw.match}'s saved fit")
         except Exception as exc:  # noqa: BLE001
@@ -263,19 +298,48 @@ _PAD_DEFAULTS = {
     "S": {"n_pumps": 3, "n_steps": 11},
     "I": {"n_pumps": None, "n_steps": 11},
     "M": {"n_pumps": 3, "n_steps": 9},
+    # E: single VFD machine, no pump-count choice - the I-Pad shape.
+    "E": {"n_pumps": None, "n_steps": 11},
 }
 
 
 def _pad_plant(pad: str):
+    """The pad's plant at its DEFAULT configuration.
+
+    Used where there is no run request to configure from (the match-health
+    scorecard, the static curve sheet). Pad runs go through
+    ``_pad_plant_for_run``, which honours the E-Pad knobs.
+    """
     if pad == "S":
         from woffl.gui.s_pad_plant import PLANT
     elif pad == "I":
         from woffl.gui.i_pad_plant import PLANT
     elif pad == "M":
         from woffl.gui.m_pad_plant import PLANT
+    elif pad == "E":
+        from woffl.gui.e_pad_plant import PLANT
     else:
-        raise ValueError(f"unknown pad run '{pad}' - expected S, I or M")
+        raise ValueError(f"unknown pad run '{pad}' - expected S, I, M or E")
     return PLANT
+
+
+def _pad_plant_for_run(pad: str, req: schemas.OptimizeRunRequest):
+    """The plant a RUN uses. Identical to ``_pad_plant`` except on E-Pad,
+    whose booster is configured per run: which build is in the ground, its
+    suction, its speed cap and the operational header cap are all things the
+    engineer sets, because none of them is a measured E-Pad tag (see
+    ``woffl/gui/e_pad_plant`` and the E_Pad_Pumps README)."""
+    if pad != "E":
+        return _pad_plant(pad)
+    from woffl.gui.e_pad_plant import EPadPlant
+
+    return EPadPlant(
+        req.e_pad_build,
+        suction_psi=req.e_pad_suction_psi,
+        hz_max=req.e_pad_hz_max,
+        max_header_psi=req.e_pad_max_header_psi,
+        amp_limit=req.e_pad_amp_limit_a,
+    )
 
 
 def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[str, Any]:
@@ -322,7 +386,7 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         job["progress"] = f"pricing {len(configs)} wells at ladder pressures..."
         plan, meta = run_choke_optimization(
             configs,
-            _pad_plant(pad),
+            _pad_plant_for_run(pad, req),
             req.n_pumps if req.n_pumps is not None else defaults["n_pumps"],
             current,
             test_rates,
@@ -361,7 +425,7 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
 
     results, _optimizer, meta = run_optimization(
         configs,
-        _pad_plant(pad),
+        _pad_plant_for_run(pad, req),
         req.n_pumps if req.n_pumps is not None else defaults["n_pumps"],
         req.nozzles,
         req.throats,
@@ -446,7 +510,10 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
             f"boosted on-pad at the C-Pad booster knob ({req.c_pad_pf_psi:,.0f} psi); "
             "its produced water still loads the CFP machines"
         )
-    configs = _build_configs(run_pads, offline, req.future, notes)
+    # Offline wells are hydrated too: they are the bring-online candidates
+    # (marked online=False below). Until 2026-09-01 they were dropped here,
+    # so the SI/BOL ladder could never price bringing a shut-in well back on.
+    configs = _build_configs(run_pads, offline, req.future, notes, include_offline=True)
     if len(configs) == 0:
         raise ValueError(f"no active wells with usable saved fits on pads {', '.join(run_pads)}")
 
@@ -494,7 +561,9 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         pad_configs.setdefault(cfg.pad, []).append(cfg)
         # Future wells and board-offline wells enter as bring-online
         # candidates; everything else is online at its current pump.
-        online[cfg.well_name] = cfg.well_name not in donors_of_future
+        online[cfg.well_name] = (
+            cfg.well_name not in donors_of_future and cfg.well_name not in offline
+        )
     if skipped:
         notes.append("no tracked pump (skipped): " + ", ".join(sorted(skipped)))
     if not pad_configs:
@@ -504,11 +573,29 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
     try:
         from woffl.assembly.pf_pressure import pad_pf_cluster
 
+        from server.services import datasources
+
+        # pad_pf_cluster takes the fleet pf_latest FRAME and returns
+        # {pad: {"psi", "n_cluster", ...}}. It used to be called with a pad
+        # LETTER, which raised inside this try and was swallowed, so the CFP
+        # run never saw a measured header and always fell back to the
+        # PAD_LINE_DP table (review 2026-09-01, SRV-15).
+        clusters = pad_pf_cluster(datasources.pf_latest_safe())
         measured_pad_pf = {
-            pad: pad_pf_cluster(pad) for pad in pad_configs if pad != "C"
-        }
-        measured_pad_pf = {p: v for p, v in measured_pad_pf.items() if v}
-    except Exception:  # noqa: BLE001 - fallback to PAD_LINE_DP inside the engine
+            pad: float(clusters[pad]["psi"])
+            for pad in pad_configs
+            if pad != "C" and pad in clusters
+        } or None
+        if measured_pad_pf:
+            notes.append(
+                "measured pad PF: "
+                + ", ".join(
+                    f"{p} {v:,.0f} psi (n={clusters[p]['n_cluster']})"
+                    for p, v in sorted(measured_pad_pf.items())
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 - fallback to PAD_LINE_DP inside the engine
+        log.warning("measured pad PF unavailable, using PAD_LINE_DP: %s", exc)
         measured_pad_pf = None
 
     p0 = req.p0_psi

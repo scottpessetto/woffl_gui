@@ -78,6 +78,45 @@ def _pump_dict_from_row(latest: pd.Series) -> dict:
     }
 
 
+def order_installs(df: pd.DataFrame, ascending: bool = False) -> pd.DataFrame:
+    """Installs ordered by ``Date Set`` with a DETERMINISTIC same-day tie-break.
+
+    A JPCO is a same-day slickline pull + set, so two rows on one ``Date Set``
+    is the normal record of a changeout. Ordering by ``Date Set`` alone with
+    pandas' default unstable sort left the winner to chance, so the current
+    pump, the pump-at-test-date and the era sequence could flip between
+    fetches (review 2026-09-01, DATA-2). Tie-break: the row still in the
+    hole (``Date Pulled`` NaT) is the later install; among rows that both
+    carry a pull date the later pull is the later install; then the input
+    order, kept by a stable sort.
+
+    Args:
+        df: JP-history rows (any subset) with ``Date Set`` and optionally
+            ``Date Pulled``.
+        ascending: True for oldest-first (era building), False for
+            latest-first (current pump).
+
+    Returns:
+        The same rows, reordered; index preserved.
+    """
+    if df is None or df.empty:
+        return df
+    work = df.copy()
+    if "Date Pulled" in work.columns:
+        pulled = pd.to_datetime(work["Date Pulled"], errors="coerce")
+    else:
+        pulled = pd.Series(pd.NaT, index=work.index)
+    # NaT (still in hole) must sort as the LATEST pull regardless of direction.
+    work["_pull_key"] = pulled.fillna(pd.Timestamp.max)
+    work["_row_key"] = range(len(work))
+    work = work.sort_values(
+        ["Date Set", "_pull_key", "_row_key"],
+        ascending=[ascending, ascending, ascending],
+        kind="stable",
+    )
+    return work.drop(columns=["_pull_key", "_row_key"])
+
+
 def get_current_pump(jp_hist: pd.DataFrame, well_name: str) -> dict | None:
     """Return the current pump for a well (latest Date Set).
 
@@ -98,8 +137,8 @@ def get_current_pump(jp_hist: pd.DataFrame, well_name: str) -> dict | None:
     if well_df.empty:
         return None
 
-    # Latest Date Set = current pump
-    latest = well_df.sort_values("Date Set", ascending=False).iloc[0]
+    # Latest Date Set = current pump (same-day ties resolved by order_installs)
+    latest = order_installs(well_df, ascending=False).iloc[0]
     return _pump_dict_from_row(latest)
 
 
@@ -140,7 +179,7 @@ def get_pump_at_date(jp_hist: pd.DataFrame, well_name: str, date) -> dict | None
     if candidates.empty:
         return None
 
-    latest = candidates.sort_values("Date Set", ascending=False).iloc[0]
+    latest = order_installs(candidates, ascending=False).iloc[0]
     return _pump_dict_from_row(latest)
 
 
@@ -157,9 +196,10 @@ def get_all_current_pumps(jp_hist: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
 
-    # Keep the row with the latest Date Set per well
-    idx = df.groupby("Well Name")["Date Set"].idxmax()
-    return df.loc[idx].reset_index(drop=True)
+    # Keep the latest install per well; same-day ties via order_installs
+    # (idxmax on Date Set alone picked an arbitrary row on a changeout day).
+    ordered = order_installs(df, ascending=False)
+    return ordered.drop_duplicates(subset=["Well Name"], keep="first").reset_index(drop=True)
 
 
 def pump_ages(jp_hist: pd.DataFrame, today=None) -> pd.DataFrame:

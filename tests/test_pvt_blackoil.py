@@ -143,5 +143,114 @@ def test_solubility_negative_abs_pressure_raises() -> None:
         )
 
 
+def _pure_oil_sound_speed(oil: BlackOil, co: float) -> float:
+    """Speed of sound in the single-phase oil, ft/s, from a compressibility."""
+    import math
+
+    return math.sqrt(32.174 * 144 / (co * oil.density))
+
+
+def test_compress_acoustic_continuous_across_bubble_point() -> None:
+    """PVT-F1 tripwire (docs/upstream_sync.md #17, upstream PR to kwellis/woffl).
+
+    ``compress`` below Pb is McCain material-balance co (includes liberated
+    gas) and is 1-2 orders of magnitude above the liquid-phase value; fed to
+    Wood's equation it gave pure-oil "sound speeds" of 111-877 ft/s below Pb
+    and a 4.4x jump across Pb. ``compress_acoustic`` is Vasquez-Beggs at Rs(p):
+    continuous across Pb, identical to ``compress`` above it. Goes red if the
+    property is lost or aliased back onto ``compress``.
+    """
+    oil = BlackOil.schrader()  # Pb = 1750 psig
+    below = oil.condition(1749, 100).compress_acoustic
+    above = oil.condition(1751, 100).compress_acoustic
+    assert below == pytest.approx(above, rel=0.005)
+    # above Pb the acoustic value IS the existing Vasquez-Beggs compress
+    oil.condition(2000, 100)
+    assert oil.compress_acoustic == oil.compress
+    oil.condition(2500, 100)
+    assert oil.compress_acoustic == oil.compress
+    # below Pb it must NOT be the McCain material-balance value
+    oil.condition(1000, 100)
+    assert oil.compress_acoustic < oil.compress / 10
+
+
+def test_pure_oil_acoustic_sound_speed_is_physical_below_pb() -> None:
+    """Below Pb the single-phase oil sound speed from ``compress_acoustic`` must
+    sit in the physical band (crude oils: ~3,500-5,000 ft/s). The material-
+    balance ``compress`` gives 344-877 ft/s on the same points."""
+    oil = BlackOil.schrader()
+    for press in (500, 1000, 1400, 1749):
+        oil.condition(press, 100)
+        c_ac = _pure_oil_sound_speed(oil, oil.compress_acoustic)
+        assert 2000 <= c_ac <= 5500, (press, c_ac)
+        c_mb = _pure_oil_sound_speed(oil, oil.compress)
+        assert c_mb < 1000, (press, c_mb)  # documents WHY compress is unusable here
+
+
+def test_compressibility_floor_heavy_oil_low_temp() -> None:
+    """PVT-F2 tripwire (docs/upstream_sync.md #18, upstream PR to kwellis/woffl).
+
+    The Vasquez-Beggs numerator goes negative for ~10-14 API at 60-80 degF
+    (Ugnu range): 14 API / 0.65 SG / Pb 1500 / 60 degF returned -1.6e-6 psi^-1
+    above Pb, so Bo ROSE with pressure and ResMix.cmix hit a sqrt domain
+    error. Both the material-balance and acoustic paths must floor at
+    BlackOil._CO_FLOOR (1e-6) and warn exactly once per process.
+    """
+    import warnings
+
+    oil = BlackOil(oil_api=14, bubblepoint=1500, gas_sg=0.65)
+    raw = BlackOil.compressibility_vasquez_above(2000, 60, 14, 0.65, 100.0)
+    assert raw < 0  # the precondition the floor exists for
+
+    BlackOil._co_floor_warned = False  # fresh process semantics for this test
+    with pytest.warns(RuntimeWarning, match="floored"):
+        co_mb = oil.condition(2000, 60).compress
+    assert co_mb >= BlackOil._CO_FLOOR == 1e-6
+    assert oil.compress_acoustic >= BlackOil._CO_FLOOR
+
+    # one-time: a second engagement is silent
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert oil.condition(3000, 60).compress == BlackOil._CO_FLOOR
+        # The acoustic path carries its own, higher, physical floor (a
+        # dead-oil sound speed of ~4,600 ft/s), applied silently.
+        assert oil.compress_acoustic == max(BlackOil._CO_FLOOR, BlackOil._CO_ACOUSTIC_FLOOR)
+
+    # Bo must not rise with pressure above Pb once co is floored
+    bo_lo = oil.condition(1600, 60).oil_fvf()
+    bo_hi = oil.condition(3000, 60).oil_fvf()
+    assert bo_hi < bo_lo
+
+
+def test_compressibility_floor_is_noop_in_range() -> None:
+    """The floor must not touch an in-range oil (bit-identical solves)."""
+    oil = BlackOil.test_oil().condition(2500, 80)
+    raw = BlackOil.compressibility_vasquez_above(
+        2500, 80, oil.oil_api, oil.gas_sg, oil.gas_solubility()
+    )
+    assert raw > BlackOil._CO_FLOOR
+    assert oil.compress == raw
+    # Acoustic path: the raw value unless it is below the dead-oil floor
+    # (c ~ 4,600 ft/s), which caps pure-oil sound speed at a physical value.
+    assert oil.compress_acoustic == max(raw, BlackOil._CO_ACOUSTIC_FLOOR)
+
+
+def test_acoustic_floor_caps_pure_oil_sound_speed() -> None:
+    """Vasquez-Beggs extrapolates LOW on co at low Rs / low pressure, which
+    with only the 1e-6 material-balance floor gave pure-oil sound speeds up
+    to ~9,000 ft/s below ~900 psig. The acoustic floor (4e-6 psi^-1) caps
+    the liquid at ~4,600 ft/s - the physical ceiling for a hydrocarbon
+    liquid - without touching the material-balance path."""
+    import math
+
+    oil = BlackOil.schrader()
+    for press in (100, 300, 500, 800):
+        oil.condition(press, 80)
+        co = oil.compress_acoustic
+        assert co >= BlackOil._CO_ACOUSTIC_FLOOR
+        c = math.sqrt(144.0 * 32.174 / (co * oil.density))
+        assert c <= 4800.0, f"{press} psig: {c:.0f} ft/s"
+
+
 if __name__ == "__main__":
     plot_blackoil_compare(hyprop, pyprop)

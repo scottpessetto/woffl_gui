@@ -40,10 +40,36 @@ def fetch_all_well_tests(months: int) -> pd.DataFrame:
 
     from woffl.assembly.well_test_client import fetch_milne_well_tests
 
+    # A shorter window is a SLICE of a longer one already in cache - never a
+    # second fleet query. The warm loop used to run "the biggest query in
+    # the app" three times for the nested 6/12/24-month windows (review
+    # 2026-09-01, DATA-10); now the longest warmed window feeds the rest.
+    longest = _longest_cached_window(months)
+    if longest is not None:
+        cutoff = datetime.now() - relativedelta(months=months)
+        big = fetch_all_well_tests(longest)  # cache hit by construction
+        if big is not None and "WtDate" in big.columns:
+            return big[pd.to_datetime(big["WtDate"]) >= pd.Timestamp(cutoff)].copy()
+
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - relativedelta(months=months)).strftime("%Y-%m-%d")
     df, _dropped = fetch_milne_well_tests(start_date, end_date)
     return df
+
+
+def _longest_cached_window(months: int) -> Optional[int]:
+    """The longest warmed window that covers ``months`` and is ALREADY in the
+    fleet-tests cache, else None (then the caller queries the warehouse)."""
+    try:
+        from server.config import WARM_TEST_MONTHS
+
+        candidates = sorted((m for m in WARM_TEST_MONTHS if m > months), reverse=True)
+        for m in candidates:
+            if fetch_all_well_tests.cache_has(m):  # type: ignore[attr-defined]
+                return m
+    except Exception:  # noqa: BLE001 - the cache probe is an optimization only
+        return None
+    return None
 
 
 def tests_for_well(well: str, months: int, cap: int = 0) -> Optional[pd.DataFrame]:

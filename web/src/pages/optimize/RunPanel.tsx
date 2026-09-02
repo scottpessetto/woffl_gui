@@ -21,9 +21,11 @@ import type {
   ChokeLadderRung,
   ChokePlanResult,
   ChokePlanRow,
+  EPadBuild,
   OptimizeRunRequest,
   PadRunResult,
   PadRunRow,
+  RunPad,
 } from "../../api/types";
 import { Card, Spinner, WarnNote } from "../../components/ui";
 import { fmtNum } from "../../lib/format";
@@ -739,7 +741,7 @@ export function RunPanel({
   aside,
 }: {
   kind: "pad" | "cfp";
-  pad: "S" | "I" | "M" | null;
+  pad: RunPad | null;
   aside?: ReactNode;
 }) {
   const runKey = kind === "cfp" ? "CFP" : (pad as string);
@@ -748,7 +750,9 @@ export function RunPanel({
   const lastJob = useOptimizeStore((s) => s.lastJob);
   const setLastJob = useOptimizeStore((s) => s.setLastJob);
 
-  const [nozzles, setNozzles] = useState(["9", "10", "11", "12", "13", "14"]);
+  // Mirrors server/schemas.py OptimizeRunRequest.nozzles - the client always
+  // sends the list, so an omission here silently drops a size from every run.
+  const [nozzles, setNozzles] = useState(["9", "10", "11", "12", "13", "14", "15"]);
   const [throats, setThroats] = useState(["A", "B", "C", "D"]);
   const [method, setMethod] = useState<"milp" | "mckp">("milp");
   const [strategy, setStrategy] = useState<"jpco" | "choke">("jpco");
@@ -760,6 +764,14 @@ export function RunPanel({
   const [slope, setSlope] = useState(13.69);
   const [cPadPf, setCPadPf] = useState(3400);
   const [cfpPads, setCfpPads] = useState<string[]>([...CFP_PADS]);
+  // E-Pad booster configuration. Defaults mirror server.schemas
+  // OptimizeRunRequest: the Summit workbook's suction cell and I-Pad's
+  // operational header cap, neither of them an E-Pad measurement.
+  const [ePadBuild, setEPadBuild] = useState<EPadBuild>("SM25000_26STG");
+  const [ePadSuction, setEPadSuction] = useState(2800);
+  const [ePadHzMax, setEPadHzMax] = useState(60);
+  const [ePadHeaderCap, setEPadHeaderCap] = useState(3500);
+  const [ePadAmpLimit, setEPadAmpLimit] = useState("");
   // Selectable CFP pads: the canonical four plus any non-POPs pad found in
   // the well universe (L, R, ...). Non-POPs water rides the CFP machines,
   // so those pads may legitimately join; PF for pads beyond B/G/J is
@@ -790,9 +802,26 @@ export function RunPanel({
     return names.filter((n) => !offlineSet.has(n)).length;
   }, [wells.data, runPads, offlineSet]);
 
+  // The booster configuration the E-Pad curve sheet and the run must agree
+  // on. Ignored (and server-rejected) on every other pad.
+  const ePadKnobs = useMemo(
+    () => ({
+      build: ePadBuild,
+      suctionPsi: ePadSuction,
+      hzMax: ePadHzMax,
+      maxHeaderPsi: ePadHeaderCap,
+    }),
+    [ePadBuild, ePadSuction, ePadHzMax, ePadHeaderCap],
+  );
+  const ePadAmpLimitNum = Number(ePadAmpLimit);
+  const ePadAmpLimitReq =
+    ePadAmpLimit.trim() === "" || !Number.isFinite(ePadAmpLimitNum) || ePadAmpLimitNum <= 0
+      ? null
+      : ePadAmpLimitNum;
+
   // The plant's selectable online-pump counts, off the (hard-cached) curve
-  // payload; [] = fixed train (I-Pad) or a CFP run - no control rendered.
-  const pumpCurve = usePumpCurve(kind === "pad" ? pad : null, null);
+  // payload; [] = fixed train (I/E-Pad) or a CFP run - no control rendered.
+  const pumpCurve = usePumpCurve(kind === "pad" ? pad : null, null, ePadKnobs);
   const pumpOptions = pumpCurve.data?.n_pump_options ?? [];
 
   const start = useStartOptimizeRun();
@@ -824,6 +853,11 @@ export function RunPanel({
       psi_per_kbpd: slope,
       c_pad_pf_psi: cPadPf,
       cfp_pads: cfpPads,
+      e_pad_build: ePadBuild,
+      e_pad_suction_psi: ePadSuction,
+      e_pad_hz_max: ePadHzMax,
+      e_pad_max_header_psi: ePadHeaderCap,
+      e_pad_amp_limit_a: ePadAmpLimitReq,
     };
     start.mutate(req, { onSuccess: (r) => setLastJob(runKey, r.job_id) });
   };
@@ -946,6 +980,51 @@ export function RunPanel({
           )}
         </div>
 
+        {kind === "pad" && pad === "E" && (
+          // E-Pad's booster is the one plant whose configuration is not a
+          // measured tag, so the run form has to ask. Build especially: this
+          // is how "would the SN35000 make more oil?" gets answered - run the
+          // pad on each build and compare the fleet total.
+          <div className="flex flex-wrap items-end gap-x-4 gap-y-3 border-t border-slate-100 pt-2.5">
+            <label className="block" title="Which build the run assumes is in the ground. Run both and compare the fleet oil to price a changeout.">
+              <span className="text-xs font-medium text-slate-500">Booster build</span>
+              <select
+                value={ePadBuild}
+                onChange={(e) => setEPadBuild(e.target.value as EPadBuild)}
+                className={clsx(INPUT_CLS, "mt-1 block w-56")}
+              >
+                <option value="SM25000_26STG">SM25000 - 26 stg (in well)</option>
+                <option value="SN35000_18STG">SN35000 - 18 stg (alternative)</option>
+              </select>
+            </label>
+            <label className="block" title="Booster suction (psig) - the upstream stage's discharge. 2,800 is the Summit workbook's cell, not a measured E-Pad tag.">
+              <span className="text-xs font-medium text-slate-500">Suction (psig)</span>
+              <input type="number" value={ePadSuction} min={0} max={5000} step={25} onChange={(e) => setEPadSuction(Number(e.target.value))} className={clsx(INPUT_CLS, "mt-1 block")} />
+            </label>
+            <label className="block" title="VFD speed cap. The stage curve is the 60 Hz catalog curve, so it cannot exceed 60.">
+              <span className="text-xs font-medium text-slate-500">Max speed (Hz)</span>
+              <input type="number" value={ePadHzMax} min={30} max={60} step={1} onChange={(e) => setEPadHzMax(Number(e.target.value))} className={clsx(INPUT_CLS, "mt-1 block")} />
+            </label>
+            <label className="block" title="Operational discharge cap on the PF header - piping/wellhead, not the pump. 3,500 is adopted from I-Pad pending an E-Pad number; the booster's own frontier peaks near 4,560 psi, so this cap is what limits the sweep.">
+              <span className="text-xs font-medium text-slate-500">Header cap (psi)</span>
+              <input type="number" value={ePadHeaderCap} min={1000} max={5000} step={25} onChange={(e) => setEPadHeaderCap(Number(e.target.value))} className={clsx(INPUT_CLS, "mt-1 block")} />
+            </label>
+            <label className="block" title="Motor amp cap. Blank enforces nothing - no E-Pad motor nameplate came with the vendor curve sheets.">
+              <span className="text-xs font-medium text-slate-500">Amp limit (A)</span>
+              <input type="number" value={ePadAmpLimit} min={1} max={5000} step={1} placeholder="none" onChange={(e) => setEPadAmpLimit(e.target.value)} className={clsx(INPUT_CLS, "mt-1 block")} />
+            </label>
+          </div>
+        )}
+
+        {kind === "pad" && pad === "E" && (
+          <p className="text-xs text-amber-700">
+            E-Pad&apos;s booster model is NOT validated against live SCADA - catalog stage
+            curve plus the Summit workbook&apos;s affinity sheet. Suction and the header cap
+            above are assumptions, and the header cap (not the pump) is what limits the
+            pressure sweep. See the E-Pad booster tab for the candidate comparison.
+          </p>
+        )}
+
         {kind === "pad" &&
           nPumps !== null &&
           pumpOptions.length > 0 &&
@@ -992,7 +1071,12 @@ export function RunPanel({
         // actually shrink; min-w-0 does the same for the flex-less children.
         <div className={clsx("grid gap-4", aside && "xl:grid-cols-2")}>
           <div className="min-w-0">
-            <PadCharts pad={pad} result={padResult ?? chokeResult} nPumps={nPumps} />
+            <PadCharts
+              pad={pad}
+              result={padResult ?? chokeResult}
+              nPumps={nPumps}
+              ePad={ePadKnobs}
+            />
           </div>
           {aside && <div className="min-w-0">{aside}</div>}
         </div>

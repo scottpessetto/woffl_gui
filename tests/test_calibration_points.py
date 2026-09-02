@@ -270,9 +270,20 @@ def test_weight_kind_and_pwh_assignment():
 
     assert all(p["weight"] == TEST_WEIGHT for p in by_kind["test"])
     assert all(p["weight"] == DAILY_WEIGHT for p in by_kind["daily"])
-    assert all(p["pwh"] == 95.0 for p in by_kind["daily"])
+    # Daily points carry the day's MEASURED wellhead pressure: on these
+    # reverse-circ days the tubing gauge (250 psi in the fixture) is the
+    # production WHP, not the surf_pres default (review 2026-09-01, EVID-F7).
+    assert all(p["pwh"] == 250.0 for p in by_kind["daily"])
     whps = sorted(p["pwh"] for p in by_kind["test"])
     assert whps == [95.0, 135.0]
+
+
+def test_daily_pwh_falls_back_when_the_gauge_is_dead():
+    daily, pf = _spread_days("2026-06-05", 12)
+    daily["tubing_prs"] = 0.0  # dead tubing gauge -> no measured WHP
+    res = _build(daily, pf, [_test_row("2026-06-10", whp=135.0)], surf_pres=95.0)
+    dailies = [p for p in res["points"] if p["kind"] == "daily"]
+    assert dailies and all(p["pwh"] == 95.0 for p in dailies)
     # daily points have no measured rate columns of their own
     assert all(p["pf_rate"] > 0 for p in res["points"])
 

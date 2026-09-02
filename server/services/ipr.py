@@ -43,6 +43,7 @@ _SEED_BOUNDS: dict[str, tuple[float, float]] = {
     "form_wc": (0.0, 1.0),
     "form_gor": (20.0, 10000.0),
     "surf_pres": (10.0, 600.0),
+    "ppf_surf": (800.0, 5500.0),
 }
 
 
@@ -131,7 +132,17 @@ def fit(req: schemas.IprFitRequest) -> dict[str, Any]:
             estimate_reservoir_pressure,
         )
 
-        merged = estimate_reservoir_pressure(df)
+        # Pass the well's chars so the RP grid search uses the FIELD's cap
+        # (Kuparuk ~3,000) instead of the Schrader 1,800 default - without
+        # it a Kuparuk well with any test above 1,790 psi hit the floor
+        # fallback (review 2026-09-01, SOLV-F5).
+        from server.services import datasources
+
+        try:
+            chars_df, _src = datasources.well_chars_safe()
+        except Exception:  # noqa: BLE001 - cap defaults to Schrader
+            chars_df = None
+        merged = estimate_reservoir_pressure(df, jp_chars=chars_df)
         coeffs = compute_vogel_coefficients(merged)
         if coeffs.empty or "Well" not in coeffs.columns:
             raise ValueError(_FIT_ERROR)
@@ -167,6 +178,17 @@ def fit(req: schemas.IprFitRequest) -> dict[str, Any]:
         whp = frames.opt_float(anchor_row.get("whp"))
         if whp is not None and whp > 0:
             seeds["surf_pres"] = _clamp_seed("surf_pres", whp)
+        # The anchor test's OWN test-day power-fluid pressure (and the
+        # circulation direction its source implies). Without it the sidebar
+        # kept the most-recent day's PF, so /calibrate fit this test's BHP at
+        # another day's PF (review 2026-09-01, SRV-5). Same rule as the
+        # well-context seed: PF_MIN_VALID readings only.
+        pf = frames.opt_float(anchor_row.get("pf_press"))
+        if pf is not None and pf >= 800.0:
+            seeds["ppf_surf"] = _clamp_seed("ppf_surf", pf)
+            src = str(anchor_row.get("pf_source") or "").lower()
+            if src in ("tubing", "annulus"):
+                seeds["jpump_direction"] = "forward" if src == "tubing" else "reverse"
 
     coeffs_out = {
         "res_p": float(res_p),
@@ -180,13 +202,18 @@ def fit(req: schemas.IprFitRequest) -> dict[str, Any]:
         "most_recent_date": frames.json_value(row.get("most_recent_date")),
         "anchor_label": row.get("anchor_label"),
         "anchor_date": frames.json_value(row.get("anchor_date")),
+        # "fit" | "floor_fallback": the latter is RP = max BHP + 50 (or the
+        # field cap), not a fitted pressure - it manufactures a 10-30x qmax
+        # and is always reported WEAK so the engineer decides RP (SOLV-F5).
+        "rp_source": str(row.get("RP_source") or "fit"),
     }
 
     return {
         "well": req.well,
         "coeffs": coeffs_out,
         "seeds": seeds,
-        "weak": r2 is not None and r2 < _WEAK_IPR_R2,
+        "weak": (r2 is not None and r2 < _WEAK_IPR_R2)
+        or coeffs_out["rp_source"] == "floor_fallback",
     }
 
 

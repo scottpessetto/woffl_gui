@@ -84,13 +84,17 @@ Guards, in order:
 **Gate semantics:** truthy = `"1"`, `"true"`, `"yes"` (stripped, lowercased). Everything else —
 unset, `""`, `"0"`, `"false"` — is false.
 
-### The single worst landmine in this repo
+### The landmine that used to be here (defused 2026-09-01)
 
-`.env` (gitignored, local-only) sets `ALLOW_DATABRICKS_WRITES` to a **truthy** value, and
-`databricks_client._new_connection()` calls `load_dotenv()` (`databricks_client.py:120`).
-So **any local code path that opens a Databricks connection silently turns the production
-write gate ON for the rest of the process.** Tests document this exact leak
-(`tests/test_ipr_saved_values.py:73-77`).
+`.env` (gitignored, local-only) may still carry `ALLOW_DATABRICKS_WRITES`, but
+`databricks_client._new_connection()` **no longer exports it**: it reads `.env` with
+`dotenv_values()` and copies every key EXCEPT the two gates (`_ENV_GATE_KEYS`:
+`ALLOW_DATABRICKS_WRITES`, `ALLOW_PROP_HIST_DELETE`) into the environment, and only where
+the key is not already set. Before that, `load_dotenv()` exported the gate, so the first
+connection any code path opened - the FastAPI warm loop does it seconds after startup,
+unprompted - flipped the production write gate ON for the rest of the process (review
+2026-09-01, DATA-1). **To write locally you now set the gate in the shell / app
+environment explicitly**; `.env` cannot do it for you. Do not "restore" `load_dotenv()`.
 
 **NEVER:**
 - Set `ALLOW_DATABRICKS_WRITES` in a shell, test, or conftest to make something pass.
@@ -214,9 +218,14 @@ Style: plain classes with `__init__` (not dataclasses) for physics objects; Goog
 docstrings; terse oilfield snake_case (`psu`, `pte`, `ptm`, `pdi`, `qoil_std`, `knz/ken/kth/kdi`);
 numpy arrays end in `_ray`.
 
-**Unit gotcha, do not simplify away** (`workflow_steps/well_review_store.py:20-31`):
-sidebar/Solver `params.qwf` is **OIL** (BOPD); `WellConfig.qwf` is **TOTAL LIQUID** (BLPD).
-Snapshots convert `qwf/(1-wc)`; the optimizer converts back.
+**Rate convention (normative text: the RATE CONVENTION docstring in `woffl/gui/params.py`).**
+`SimParams.qwf` / `SimulationParams.qwf` AND `WellConfig.qwf` are all **TOTAL LIQUID**
+(BLPD, excluding returned power fluid) - the measured quantity (`vw_well_test.WtTotalFluid`,
+`prop_hist.ipr_qwf_liq`). Oil is DERIVED downward, exactly once, at each `InFlow`
+construction site (`params.inflow_rate`, `network_optimizer._create_well_objects`,
+`server/services/factories.build_sim_objects`). Never gross a rate up by `1/(1-wc)`.
+(An earlier version of this note said the sidebar held OIL and snapshots converted; that
+was inverted against the code and cited a deleted module - corrected 2026-09-01.)
 
 ---
 
@@ -224,13 +233,25 @@ Snapshots convert `qwf/(1-wc)`; the optimizer converts back.
 
 The Streamlit app was **DELETED 2026-08-18**. `woffl/gui/` no longer holds any
 page, tab, sidebar or session-state code, `streamlit` is not a dependency, and
-nothing in the tree may import it. What survives under `woffl/gui/` is 14
+nothing in the tree may import it. What survives under `woffl/gui/` is 16
 Streamlit-free modules the FastAPI server depends on: the pad/CFP plants and
-optimizers (`pad_plant_base`, `{s,i,m}_pad_plant`, `cfp_pad_plant`,
-`pad_optimize`, `cfp_moves`, `cfp_optimize`), `params` (the RATE CONVENTION),
-`ipr_anchor`, `fric_calibration`, `pump_identity`, and `memory_gauge` (parse +
-apply only). They are fork-only and keep the `gui` package name purely to avoid
-churn; new server-facing helpers belong in `server/` or `woffl/assembly/`.
+optimizers (`pad_plant_base`, `{s,i,m}_pad_plant`, `e_pad_plant`,
+`cfp_pad_plant`, `pad_optimize`, `cfp_moves`, `cfp_optimize`),
+`e_pad_booster` (the E-Pad booster candidate screen's physics — MPU pump data
++ `woffl/jp_data` loader; `e_pad_plant` is the thin `PadPlant` face on it, so
+the physics has ONE home), `params` (the RATE CONVENTION), `ipr_anchor`,
+`fric_calibration`, `pump_identity`, and `memory_gauge` (parse + apply only).
+They are fork-only and keep the `gui` package name purely to avoid churn; new
+server-facing helpers belong in `server/` or `woffl/assembly/`.
+
+**E-Pad is a pad run like S/I/M** (`_pad_plant("E")`), but it is the ONE plant
+whose configuration is not a measured tag — no E-Pad SCADA point, no motor
+nameplate, no piping rating came with the vendor curve sheets. Build,
+suction, speed cap, header cap and amp limit are per-run knobs
+(`OptimizeRunRequest.e_pad_*` → `_pad_plant_for_run`), and its frontier is
+UNIMODAL in flow (the recommended-range floor collapses deliverable pressure
+below `ror_lo * hz_max/60`), so its inverses scan before they bisect. Do not
+"simplify" them to the monotone I/M shape: that returns 0.0 at every header.
 
 Construction helpers live in `woffl/assembly/sim_factories.py` (Streamlit-free,
 fork-only) — `create_pvt_components`, `create_jetpump`, `create_pipes`,
@@ -304,8 +325,10 @@ Still open:
   upstream* woffl into site-packages beside the vendored patched tree; it works by path-precedence
   luck) and `:10` still lists the unused `databricks-sdk`.
 - Dead out-of-range check in `wellprofile._depth_interp` (`is False` on a numpy bool);
-  orphaned `databricks_client.get_tags_for_wells`; unguarded tag-list f-string in
-  `databricks_client`; zero-caller `WellTestProcessor`.
+  orphaned `databricks_client.get_tags_for_wells`; zero-caller `WellTestProcessor`,
+  `assembly/calibration.py` (+ `NetworkOptimizer.set_calibration`), `pf_calibration.robust_bracket`,
+  `cfp_optimize.run_joint_optimization`. (The "unguarded tag-list f-string" note is obsolete -
+  that path no longer exists.) Full inventory: `docs/code_review_2026-09-01.md` §5.
 - External asks (`docs/prop_hist_asks.md`): `manual_well_tests` table, NULL un-pin confirmation,
   MODIFY on `woffl_active`.
 - `pwf` auto-match seed is clamped to (100, 2500) psi; PF surface pressure floats freely.
@@ -313,8 +336,9 @@ Still open:
   autosaved to `mpu.wells.woffl_review_store`. No such table exists anywhere in the code —
   `sync_pad` writes `mpu.wells.prop_hist`. `woffl_active` / `woffl_review_store` appear only in
   that comment and in `docs/prop_hist_asks.md` ask (f), which is undelivered.
-- Three independent copies of the `ALLOW_DATABRICKS_WRITES` truthy check exist —
-  `databricks_client.py:225`, `ipr_anchor.py:188`, `scotts_tools/jp_calibration.py:930`. The
+- Independent copies of the `ALLOW_DATABRICKS_WRITES` truthy check exist —
+  `databricks_client.py` (`_write_gate_enabled`), `ipr_anchor.py`, `server/config.py`
+  (`writes_enabled`), and the same shape for the delete gate in `prop_hist_client`. The
   `ipr_anchor` copy is deliberate (the UI must hide controls before attempting a push); keep
   them in sync if you touch the semantics.
 
@@ -338,7 +362,7 @@ Settled decisions — do not relitigate:
 |---|---|
 | MPU | Milne Point Unit — the field |
 | pad | Surface production pad; single letters B, C, E, F, G, H, I, J, M, S |
-| S/I/M pad | The three pads with dedicated optimization pages and booster-plant models |
+| S/I/M/E pad | The four pads with booster-plant models the pad optimizer can run. E joined 2026-08-27 and is the only one whose plant configuration is per-run rather than measured |
 | POPS | Pad with on-pad production separation (E/F/H/I/M/S) — handles its own lift water, so only formation water reaches the plant |
 | CFP / PW | The produced-water plant whose discharge pressure the CFP pages optimize |
 | JP | Jet pump, sized nozzle-number + throat letter, e.g. `12B`, `9X` |

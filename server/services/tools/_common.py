@@ -67,6 +67,16 @@ def live_pf_for_seed(well_name: str) -> Optional[dict[str, Any]]:
         return None
 
 
+def detect_jpump_direction(well_name: str) -> str:
+    """"forward" when the well's live PF reading comes from the TUBING
+    (forward circulation: PF down the tubing, production up the annulus),
+    else "reverse" - the same rule the sidebar seeds from (pf_pressure
+    resolve_pf_pressure). Falls back to "reverse" when there is no reading."""
+    live = live_pf_for_seed(well_name)
+    src = str((live or {}).get("pf_source") or "").lower()
+    return "forward" if src == "tubing" else "reverse"
+
+
 def load_well_characteristics():
     """The fleet characteristics frame (compat name for the ported tools)."""
     df, _source = datasources.well_chars_safe()
@@ -241,6 +251,7 @@ def build_well_config(
     jp_chars_dict: dict,
     vogel_row: Optional[dict] = None,
     surf_pres: float = 210.0,
+    jpump_direction: Optional[str] = None,
 ) -> WellConfig:
     """WellConfig from jp_chars, optionally overriding IPR with Vogel data.
 
@@ -249,6 +260,12 @@ def build_well_config(
         jp_chars_dict: {well: chars} from :func:`well_chars_map`.
         vogel_row: Optional Vogel coefficient row to override IPR.
         surf_pres: Wellhead pressure, psi (callers pass the latest test's).
+        jpump_direction: "forward" | "reverse". None (default) live-detects
+            it from the well's PF source the way the sidebar does (a tubing
+            PF reading = forward circulation). Until 2026-09-01 every tool
+            modeled every well REVERSE - MPS-17, MPE-17, MPL-20 and the
+            F-pad forward wells had PF friction computed down the annulus
+            and production up the tubing (review EVID-F22).
 
     Raises:
         ValueError: the well is not in the characteristics frame.
@@ -256,6 +273,9 @@ def build_well_config(
     chars = jp_chars_dict.get(well_name)
     if not chars:
         raise ValueError(f"{well_name} not in jp_chars database")
+
+    if jpump_direction is None:
+        jpump_direction = detect_jpump_direction(well_name)
 
     is_sch = chars.get("is_sch", True)
     if isinstance(is_sch, str):
@@ -280,6 +300,7 @@ def build_well_config(
         form_gor=250.0,
         qwf=750.0,
         pwf=500.0,
+        jpump_direction=jpump_direction,
     )
 
     if vogel_row:

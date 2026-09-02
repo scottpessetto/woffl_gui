@@ -394,9 +394,35 @@ def milp_optimization(
         batch_pump = optimizer.batch_results[wn]
         successful = batch_pump.df[~batch_pump.df["qoil_std"].isna()]
 
+        # The per-config marginal ratio (molwr/motwr) exists only on the
+        # semi-finalist rows; on every other row it is NaN and the gate fails
+        # OPEN. So a gated-out semi config's DOMINATED neighbours (more water,
+        # less oil, non-semi) survived and the MILP picked them - lower oil
+        # AND more water than with no gate (review 2026-09-01, OPT-A3). Any
+        # config using at least as much water as the least-water config the
+        # gate excluded on this well is excluded with it.
+        water_col = "lift_wat" if water_key == "lift_wat" else "totl_wat"
+        gated_water_floor: "float | None" = None
+        if apply_mwc:
+            for _, row in successful.iterrows():
+                if _over_marginal_wc(row.get(marg_col), mwc):
+                    w = row.get(water_col)
+                    if w is not None and w == w:
+                        gated_water_floor = (
+                            float(w) if gated_water_floor is None else min(gated_water_floor, float(w))
+                        )
+
         n_kept = 0
         for _, row in successful.iterrows():
-            if apply_mwc and _over_marginal_wc(row.get(marg_col), mwc):
+            gated = apply_mwc and (
+                _over_marginal_wc(row.get(marg_col), mwc)
+                or (
+                    gated_water_floor is not None
+                    and row.get(water_col) is not None
+                    and float(row.get(water_col)) >= gated_water_floor
+                )
+            )
+            if gated:
                 mwc_excluded[wn] = mwc_excluded.get(wn, 0) + 1
                 continue
             perf = optimizer.get_pump_performance(wn, row["nozzle"], row["throat"])
@@ -591,13 +617,22 @@ def mckp_optimization(
         optimizer.optimization_results = []
         return []
 
-    # Call upstream MCKP solver
-    mckp_df = optimize_jet_pumps(
-        well_list=batch_pumps,
-        qpf_tot=optimizer.power_fluid.total_rate,
-        water_key=water_key,
-        allow_shutin=False,
-    )
+    # Call upstream MCKP solver. allow_shutin=True matches the MILP's
+    # "at most one" semantics (implicit shut-in when a well cannot be fed);
+    # with exactly-one the model was INFEASIBLE at any tight budget and the
+    # RuntimeError below escaped every caller, so one high-header trial
+    # killed a whole I/M/E sweep (review 2026-09-01, OPT-A4).
+    try:
+        mckp_df = optimize_jet_pumps(
+            well_list=batch_pumps,
+            qpf_tot=optimizer.power_fluid.total_rate,
+            water_key=water_key,
+            allow_shutin=True,
+        )
+    except RuntimeError as exc:
+        logger.warning("MCKP: no feasible allocation at this budget (%s); trial empty", exc)
+        optimizer.optimization_results = []
+        return []
 
     # Convert MCKP result DataFrame to OptimizationResult objects
     results = []

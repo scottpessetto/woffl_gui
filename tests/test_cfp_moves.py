@@ -89,12 +89,54 @@ class TestInterp:
         ws = _surfaces().wells["RESP"]
         assert option_at(ws, SI, 2777.0) == (0.0, 0.0)
 
-    def test_non_converged_points_are_skipped(self):
+    def test_non_converged_edge_is_unavailable_not_held(self):
+        """OPT-A1 (review 2026-09-01): a failed solve is an honest gap. The
+        old behaviour held the nearest converged value, so a pump that only
+        solved at high PF was scored at low PF with its high-PF oil."""
         ws = _surfaces().wells["RESP"]
         ws.options["12B"]["oil"][0] = None  # failed at 2,500
         ws.options["12B"]["water"][0] = None
-        oil, _ = option_at(ws, "12B", 2500.0)  # held at nearest valid (2,600)
-        assert oil == pytest.approx(300.0 + 0.5 * -200.0)
+        assert option_at(ws, "12B", 2500.0) is None
+        assert option_at(ws, "12B", 2550.0) is None  # inside the failed bracket
+        assert option_at(ws, "12B", 2600.0) == pytest.approx((200.0, 5000.0))
+        assert not cm.is_available(ws, "12B", 2500.0)
+        assert cm.is_available(ws, "12B", 2650.0)
+
+    def test_interior_gap_is_not_interpolated_across(self):
+        ws = _surfaces().wells["RESP"]
+        ws.options["12B"]["oil"][2] = None  # failed at 2,700 only
+        ws.options["12B"]["water"][2] = None
+        assert option_at(ws, "12B", 2650.0) is None
+        assert option_at(ws, "12B", 2750.0) is None
+        assert option_at(ws, "12B", 2600.0) is not None
+        assert option_at(ws, "12B", 2800.0) is not None
+
+    def test_settle_marks_infeasible_states(self):
+        """A move that lands the fleet at a pressure where a chosen pump has no
+        converged surface is infeasible - never a candidate plan."""
+        s = _surfaces()
+        plant = _plant(s)
+        # BOL1 only converges at >= 2,800; bringing it on (4,000 BPD at
+        # 15 psi/kBPD) drops P to 2,740, inside the failed 2,700-2,800 bracket.
+        s.wells["BOL1"].options["11B"]["oil"][:3] = [None, None, None]
+        s.wells["BOL1"].options["11B"]["water"][:3] = [None, None, None]
+        state = settle({**s.baseline_choices(), "BOL1": "11B"}, s, plant)
+        assert not state["feasible"]
+        assert state["infeasible"] == ["BOL1"]
+        assert state["oil"] == float("-inf")
+        singles = rank_single_moves(s, plant)
+        assert not any(m["well"] == "BOL1" for m in singles)
+        assert all(m["fleet_oil_delta"] > float("-inf") for m in singles)
+
+    def test_anchor_refuses_unanchorable_online_well(self):
+        """OPT-A9: an online well whose CURRENT pump never converged at P0
+        must not be silently treated as idle (its own BOL would then read
+        as a gain)."""
+        s = _surfaces()
+        s.wells["PIG"].options["12B"]["oil"] = [None] * len(GRID)
+        s.wells["PIG"].options["12B"]["water"] = [None] * len(GRID)
+        with pytest.raises(ValueError, match="PIG"):
+            _plant(s)
 
     def test_option_with_no_converged_points_is_not_a_choice(self):
         ws = _surfaces().wells["RESP"]

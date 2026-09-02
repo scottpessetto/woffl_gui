@@ -17,8 +17,15 @@ from server import config
 from server.cache import ttl_cache
 
 
-@ttl_cache(config.TTL_PUMP_CURVE, maxsize=16)
-def pump_curve(pad: str, n_pumps: Optional[int]) -> dict[str, Any]:
+@ttl_cache(config.TTL_PUMP_CURVE, maxsize=64)
+def pump_curve(
+    pad: str,
+    n_pumps: Optional[int],
+    build: Optional[str] = None,
+    suction_psi: Optional[float] = None,
+    hz_max: Optional[float] = None,
+    max_header_psi: Optional[float] = None,
+) -> dict[str, Any]:
     """Industry-format curve set for one pad's booster plant.
 
     The payload is exactly ``PadPlant.curve_report``'s contract (nameplate,
@@ -27,19 +34,35 @@ def pump_curve(pad: str, n_pumps: Optional[int]) -> dict[str, Any]:
     dicts and lists.
 
     Args:
-        pad (str): pad letter, "S", "I" or "M".
+        pad (str): pad letter, "S", "I", "M" or "E".
         n_pumps (int | None): pumps online for the station family. None means
             the plant's own default.
+        build (str | None): E-Pad only - which booster build is in the ground.
+        suction_psi (float | None): E-Pad only - booster suction (psig).
+        hz_max (float | None): E-Pad only - VFD speed cap (Hz).
+        max_header_psi (float | None): E-Pad only - operational header cap.
 
     Returns:
         dict: curve_report payload; see schemas.PumpCurveResponse.
 
     Raises:
-        ValueError: unknown pad (propagated from the plant lookup).
+        ValueError: unknown pad, or an unknown E-Pad build.
     """
     from server.services.optimizer_runs import _pad_plant
 
-    plant = _pad_plant(pad)
+    if pad == "E":
+        # Configured per call: none of these four is a measured E-Pad tag, so
+        # the sheet must show the booster the caller is actually assuming.
+        from woffl.gui.e_pad_plant import INSTALLED_BUILD, EPadPlant
+
+        plant = EPadPlant(
+            build or INSTALLED_BUILD,
+            suction_psi=suction_psi,
+            hz_max=60.0 if hz_max is None else hz_max,
+            max_header_psi=max_header_psi,
+        )
+    else:
+        plant = _pad_plant(pad)
     report = plant.curve_report(n_pumps)
     # Ride the plant's selectable online-pump counts along (outside
     # curve_report - its key set is contract-pinned by the plant tests) so

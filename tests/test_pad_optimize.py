@@ -547,6 +547,23 @@ class TestMatchCheck:
         assert by_well["W2"]["pump"] == "—"
         assert by_well["W2"]["oil_flag"] == "— no data"
 
+    def test_measured_per_well_pf_is_kept(self, fake_core):
+        """OPT-A6 (review 2026-09-01): the match check compares each well to
+        its TEST, so a well that arrived with its measured PF pressure keeps
+        it; only wells without one take the plant's derived header."""
+        fake_core.Optimizer.perf_table = {
+            ("W1", "12", "B"): {"oil_rate": 100.0, "lift_water": 200.0},
+        }
+        wells = _wells("W1", "W2")
+        wells[0].ppf_surf_well = 2650.0  # live seed from the context
+        wells[1].ppf_surf_well = None
+        _rows, header = po.match_check(
+            wells, CurvePlant(), 3, {"W1": ("12", "B"), "W2": None},
+            {"W1": (100.0, 400.0), "W2": (None, None)},
+        )
+        assert wells[0].ppf_surf_well == pytest.approx(2650.0)
+        assert wells[1].ppf_surf_well == pytest.approx(header)
+
 
 # ── P1-13: PowerFluidConstraint.rho_pf plumbing ─────────────────────────────
 

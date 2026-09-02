@@ -12,7 +12,11 @@ import re
 import pandas as pd
 
 from woffl.assembly.databricks_client import execute_query
-from woffl.assembly.sql_guards import validate_iso_date, validate_well_name
+from woffl.assembly.sql_guards import (
+    UnsafeSqlValueError,
+    validate_iso_date,
+    validate_well_name,
+)
 
 WELL_HEADER_QUERY = """\
 SELECT well_name
@@ -169,8 +173,31 @@ def fetch_milne_well_tests(
         return pd.DataFrame(), []
 
     # Format well list for SQL IN clause. validate_well_name raises
-    # UnsafeSqlValueError before any of these reach the query text.
-    well_list = ", ".join(f"'{validate_well_name(w)}'" for w in well_names)
+    # UnsafeSqlValueError before any of these reach the query text. A name
+    # the guard rejects is DROPPED AND LOGGED, never allowed to abort the
+    # fleet fetch: one sidetrack suffix or lowercase entry in vw_well_header
+    # used to raise here and leave EVERY well with no tests (review
+    # 2026-09-01, DATA-3; sql_guards' own docstring calls a false rejection
+    # of a real well name the worse outcome).
+    safe_names: list[str] = []
+    rejected: list[str] = []
+    for w in well_names:
+        try:
+            safe_names.append(validate_well_name(w))
+        except UnsafeSqlValueError:
+            rejected.append(str(w))
+    if rejected:
+        import logging
+
+        logging.getLogger("woffl.well_test_client").warning(
+            "fetch_milne_well_tests: %d well name(s) failed the SQL shape guard and "
+            "were excluded from the fleet fetch: %s",
+            len(rejected),
+            ", ".join(sorted(rejected)[:20]),
+        )
+    if not safe_names:
+        return pd.DataFrame(), []
+    well_list = ", ".join(f"'{w}'" for w in safe_names)
 
     # Step 2: query well tests with BHP
     query = WELL_TEST_QUERY.format(

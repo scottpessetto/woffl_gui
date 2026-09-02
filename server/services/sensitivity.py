@@ -813,15 +813,37 @@ def _solve_parallel(
     solver bug costs one wasted parallel attempt and then raises with a
     clean traceback from the serial rerun.
     """
-    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from concurrent.futures import as_completed
 
-    pool_cls = _EXECUTOR_CLS or ProcessPoolExecutor
     # ~4 chunks per worker: big enough to amortize per-task IPC, small
     # enough that one straggling chunk cannot idle the rest of the pool.
     chunk = max(1, -(-len(updates) // (workers * 4)))
     slices = [updates[i : i + chunk] for i in range(0, len(updates), chunk)]
     results: list[Optional[list[dict[str, Any]]]] = [None] * len(slices)
     done = 0
+
+    if _EXECUTOR_CLS is None:
+        # Production path: the server's primed, forkserver-started pool, behind
+        # its concurrency gate. Forking a fresh default-start-method
+        # ProcessPoolExecutor from inside the multi-threaded uvicorn process
+        # (event loop, warm loop, live warehouse sockets) is exactly what
+        # server/pool.py exists to avoid, and it stacked 2 more workers beside
+        # the 2 primed ones on the 2-vCPU tier (review 2026-09-01, SRV-8).
+        # Progress is reported once per chunk batch; the pool returns in order.
+        from server import pool as server_pool
+
+        try:
+            got = server_pool.submit_all(_solve_chunk, [(well, sp, part) for part in slices])
+        except Exception as exc:  # noqa: BLE001 - fall back, never fail the study
+            log.warning("combine via server pool failed (%r); rerunning serially", exc)
+            return None
+        if got is None:
+            return None
+        if progress is not None:
+            progress(len(updates), len(updates))
+        return [point for part in got for point in part or []]
+
+    pool_cls = _EXECUTOR_CLS
     try:
         with pool_cls(max_workers=workers) as pool:
             futures = {

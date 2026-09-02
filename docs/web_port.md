@@ -353,6 +353,111 @@ optimizer's own trace: oil and total PF vs header pressure across the sweep
 for the free-pressure pads, or the header fixed-point convergence for
 S-Pad's curve coupling.
 
+The **E-Pad booster** tab is a different animal from the run tabs: pump
+SELECTION, not allocation. It needs no saved fits, no readiness board and no
+run, and it answers one question - at a required dP across the booster, how
+much water can each candidate build push into the 3,400 psig E-Pad PF header,
+inside the vendor recommended operating range, and what amps does that pull?
+Two candidates, both Summit ESP mixed-flow stages on a VFD: the installed
+SM25000 26-stage build and the SN35000 18-stage alternative, digitized from
+the catalog performance pages into `woffl/jp_data/E_Pad_Pumps/` (provenance
+and caveats in the README there).
+
+It is the affinity-law sheet of the two Summit workbooks run BACKWARDS. The
+workbooks fix a speed and read off dP; `woffl/gui/e_pad_booster.py` fixes the
+dP and solves the SPEED at every flow, because that is the decision a VFD
+makes. Since the required speed rises with flow and the recommended range
+scales WITH speed (`[xrc_lo, xrc_hi] * Hz/60`), each candidate's answer is a
+flow WINDOW: below it the pump is under its range, above it the range, the
+motor amp cap, or the max-speed capability wall cuts in, and the run table
+names which. `POST /api/optimize/e-pad-booster`
+(`server/services/e_pad_curves.py`) is a pure computation - the body exists
+only because the duty is seven scalars an engineer sweeps - cached on the
+whole argument tuple like the pad curves.
+
+Two model boundaries the screen states out loud rather than hiding:
+
+- **Amps.** `amps = k * BHP`, the convention the I-Pad and M-Pad plants use.
+  No E-Pad motor nameplate came with the curve sheets, so `k` defaults to
+  0.1435 A/BHP - the I-Pad SN35000 live calibration on a 4160 V motor - as an
+  explicitly labeled TRANSFERRED estimate, and the amp limit defaults to
+  UNSET: amps are always reported, a cap is enforced only when the engineer
+  types the motor limit in. Nothing is invented.
+- **Housing pressure is not enforced.** The SN35000 catalog page says 2,800
+  psi, below the 3,400 psig header, but that is a downhole ESP housing number
+  and the identical stage runs at 3,408 psig discharge on I-Pad today. Gating
+  on it would raise a false alarm on the better candidate, so it is displayed
+  with the reason and left ungated.
+
+Three chart layers: the answer (speed and amps needed across flow, both
+candidates, feasible windows shaded per build, speed and amp ceilings drawn),
+the iso-speed dP family per candidate with the required dP as a reference line
+and the duty point on it, and the catalog head / BHP / efficiency sheet per
+candidate. The shared curve-chart primitives (annotation carrier, tooltip row
+builders, machine panel) live in `web/src/pages/optimize/curveChart.ts`, used
+by both `PadCharts` and `EPadBoosterPanel`. Two gotchas the code comments
+pin: an ECharts markLine resolves `yAxis` against the axis of the series that
+CARRIES it, so the amp limit needs its own carrier on the amps axis or a 60 A
+cap draws at 60 Hz; and a markLine past the data range does not stretch the
+axis, so the required-dP line gets an explicit `max` or an impossible duty
+silently vanishes and the sheet looks like it agreed with the ask.
+
+**Three views, because "what flow do I get?" has three honest answers** and
+conflating them is what made the first version of this screen confusing:
+
+1. **Deliverable rate** (`solve_candidate`) - hold the required dP EXACTLY by
+   slowing the drive until the pump makes only that much head. The
+   recommended range shrinks with the speed, and that is what caps the rate:
+   at 600 psid the installed 26-stage build needs 42.3 Hz and its range
+   ceiling there is 22,867 BPD. No wasted pressure, least water.
+2. **Fixed-speed ladder** (`speed_table`) - pin the drive at a speed and read
+   the flow where THAT speed's curve crosses the required dP, checked against
+   the range at that speed. This is the operator's question, and it is also
+   the explanation of view 1: the duty row is the last in-range rung (exactly
+   100 pct of its range ceiling) and every faster rung is over it, because
+   the crossing flow grows faster with speed than the range does. At 55 Hz
+   the same build passes 37,248 BPD - 125 pct of range, 52.7 pct efficiency,
+   721 BHP against 254 BHP at 40 Hz.
+3. **Flat out and choke** (`throttled_duty`) - run at the speed cap, pass the
+   most the range allows there, and burn the surplus across a choke. At a 55
+   Hz cap that is 29,700 BPD (+6,833) but the pump makes 1,012 psid, so 412
+   psi is choked off - 208 hydraulic HP - for 686 BHP. This is the trade
+   behind "do I run the pump slower?", priced side by side under the ladder.
+
+**E-Pad is also a pad RUN tab now** (`woffl/gui/e_pad_plant.EPadPlant`,
+`coupling="free_pressure"`), so it gets the same readiness board, saved-fit
+hydration, future wells, match-health scorecard and JPCO/choke strategies as
+S/I/M. Its frontier is shaped by the recommended RANGE rather than by motor
+amps, which makes it **unimodal in flow** where the I/M frontiers only fall:
+above `ror_hi * hz_max/60` no speed keeps the flow on the curve, but BELOW
+`ror_lo * hz_max/60` the range FLOOR binds instead, the drive must slow, and
+deliverable pressure collapses with the square of the speed. The frontier
+therefore peaks at 4,562 psi / 8,100 BPD and falls to 4,005 psi / 32,400 BPD.
+Every inverse scans then bisects the falling branch; a monotone bisection
+from zero flow - the shape the I/M inverses assume - returns 0.0 here and
+would report the pad infeasible at every header (pinned in
+`tests/test_e_pad_plant.py`).
+
+Two consequences worth stating, because they are the pad's actual answer.
+The booster has **pressure to spare** at 3,400 psi: its frontier sits above
+4,000 psi across the whole range, so `budget_at_pressure` is a flat 32,400
+BPD over the entire sweep band and it is the OPERATIONAL header cap, not the
+pump, that limits the sweep. And the booster's real constraint is
+**throughput**: 32,400 BPD on the installed build against 49,500 on the
+alternative, which is what a changeout buys if E-Pad's PF demand grows past
+the installed ceiling.
+
+Unlike every other plant, E-Pad's configuration is NOT measured - no E-Pad
+SCADA point, no motor nameplate and no piping rating came with the vendor
+curve sheets - so the build, suction, speed cap, header cap and amp limit are
+per-run knobs (`OptimizeRunRequest.e_pad_*`, `_pad_plant_for_run`), the run
+form carries them with an explicit not-validated banner, and the same four
+ride `GET /api/optimize/pump-curve?pad=E&build=&suction_psi=&hz_max=&max_header_psi=`
+so the curve sheet beside the form draws the booster the run will assume.
+They are rejected with a 422 on the other pads rather than silently ignored.
+Running the pad on each build and comparing fleet oil is how "would the
+SN35000 make more oil?" gets answered.
+
 Not ported yet (Streamlit remains the tool for these): the fixed-pump /
 existing-baseline scenario comparators and Base-vs-Future, the CFP
 dashboard (tradeoff verdict + match-check gate),

@@ -91,6 +91,11 @@ from server.services.tools.header_engine import (
 )
 from server.services.tools.pf_scenario import _estimate_gaugeless_ipr
 
+# Smallest (ResP - BHP) for which a generic Vogel IPR on an ESP / flowing well
+# is allowed. Below this the assumed ResP is doing the work and the implied
+# productivity index is fiction (review 2026-09-01, EVID-F17).
+_MIN_GENERIC_DRAWDOWN_PSI = 300.0
+
 # Header-change grid for the per-pad response curves (psi, relative to each well's
 # current WHP). Symmetric — show the oil response equally for header drops and rises.
 _SWEEP_DELTAS = (-150, -100, -50, 0, 50, 100, 150)
@@ -298,7 +303,10 @@ def _build_input_table(
             pf_held = (
                 int(round(live_pf["pf_press"]))
                 if live_pf
-                else int(pad_pf.get(pad, default_pad_pf(pad)))
+                # default_pad_pf() takes a WELL NAME; handing it the pad
+                # letter resolved to the 3,400 fallback for every pad
+                # (review 2026-09-01, EVID-F16). Use the pad table directly.
+                else int(pad_pf.get(pad, PAD_PF_DEFAULTS.get(pad, PAD_PF_FALLBACK)))
             )
 
         rows.append(
@@ -515,8 +523,15 @@ def _solve_nonjp_row(
         emp_doil = 0.0  # an unresponsive well won't move with the header
     elif oil is None or pd.isna(oil) or float(oil) <= 0:
         verdict = "no test oil rate"
+    elif res_pres - bhp_now < _MIN_GENERIC_DRAWDOWN_PSI:
+        # An ASSUMED reservoir pressure within a few hundred psi of the
+        # measured BHP manufactures a productivity index: with the old
+        # max(ResP, BHP+100) floor a 30 psi header move predicted ~30% of the
+        # well's oil (review 2026-09-01, EVID-F17). No IPR, no delta oil -
+        # the well is excluded from the pad sum rather than invented.
+        verdict = "ResP too close to BHP - no IPR"
     else:
-        pres = max(res_pres, bhp_now + 100.0)
+        pres = res_pres
         ipr = InFlow(qwf=float(oil), pwf=bhp_now, pres=pres)
         emp_dbhp = emp_slope * delta_p
         b0 = float(np.clip(bhp_now, 1.0, pres))
@@ -532,9 +547,10 @@ def _solve_nonjp_row(
         and oil is not None
         and pd.notna(oil)
         and float(oil) > 0
+        and res_pres - bhp_now >= _MIN_GENERIC_DRAWDOWN_PSI
     ):
         ipr_sink[wn] = {
-            "res_pres": float(max(res_pres, bhp_now + 100.0)),
+            "res_pres": float(res_pres),
             "qwf": float(oil),
             "pwf": float(bhp_now),
             "form_wc": 0.0,  # qwf is already the oil rate for non-JP
@@ -964,7 +980,10 @@ def solve_jp_row(
             bool(res_now["sonic"]),
             bool(res_scen["sonic"]),
             float(d_oil),
-            emp.get("EmpClass"),
+            # Row key is "Emp class" (see _empirical_columns). The old
+            # "EmpClass" lookup was always None, so the physics-vs-field
+            # verdict never fired (review 2026-09-01, EVID-F15).
+            emp.get("Emp class"),
             compare_emp=bool(emp),
         ),
         "Error": "",

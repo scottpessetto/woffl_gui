@@ -102,37 +102,55 @@ class Surfaces:
         return out
 
 
-def option_at(ws: WellSurface, label: str, pressure: float) -> tuple:
+def option_at(ws: WellSurface, label: str, pressure: float) -> Optional[tuple]:
     """(oil, water) for one option at a discharge, linear-interpolated.
 
-    Idle labels are exactly (0, 0). Non-converged grid points are skipped;
-    outside the valid span the nearest valid value is held (no extrapolation
-    — the grid should cover the sweep range).
+    Idle labels are exactly (0, 0). Returns ``None`` where the option is NOT
+    available: outside the span of converged grid points, or inside an
+    interior gap between two converged points that brackets a non-converged
+    one. Non-converged WOFFL points are honest gaps, not values to hold - a
+    large pump that only solves at high delivered PF must not be scored at
+    a lower pressure with its high-pressure oil (review 2026-09-01, OPT-A1).
     """
     if label in (SI, OFF):
         return 0.0, 0.0
     opt = ws.options[label]
-    return (
-        _interp(pressure, opt["_grid"], opt["oil"]),
-        _interp(pressure, opt["_grid"], opt["water"]),
-    )
+    oil = _interp(pressure, opt["_grid"], opt["oil"])
+    water = _interp(pressure, opt["_grid"], opt["water"])
+    if oil is None or water is None:
+        return None
+    return oil, water
 
 
-def _interp(x: float, grid: list, vals: list) -> float:
-    pts = [(g, v) for g, v in zip(grid, vals) if v is not None]
-    if not pts:
-        return 0.0
-    if x <= pts[0][0]:
-        return float(pts[0][1])
-    if x >= pts[-1][0]:
-        return float(pts[-1][1])
-    for (g0, v0), (g1, v1) in zip(pts, pts[1:]):
+def is_available(ws: WellSurface, label: str, pressure: float) -> bool:
+    """Whether ``option_at`` has a converged answer at this pressure."""
+    return option_at(ws, label, pressure) is not None
+
+
+def _interp(x: float, grid: list, vals: list) -> Optional[float]:
+    """Linear interpolation across CONVERGED neighbours only.
+
+    ``None`` outside the converged span, and ``None`` inside a gap whose
+    bracketing grid points are not both converged (no interpolation across
+    a failed solve). Exactly on a converged grid point returns that value.
+    """
+    n = min(len(grid), len(vals))
+    if n == 0:
+        return None
+    for i in range(n):
+        if vals[i] is not None and abs(float(grid[i]) - x) <= 1e-9:
+            return float(vals[i])
+    for i in range(n - 1):
+        g0, g1 = float(grid[i]), float(grid[i + 1])
         if g0 <= x <= g1:
+            v0, v1 = vals[i], vals[i + 1]
+            if v0 is None or v1 is None:
+                return None
             if g1 == g0:
                 return float(v0)
             f = (x - g0) / (g1 - g0)
-            return float(v0 + f * (v1 - v0))
-    return float(pts[-1][1])
+            return float(v0 + f * (float(v1) - float(v0)))
+    return None
 
 
 # ── the anchored plant ──────────────────────────────────────────────────────
@@ -174,11 +192,28 @@ def anchor(
     trip_psi: float = 2900.0,
     trip_margin_psi: float = 20.0,
 ) -> AnchoredPlant:
-    """Build the anchored plant from the surfaces' own baseline at P0."""
+    """Build the anchored plant from the surfaces' own baseline at P0.
+
+    Raises ``ValueError`` naming any ONLINE well whose current size has no
+    converged surface at P0: such a well cannot be anchored, and silently
+    treating it as idle would make its own "bring online" read as a gain
+    (review 2026-09-01, OPT-A9). The caller excludes it with a note.
+    """
     choices = surfaces.baseline_choices()
-    w0 = sum(
-        option_at(surfaces.wells[w], lab, surfaces.p0)[1] for w, lab in choices.items()
+    unanchorable = sorted(
+        w
+        for w, ws in surfaces.wells.items()
+        if ws.online and (not ws.current or not is_available(ws, choices[w], surfaces.p0))
     )
+    if unanchorable:
+        raise ValueError(
+            "online wells with no converged current-pump surface at P0: "
+            + ", ".join(unanchorable)
+        )
+    w0 = 0.0
+    for w, lab in choices.items():
+        ow = option_at(surfaces.wells[w], lab, surfaces.p0)
+        w0 += ow[1] if ow is not None else 0.0
     return AnchoredPlant(
         p0=surfaces.p0,
         baseline_water=w0,
@@ -194,32 +229,46 @@ def settle(choices: dict, surfaces: Surfaces, plant: AnchoredPlant,
     """Fixed point of the pressure/water coupling for one configuration.
 
     Loop gain ≈ dW/dP * s/1000 ≈ 0.1 here, so plain iteration converges in a
-    few passes. Returns pressure, fleet oil, machine water, at_trip.
+    few passes. Returns pressure, fleet oil, machine water, at_trip, and
+    ``feasible`` - False (with ``oil = -inf`` and the offending wells in
+    ``infeasible``) when any chosen option has no converged surface at the
+    settled pressure. An infeasible state is never a candidate plan.
     """
+
+    def _totals(pressure: float):
+        oil = water = 0.0
+        missing = []
+        for w, lab in choices.items():
+            ow = option_at(surfaces.wells[w], lab, pressure)
+            if ow is None:
+                missing.append(w)
+                continue
+            oil += ow[0]
+            water += ow[1]
+        return oil, water, missing
+
     pressure = plant.p0
     at_trip = False
+    missing: list = []
     for _ in range(max_iter):
-        water = sum(
-            option_at(surfaces.wells[w], lab, pressure)[1]
-            for w, lab in choices.items()
-        )
+        _oil, water, missing = _totals(pressure)
+        if missing:
+            break
         new_pressure, at_trip = plant.pressure_at(water)
         if abs(new_pressure - pressure) < tol_psi:
             pressure = new_pressure
             break
         pressure = new_pressure
-    oil = sum(
-        option_at(surfaces.wells[w], lab, pressure)[0] for w, lab in choices.items()
-    )
-    water = sum(
-        option_at(surfaces.wells[w], lab, pressure)[1] for w, lab in choices.items()
-    )
+    oil, water, missing = _totals(pressure)
+    feasible = not missing
     return {
         "pressure": pressure,
-        "oil": oil,
-        "water": water,
+        "oil": oil if feasible else float("-inf"),
+        "water": water if feasible else float("nan"),
         "at_trip": at_trip,
         "choices": dict(choices),
+        "feasible": feasible,
+        "infeasible": sorted(missing),
     }
 
 
@@ -237,7 +286,10 @@ def _best_option(ws: WellSurface, pressure: float, lam: float) -> str:
     """The well's equal-slope pick: argmax oil - λ*water (idle scores 0)."""
     best_lab, best_val = ws.idle_label(), 0.0
     for lab in ws.labels():
-        oil, water = option_at(ws, lab, pressure)
+        ow = option_at(ws, lab, pressure)
+        if ow is None:  # not converged at this pressure - not a choice here
+            continue
+        oil, water = ow
         val = oil - lam * water
         if val > best_val + 1e-9:
             best_lab, best_val = lab, val
@@ -262,7 +314,7 @@ def sweep_frontier(surfaces: Surfaces, plant: AnchoredPlant,
             }
             sig = tuple(sorted(choices.items()))
             state = settle(choices, surfaces, plant)
-            if best_state is None or state["oil"] > best_state["oil"]:
+            if state["feasible"] and (best_state is None or state["oil"] > best_state["oil"]):
                 best_state = state
             if sig in visited:
                 break
@@ -270,6 +322,8 @@ def sweep_frontier(surfaces: Surfaces, plant: AnchoredPlant,
             if abs(state["pressure"] - pressure) < 1.0:
                 break
             pressure = state["pressure"]
+        if best_state is None:  # every visited state was infeasible at its pressure
+            continue
         sig = tuple(sorted(best_state["choices"].items()))
         if sig not in seen_signatures:
             seen_signatures.add(sig)
@@ -294,8 +348,11 @@ def best_plan(frontier: list, baseline: dict, surfaces: Surfaces) -> Optional[di
         if lab == frm:
             continue
         ws = surfaces.wells[w]
+        # The plan state is feasible, so ``lab`` is available at its pressure;
+        # the FROM option may not be (that can be why it was changed).
         oil_a, wat_a = option_at(ws, lab, best["pressure"])
-        oil_b, wat_b = option_at(ws, frm, best["pressure"])
+        before = option_at(ws, frm, best["pressure"])
+        oil_b, wat_b = before if before is not None else (float("nan"), float("nan"))
         actions.append(
             {
                 "well": w,
@@ -337,6 +394,8 @@ def rank_single_moves(surfaces: Surfaces, plant: AnchoredPlant,
             if lab == baseline.get(w):
                 continue
             state = settle({**baseline, w: lab}, surfaces, plant)
+            if not state["feasible"]:
+                continue  # the move lands at a pressure where a pump has no solve
             own_after, _ = option_at(ws, lab, state["pressure"])
             own_before, _ = option_at(ws, baseline[w], base["pressure"])
             moves.append(
@@ -382,6 +441,8 @@ def pair_moves(surfaces: Surfaces, plant: AnchoredPlant,
             state = settle(
                 {**baseline, b["well"]: b["to"], r["well"]: r["to"]}, surfaces, plant
             )
+            if not state["feasible"]:
+                continue
             gain = state["oil"] - base["oil"]
             if gain > max(b["fleet_oil_delta"], r["fleet_oil_delta"]) + 1e-6:
                 pairs.append(
@@ -407,17 +468,32 @@ def shadow_price_today(surfaces: Surfaces, plant: AnchoredPlant,
     """
     choices = surfaces.baseline_choices()
 
-    def fleet_oil(pressure: float) -> float:
-        return sum(
-            option_at(surfaces.wells[w], lab, pressure)[0]
-            for w, lab in choices.items()
-        )
+    def fleet_oil(pressure: float) -> Optional[float]:
+        total = 0.0
+        for w, lab in choices.items():
+            ow = option_at(surfaces.wells[w], lab, pressure)
+            if ow is None:
+                return None
+            total += ow[0]
+        return total
 
     hi = min(plant.p0 + delta_psi, plant.cap)
     lo = max(plant.p0 - delta_psi, plant.p_floor)
     if hi <= lo:
         return 0.0
-    return (fleet_oil(hi) - fleet_oil(lo)) / (hi - lo)
+    f_hi, f_lo = fleet_oil(hi), fleet_oil(lo)
+    if f_hi is None or f_lo is None:
+        # A current pump is not converged on one side: fall back to the
+        # one-sided difference through P0 rather than inventing a value.
+        f0 = fleet_oil(plant.p0)
+        if f0 is None:
+            return 0.0
+        if f_hi is not None and hi > plant.p0:
+            return (f_hi - f0) / (hi - plant.p0)
+        if f_lo is not None and plant.p0 > lo:
+            return (f0 - f_lo) / (plant.p0 - lo)
+        return 0.0
+    return (f_hi - f_lo) / (hi - lo)
 
 
 def moves_summary(surfaces: Surfaces, plant: AnchoredPlant) -> dict:
@@ -510,6 +586,7 @@ def build_response_surfaces(
         per_pad, _clamped = delivered_by_pad(
             plant_model, pressure, pads,
             c_pad_pf_psi=c_pad_pf_psi, measured_pad_pf=measured_pad_pf,
+            anchor_disch_p=float(p0),  # today's pad readings were taken at p0
         )
         _assign_well_pressures(wells, per_pad, fallback=c_pad_pf_psi)
         constraint_psi = min(max(pressure, 1000.0), 5000.0)

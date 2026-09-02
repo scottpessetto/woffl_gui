@@ -289,27 +289,35 @@ def _format_sql_preview(results_df: pd.DataFrame, target_table: str) -> str:
             f"-- EXCLUDED {len(excluded)} well(s) — pump changed since the "
             f"calibrated test: {', '.join(excluded['Well'].tolist())}"
         )
+    # prop_hist is an APPEND-ONLY EAV table (enthid, prop_id, prop_value,
+    # entry_datetime, entry_user) that vw_prop_mech pivots - it has no
+    # well_name / jpfric_* columns and the house rule forbids UPDATE on it.
+    # The preview used to emit exactly that UPDATE, which was both invalid
+    # and a rule violation if pasted (review 2026-09-01, EVID-F26). Emit the
+    # rows the app's own save path would write, enthid resolved by name.
+    # (This module never writes anything itself - the preview is text.)
+    table = target_table if "." in target_table else f"mpu.wells.{target_table}"
     lines += [
         "",
-        f"UPDATE mpu.wells.{target_table}",
-        "SET jpfric_entry = CASE well_name",
+        "-- One row per (well, coefficient); latest entry_datetime per",
+        "-- (enthid, prop_id) wins in the vw_prop_mech pivot. Append only.",
+        f"INSERT INTO {table} (enthid, prop_id, prop_value, entry_datetime, entry_user)",
     ]
-    for wn_db, ken in zip(db_names, converged["Cal ken"]):
-        lines.append(f"        WHEN '{wn_db}' THEN {ken:.4f}")
-    lines.append("        ELSE jpfric_entry")
-    lines.append("    END,")
-    lines.append("    jpfric_throat = CASE well_name")
-    for wn_db, kth in zip(db_names, converged["Cal kth"]):
-        lines.append(f"        WHEN '{wn_db}' THEN {kth:.4f}")
-    lines.append("        ELSE jpfric_throat")
-    lines.append("    END,")
-    lines.append("    jpfric_diffuser = CASE well_name")
-    for wn_db, kdi in zip(db_names, converged["Cal kdi"]):
-        lines.append(f"        WHEN '{wn_db}' THEN {kdi:.4f}")
-    lines.append("        ELSE jpfric_diffuser")
-    lines.append("    END")
-    well_list = ", ".join(f"'{w}'" for w in db_names)
-    lines.append(f"WHERE well_name IN ({well_list});")
+    selects: list[str] = []
+    for wn_db, ken, kth, kdi in zip(
+        db_names, converged["Cal ken"], converged["Cal kth"], converged["Cal kdi"]
+    ):
+        for prop_id, val in (
+            ("jpfric_entry", ken),
+            ("jpfric_throat", kth),
+            ("jpfric_diffuser", kdi),
+        ):
+            selects.append(
+                f"SELECT h.enthid, '{prop_id}', {float(val):.4f}, current_timestamp(), "
+                f"current_user() FROM mpu.wells.vw_well_header h "
+                f"WHERE h.wellname = '{wn_db}' AND h.field = 'MPU' AND h.well_type = 'prod'"
+            )
+    lines.append("\nUNION ALL\n".join(selects) + ";")
     return "\n".join(lines)
 
 
@@ -401,7 +409,7 @@ def calibrate_one(row_dict: dict, chars: dict | None, pump: dict | None,
             ipr_su=inflow,
             prop_su=res_mix,
             prop_pf=prop_pf,
-            jpump_direction="reverse",
+            jpump_direction=wc.jpump_direction,  # live-detected (EVID-F22)
         )
     except Exception as exc:  # noqa: BLE001
         return _failed_row(wn, row_dict, f"calibration error: {exc}")

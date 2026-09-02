@@ -361,7 +361,16 @@ class TestWaterPumpMode:
         the Vogel curve sits BELOW the straight-line PI chord — so fwat moves
         DOWN (was 1315.9 pidx-based -> 1248.9 vogel-based); lwat ticks up
         slightly as the lower suction pulls a bit more power fluid through the
-        nozzle."""
+        nozzle.
+
+        Re-baselined 2026-09-01 (docs/upstream_sync.md #16, Payne re-floor):
+        this is a PURE-WATER column, so lambda_L = 1 on every segment and the
+        Payne multiplier had the whole tubing at HL = 0.924 - a gas-free
+        column modeled 7.6% lighter than water. Restoring HL = 1 raises the
+        discharge back-pressure, so psu moves UP (698 -> 820) and formation
+        water DOWN (1249 -> 1175); PF draw ticks down with the higher suction.
+        Losing the anchor fix still moves psu by ~+22% on top of this, so
+        the 5% tolerance keeps the tripwire."""
         psu, _sonic, qwater, fwat, lwat, _mach = so.jetpump_solver(
             self.pwh_w,
             self.tsu_w,
@@ -374,9 +383,9 @@ class TestWaterPumpMode:
             mpu_wat,
             "reverse",
         )
-        assert psu == pytest.approx(698.4, rel=0.05)
-        assert fwat == pytest.approx(1248.9, rel=0.05)
-        assert lwat == pytest.approx(2873.8, rel=0.05)
+        assert psu == pytest.approx(820.0, rel=0.05)
+        assert fwat == pytest.approx(1175.3, rel=0.05)
+        assert lwat == pytest.approx(2826.6, rel=0.05)
         # reported rates keep their meaning: the "oil" slot carries FORMATION
         # water only (the PF stays in lwat)
         assert qwater == fwat
@@ -676,3 +685,259 @@ class TestMachCritAndNozzleAreaFactor:
         )
         batch.batch_run([JetPump("12", "B")])
         assert seen["mach_crit"] == 1.6
+# ---------------------------------------------------------------------------
+# 2026-09-02 solver-core review fixes (docs/code_review_2026-09-01.md section 1,
+# docs/upstream_sync.md #29-#35). Each class goes RED if its patch is lost.
+# ---------------------------------------------------------------------------
+
+
+def _walk_kwargs():
+    return dict(
+        pwh=pwh,
+        tsu=tsu,
+        ppf_surf=ppf_surf,
+        jpump=None,
+        wellbore=None,
+        wellprof=None,
+        ipr_su=None,
+        prop_su=None,
+        prop_pf=None,
+        jpump_direction="reverse",
+    )
+
+
+class TestWalkInwardFeasibilityEdge:
+    """SOLV-F2 (upstream_sync.md #29): the suction walk's probe grid is coarse
+    (gaps up to 14 % of the span). When the first FEASIBLE probe already has
+    the far end's residual sign, the root sits in the unprobed gap; the walk
+    used to return that probe and jetpump_solver called it ``sonic``. Now it
+    bisects on feasibility to the edge (or until the residual flips sign)."""
+
+    def _walk(self, fake, monkeypatch, psu_start=1000.0, psu_toward=1400.0):
+        monkeypatch.setattr(so, "discharge_residual", fake)
+        return so._residual_walk_inward(
+            psu_start=psu_start, psu_toward=psu_toward, **_walk_kwargs()
+        )
+
+    def test_positive_first_feasible_probe_is_refined_until_bracketed(self, monkeypatch):
+        calls = []
+
+        def fake(psu, *args, **kwargs):
+            calls.append(psu)
+            if psu < 1030.0:
+                raise _jf.JetPumpError("infeasible throat mixture")
+            return ((psu - 1035.0) * 2.0, 1.0, 2.0, 3.0, 0.4)  # root at 1035
+
+        psu, res, _rates = self._walk(fake, monkeypatch)
+        # grid probes 1000..1028 are infeasible; 1044 is the first feasible one
+        # and carries +18 - the OLD return value. The refinement lands on the
+        # feasible side of the edge with the bracketing (negative) sign.
+        assert max(calls) == 1044.0
+        assert 1030.0 <= psu <= 1036.0
+        assert res < 0.0
+        assert len(calls) == 9  # 7 grid probes + 2 bisection probes
+
+    def test_pinned_by_feasibility_lands_within_edge_tolerance(self, monkeypatch):
+        def fake(psu, *args, **kwargs):
+            if psu < 1030.0:
+                raise _jf.JetPumpError("infeasible throat mixture")
+            return (50.0 + (psu - 1030.0), 1.0, 2.0, 3.0, 0.4)  # positive everywhere
+
+        psu, res, _rates = self._walk(fake, monkeypatch)
+        assert 1030.0 <= psu < 1030.0 + so._EDGE_TOL_PSI
+        assert res > 0.0  # no root: pinned by feasibility, not by the choke
+
+    def test_feasible_endpoint_returns_from_the_first_probe(self, monkeypatch):
+        calls = []
+
+        def fake(psu, *args, **kwargs):
+            calls.append(psu)
+            return (25.0, 1.0, 2.0, 3.0, 0.4)
+
+        psu, res, _rates = self._walk(fake, monkeypatch)
+        assert (psu, res) == (1000.0, 25.0)
+        assert calls == [1000.0]  # bit-identical path for converged solves
+
+    def test_bracketing_first_feasible_probe_is_not_refined(self, monkeypatch):
+        calls = []
+
+        def fake(psu, *args, **kwargs):
+            calls.append(psu)
+            if psu < 1030.0:
+                raise _jf.JetPumpError("infeasible throat mixture")
+            return (-5.0, 1.0, 2.0, 3.0, 0.4)
+
+        psu, res, _rates = self._walk(fake, monkeypatch)
+        assert (psu, res) == (1044.0, -5.0)
+        assert len(calls) == 7
+
+    def test_throat_entry_choked_is_walked_past(self, monkeypatch):
+        """FLOW-5's ThroatEntryChoked means 'below the choke floor' - the walk
+        steps inward, while plain ThroatEntryNoSolution still propagates."""
+        from woffl.flow.jetplot import ThroatEntryChoked
+
+        calls = []
+
+        def fake(psu, *args, **kwargs):
+            calls.append(psu)
+            if psu < 1003.0:
+                raise ThroatEntryChoked("below the choke floor")
+            return (-5.0, 1.0, 2.0, 3.0, 0.4)
+
+        psu, res, _rates = self._walk(fake, monkeypatch)
+        assert psu == 1004.0 and res == -5.0
+        assert len(calls) == 3
+
+    def test_marginal_11a_is_bracketed_not_sonic(self):
+        """The real case from the review: 11A at 94 % WC / 2000 psi. Before the
+        fix the walk returned 1885.0 psig (residual +35 psid) as sonic at
+        Mach 0.50; the true root was in the gap below."""
+        fx = TestMarginalConvergence
+        jp = JetPump("11", "A")
+        psu, sonic, qoil, _fwat, _lwat, mach = so.jetpump_solver(
+            fx.pwh_m, fx.tsu_m, fx.ppf_m, jp, wbore, profile,
+            fx.ipr_marginal, fx.res_marginal, mpu_wat, "reverse",
+        )
+        assert sonic is False
+        assert qoil > 0 and mach < 0.8
+        res, *_ = so.discharge_residual(
+            psu, fx.pwh_m, fx.tsu_m, fx.ppf_m, jp, wbore, profile,
+            fx.ipr_marginal, fx.res_marginal, mpu_wat, "reverse",
+        )
+        assert abs(res) <= 10.0  # res_tol: a bracketed, converged root
+
+    def test_sonic_is_a_python_bool(self):
+        """BatchPump / the API serialize sonic_status; keep it a plain bool."""
+        _psu, sonic, *_ = so.jetpump_solver(
+            pwh, tsu, ppf_surf, JetPump("9", "X"), wbore, profile, ipr, res, mpu_wat, "reverse"
+        )
+        assert sonic is True  # E-41 9X is the known choked case
+
+
+class TestBisectionSolveConsistency:
+    """SOLV-F3 (upstream_sync.md #30): the first midpoint is guarded like the
+    loop's, and the returned rates always belong to the returned suction."""
+
+    def _bisect(self, fake, monkeypatch, lo=1000.0, hi=1400.0):
+        monkeypatch.setattr(so, "discharge_residual", fake)
+        return so._bisection_solve(
+            psu_lo=lo, psu_hi=hi, res_lo=-100.0, res_hi=100.0,
+            res_tol=10.0, **_walk_kwargs(),
+        )
+
+    def test_first_midpoint_exception_does_not_escape(self, monkeypatch):
+        calls = {"n": 0}
+
+        def fake(psu, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _jf.ConvergenceError("throat mixture did not converge")
+            return (5.0, psu, psu + 1.0, psu + 2.0, 0.4)
+
+        psu, _sonic, qoil, fwat, qnz, _mach = self._bisect(fake, monkeypatch)
+        assert calls["n"] == 2  # first probe treated as too-low side, then converged
+        assert (qoil, fwat, qnz) == (psu, psu + 1.0, psu + 2.0)
+
+    def test_width_exit_after_infeasible_probe_returns_matching_rates(self, monkeypatch):
+        seen = []
+
+        def fake(psu, *args, **kwargs):
+            seen.append(psu)
+            if psu == 1003.0:
+                raise _jf.JetPumpError("nozzle inlet pressure below throat entry pressure")
+            return (-50.0 if psu < 1003.5 else 20.0, psu, psu + 1.0, psu + 2.0, 0.4)
+
+        psu, _sonic, qoil, fwat, qnz, _mach = self._bisect(fake, monkeypatch, lo=1000.0, hi=1004.0)
+        # used to return psu 1003 (the infeasible probe) with the rates of 1002
+        assert (qoil, fwat, qnz) == (psu, psu + 1.0, psu + 2.0)
+        assert psu == 1004.0  # the feasible upper end of the 2-psi bracket
+        assert seen[-1] == 1004.0
+
+
+class TestSecantSolveReusesKnownPoints:
+    """SOLV-P3 (upstream_sync.md #35): a clamp back onto an already-evaluated
+    suction is served from memory, and a clamp that pins the iterate on the
+    point it already stands on raises immediately instead of re-evaluating
+    the identical point (the next psu_secant would raise anyway)."""
+
+    def test_clamped_repeat_is_free_and_pinned_iterate_raises(self, monkeypatch):
+        calls = []
+
+        def fake(psu, *args, **kwargs):
+            calls.append(psu)
+            return (500.0, 1.0, 2.0, 3.0, 0.4)  # 1200 -> +500 pushes the secant past psu_max
+
+        monkeypatch.setattr(so, "discharge_residual", fake)
+        with pytest.raises(_jf.ConvergenceError):
+            so._secant_solve(
+                seed_pair=(1000.0, 1400.0), res_min=-100.0, res_max=100.0,
+                psu_min=1000.0, psu_max=1400.0, psu_diff=5.0, res_tol=10.0,
+                **_walk_kwargs(),
+            )
+        # 1200 evaluated once; the two clamps onto psu_max (a known point,
+        # then the same point again) cost no evaluations
+        assert calls == [1200.0]
+
+
+class TestPsuMinimizeChokeResidual:
+    """FLOW-9 (upstream_sync.md #32): psu_minimize converges on the CHOKE
+    RESIDUAL too, evaluated by interpolating tde at Mach = mach_crit, and a
+    pump that chokes at every admissible suction raises a typed error instead
+    of "converging" on the reservoir-pressure clamp."""
+
+    def test_e41_floor_residual_is_small_and_interpolated(self):
+        jp = JetPump("9", "X")
+        psu_min, _qoil, _book = _jf.psu_minimize(
+            tsu=tsu, ken=jp.ken, ate=jp.ate, ipr_su=ipr, prop_su=res
+        )
+        tee, _qoil2, book = _jf.throat_entry_mach_one(psu_min, tsu, jp.ken, jp.ate, ipr, res)
+        assert book.mach_ray[-1] >= 1.0  # the sweep crossed Mach 1: a real choke
+        assert abs(tee) <= _jf._TEE_TOL_FRAC * book.kde_ray[0]
+        m1, m2 = book.mach_ray[-2], book.mach_ray[-1]
+        t1, t2 = book.tde_ray[-2], book.tde_ray[-1]
+        assert tee == pytest.approx(t1 + (t2 - t1) * (1.0 - m1) / (m2 - m1))
+        assert tee != t1  # not the old nearest-point value
+
+    def test_pump_that_cannot_be_fed_raises_typed(self):
+        from woffl.flow.errors import ThroatEntryNoSolution
+
+        ipr_big = InFlow(qwf=2000, pwf=600, pres=1300)
+        res_wet = ResMix(wc=0.95, fgor=300, oil=mpu_oil, wat=mpu_wat, gas=mpu_gas)
+        jp = JetPump("9", "X")
+        with pytest.raises(ThroatEntryNoSolution):
+            _jf.psu_minimize(tsu=80, ken=jp.ken, ate=jp.ate, ipr_su=ipr_big, prop_su=res_wet)
+        # the full solve reports it as no-solution, never as "sonic, 30 BOPD"
+        with pytest.raises(ThroatEntryNoSolution):
+            so.jetpump_solver(
+                pwh, 80, ppf_surf, jp, wbore, profile, ipr_big, res_wet, mpu_wat, "reverse"
+            )
+
+
+class TestSeedBookReuse:
+    """SOLV-F9 (upstream_sync.md #35): discharge_residual reuses the throat
+    entry book psu_minimize already swept, bit-identically, without touching
+    the seed."""
+
+    def test_seeded_residual_is_bit_identical_and_skips_the_sweep(self, monkeypatch):
+        used = {"n": 0}
+        real = _jf._seed_zero_tde_book
+
+        def spy(book):
+            used["n"] += 1
+            return real(book)
+
+        monkeypatch.setattr(_jf, "_seed_zero_tde_book", spy)
+        for jp in (JetPump("9", "X"), JetPump("12", "B")):
+            psu_min, _qoil, book = _jf.psu_minimize(
+                tsu=tsu, ken=jp.ken, ate=jp.ate, ipr_su=ipr, prop_su=res
+            )
+            n_pts = len(book.prs_ray)
+            args = (psu_min, pwh, tsu, ppf_surf, jp, wbore, profile, ipr, res, mpu_wat, "reverse")
+            plain = so.discharge_residual(*args)
+            seeded = so.discharge_residual(*args, te_seed=book)
+            assert seeded == plain  # bitwise
+            assert len(book.prs_ray) == n_pts  # the seed is never mutated
+            # a seed swept from a different psu is ignored, never mis-applied
+            other = so.discharge_residual(psu_min + 1.0, *args[1:], te_seed=book)
+            assert other == so.discharge_residual(psu_min + 1.0, *args[1:])
+        assert used["n"] == 2
