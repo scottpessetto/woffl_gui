@@ -5,7 +5,11 @@ Run from a machine with Oracle PDB network access (i.e. on Hilcorp VPN/LAN).
 Requires .env with pdb_user, pdb_pw, plus Databricks creds for the diff.
 
 Usage:
-    python -m woffl.jp_data.pull_missing_surveys
+    python -m woffl.jp_data.pull_missing_surveys            # only wells with no CSV
+    python -m woffl.jp_data.pull_missing_surveys --refresh  # re-pull every well
+
+The query (deviation_survey_pdb.sql) takes the PREFERRED survey only; the
+PDB view is a history view with every survey version per well.
 """
 
 import os
@@ -37,13 +41,17 @@ def main() -> int:
         f.name.replace(" Deviation Survey.csv", "")
         for f in survey_dir.glob("*Deviation Survey.csv")
     }
-    missing = sorted(set(df["Well"].dropna()) - existing)
+    # --refresh re-pulls EVERY well (existing files included). Needed once on
+    # 2026-09-02 after the query gained its PREFERRED_FLAG filter: the history
+    # view stacks every survey version, and 5 of 91 local CSVs were unusable.
+    refresh = "--refresh" in sys.argv
+    missing = sorted(set(df["Well"].dropna()) - (set() if refresh else existing))
 
     if not missing:
         print("All wells already have surveys.")
         return 0
 
-    print(f"Pulling {len(missing)} missing surveys from Oracle PDB...")
+    print(f"Pulling {len(missing)} {'(refresh)' if refresh else 'missing'} surveys from Oracle PDB...")
 
     conn = oracledb.connect(
         user=os.getenv("pdb_user"),

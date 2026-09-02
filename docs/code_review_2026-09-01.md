@@ -8,8 +8,11 @@
 > **Fixed — physics:** FLOW-1 Payne re-floor (#16); PVT-F1 acoustic compressibility in `cmix`
 > with a dead-oil floor (#17); PVT-F2 V-B floor (#18); PVT-F3 DAK z-factor (#19); PVT-F4/F5
 > ResMix guards (#20/#21); FLOW-2 raw-survey TVD in the traverse (#23; fleet p90 111 ft → 0);
-> FLOW-3 survey validation (MPC-05 and four more corrupt CSVs now raise → preset + warning:
-> **re-pull MPC-05, MPC-40, MPI-11, MPL-20, MPM-64 from Oracle PDB**); FLOW-10/11/12 and the
+> FLOW-3 survey validation (MPC-05 and four more corrupt CSVs raised → **root cause found and
+> fixed 2026-09-02**: `deviation_survey_pdb.sql` read the PDB *history* view without its
+> `PREFERRED_FLAG` filter, stacking every survey version (MPC-05: 12 versions, one with TVD 0);
+> all 887 MILNEPT wells have exactly one preferred survey; all 91 local CSVs re-pulled, all
+> construct, pump TVD moved ≤ 2.8 ft on the 86 that were already usable); FLOW-10/11/12 and the
 > `Pipe` wall guard; server JP-MD from measured chars `JP_MD` / first crossing (rows 1–2 of the
 > table); SRV-6 `/calibrate` fits the same pump as the page; SRV-7 water-mode flag; SOLV-F4 R²
 > of the returned curve; SOLV-F5 RP floor-fallback flagged + weak, field cap from chars, anchored

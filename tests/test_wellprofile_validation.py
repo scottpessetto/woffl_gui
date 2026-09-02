@@ -22,20 +22,27 @@ from woffl.geometry.wellprofile import WellProfile, first_crossing, validate_sur
 ROOT = Path(__file__).resolve().parents[1]
 SURVEY_DIR = ROOT / "woffl" / "jp_data" / "well_surveys"
 
-# Surveys whose CSVs carry rows a wellbore cannot have (2026-09-02 pull):
-# MPC-05 alternates 0 / 4547 ft TVD at 6090 ft MD, MPC-40 has the subsea
-# datum bled into tvd_depth, MPI-11 drops 9.5 ft TVD in a 2.4 ft step at 84
-# deg inclination, MPL-20 and MPM-64 carry duplicate MDs disagreeing by 33 /
-# 18 ft. Re-pull these from Oracle PDB.
-CORRUPT_SURVEYS = {"MPC-05", "MPC-40", "MPI-11", "MPL-20", "MPM-64"}
+# Local surveys the validator is expected to reject. EMPTY since 2026-09-02:
+# the five that raised (MPC-05, MPC-40, MPI-11, MPL-20, MPM-64) were not bad
+# wells but a bad PULL - deviation_survey_pdb.sql read the PDB *history* view
+# without its PREFERRED_FLAG filter and stacked every survey version into one
+# CSV (MPC-05: 12 versions, one with TVD 0). The query now takes the preferred
+# survey only and all 91 CSVs were re-pulled. The stacked MPC-05 file is kept
+# under tests/fixtures/ so the rejection path stays exercised.
+CORRUPT_SURVEYS: set[str] = set()
+CORRUPT_FIXTURE = ROOT / "tests" / "fixtures" / "corrupt_survey_MPC-05_stacked_versions.csv"
 
 
-def _load(well: str) -> tuple[list[float], list[float]]:
-    df = pd.read_csv(SURVEY_DIR / f"{well} Deviation Survey.csv")
+def _load_csv(path: Path) -> tuple[list[float], list[float]]:
+    df = pd.read_csv(path)
     md = df["meas_depth"].to_numpy(dtype=float)
     vd = df["tvd_depth"].to_numpy(dtype=float)
     keep = np.isfinite(md) & np.isfinite(vd)
     return md[keep].tolist(), vd[keep].tolist()
+
+
+def _load(well: str) -> tuple[list[float], list[float]]:
+    return _load_csv(SURVEY_DIR / f"{well} Deviation Survey.csv")
 
 
 def _all_surveys() -> list[str]:
@@ -49,23 +56,43 @@ def _all_surveys() -> list[str]:
 # ------------------------------------------------------------------
 
 
-def test_mpc05_corrupt_survey_raises_naming_station():
-    md, vd = _load("MPC-05")
+def test_stacked_versions_survey_raises_naming_station():
+    """The pre-fix MPC-05 pull (every survey version stacked) must be
+    rejected with the offending station named."""
+    md, vd = _load_csv(CORRUPT_FIXTURE)
     with pytest.raises(
         ValueError, match=r"conflicting vertical depths at 6090\.00 ft MD"
     ):
         WellProfile(md, vd, jetpump_md=0.85 * max(md))
 
 
-def test_mph31_toe_up_survey_constructs_and_coalesces_duplicates():
-    """MPH-31 merges two survey runs (157 duplicated MDs agreeing to < 4 ft)
-    and builds past horizontal (TVD max 4037 ft, toe at 3670 ft)."""
+def test_repulled_mpc05_constructs():
+    """The preferred-survey pull of the same well is clean."""
+    md, vd = _load("MPC-05")
+    wp = WellProfile(md, vd, jetpump_md=0.85 * max(md))
+    assert wp.jetpump_vd > 0
+
+
+def test_mph31_toe_up_survey_constructs():
+    """MPH-31 builds past horizontal (toe-up: TVD max above the toe TVD).
+    The preferred-survey pull has no duplicated MDs; the measured pump MD
+    (5,144 ft) sits within the resolver's 5 ft window of chars JP_TVD 3,799,
+    which was interpolated from the pre-fix stacked file."""
     md, vd = _load("MPH-31")
     wp = WellProfile(md, vd, jetpump_md=5144)
-    assert len(wp.md_ray) < len(md)  # duplicates coalesced
     assert np.all(np.diff(wp.md_ray) > 0)  # strictly increasing MD
-    assert wp.jetpump_vd == pytest.approx(3798.9, abs=0.5)
+    assert wp.jetpump_vd == pytest.approx(3799.0, abs=5.0)
     assert wp.vd_ray[-1] < wp.vd_ray.max()  # genuinely toe-up
+
+
+def test_merged_run_duplicates_within_tolerance_coalesce():
+    """Two survey runs that agree at a shared MD to within the tolerance
+    coalesce to one station (the MPH-31 case before the preferred pull)."""
+    md = [0, 1000, 1000, 2000, 3000]
+    vd = [0, 990.0, 993.0, 1950.0, 2800.0]  # 3 ft disagreement < 5 ft tol
+    wp = WellProfile(md, vd, jetpump_md=2500)
+    assert wp.md_ray.tolist() == [0, 1000, 2000, 3000]
+    assert np.all(np.diff(wp.md_ray) > 0)
 
 
 def test_exact_duplicate_rows_are_dropped_silently():
