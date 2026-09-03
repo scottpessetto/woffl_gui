@@ -4,7 +4,6 @@
  * preset trajectory when no survey exists), plus inclination when available.
  * Carries the MD <-> TVD depth interpolator, whose hit is marked on both
  * depth charts.
- * Mirrors woffl/gui/tabs/well_profile.py.
  */
 
 import { useCallback, useMemo, useState } from "react";

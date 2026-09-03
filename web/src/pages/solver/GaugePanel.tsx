@@ -1,6 +1,6 @@
 /**
- * Memory-gauge upload control - port of the Solver's gauge expander
- * (jetpump_solver._render_memory_gauge_section). Lives in the IPR chart
+ * Memory-gauge upload control - port of the Solver's gauge expander from
+ * the retired Streamlit app. Lives in the IPR chart
  * card header: a quiet "Add gauge data" affordance that opens a compact
  * dropdown; once a gauge is loaded the button becomes an indigo chip with
  * the coverage count so the override is always visible while reading the

@@ -1,7 +1,7 @@
 /**
  * Pad Water Cut - daily pad-level WC for G/H/I/J.
  *
- * Port of woffl/gui/scotts_tools/pad_watercut.py. Same method, same series,
+ * Port of the retired Streamlit Pad Water Cut tool. Same method, same series,
  * same default three-year window; the aggregation is untouched server-side.
  *
  * Two charts, as the tab had: water cut on a fixed 0-100% axis (a WC chart

@@ -173,7 +173,15 @@ function FitSource({ row }: { row: Pick<PadRunRow, "ipr_source" | "ipr_r2" | "ha
 function PadResults({ result }: { result: PadRunResult }) {
   const meta = result.meta;
   const nPumpsUsed = metaNum(meta, "n_pumps");
-  const swaps = Array.isArray(meta.parsimony_swaps) ? meta.parsimony_swaps.length : 0;
+  // a number only when the engineer pinned the header; null on a swept run
+  const setpoint = metaNum(meta, "setpoint_psi");
+  const lam = metaNum(meta, "lambda_used");
+  const lamSource = typeof meta.lambda_source === "string" ? meta.lambda_source : null;
+  const wcEquiv = metaNum(meta, "marginal_wc_used");
+  const agreement =
+    meta.solver_agreement && typeof meta.solver_agreement === "object"
+      ? (meta.solver_agreement as { agree?: boolean; mckp_objective?: number; milp_objective?: number; error?: string })
+      : null;
   const totalTestOil = result.rows.reduce((a, r) => a + (r.test_oil ?? 0), 0);
   return (
     <div className="space-y-3">
@@ -183,17 +191,25 @@ function PadResults({ result }: { result: PadRunResult }) {
         <Metric label="Optimized oil" value={`${fmtNum(metaNum(meta, "total_oil_bopd"))} BOPD`} />
         <Metric label="Current test oil" value={`${fmtNum(totalTestOil)} BOPD`} />
         <Metric
-          label="Marginal WC gate"
-          value={
-            metaNum(meta, "marginal_wc_used") !== null
-              ? `${(metaNum(meta, "marginal_wc_used")! * 100).toFixed(1)}%`
-              : "-"
+          label="Water price"
+          value={lam === null ? "-" : `${fmtNum(lam * 1000, 1)} BOPD/MBPD`}
+          title={
+            lam === null
+              ? undefined
+              : `Oil given up per MBPD of lift water in the objective (oil - λ·water)${
+                  wcEquiv !== null ? `; equivalent marginal WC ${(wcEquiv * 100).toFixed(1)}%` : ""
+                }${lamSource ? `; source: ${lamSource}` : ""}`
           }
         />
       </div>
       {nPumpsUsed !== null && (
         <p className="text-xs text-slate-500">
           Plant modeled with {nPumpsUsed} booster pump{nPumpsUsed === 1 ? "" : "s"} online.
+        </p>
+      )}
+      {setpoint !== null && (
+        <p className="text-xs text-slate-500">
+          Header pinned at {fmtNum(setpoint)} psi by the engineer - the pressure was not swept.
         </p>
       )}
       {meta.converged === false && (
@@ -255,10 +271,18 @@ function PadResults({ result }: { result: PadRunResult }) {
         </table>
       </Card>
 
-      {swaps > 0 && (
+      {agreement && agreement.error && (
+        <WarnNote>MILP cross-check failed: {agreement.error}</WarnNote>
+      )}
+      {agreement && !agreement.error && agreement.agree === false && (
+        <WarnNote>
+          The two solvers disagree at the winning header (MCKP {fmtNum(agreement.mckp_objective ?? null, 1)} vs MILP{" "}
+          {fmtNum(agreement.milp_objective ?? null, 1)} BOPD-equivalent). Treat the plan as approximate.
+        </WarnNote>
+      )}
+      {agreement && !agreement.error && agreement.agree === true && (
         <p className="text-xs text-slate-500">
-          Parsimony: {swaps} well{swaps > 1 ? "s" : ""} swapped down to a smaller pump for
-          near-zero oil given up.
+          MILP cross-check agrees with the CP-SAT plan at the winning header.
         </p>
       )}
       {result.notes.length > 0 && (
@@ -756,9 +780,16 @@ export function RunPanel({
   const [throats, setThroats] = useState(["A", "B", "C", "D"]);
   const [method, setMethod] = useState<"milp" | "mckp">("milp");
   const [strategy, setStrategy] = useState<"jpco" | "choke">("jpco");
-  const [autoWc, setAutoWc] = useState(true);
-  const [manualWc, setManualWc] = useState(0.95);
-  const [parsimony, setParsimony] = useState(20);
+  // Water price λ (BOPD per BPD of lift water). auto = the plant budget's own
+  // shadow price; the manual default is 0.02 BOPD/BPD = 20 BOPD/MBPD.
+  const [autoLam, setAutoLam] = useState(true);
+  const [manualLam, setManualLam] = useState(0.02);
+  // Header setpoint for the free-pressure pads (I/M/E). auto = sweep the
+  // pressure window and let the run pick; unchecked pins it to one trial.
+  // The S-Pad's header is a function of flow, so it has no setpoint to pin
+  // and the control is never rendered there.
+  const [autoSetpoint, setAutoSetpoint] = useState(true);
+  const [manualSetpoint, setManualSetpoint] = useState(3200);
   const [nPumps, setNPumps] = useState<number | null>(null);
   const [p0, setP0] = useState(2792);
   const [slope, setSlope] = useState(13.69);
@@ -819,6 +850,11 @@ export function RunPanel({
       ? null
       : ePadAmpLimitNum;
 
+  // Only the free-pressure pads (I/M/E) have a header to pin, and only a
+  // JPCO run sweeps one. Everything else sends null - a swept run.
+  const setpointPinnable = kind === "pad" && strategy === "jpco" && pad !== "S";
+  const setpointReq = setpointPinnable && !autoSetpoint ? manualSetpoint : null;
+
   // The plant's selectable online-pump counts, off the (hard-cached) curve
   // payload; [] = fixed train (I/E-Pad) or a CFP run - no control rendered.
   const pumpCurve = usePumpCurve(kind === "pad" ? pad : null, null, ePadKnobs);
@@ -845,10 +881,12 @@ export function RunPanel({
       throats,
       method,
       strategy,
-      marginal_wc: autoWc ? null : manualWc,
-      parsimony_bopd: parsimony,
+      lambda_bopd_per_bpd: autoLam ? null : manualLam,
+      marginal_wc: null,
+      parsimony_bopd: 0,
       n_pumps: nPumps,
       n_steps: null,
+      setpoint_psi: setpointReq,
       p0_psi: p0,
       psi_per_kbpd: slope,
       c_pad_pf_psi: cPadPf,
@@ -920,42 +958,58 @@ export function RunPanel({
                   <option value="mckp">MCKP (CP-SAT)</option>
                 </select>
               </label>
-              <div>
-                <span className="text-xs font-medium text-slate-500">Marginal WC gate</span>
+              <div title="Oil given up per barrel of lift water in the objective (oil - λ·water). auto = the plant budget's own shadow price off the pooled pump frontier; set it by hand to price water at the plant's real marginal cost. Both solvers use it identically.">
+                <span className="text-xs font-medium text-slate-500">Water price λ (BOPD/BPD)</span>
                 <div className="mt-1 flex h-8 items-center gap-2">
                   <label className="flex cursor-pointer items-center gap-1 text-xs text-slate-600">
                     <input
                       type="checkbox"
-                      checked={autoWc}
-                      onChange={(e) => setAutoWc(e.target.checked)}
+                      checked={autoLam}
+                      onChange={(e) => setAutoLam(e.target.checked)}
                       className="h-4 w-4 rounded border-slate-300 accent-blue-600"
                     />
                     auto
                   </label>
-                  {!autoWc && (
+                  {!autoLam && (
                     <input
                       type="number"
-                      value={manualWc}
+                      value={manualLam}
                       min={0}
-                      max={1}
-                      step={0.01}
-                      onChange={(e) => setManualWc(Number(e.target.value))}
+                      max={10}
+                      step={0.005}
+                      onChange={(e) => setManualLam(Number(e.target.value))}
                       className={INPUT_CLS}
                     />
                   )}
                 </div>
               </div>
-              <label className="block">
-                <span className="text-xs font-medium text-slate-500">Parsimony (BOPD)</span>
-                <input
-                  type="number"
-                  value={parsimony}
-                  min={0}
-                  step={5}
-                  onChange={(e) => setParsimony(Number(e.target.value))}
-                  className={clsx(INPUT_CLS, "mt-1 block")}
-                />
-              </label>
+              {setpointPinnable && (
+                <div title="The booster header the run is planned at. auto sweeps the plant's pressure window and keeps the best trial; pin it when the header is already decided (a setpoint the operator is holding) and the run evaluates that ONE pressure instead. S-Pad is a fixed-curve station - its header follows the flow - so it has no setpoint to pin.">
+                  <span className="text-xs font-medium text-slate-500">Header setpoint (psi)</span>
+                  <div className="mt-1 flex h-8 items-center gap-2">
+                    <label className="flex cursor-pointer items-center gap-1 text-xs text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={autoSetpoint}
+                        onChange={(e) => setAutoSetpoint(e.target.checked)}
+                        className="h-4 w-4 rounded border-slate-300 accent-blue-600"
+                      />
+                      auto (sweep)
+                    </label>
+                    {!autoSetpoint && (
+                      <input
+                        type="number"
+                        value={manualSetpoint}
+                        min={1000}
+                        max={5000}
+                        step={25}
+                        onChange={(e) => setManualSetpoint(Number(e.target.value))}
+                        className={INPUT_CLS}
+                      />
+                    )}
+                  </div>
+                </div>
+              )}
             </>
             )
           ) : (

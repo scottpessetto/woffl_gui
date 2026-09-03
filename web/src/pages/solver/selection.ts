@@ -81,8 +81,7 @@ function medianTest(
 /**
  * Pump installed on or before `date`. Tenure is set-to-set - a pump runs
  * until the NEXT Date Set, and Date Pulled is never consulted.
- * Mirror of woffl/gui/ipr_viz.py:_pump_label_at_date (ISO strings compare
- * lexicographically, so no Date parsing is needed).
+ * ISO strings compare lexicographically, so no Date parsing is needed.
  */
 export function pumpAt(
   installs: JpInstallRow[],

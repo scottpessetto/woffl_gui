@@ -147,7 +147,7 @@ def _vogel_scale(
 def _test_wc(row: Any, fallback_wc: Optional[float]) -> Optional[float]:
     """form_wc, else computed WtWaterVol/(WtOilVol+WtWaterVol), else fallback.
 
-    Same chain as scotts_tools/jp_fric_trend; clamped to [0, 0.99] (the
+    Same chain as ``tools/jp_fric_trend``; clamped to [0, 0.99] (the
     prop-store MAX_MODELABLE_WC precedent). None when nothing is available.
     """
     wc = _f(row.get("form_wc"))

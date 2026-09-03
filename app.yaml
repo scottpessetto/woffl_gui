@@ -18,6 +18,23 @@ env:
   - name: WOFFL_MAX_WORKERS
     value: "2"
 
+  # Fleet cache warm cadence (server/warmup.py; code default is 6 h, which
+  # local runs keep). 12 h here because the SQL warehouse bills per WAKE
+  # WINDOW, not per statement: at 6 h the loop woke it five times a day -
+  # 00:00 (the day-roll pass `_next_wait` always forces), 06:00, 12:00, 18:00 -
+  # mostly at night, for nobody. Two passes replace those five: the midnight
+  # day-roll one (unavoidable - the per-well cache keys carry today's date) and
+  # one near noon, inside the workday, when the warehouse is already up for
+  # real traffic. Safe because the retention floor is two intervals, so nothing
+  # a pass warmed can go cold before the next pass rewrites it, and the 1 h
+  # tier is served stale-while-revalidate in between - a read gets the stale
+  # value instantly and refreshes it on its own, never a blocking cold query.
+  # Next step if the noon pass proves unnecessary: "86400" (the day-roll pass
+  # alone). Paired with the fleet-statement history warm - a pass is now ~19
+  # warehouse statements, not ~200.
+  - name: WOFFL_WARM_INTERVAL_SEC
+    value: "43200"
+
   # prop_hist writes (the Solver's "Save as well default" / clear-pin).
   #
   # ENABLED 2026-08-06 with the first ported write flow. Same app = same

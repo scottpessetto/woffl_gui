@@ -1,6 +1,6 @@
 """PF Scenario - oil and BHP response to a power-fluid pressure change.
 
-Port of woffl/gui/scotts_tools/pf_scenario.py (engine only).
+Port of the retired Streamlit tool (engine only).
 
 Sibling of Header Impact: this sweeps power-fluid pressure (ppf_surf) holding
 wellhead pressure fixed; that one sweeps wellhead pressure holding PF fixed.
@@ -496,7 +496,7 @@ def _estimate_gaugeless_ipr(
             "num_tests": len(well_tests),
             "R2": 0,
             "_bhp_estimated": True,
-            # [P1-29 guard] surfaced by render_tab so the engineer knows this
+            # [P1-29 guard] surfaced in the UI so the engineer knows this
             # well's back-calc used the pump that WAS in the hole at test
             # time, which differs from what's in the well today.
             "_pump_changed": pump_changed,

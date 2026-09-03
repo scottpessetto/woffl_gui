@@ -1,7 +1,7 @@
 /**
  * JP Wash-Out - pumps needing more PF pressure than the surface can deliver.
  *
- * Port of woffl/gui/scotts_tools/jp_washout.py. For every JP producer whose
+ * Port of the retired Streamlit JP Wash-Out tool. For every JP producer whose
  * latest test measured lift water, the engine finds the PF surface pressure
  * the model needs to reproduce that measurement. Above the infrastructure cap
  * the PUMP is the problem, not the pressure.

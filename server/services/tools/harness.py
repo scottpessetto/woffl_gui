@@ -1,9 +1,9 @@
 """Test Harness - curated live-data sanity cases.
 
-Port of woffl/gui/scotts_tools/test_harness.py plus the tests/harness_cases.py
-registry it drove. Both are rewritten against the server's services rather
-than restored verbatim: the originals imported ``scotts_tools.well_sort`` and
-``scotts_tools.header_impact``, neither of which exists any more.
+Port of the retired Streamlit Test Harness tab plus the case registry it
+drove. Both are rewritten against the server's services rather than restored
+verbatim: the originals imported the old ``scotts_tools`` well_sort and
+header_impact modules, neither of which exists any more.
 
 What this is FOR: these are not unit tests (pytest covers that, offline and
 mocked). Each case exercises a real pipeline against TODAY's Databricks data

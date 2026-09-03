@@ -79,6 +79,10 @@ class EPadPlant(PadPlant):
     """
 
     coupling = "free_pressure"
+    # E-Pad pumps handle formation AND lift water (Scott, 2026-09-02;
+    # well_sort_engine.POPS_PUMP_HANDLES["E"] == "total"): budget and
+    # price TOTAL water. See docs/optimization_redesign_2026-09.md section 5.
+    water_key = "totl_wat"
     n_pump_options = []  # single machine — no pump-count choice
     max_header_psi = _MAX_HEADER_PSI
 

@@ -1,8 +1,8 @@
 """Pure compute helpers for the Header Pressure Impact tab.
 
 This module holds the side-effect-free logic behind ``header_impact`` so it can
-be unit-tested without a Streamlit or Databricks runtime. The Streamlit render
-layer (``header_impact.render_tab``) imports these and supplies the IO.
+be unit-tested without a Databricks runtime. The Header Impact tool imports
+these and supplies the IO.
 
 Currently houses:
   - ``resolve_pad_pf`` / ``pf_map_from_selected`` — per-pad power-fluid pressure

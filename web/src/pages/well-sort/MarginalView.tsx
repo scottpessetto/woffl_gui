@@ -1,7 +1,7 @@
 /**
  * Marginal WC view - the field-wide cumulative-water-threshold calculator
- * plus the per-pad (POPs) calculator with pump-limit headroom. Port of
- * well_sort.py:render_marginal_wc_tab + _render_pad_marginal_wc_section.
+ * plus the per-pad (POPs) calculator with pump-limit headroom. Port of the
+ * retired Streamlit Marginal WC tab and its per-pad section.
  * Both import buttons write params.marginal_watercut - the cutoff the Batch
  * Run recommender consumes, editable on the Batch Run card itself.
  */

@@ -1,7 +1,7 @@
 /**
  * Vogel IPR chart: fitted curve + test scatter colored by recency + the
- * modeled operating point. Mirror of woffl/gui/ipr_viz.py:create_ipr_plotly
- * (axes, series, Res P / Qmax annotation) rebuilt on the house ECharts
+ * modeled operating point. Axes, series and the Res P / Qmax annotation are
+ * carried over from the retired Streamlit app, rebuilt on the house ECharts
  * theme. The curve is recomputed CLIENT-SIDE from the anchor at the SIDEBAR
  * reservoir pressure, so dragging ResP redraws instantly.
  */

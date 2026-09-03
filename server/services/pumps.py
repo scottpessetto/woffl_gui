@@ -1,8 +1,8 @@
 """Cross-brand jet pump equivalent lookup.
 
-mirrors woffl/gui/tabs/pump_equivalent.py - given a National nozzle + throat,
-find the closest equivalent in the Guiberson, Kobe, and Petrolift catalogs
-(Petrie & Smart, Jet Pumping Oil Wells, 1983):
+Given a National nozzle + throat, find the closest equivalent in the
+Guiberson, Kobe, and Petrolift catalogs (Petrie & Smart, Jet Pumping Oil
+Wells, 1983):
 
 1. Find the brand nozzle whose diameter is closest to the National nozzle.
 2. Compute the National diameter ratio (throat_dia / nozzle_dia).
@@ -18,17 +18,15 @@ from typing import Any
 
 from server import config, schemas
 
-# mirrors woffl/gui/tabs/pump_equivalent.py:_OTHER_BRANDS
 _OTHER_BRANDS = ["guiberson", "kobe", "petrolift"]
 
-# mirrors woffl/gui/tabs/pump_equivalent.py:_load_catalog - loaded once at
-# import; the catalog ships with the repo and never changes at runtime.
+# Loaded once at import; the catalog ships with the repo and never changes
+# at runtime.
 _CATALOG: dict[str, Any] = json.loads(
     config.JETPUMP_DIMENSIONS_JSON.read_text(encoding="utf-8")
 )
 
 
-# mirrors woffl/gui/tabs/pump_equivalent.py:_closest_by_diameter
 def _closest_by_diameter(
     catalog_items: dict[str, float], target_dia: float
 ) -> tuple[str, float]:
@@ -39,7 +37,6 @@ def _closest_by_diameter(
     return best_label, best_dia
 
 
-# mirrors woffl/gui/tabs/pump_equivalent.py:_find_equivalent
 def _find_equivalent(
     brand_data: dict[str, dict[str, float]],
     national_nozzle_dia: float,

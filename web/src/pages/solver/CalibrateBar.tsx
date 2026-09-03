@@ -9,6 +9,11 @@
  * era fit always targets the pump actually installed today, so there is no
  * "calibrating one pump against another's test" trap to guard against.
  *
+ * "Match the test (no gauge)" (MatchTest) is the second calibration, for
+ * wells with no downhole gauge: the test's power-fluid rate stands in for
+ * the BHP measurement and the fit infers the anchor BHP with the discharge
+ * coefficients.
+ *
  * Match Sensitivities rides along, always enabled - it is the "why doesn't
  * anything reach this test?" explorer, useful exactly when a match is poor.
  */
@@ -16,13 +21,21 @@
 import { SlidersHorizontal } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
+import type { WellTestRow } from "../../api/types";
 import { Button } from "../../components/ui";
 import { useParamsStore } from "../../state/params";
 
 import { EventCalibration } from "./EventCalibration";
 import { KcoefExplainer } from "./KcoefExplainer";
+import { MatchTest } from "./MatchTest";
 
-export function CalibrateBar({ well }: { well: string }) {
+export function CalibrateBar({
+  well,
+  compareTest,
+}: {
+  well: string;
+  compareTest: WellTestRow | null;
+}) {
   const modelAsWater = useParamsStore((s) => s.params.model_as_water);
   const navigate = useNavigate();
 
@@ -32,6 +45,7 @@ export function CalibrateBar({ well }: { well: string }) {
     <div className="space-y-1.5 border-t border-slate-100 pt-2.5">
       <div className="flex flex-wrap items-center gap-2">
         <EventCalibration well={well} />
+        <MatchTest well={well} compareTest={compareTest} />
         <Button
           variant="secondary"
           size="sm"

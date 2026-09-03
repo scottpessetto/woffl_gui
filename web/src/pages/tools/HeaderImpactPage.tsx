@@ -1,7 +1,7 @@
 /**
  * Header Pressure Impact - what moving a pad header does to BHP and oil.
  *
- * Port of woffl/gui/scotts_tools/header_impact.py. JP wells go through WOFFL
+ * Port of the retired Streamlit Header Impact tool. JP wells go through WOFFL
  * physics (solved at the current WHP and again at WHP + delta); ESP /
  * gas-lift / flowing wells take the empirical slope path. The verdict column
  * is the point: "sonic-decoupled" means a choked pump cannot pass a

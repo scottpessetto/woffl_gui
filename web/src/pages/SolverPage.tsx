@@ -1,5 +1,5 @@
 /**
- * Solver workbench - the React port of woffl/gui/tabs/jetpump_solver.py.
+ * Solver workbench - the React port of the retired Streamlit Solver tab.
  * Layout: verdict bar, solve errors, IPR chart | control column (comparison,
  * anchor controls, rate calculator), pump-history strip, full-width test
  * table. Convention for every single-well analysis page: the pump-history
@@ -296,7 +296,7 @@ function Workbench({ well }: { well: string }) {
             compareTest={compareTest}
             formWc={params.form_wc}
             ppfSurf={params.ppf_surf}
-            footer={<CalibrateBar well={well} />}
+            footer={<CalibrateBar well={well} compareTest={compareTest} />}
           />
           <IprControls
             anchorMode={anchorMode}

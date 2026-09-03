@@ -305,10 +305,18 @@ export interface OptimizeRunRequest {
    *  chokes back / shuts in wells (short-term plan for a PF pump outage). */
   strategy: "jpco" | "choke";
   method: "milp" | "mckp";
-  marginal_wc: number | null; // null = auto-derive from the plant budget
-  parsimony_bopd: number;
+  /** Water price λ, BOPD given up per BPD of lift water, in the knapsack
+   *  objective oil − λ·water. null = auto (the plant budget's own shadow
+   *  price). Wins over marginal_wc when both are set. */
+  lambda_bopd_per_bpd: number | null;
+  marginal_wc: number | null; // legacy gate, mapped to λ = (1 − wc) / wc
+  parsimony_bopd: number; // DEPRECATED: accepted and ignored by the server
   n_pumps: number | null; // null = pad default
   n_steps: number | null;
+  /** Pins the header for free-pressure pads (I/M/E) to one trial instead of
+   *  sweeping it. null = sweep. Ignored for the fixed-curve S-Pad, whose
+   *  header is a function of flow. */
+  setpoint_psi: number | null;
   p0_psi: number;
   psi_per_kbpd: number;
   c_pad_pf_psi: number;
@@ -578,6 +586,71 @@ export interface MatchHealthResult {
   header_psi: number | null;
   notes: string[];
   n_wells: number;
+}
+
+/** POST /match-test - gaugeless test match: infer the anchor BHP from the
+ * test's power-fluid rate and fit kth/kdi so the installed pump reproduces
+ * the test's oil and PF. Mirror of server.schemas.MatchTestRequest. */
+export interface MatchTestRequest {
+  well: string;
+  params: SimParams;
+  test_oil: number; // STBOPD
+  test_water: number; // formation BWPD
+  test_pf: number; // power fluid BWPD
+  test_whp: number | null;
+  test_pf_press: number | null;
+  test_date: string | null;
+}
+
+export interface MatchTestScanPoint {
+  pwf: number;
+  psu: number | null;
+  oil: number | null;
+  pf: number | null;
+  sonic: boolean | null;
+}
+
+/** Mirror of server.schemas.MatchTestResponse. */
+export interface MatchTestResponse {
+  match_quality: "good" | "fair" | "poor" | "failed";
+  converged: boolean;
+  bounded: boolean;
+  sonic: boolean;
+  pwf: number | null; // inferred anchor BHP, psi
+  qwf_liq: number; // anchor TOTAL liquid, BLPD
+  form_wc: number; // the test's water cut
+  kth: number;
+  kdi: number;
+  ken: number; // held
+  modeled_bhp: number | null;
+  modeled_oil: number | null;
+  modeled_water: number | null;
+  modeled_pf: number | null;
+  score: number | null;
+  oil_error_pct: number | null;
+  pf_error_pct: number | null;
+  pwh_used: number;
+  ppf_surf_used: number;
+  seed_pwf: number | null;
+  scan: MatchTestScanPoint[];
+  iterations: number;
+  starts_tried: number;
+  message: string | null;
+  caveat: string;
+  /** false = the test's PF is outside what the catalog nozzle passes at any
+   *  BHP at this PF pressure: the BHP is NOT identified. */
+  pf_reachable: boolean;
+  pf_model_min: number | null;
+  pf_model_max: number | null;
+  /** BHP change worth a 2 % PF error on this well, psi - the resolution of
+   *  the inferred BHP. */
+  bhp_resolution_psi: number | null;
+  pf_per_100psi: number | null;
+  /** Only when pf_reachable is false: the nozzle AREA factor that would let
+   *  the catalog nozzle pass the test's PF at the fitted point,
+   *  (pf_test / modeled_pf)^2 - the sidebar's nozzle_area_factor knob
+   *  (bounded 0.8 - 1.3) in the same units. */
+  area_factor_needed: number | null;
 }
 
 /** POST /optimize/event-calibration - start a multi-point era-history

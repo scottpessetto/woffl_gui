@@ -1,8 +1,8 @@
 /**
  * Batch Pump Analysis - the nozzle x throat grid sweep.
- * Mirrors woffl/gui/tabs/batch_run.py: success metrics, performance graph
- * (eliminated / semi-finalist / curve fit / recommended star), recommended
- * pump block, results table, recommender table.
+ * Success metrics, performance graph (eliminated / semi-finalist / curve
+ * fit / recommended star), recommended pump block, results table,
+ * recommender table.
  *
  * Expensive: runs ONLY on explicit submit. The page snapshots the params on
  * click and hands the snapshot to useBatch (null = not requested yet).

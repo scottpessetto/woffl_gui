@@ -20,9 +20,11 @@ persisting an accepted fit is the save path's job.
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 from typing import Any, Optional
 
-from server import jobs
+from server import jobs, pool
 from server.services import calibration_points, evidence as evidence_svc, optimizer_runs
 from server.services import tests as tests_svc
 
@@ -172,6 +174,102 @@ def _single_point_fallback(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# The fit itself: one pool worker, progress relayed through a file
+# ---------------------------------------------------------------------------
+
+# How often the job thread looks for a new progress line while it waits on
+# the worker. The fitter reports every MP_PROGRESS_EVERY cost evaluations
+# (a few seconds apart), so half a second is plenty and costs nothing.
+PROGRESS_POLL_S = 0.5
+
+
+def _write_progress(path: str, msg: str) -> None:
+    """Atomic overwrite (write-then-replace) so the reader never sees a
+    half-written line."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(msg)
+    os.replace(tmp, path)
+
+
+def _multipoint_worker(config: Any, nozzle: str, throat: str, built: Any, progress_path: str):
+    """Run calibrate_multipoint in a pool CHILD.
+
+    Picklable arguments only (the WellConfig dataclass, the builder's point
+    dicts, a file path) - the worker builds its own physics objects, exactly
+    as the in-thread fit does. Progress cannot reach the parent's job dict
+    from here, so each line is written to ``progress_path`` and the parent
+    polls it (see _fit_multipoint). A write failure is swallowed: progress
+    is cosmetic, the fit is not.
+    """
+    from woffl.gui import fric_calibration
+
+    def _progress(msg: str) -> None:
+        try:
+            _write_progress(progress_path, msg)
+        except OSError:
+            pass
+
+    return fric_calibration.calibrate_multipoint(config, nozzle, throat, built, progress=_progress)
+
+
+def _fit_multipoint(
+    job: dict[str, Any], config: Any, nozzle: str, throat: str, built: Any, progress: Any
+):
+    """The multipoint fit, on the process pool when it is up, else in-thread.
+
+    Why: the fit is 2-3 minutes of pure solving (MPE-35: 24 points, four
+    Nelder-Mead passes). On the job thread it held the GIL the whole time
+    and every other request crawled (a 33 ms /context read measured at
+    1.25 s under a 4 s sweep; a 3-minute fit froze the app for every
+    engineer on the 2-vCPU tier). In a worker the job thread just waits on
+    a Future, relaying the worker's progress lines into the envelope.
+
+    Hydration and the field-evidence query stay on the job thread: they
+    are Databricks I/O, and the worker would only pay for its own session.
+
+    Fallback: pool down, pool broken, or submit refused -> the in-thread fit
+    with the direct progress callback, exactly as before. A fit that RAISES
+    raises here either way (the job records the error).
+    """
+    from concurrent.futures import TimeoutError as FutureTimeout
+    from concurrent.futures.process import BrokenProcessPool
+
+    from woffl.gui import fric_calibration
+
+    if pool.workers() > 0:
+        fd, path = tempfile.mkstemp(prefix="woffl_cal_", suffix=".txt")
+        os.close(fd)
+        try:
+            fut = pool.submit(_multipoint_worker, config, nozzle, throat, built, path)
+            if fut is not None:
+                job["progress"] = f"fitting {len((built or {}).get('points') or []) if isinstance(built, dict) else len(built or [])} points (pool worker)..."
+                last: Optional[str] = None
+                while True:
+                    try:
+                        return fut.result(timeout=PROGRESS_POLL_S)
+                    except FutureTimeout:
+                        try:
+                            with open(path, encoding="utf-8") as fh:
+                                msg = fh.read().strip()
+                        except OSError:
+                            msg = ""
+                        if msg and msg != last:
+                            job["progress"] = msg
+                            last = msg
+                    except BrokenProcessPool:
+                        log.warning("process pool broke mid-fit for %s; refitting in-thread", getattr(config, "well_name", "?"))
+                        break
+        finally:
+            for name in (path, path + ".tmp"):
+                try:
+                    os.remove(name)
+                except OSError:
+                    pass
+    return fric_calibration.calibrate_multipoint(config, nozzle, throat, built, progress=progress)
+
+
 def _run_event_calibration_job(job: dict[str, Any], well: str) -> dict[str, Any]:
     from woffl.gui import fric_calibration
     from server.services.wells import _pad_from_mp_name as pad_from_mp_name
@@ -225,9 +323,7 @@ def _run_event_calibration_job(job: dict[str, Any], well: str) -> dict[str, Any]
         def _progress(msg: str) -> None:
             job["progress"] = msg
 
-        result = fric_calibration.calibrate_multipoint(
-            config, str(nozzle), str(throat), built, progress=_progress
-        )
+        result = _fit_multipoint(job, config, str(nozzle), str(throat), built, _progress)
         if result.refusal:
             refusal = str(result.refusal)
         else:

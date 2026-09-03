@@ -22,7 +22,6 @@ from server.services import frames
 # 6-month default and evidence._min_test_bhp's 12), and /wells/{name}/tests
 # accepts months 1..60, so a maxsize of 4 let a handful of ad-hoc requests
 # evict a 24 h fleet query and force a full refetch.
-# mirrors woffl/gui/utils.py:fetch_all_well_tests
 @ttl_cache(config.TTL_WELL_TESTS, maxsize=8)
 def fetch_all_well_tests(months: int) -> pd.DataFrame:
     """Fleet-wide well tests for the trailing ``months`` window.
@@ -77,7 +76,6 @@ def tests_for_well(well: str, months: int, cap: int = 0) -> Optional[pd.DataFram
 
     Soft-fail: Databricks down or no rows -> None (v1 drops the gauge and
     manual-test layers of the Streamlit helper).
-    # mirrors woffl/gui/utils.py:get_well_tests_for_well
 
     Args:
         well: GUI well name, e.g. "MPB-28".

@@ -93,6 +93,59 @@ class PadPlant:
     coupling: str = "free_pressure"  # or "fixed_curve"
     n_pump_options: list = []  # selectable online-pump counts; [] = fixed train
     max_header_psi: Optional[float] = None  # operational discharge cap
+    # Which water stream this pad's machines handle and the optimizer budgets:
+    # "lift_wat" (power fluid only - formation water passes to the plant) or
+    # "totl_wat" (lift + formation - a full-POPS pad pump). Every pad is
+    # "lift_wat" until its owner says otherwise (see well_sort_engine.
+    # POPS_PUMP_HANDLES for the candidates; redesign doc §5).
+    water_key: str = "lift_wat"
+
+    def delivered_header(
+        self,
+        q_total: float,
+        setpoint: Optional[float] = None,
+        n_pumps: int | None = None,
+    ) -> tuple[Optional[float], bool]:
+        """Header the pad actually runs at for a total PF draw: SETPOINT
+        below the knee, frontier above (docs/optimization_redesign_2026-09.md
+        §3).
+
+        Operators run a header setpoint with bypass / recirculation; the
+        booster only fails to hold it when the frontier at that flow is
+        below it. A fixed-speed station (``coupling == "fixed_curve"``) has
+        no setpoint - its header follows the curve.
+
+        Args:
+            q_total: total PF draw, BPD
+            setpoint: operator header setpoint, psi (None = the plant's
+                operational cap ``max_header_psi``; None on a fixed-curve
+                plant means "the curve")
+            n_pumps: pumps online
+
+        Returns:
+            (header_psi, over_capacity): header None and over_capacity True
+            when the frontier cannot carry the flow at all.
+        """
+        frontier = self.header_at_flow(q_total, n_pumps) if q_total > 0 else None
+        if self.coupling == "fixed_curve":
+            return (frontier, False) if (q_total <= 0 or frontier is not None) else (None, True)
+        cap = setpoint if setpoint is not None else self.max_header_psi
+        if q_total > 0 and frontier is None:
+            # Either BELOW the machine's minimum flow (it recirculates and
+            # holds the setpoint - E-Pad's unimodal frontier is None there)
+            # or ABOVE its capability (over capacity).
+            try:
+                q_min = float(self.flow_window(n_pumps)[0])
+            except Exception:  # noqa: BLE001 - a plant without a window
+                q_min = 0.0
+            if q_total < q_min and cap is not None:
+                return float(cap), False
+            return None, True
+        if frontier is None:  # no draw: the plant holds its setpoint
+            return cap, False
+        if cap is None:
+            return float(frontier), False
+        return min(float(cap), float(frontier)), False
 
     # -- pad-specific: subclasses must implement ----------------------------
 
@@ -1001,6 +1054,10 @@ class MPadPlant(PadPlant):
     """
 
     coupling = "free_pressure"
+    # M-Pad pumps handle formation AND lift water (Scott, 2026-09-02;
+    # well_sort_engine.POPS_PUMP_HANDLES["M"] == "total"): budget and
+    # price TOTAL water. See docs/optimization_redesign_2026-09.md section 5.
+    water_key = "totl_wat"
     n_pump_options = [3, 2, 1]
     max_header_psi = 3500.0  # PF-header discharge cap (PIC-4231 setpoint)
 

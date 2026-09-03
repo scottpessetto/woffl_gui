@@ -1,10 +1,10 @@
-"""Simulation object factories - server mirrors of the Streamlit GUI builders.
+"""Simulation object factories - ported from the retired Streamlit app.
 
-Each factory is a faithful copy of its ``woffl/gui/utils.py`` counterpart
-(citation comments on every function) minus the Streamlit dependencies.
-``build_sim_objects`` is the one entry point the solver wrappers use: it goes
-through ``schemas.SimParams.to_simulation_params`` so the derived rates (the
-qwf TOTAL-LIQUID convention, single-phase ``inflow_rate``) stay canonical.
+Each factory is a faithful copy of its counterpart there, minus the Streamlit
+dependencies. ``build_sim_objects`` is the one entry point the solver wrappers
+use: it goes through ``schemas.SimParams.to_simulation_params`` so the derived
+rates (the qwf TOTAL-LIQUID convention, single-phase ``inflow_rate``) stay
+canonical.
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ from woffl.pvt import BlackOil, FormGas, FormWater, ResMix
 log = logging.getLogger("woffl.web.factories")
 
 
-# mirrors woffl/gui/utils.py:create_jetpump
 def create_jetpump(nozzle_no: str, area_ratio: str, ken: float, kth: float, kdi: float) -> JetPump:
     """Create a JetPump object with the given parameters."""
     return JetPump(nozzle_no=nozzle_no, area_ratio=area_ratio, ken=ken, kth=kth, kdi=kdi)
@@ -44,7 +43,6 @@ def apply_nozzle_area_factor(jetpump: JetPump, factor: float) -> JetPump:
     return jetpump
 
 
-# mirrors woffl/gui/utils.py:create_pipes
 def create_pipes(
     tubing_od: float = 4.5,
     tubing_thickness: float = 0.5,
@@ -58,7 +56,6 @@ def create_pipes(
     return tube, case, wellbore
 
 
-# mirrors woffl/gui/utils.py:create_inflow
 def create_inflow(qwf: float, pwf: float, pres: float) -> InFlow:
     """Create an InFlow object from a SINGLE-PHASE rate at ``pwf``.
 
@@ -70,7 +67,6 @@ def create_inflow(qwf: float, pwf: float, pres: float) -> InFlow:
     return InFlow(qwf=qwf, pwf=pwf, pres=pres)
 
 
-# mirrors woffl/gui/utils.py:create_pvt_components
 def create_pvt_components(
     field_model: Optional[str] = None,
     oil_api: Optional[float] = None,
@@ -117,7 +113,6 @@ def create_pvt_components(
     return oil, water, gas
 
 
-# mirrors woffl/gui/utils.py:create_reservoir_mix
 def create_reservoir_mix(
     wc: float,
     gor: float,
@@ -155,17 +150,16 @@ def create_reservoir_mix(
     return ResMix(wc=wc, fgor=gor, oil=oil, wat=water, gas=gas, model_as_water=model_as_water)
 
 
-# mirrors woffl/gui/utils.py:run_jetpump_solver (prop_pf construction) - the
-# power fluid is always the field model's FormWater preset conditioned at
-# 0 psig / 60 degF.
+# The power fluid is always the field model's FormWater preset conditioned
+# at 0 psig / 60 degF.
 def power_fluid(field_model: Optional[str]) -> FormWater:
     """Power-fluid water properties for the field model, conditioned (0, 60)."""
     _, prop_pf, _ = create_pvt_components(field_model)
     return prop_pf.condition(0, 60)
 
 
-# mirrors woffl/gui/utils.py:create_well_profile - the preset-model path used
-# when no survey CSV exists (or the caller is Custom).
+# The preset-model path, used when no survey CSV exists (or the caller is
+# Custom).
 def _preset_well_profile(field_model: Optional[str], jpump_tvd: Optional[float]) -> WellProfile:
     """WellProfile from the field-model preset, rebuilt at ``jpump_tvd``."""
     model = (field_model or "schrader").lower()
@@ -253,7 +247,6 @@ def resolve_jetpump_md(
     return first_crossing_md(md, vd, float(jpump_tvd))
 
 
-# mirrors woffl/gui/utils.py:create_well_profile_from_survey
 @ttl_cache(config.TTL_PROFILES, maxsize=512)
 def build_well_profile(well: Optional[str], jpump_tvd: float, field_model: str) -> WellProfile:
     """WellProfile from the well's deviation survey, else the preset model.

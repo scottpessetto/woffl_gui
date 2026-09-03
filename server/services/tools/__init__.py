@@ -1,7 +1,7 @@
 """Scott's Tools - the secret-menu engineering tools, server side.
 
-Ported from ``woffl/gui/scotts_tools/`` when the Streamlit app was deleted
-(2026-08-18). Each module here is the tool's ENGINE with the Streamlit
+Ported from the Streamlit app's ``scotts_tools`` package when that app was
+deleted (2026-08-18). Each module here is the tool's ENGINE with the Streamlit
 rendering stripped: pure functions plus a cached data pull, returning
 JSON-ready dicts for the React pages under ``web/src/pages/tools/``.
 

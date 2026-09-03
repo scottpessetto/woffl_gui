@@ -54,12 +54,10 @@ cd web && npm run dev                       # Vite dev server, proxies /api to :
 
 Formatting is **black + isort** (`pyproject.toml:36`), by convention only — nothing enforces it.
 
-Known-slow, skip during iteration: `tests/test_joint_match.py`,
-`tests/test_joint_match_sweep.py` (72-combination sweep),
-`tests/test_utils.py::TestDataFlowIntegration::test_full_solver_flow` (real end-to-end solve).
+(`tests/test_joint_match_sweep.py` was deleted; the old `--deselect` of it is a no-op and was dropped from the command on 2026-09-02.)
 
-Green baseline: **1686 passed, 1 skipped** in ~52 s (2026-08-03). The one skip is the
-`live`-marked class. If a solopump test — especially `TestMarginalConvergence` — goes red after
+Green baseline: **1,667 passed** in ~26 s (2026-09-02; was 1,686 + 1 skipped in ~52 s on 2026-08-03).
+If a solopump test — especially `TestMarginalConvergence` — goes red after
 an upstream merge, a local solver patch was dropped (§4).
 
 ---
@@ -132,7 +130,12 @@ pins **2** for the 2-vCPU tier — do not raise it unless the tier changes),
 `WOFFL_WARM_INTERVAL_SEC` / `WOFFL_WARM_WORKERS` / `WOFFL_WARM_WELLS`
 (the FastAPI fleet cache warmup - `server/warmup.py`; the worker count is a
 warehouse-connection cap, NOT a CPU cap, so it is deliberately separate from
-`WOFFL_MAX_WORKERS`),
+`WOFFL_MAX_WORKERS`). The warehouse bills per **wake window**, not per
+statement, so the deployed interval is `app.yaml`'s **43200 (12 h)** - two
+passes a day (the forced midnight day-roll plus one in the workday) instead of
+the code default's five - and each pass warms the fleet's history with
+`history.warm_fleet`'s **two** statements rather than `warm_well` x ~90;
+`warm_well` remains the per-well fallback and the on-demand path.
 `DATABRICKS_CLIENT_ID`/`_SECRET` (presence of both = "deployed"), local lowercase
 `bricks_host`/`bricks_token`/`bricks_http`.
 
@@ -244,6 +247,14 @@ the physics has ONE home), `params` (the RATE CONVENTION), `ipr_anchor`,
 They are fork-only and keep the `gui` package name purely to avoid churn; new
 server-facing helpers belong in `server/` or `woffl/assembly/`.
 
+The port-provenance comments of the form `# mirrors woffl/gui/sidebar.py:...`
+that `server/` and `web/src` carried were **removed on 2026-09-02** — every one
+of them pointed at a module deleted with the Streamlit app. Any `woffl/gui`
+reference left in those trees names a **live** module, so treat it as a real
+path. Do not reintroduce citation comments for the deleted app; where the
+provenance itself is the point (a query copied unchanged, a threshold carried
+over), say "ported unchanged from the retired Streamlit app" and give no path.
+
 **E-Pad is a pad run like S/I/M** (`_pad_plant("E")`), but it is the ONE plant
 whose configuration is not a measured tag — no E-Pad SCADA point, no motor
 nameplate, no piping rating came with the vendor curve sheets. Build,
@@ -288,9 +299,6 @@ There is no CI. The suite plus the in-app Test Harness page is the whole safety 
 fixtures are file-local. Do **not** add a `python_files` setting to `pyproject.toml`:
 `batch_test.py` / `outflow_test.py` / `e41_test.py` / `jpump_test.py` rely on the default
 `*_test.py` collection pattern.
-
-Do not move or rename `tests/harness_cases.py` — the **deployed app** imports it via
-`woffl/gui/scotts_tools/test_harness.py`.
 
 ### Writing a server/API test
 
@@ -375,15 +383,17 @@ Settled decisions — do not relitigate:
 | knz / ken / kth / kdi | Jet-pump friction coefficients: nozzle, entrance, throat, diffuser |
 | wc / GOR / FGOR | Water cut (fraction) / gas-oil ratio / formation GOR |
 | form-WC vs total-WC | Formation-water cut vs total (formation + lift water) cut — mixing bases over-recommends bring-online |
-| marginal WC | Water cut above which a well stops paying for its water handling |
+| marginal WC | Legacy economics gate (water cut above which a well stops paying for its water). Since 2026-09 it is only a LABEL: the optimizers price water with λ, and a gate w maps to λ = (1 − w) / w |
+| λ / water price | BOPD given up per BPD of lift water in the pad objective oil − λ·water; one λ for every engine (`docs/optimization_redesign_2026-09.md`). auto = the plant budget's own shadow price off the pooled pump frontier |
 | SI / BOL / LTSI | Shut in / bring on line / long-term shut-in (mechanical, out of Triage scope) |
 | joint match | Solve IPR + PF pressure + friction coefs so the installed pump reproduces a test's oil AND PF |
 | backmatch | Oil-only inverse: infer the `pwf` at which the installed pump makes the test's oil rate |
+| gaugeless match | `woffl/gui/gaugeless_match.py` / `POST /match-test`: for wells with no downhole gauge, the test's PF rate through the nozzle stands in for the BHP measurement; fits (pwf, kth, kdi) so the installed pump reproduces the test's oil AND PF. Reports `pf_reachable=False` (BHP not identified) when the catalog nozzle cannot pass the test's PF at any BHP |
 | washout | Nozzle/throat erosion, flagged when required PF pressure exceeds the pad threshold |
 | si_ladder | Ranks shut-in candidates by water contribution to plant load, applying the POPS rule |
 | Header Impact / HPI | Tool that re-solves wells at a candidate header pressure and reports the response |
 | XV / ProdXV / PFXV | Production / power-fluid safety valves, 1=open 0=closed; usually empty on the hosted app |
-| MCKP / MILP | Multiple-choice knapsack / mixed-integer LP — the two optimizer paths, which currently solve different problems |
+| MCKP / MILP | Multiple-choice knapsack (CP-SAT) / mixed-integer LP — the two optimizer paths. Since 2026-09 they solve the SAME priced problem over the same candidate set; a pad run with MCKP re-solves the winner with MILP and reports `solver_agreement` |
 | equal-slope / λ | At the optimum, marginal oil per unit shared resource is equal across wells; λ_today = d(fleet oil)/dP |
 | prop_hist / prop_xref | `mpu.wells` tables: append-only per-well property history + the valid-`prop_id` whitelist |
 | ipr_wt_uid | prop_hist key pinning a well's chosen IPR anchor well-test; SQL NULL = un-pinned |

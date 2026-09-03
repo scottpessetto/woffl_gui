@@ -1,7 +1,7 @@
 """Header Pressure Impact - the oil/BHP effect of moving a pad header.
 
-Port of woffl/gui/scotts_tools/header_impact.py (engine only; the 353
-Streamlit calls are replaced by the React page).
+Port of the retired Streamlit tool (engine only; its 353 Streamlit calls are
+replaced by the React page).
 
 Sibling of PF Scenario: that one sweeps power-fluid pressure holding wellhead
 pressure fixed; this sweeps WELLHEAD pressure (the header lever) holding PF

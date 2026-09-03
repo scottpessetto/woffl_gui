@@ -70,6 +70,17 @@
 > and the FLOW-4 `mach_crit` energy-balance decision — all deferred to the optimization
 > redesign pass (§8); WEB-14 server-owned client defaults; EVID-F8 mach_crit profile
 > likelihood; EVID-F28/F29 separator baseline and OIW units; PVT-F6 water PVT(T); SRV-13/14.
+>
+> **Addendum (2026-09-02):** DATA-9 CLOSED — `history.warm_fleet` warms the fleet's tests and
+> daily BHP with 2 statements (sliced per well and primed via `cache.cache_prime`), and the
+> deployed cadence moved to 12 h (`app.yaml WOFFL_WARM_INTERVAL_SEC=43200`): ~19 warehouse
+> statements over 2 wake windows a day, down from ~200 over 5.
+>
+> **Optimization redesign (2026-09-02, `docs/optimization_redesign_2026-09.md` §7):** OPT-A5 and the
+> three contradictory cutoffs are replaced by ONE water price λ inside both solvers (identical candidate
+> sets, cross-checked); OPT-A7's knee is handled by `PadPlant.delivered_header` (setpoint below the knee,
+> frontier above); the S-Pad damped fixed point is retired for the one-dimensional sweep (S sweeps total
+> flow) with bracket refinement. Server knob `lambda_bopd_per_bpd`, client "Water price λ". Suite 1,64x.
 
 **Scope:** entire working tree — `woffl/` library (pvt, flow, geometry, assembly), `woffl/gui/` plants and optimizers, `server/` FastAPI services and tools, `web/src/` React SPA. Reviewed by eight parallel deep-read agents (PVT, flow+geometry, solver+IPR+calibration, optimization engines, Databricks data layer, server core, evidence/calibration/tools, web SPA). Findings deduped; the highest-impact claims were re-verified by hand against the code and, where cheap, by a numeric probe.
 

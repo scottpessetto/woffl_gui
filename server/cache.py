@@ -31,6 +31,13 @@ lands on a user request. Rules:
   unconditionally and overwrites the entry, where a plain call short-circuits
   on a fresh entry and refreshes nothing. It is single-flight against the SWR
   latch, so a warm pass and a stale read never duplicate one query.
+- ``cache_prime(value, *args)`` is the same write with the fetch already done
+  elsewhere: it stores a value the caller obtained by OTHER means under the
+  key the wrapper would have built, with the warm retention floor. It exists
+  because one fleet-wide query can answer ~90 per-well cache keys, and paying
+  90 per-well queries to fill them is exactly the warehouse bill this cache is
+  supposed to avoid. Pass ``version=`` captured BEFORE the shared fetch so the
+  clear() guard covers it just as it covers an in-flight fetch.
 """
 
 from __future__ import annotations
@@ -229,6 +236,46 @@ def ttl_cache(ttl: float, maxsize: int = 32) -> Callable[[F], F]:
                 cache.end_refresh(key)
             return True
 
+        def cache_version() -> int:
+            """The cache's current clear/evict counter.
+
+            A ``cache_prime`` caller captures this BEFORE its shared fetch and
+            hands it back, so a write that clears the cache mid-fetch discards
+            the prime - the same read-your-writes guarantee an ordinary
+            in-flight fetch gets.
+            """
+            return cache.version
+
+        def cache_prime(
+            value: Any, *args: Any, version: int | None = None, **kwargs: Any
+        ) -> bool:
+            """Store `value` under this call signature WITHOUT calling `fn`.
+
+            The warm loop's bulk write path: one fleet-wide query answers every
+            well's key, so the loop can fill ~90 entries for 1 statement instead
+            of 90. The entry is indistinguishable from one `cache_refresh`
+            wrote - same key, same warm retention floor - so the request path
+            reads it exactly as it would a warmed per-well fetch.
+
+            Single-flight against the SWR latch like `cache_refresh`: returns
+            False without storing when a refresh for this key is in flight
+            (that refresh is about to store a value fetched at least as late as
+            this one). `version` is the counter captured before the caller's
+            shared fetch; omitted, the current one is used, which only guards
+            against a clear racing the store itself.
+
+            Returns:
+                True when the value was stored.
+            """
+            key = (args, tuple(sorted(kwargs.items())))
+            if not cache.try_begin_refresh(key):
+                return False
+            try:
+                stamp = cache.version if version is None else version
+                return cache.put(key, value, stamp, retention=warm_retention())
+            finally:
+                cache.end_refresh(key)
+
         def cache_has(*args: Any, **kwargs: Any) -> bool:
             """True when an entry for this call signature is servable (fresh
             OR stale) - a peek that never queries. Lets a caller derive a
@@ -237,6 +284,8 @@ def ttl_cache(ttl: float, maxsize: int = 32) -> Callable[[F], F]:
             return state in ("fresh", "stale")
 
         wrapper.cache_refresh = cache_refresh  # type: ignore[attr-defined]
+        wrapper.cache_prime = cache_prime  # type: ignore[attr-defined]
+        wrapper.cache_version = cache_version  # type: ignore[attr-defined]
         wrapper.cache_evict = cache_evict  # type: ignore[attr-defined]
         wrapper.cache_has = cache_has  # type: ignore[attr-defined]
         wrapper.cache_clear = cache.clear  # type: ignore[attr-defined]

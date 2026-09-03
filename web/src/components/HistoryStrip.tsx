@@ -1,8 +1,7 @@
 /**
  * Production & JP change history - THE shared stacked figure for the JP
- * History view and the Solver's pump-history strip, mirror of
- * woffl/gui/tabs/jp_history_tab.py:build_history_with_strip_figure
- * ("one builder so the two can never drift").
+ * History view and the Solver's pump-history strip ("one builder so the two
+ * can never drift").
  *
  * Top grid: Oil (green) stacked under Form Water (blue) as areas, BHP
  * (orange) and optional PF pressure (purple dotted) on the right axis,
@@ -20,7 +19,7 @@ import { axis, baseTooltip, houseOption, nearestByX, SLATE, ttHeader, ttRow } fr
 import { ChartPanel } from "../charts/ChartPanel";
 import { fmtDate, fmtNum, pumpCode } from "../lib/format";
 
-// Colors lifted from the plotly original (jp_history_tab.py).
+// Colors lifted from the retired Streamlit app's plotly original.
 const OIL_LINE = "#2E7D32";
 const OIL_FILL = "rgba(46,125,50,0.4)";
 const WAT_LINE = "#1565C0";

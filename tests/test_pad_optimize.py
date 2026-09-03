@@ -223,17 +223,23 @@ def fake_core(monkeypatch):
     return ns
 
 
-# ── run_optimization: fixed_curve fixed point ───────────────────────────────
+# ── run_optimization: fixed_curve sweep ─────────────────────────────────────
 
 
-class TestFixedPointRun:
-    def test_converges_and_sets_converged(self, fake_core):
-        # constant demand 20k BPD → curve settles at 2800 psi; warm start 2700
-        # → deltas 100, 40, 16, 6.4 → converged on iteration 4
-        fake_core.optimize_fn = lambda opt: [
-            _result("W1", 10000.0, 100.0),
-            _result("W2", 10000.0, 150.0),
-        ]
+class TestFixedCurveSweep:
+    """A fixed-speed station's header is a function of total flow, so the
+    unified engine sweeps TOTAL FLOW with the knapsack inside (redesign §4).
+    The damped fixed point is retired: no history, no oscillation."""
+
+    def test_sweeps_flow_and_reports_the_curve_header(self, fake_core):
+        # the wells draw the budget up to 18k BPD (on the coarse grid) and
+        # make 1 BOPD per 2 BPD of lift water -- richer than the 0.7 gate's
+        # price (0.43), so more flow is better until the draw saturates
+        def _draw(opt):
+            q = min(opt.power_fluid.total_rate, 18000.0)
+            return [_result("W1", q / 2, q / 4), _result("W2", q / 2, q / 4)]
+
+        fake_core.optimize_fn = _draw
         progress = []
         results, optimizer, meta = po.run_optimization(
             _wells("W1", "W2"),
@@ -244,37 +250,49 @@ class TestFixedPointRun:
             "milp",
             0.7,
             progress=lambda *a: progress.append(a),
+            refine_rounds=0,
         )
         assert meta["converged"] is True
-        assert meta["header_psi"] == pytest.approx(2800.0)
-        assert meta["total_pf_bpd"] == pytest.approx(20000.0)
-        assert meta["total_oil_bopd"] == pytest.approx(250.0)
-        assert len(meta["history"]) == 4 and len(progress) == 4
-        assert meta["history"][0]["curve_psi"] == pytest.approx(2800.0)
+        assert meta["history"] == []
+        # the sweep covers the station's flow window and every trial carries
+        # the flow it was solved at
+        assert len(meta["sweep"]) == 11 and len(progress) == 11
+        assert meta["sweep"][0]["total_flow_bpd"] == pytest.approx(10000.0)
+        assert meta["sweep"][-1]["total_flow_bpd"] == pytest.approx(50000.0)
+        # ties on the priced objective go to the SMALLEST flow, so the
+        # winner's budget equals its draw and the header is the curve there
+        assert meta["total_pf_bpd"] == pytest.approx(18000.0)
+        assert meta["total_oil_bopd"] == pytest.approx(9000.0)
+        assert optimizer.power_fluid.total_rate == pytest.approx(18000.0)
+        assert meta["header_psi"] == pytest.approx(3000.0 - 0.01 * 18000.0)
         # station extras + flags
-        assert meta["per_pump_bpd"] == pytest.approx(20000.0 / 3)
+        assert meta["per_pump_bpd"] == pytest.approx(18000.0 / 3)
         assert meta["station_cap_bpd"] == pytest.approx(50000.0)
         assert meta["in_range"] is True and meta["over_capacity"] is False
-        # the marginal-WC gate is the RUN's, not the scenario constant
+        # the legacy gate is still handed to the optimizer, and priced
         assert optimizer.marginal_watercut == 0.7
+        assert optimizer.water_price == pytest.approx(0.3 / 0.7)
+        assert meta["lambda_source"] == "legacy wc"
+        assert meta["parsimony_swaps"] == []
         # reconciliation computed from the returned optimizer
         assert meta["reconciliation"]["at_pressure"] == pytest.approx(
             optimizer.power_fluid.pressure
         )
 
-    def test_oscillation_hits_cap_with_converged_false(self, fake_core):
-        # threshold flip: high header → big draw → low curve, and vice versa —
-        # the damped iterate never lands within tolerance (P0-9 flag)
+    def test_threshold_demand_does_not_oscillate(self, fake_core):
+        # the old fixed point flip-flopped on this demand and hit its
+        # iteration cap; a sweep just evaluates each flow once
         def flip(opt):
             q = 60000.0 if opt.power_fluid.pressure >= 2700.0 else 0.0
             return [_result("W1", q, 50.0)]
 
         fake_core.optimize_fn = flip
         results, optimizer, meta = po.run_optimization(
-            _wells("W1"), CurvePlant(), 3, ["12"], ["B"], "milp", 1.0
+            _wells("W1"), CurvePlant(), 3, ["12"], ["B"], "milp", 1.0, refine_rounds=0
         )
-        assert meta["converged"] is False
-        assert len(meta["history"]) == 8  # the iteration cap
+        assert meta["converged"] is True
+        assert meta["history"] == []
+        assert len(meta["sweep"]) == 11
 
 
 # ── run_optimization: free_pressure sweep ───────────────────────────────────
@@ -287,7 +305,8 @@ class TestPressureSweepRun:
             _result("W1", 1000.0, 5000.0 - abs(opt.power_fluid.pressure - 2600.0))
         ]
         results, optimizer, meta = po.run_optimization(
-            _wells("W1"), FreePlant(), None, ["12"], ["B"], "mckp", 1.0, n_steps=11
+            _wells("W1"), FreePlant(), None, ["12"], ["B"], "mckp", 1.0, n_steps=11,
+            refine_rounds=0,
         )
         assert meta["header_psi"] == pytest.approx(2600.0)
         assert meta["total_oil_bopd"] == pytest.approx(5000.0)
@@ -323,10 +342,59 @@ class TestPressureSweepRun:
             1.0,
             n_steps=11,
             progress=lambda *a: progress.append(a),
+            refine_rounds=0,
         )
         assert len(meta["sweep"]) == 9  # 2900, 3000 skipped
         assert len(progress) == 11  # but progress still ticks every step
         assert meta["header_psi"] == pytest.approx(2800.0)  # most oil = highest P
+
+    def test_setpoint_pins_the_header_instead_of_sweeping(self, fake_core):
+        fake_core.optimize_fn = lambda opt: [_result("W1", 1000.0, opt.power_fluid.pressure)]
+        progress = []
+        _r, optimizer, meta = po.run_optimization(
+            _wells("W1"), FreePlant(), None, ["12"], ["B"], "milp", 1.0,
+            n_steps=11, setpoint_psi=2650.0, progress=lambda *a: progress.append(a),
+        )
+        assert len(meta["sweep"]) == 1 and len(progress) == 1
+        assert meta["header_psi"] == pytest.approx(2650.0)
+        assert optimizer.power_fluid.pressure == pytest.approx(2650.0)
+        # the pin is reported back so the page can say the header was NOT swept
+        assert meta["setpoint_psi"] == pytest.approx(2650.0)
+        # outside the window the setpoint is clamped to it - and the CLAMPED
+        # value is what meta reports, not what was asked for
+        _r, _o, meta = po.run_optimization(
+            _wells("W1"), FreePlant(), None, ["12"], ["B"], "milp", 1.0, setpoint_psi=9999.0
+        )
+        assert meta["header_psi"] == pytest.approx(FreePlant().pressure_window()[1])
+        assert meta["setpoint_psi"] == pytest.approx(FreePlant().pressure_window()[1])
+
+    def test_no_setpoint_reports_none_and_a_fixed_curve_pad_ignores_one(self, fake_core):
+        fake_core.optimize_fn = lambda opt: [_result("W1", 1000.0, opt.power_fluid.pressure)]
+        _r, _o, meta = po.run_optimization(
+            _wells("W1"), FreePlant(), None, ["12"], ["B"], "milp", 1.0, n_steps=5
+        )
+        assert meta["setpoint_psi"] is None  # swept
+        # a fixed-curve station's header is a function of FLOW: there is no
+        # setpoint to pin, so the sweep runs and meta says nothing was pinned
+        _r, _o, meta = po.run_optimization(
+            _wells("W1"), CurvePlant(), 3, ["12"], ["B"], "milp", 1.0,
+            n_steps=5, setpoint_psi=2650.0,
+        )
+        assert meta["setpoint_psi"] is None
+        assert len(meta["sweep"]) > 1
+
+    def test_refinement_lands_between_coarse_points(self, fake_core):
+        # oil peaks at 2640 psi, off the 100-psi coarse grid; two rounds of
+        # bracket halving get within 25 psi of it
+        fake_core.optimize_fn = lambda opt: [
+            _result("W1", 1000.0, 5000.0 - abs(opt.power_fluid.pressure - 2640.0))
+        ]
+        _r, _o, meta = po.run_optimization(
+            _wells("W1"), FreePlant(), None, ["12"], ["B"], "milp", 1.0, n_steps=11, refine_rounds=2
+        )
+        assert len(meta["sweep"]) == 15  # 11 coarse + 2 per refine round
+        assert abs(meta["header_psi"] - 2640.0) <= 25.0
+        assert meta["total_oil_bopd"] > 5000.0 - 40.0
 
     def test_no_feasible_pressure_raises_plant_message(self, fake_core):
         plant = FreePlant()
@@ -398,6 +466,90 @@ class TestFixedScenarioFallbackChain:
             _wells("W1"), CurvePlant(), 3, {"W1": None}
         )
         assert per_well[0]["pump"] == "SHUT IN" and per_well[0]["oil"] == 0.0
+
+
+# ── scenario header coupling (bracketed root find) ────────────────────
+
+
+class TestScenarioHeaderCoupling:
+    """A fixed plan has no decision to sweep, but the delivered header and
+    the plan's own PF draw still determine each other, so the evaluators
+    solve g(P) = delivered_header(draw(P)) - P by BISECTION over the plant's
+    clamp window (2 bracket probes + at most 12 halvings). No assertion here
+    pins an iteration count or the damping path - the damped loop survives
+    only as the no-sign-change fallback."""
+
+    def test_bisection_lands_on_the_crossing(self, fake_core):
+        # draw falls with header: q(P) = 100k - 30P (floored at 0), curve
+        # header = 3000 - 0.01q  ->  g(P) = 2000 - 0.7P, crossing at 2857 psi
+        fake_core.Optimizer.perf_table = {
+            ("W1", "12", "B"): lambda pressure: {
+                "oil_rate": 100.0,
+                "lift_water": max(0.0, 100000.0 - 30.0 * pressure),
+            }
+        }
+        steps = []
+        per_well, meta = po.evaluate_fixed_scenario(
+            _wells("W1"),
+            CurvePlant(),
+            3,
+            {"W1": ("12", "B")},
+            progress=lambda *a: steps.append(a),
+        )
+        assert meta["converged"] is True
+        assert meta["header_psi"] == pytest.approx(2000.0 / 0.7, abs=10.0)
+        # the settled header and the draw are consistent with each other
+        assert meta["total_pf_bpd"] == pytest.approx(
+            100000.0 - 30.0 * meta["header_psi"], rel=0.02
+        )
+        # bounded work: two bracket probes plus the halvings, never more
+        assert 3 <= len(steps) <= 14
+        assert len(meta["history"]) == len(steps)
+        # the bracket is probed at the clamp window ends first
+        assert steps[0][2] == pytest.approx(1000.0)
+        assert steps[1][2] == pytest.approx(5000.0)
+
+    def test_no_sign_change_falls_back_to_the_damped_loop(self, fake_core):
+        # a draw so large the curve header sits BELOW the clamp floor at
+        # every trial: g < 0 across the whole band, so there is no root to
+        # bracket and the old damped iteration runs (and cannot settle)
+        fake_core.Optimizer.perf_table = {
+            ("W1", "12", "B"): {"oil_rate": 100.0, "lift_water": 250000.0}
+        }
+        steps = []
+        _per_well, meta = po.evaluate_fixed_scenario(
+            _wells("W1"),
+            CurvePlant(),
+            3,
+            {"W1": ("12", "B")},
+            max_iter=8,
+            progress=lambda *a: steps.append(a),
+        )
+        assert meta["converged"] is False
+        # 2 bracket probes + the 8 damped iterations
+        assert len(steps) == 10
+        assert meta["total_pf_bpd"] == pytest.approx(250000.0)
+
+    def test_existing_scenario_settles_by_bisection_too(self, fake_core):
+        fake_core.Optimizer.perf_table = {
+            ("W1", "12", "B"): {"oil_rate": 120.0, "lift_water": 300.0},
+            ("W1", "11", "A"): {"oil_rate": 60.0, "lift_water": 150.0},
+        }
+        steps = []
+        _per_well, meta = po.evaluate_existing_scenario(
+            _wells("W1"),
+            CurvePlant(),
+            3,
+            {"W1": ("11", "A")},
+            {"W1": ("12", "B")},
+            test_rates={"W1": (100.0, 200.0)},
+            progress=lambda *a: steps.append(a),
+        )
+        assert meta["converged"] is True
+        # displayed PF = 200 x (150/300) = 100 BPD -> curve header 2999 psi
+        assert meta["total_pf_bpd"] == pytest.approx(100.0)
+        assert meta["header_psi"] == pytest.approx(3000.0 - 0.01 * 100.0)
+        assert 3 <= len(steps) <= 14
 
 
 # ── ★/ripple rescale math ───────────────────────────────────────────────────
@@ -714,30 +866,17 @@ class TestMarginalWcAutoDeriveAndParsimony:
         # pf_slack is still reported -- informative even though unused to gate
         assert meta["pf_slack"] is True
 
-    def test_parsimony_reduces_total_pf_in_crafted_case(self, fake_core):
-        # chosen 12B: 302 BOPD @ 3200 BPD PF. 13C gives up only 2 BOPD for
-        # 1500 less PF -- within the default 5 BOPD threshold, and the
-        # least-water qualifier -- so the parsimony pass swaps to it, and
-        # the header fixed point settles on the smaller demand. This is the
-        # field case the feature exists for: a needless pump upsize
-        # (13C->15B in the field, mirrored here as 13C vs 12B) for
-        # noise-level oil.
+    def test_parsimony_is_retired_in_favour_of_lambda(self, fake_core):
+        # The old parsimony pass swapped 12B (302 BOPD @ 3200 BPD) for 13C
+        # (300 @ 1700) after the solve. That trade is now priced INSIDE the
+        # knapsack: Δoil/Δwater = 2/1500 = 0.0013 < λ takes it, and the
+        # freed water is re-spent by the same solve. ``parsimony_bopd`` is
+        # accepted for signature compatibility and ignored, so the result
+        # is exactly what the (fake) solver returned.
         fake_core.Optimizer.batch_dfs = {
             "W1": _derive_batch_df(
                 [("12", "B", 302.0, 3200.0), ("13", "C", 300.0, 1700.0)]
             )
-        }
-        fake_core.Optimizer.perf_table = {
-            ("W1", "13", "C"): {
-                "oil_rate": 300.0,
-                "lift_water": 1700.0,
-                "formation_water": 0.0,
-                "suction_pressure": 1000.0,
-                "sonic_status": False,
-                "mach_te": 0.5,
-                "marginal_oil_lift_water": 0.0,
-                "marginal_oil_total_water": 0.0,
-            },
         }
         fake_core.optimize_fn = lambda opt: [_result("W1", 3200.0, 302.0)]
         results, optimizer, meta = po.run_optimization(
@@ -747,22 +886,49 @@ class TestMarginalWcAutoDeriveAndParsimony:
             ["12", "13"],
             ["B", "C"],
             "milp",
-            1.0,
+            0.7,
             parsimony_bopd=5.0,
         )
         (r,) = results
-        assert (r.recommended_nozzle, r.recommended_throat) == ("13", "C")
-        assert meta["total_pf_bpd"] == pytest.approx(1700.0)
-        assert meta["total_oil_bopd"] == pytest.approx(300.0)
-        assert meta["parsimony_swaps"] == [
-            {
-                "well": "W1",
-                "from_pump": "12B",
-                "to_pump": "13C",
-                "oil_given_up": pytest.approx(2.0),
-                "pf_saved": pytest.approx(1500.0),
-            }
-        ]
+        assert (r.recommended_nozzle, r.recommended_throat) == ("12", "B")
+        assert meta["total_pf_bpd"] == pytest.approx(3200.0)
+        assert meta["parsimony_swaps"] == []
+        assert "retired" in meta["parsimony_note"]
+        # the price the knapsack saw is the legacy gate's equivalent
+        assert optimizer.water_price == pytest.approx(0.3 / 0.7)
+        assert meta["lambda_used"] == pytest.approx(0.3 / 0.7)
+        assert meta["lambda_source"] == "legacy wc"
+        assert meta["objective_bopd_equiv"] == pytest.approx(302.0 - (0.3 / 0.7) * 3200.0)
+
+    def test_manual_water_price_wins_over_legacy_wc(self, fake_core):
+        fake_core.Optimizer.batch_dfs = {
+            "W1": _derive_batch_df([("12", "B", 100.0, 1000.0)])
+        }
+        fake_core.optimize_fn = lambda opt: [_result("W1", 1000.0, 100.0)]
+        _r, optimizer, meta = po.run_optimization(
+            _wells("W1"), CurvePlant(), 3, ["12"], ["B"], "milp", 0.7, water_price=0.02
+        )
+        assert optimizer.water_price == pytest.approx(0.02)
+        assert meta["lambda_used"] == pytest.approx(0.02)
+        assert meta["lambda_source"] == "manual"
+        assert meta["marginal_wc_used"] == pytest.approx(1.0 / 1.02)
+        # the optimizer reports the EQUIVALENT gate of the price it solved at
+        assert optimizer.marginal_watercut == pytest.approx(1.0 / 1.02)
+
+    def test_mckp_reports_solver_agreement(self, fake_core):
+        fake_core.Optimizer.batch_dfs = {
+            "W1": _derive_batch_df([("12", "B", 100.0, 1000.0)])
+        }
+        fake_core.optimize_fn = lambda opt: [_result("W1", 1000.0, 100.0)]
+        _r, _o, meta = po.run_optimization(
+            _wells("W1"), FreePlant(), None, ["12"], ["B"], "mckp", 0.7, n_steps=5, refine_rounds=0
+        )
+        agree = meta["solver_agreement"]
+        assert agree["agree"] is True
+        assert agree["mckp_objective"] == pytest.approx(agree["milp_objective"])
+        assert "solver_agreement" not in po.run_optimization(
+            _wells("W1"), FreePlant(), None, ["12"], ["B"], "milp", 0.7, n_steps=5, refine_rounds=0
+        )[2]
 
     def test_parsimony_disabled_when_threshold_zero(self, fake_core):
         fake_core.Optimizer.batch_dfs = {

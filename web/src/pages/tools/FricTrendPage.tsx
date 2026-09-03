@@ -1,7 +1,7 @@
 /**
  * JP Fric Trend - fitted friction coefficients over a well's test history.
  *
- * Port of woffl/gui/scotts_tools/jp_fric_trend.py. Two-step per test:
+ * Port of the retired Streamlit JP Fric Trend tool. Two-step per test:
  * calibrate the PF pressure that reproduces the measured lift water, then fit
  * the coefficients that reproduce the measured BHP at that pressure.
  *

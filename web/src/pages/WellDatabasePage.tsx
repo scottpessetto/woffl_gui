@@ -1,7 +1,6 @@
 /**
  * Well Database - read-only viewer of the mech + reservoir characteristics
  * table, the aging jet pump report, and the per-well prop_hist audit trail.
- * Mirrors woffl/gui/well_database_page.py.
  */
 
 import { useMemo, useState } from "react";

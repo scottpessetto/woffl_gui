@@ -731,6 +731,32 @@ bit-identical by construction (`discharge_residual` is a pure function of psu).
 
 ---
 
+### 36. `woffl/assembly/optimization_algorithms.py` + `network.py` + `network_optimizer.py` — ONE water price λ in both solvers (optimization redesign, 2026-09-02)
+Both pad solvers now maximize Σ x_wk (oil_wk − λ·water_wk) over EVERY converged
+config (Σ_k x_wk ≤ 1, shut-in allowed; Σ water ≤ budget) instead of pruning on
+the per-config marginal water cut. `optimization_algorithms`: new
+`marginal_wc_to_lambda` (λ = (1 − w) / w), `water_price(optimizer)` (explicit
+`optimizer.water_price`, else the legacy gate converted), `derive_lambda`
+(the budget's own shadow price: the slope of the pooled Pareto-frontier segment
+the budget crosses; slack → 0); `milp_optimization` objective coefficients
+`−(oil − λ·water_key)`, `mckp_optimization` builds the well views from
+`_valid_configs` and calls `optimize_jet_pumps(..., allow_shutin=True,
+water_price=λ, all_configs=True)`; both set `optimizer.lambda_used` and leave
+`mwc_excluded` / `mwc_excluded_wells` empty. `_valid_configs` accepts the blank
+error markers (`"na"`, `""`, NaN). `network.optimize_jet_pumps(water_price=0.0,
+all_configs=False)`: candidates = every valid row when `all_configs`, objective
+`floor((oil − λ·water)·SCALE)`. `NetworkOptimizer(..., water_price=None)` +
+`lambda_used`. At λ = 0 and with the legacy gate at 1.0 the MILP picks exactly
+what it did before (highest oil under the budget); the MCKP now sees the same
+candidate set as the MILP, so the two agree by construction.
+
+**Guarded by:** `tests/test_optimization_algorithms.py::TestWaterPriceObjective`,
+`tests/test_marginal_wc_enforcement.py` (`TestPricedObjective` parametrized over
+both solvers, `TestSolverAgreement`), and the GUI-side
+`tests/test_pad_optimize.py::TestMarginalWcAutoDeriveAndParsimony`.
+
+---
+
 ## Dead-code deletions from `woffl/assembly/` (R-10, 2026-07-06)
 
 Not patches — these are GUI-fork-only removals of confirmed-zero-caller code

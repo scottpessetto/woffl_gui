@@ -1,7 +1,7 @@
 /**
  * JP Friction Calibration - fit ken/kth/kdi per well against measured BHP.
  *
- * Port of woffl/gui/scotts_tools/jp_calibration.py.
+ * Port of the retired Streamlit JP Calibration tool.
  *
  * READ-ONLY, exactly as the tab was. The SQL panel is a PREVIEW for a human
  * to run against prop_hist; nothing on this page or behind it writes, and

@@ -84,6 +84,8 @@ def test_pad_run_lifecycle_and_hydration(client, monkeypatch):
         captured["ken"] = {c.well_name: c.ken_well for c in configs}
         captured["method"] = method
         captured["n_steps"] = kw.get("n_steps")
+        captured["water_price"] = kw.get("water_price")
+        captured["marginal_wc"] = marginal_wc
         return [_FakeResult(c.well_name) for c in configs], object(), {
             "header_psi": 2450.0,
             "total_pf_bpd": 9000.0,
@@ -120,6 +122,8 @@ def test_pad_run_lifecycle_and_hydration(client, monkeypatch):
     assert captured["ken"]["MPM-99"] is None  # donor MPB-28 has kth, not ken
     assert captured["method"] == "mckp"
     assert captured["n_steps"] == 3
+    # no price given -> auto (None) and the legacy gate untouched
+    assert captured["water_price"] is None and captured["marginal_wc"] is None
 
     result = body["result"]
     assert result["pad"] == "M"
@@ -510,3 +514,102 @@ def test_cfp_offline_wells_are_bring_online_candidates(client, monkeypatch):
     body = _wait_done(client, r.json()["job_id"])
     assert body["status"] == "done", body.get("error")
     assert captured["online"] == {"MPB-28": True, "MPG-01": False}
+
+
+def test_pad_run_forwards_the_header_setpoint(client, monkeypatch):
+    """setpoint_psi pins a free-pressure pad's header to ONE trial. The
+    engine decides what to do with it (fixed_curve S-Pad ignores it), so the
+    server contract is only that the kwarg is forwarded verbatim and that
+    the clamped value the engine reports rides back out in meta."""
+    captured: dict = {}
+
+    def fake_run(configs, plant, n_pumps, nozzles, throats, method, marginal_wc, **kw):
+        captured["setpoint_psi"] = kw.get("setpoint_psi")
+        captured["kw"] = set(kw)
+        return [_FakeResult(c.well_name) for c in configs], object(), {
+            "header_psi": 3200.0,
+            "total_pf_bpd": 9000.0,
+            "total_oil_bopd": 750.0,
+            "converged": True,
+            "setpoint_psi": 3200.0,
+        }
+
+    import woffl.gui.pad_optimize as pad_optimize
+
+    monkeypatch.setattr(pad_optimize, "run_optimization", fake_run)
+    r = client.post(
+        "/api/optimize/run",
+        json={"kind": "pad", "pad": "M", "setpoint_psi": 3200.0},
+    )
+    assert r.status_code == 200
+    body = _wait_done(client, r.json()["job_id"])
+    assert body["status"] == "done"
+    assert captured["setpoint_psi"] == 3200.0
+    # the pinned header is part of the meta contract the page reads
+    assert body["result"]["meta"]["setpoint_psi"] == 3200.0
+
+
+def test_pad_run_without_a_setpoint_sweeps(client, monkeypatch):
+    """No setpoint given -> None forwarded (a swept run), and the S-Pad is
+    handed the same None: the fixed-curve station has no header to pin."""
+    captured: dict = {}
+
+    def fake_run(configs, plant, n_pumps, nozzles, throats, method, marginal_wc, **kw):
+        captured["setpoint_psi"] = kw.get("setpoint_psi")
+        return [_FakeResult(c.well_name) for c in configs], object(), {
+            "header_psi": 2450.0,
+            "total_pf_bpd": 9000.0,
+            "total_oil_bopd": 750.0,
+            "converged": True,
+            "setpoint_psi": None,
+        }
+
+    import woffl.gui.pad_optimize as pad_optimize
+
+    monkeypatch.setattr(pad_optimize, "run_optimization", fake_run)
+    r = client.post("/api/optimize/run", json={"kind": "pad", "pad": "M"})
+    assert r.status_code == 200
+    body = _wait_done(client, r.json()["job_id"])
+    assert body["status"] == "done"
+    assert captured["setpoint_psi"] is None
+    assert body["result"]["meta"]["setpoint_psi"] is None
+
+
+def test_setpoint_outside_the_band_is_rejected(client):
+    r = client.post("/api/optimize/run", json={"kind": "pad", "pad": "M", "setpoint_psi": 900.0})
+    assert r.status_code == 422
+
+
+def test_pad_run_forwards_the_water_price(client, monkeypatch):
+    captured: dict = {}
+
+    def fake_run(configs, plant, n_pumps, nozzles, throats, method, marginal_wc, **kw):
+        captured["water_price"] = kw.get("water_price")
+        captured["kw"] = set(kw)
+        return [_FakeResult(c.well_name) for c in configs], object(), {
+            "header_psi": 2450.0,
+            "total_pf_bpd": 9000.0,
+            "total_oil_bopd": 750.0,
+            "converged": True,
+            "lambda_used": 0.02,
+            "lambda_source": "manual",
+            "objective_bopd_equiv": 570.0,
+            "solver_agreement": {"agree": True, "mckp_objective": 570.0, "milp_objective": 570.0},
+        }
+
+    import woffl.gui.pad_optimize as pad_optimize
+
+    monkeypatch.setattr(pad_optimize, "run_optimization", fake_run)
+    r = client.post(
+        "/api/optimize/run",
+        json={"kind": "pad", "pad": "M", "method": "mckp", "lambda_bopd_per_bpd": 0.02, "parsimony_bopd": 50},
+    )
+    assert r.status_code == 200
+    body = _wait_done(client, r.json()["job_id"])
+    assert body["status"] == "done"
+    assert captured["water_price"] == 0.02
+    assert "parsimony_bopd" not in captured["kw"]  # retired: never forwarded
+    meta = body["result"]["meta"]
+    assert meta["lambda_used"] == 0.02 and meta["lambda_source"] == "manual"
+    assert meta["objective_bopd_equiv"] == 570.0
+    assert meta["solver_agreement"]["agree"] is True

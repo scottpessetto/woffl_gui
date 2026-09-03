@@ -364,6 +364,7 @@ def test_run_optimization_sweeps_the_e_pad_pressure_window(fake_core):
         0.7,
         n_steps=6,
         progress=lambda *a: trials.append(a),
+        refine_rounds=0,  # exact coarse grid for this pin
     )
     floor, ceiling = PLANT.pressure_window()
     assert len(trials) == 6

@@ -60,6 +60,76 @@ def _stub_optimizer(budget: float):
     return opt
 
 
+class TestWaterPriceObjective:
+    """docs/optimization_redesign_2026-09.md §1: one λ in the objective of
+    BOTH solvers replaces the marginal-WC gate and the parsimony pass."""
+
+    def test_lambda_zero_is_pure_oil(self):
+        opt = _stub_optimizer(budget=10_000)
+        opt.water_price = 0.0
+        res = milp_optimization(opt)
+        assert (res[0].recommended_nozzle, res[0].recommended_throat) == ("12", "A")
+        assert opt.lambda_used == 0.0
+
+    def test_lambda_prices_the_incremental_barrel(self):
+        """A -> B trades 20 BOPD for 200 BPD of lift water: ratio 0.10. Any
+        λ above 0.10 must prefer B (parsimony without a threshold), any λ
+        below must keep A."""
+        opt = _stub_optimizer(budget=10_000)
+        opt.water_price = 0.15
+        res = milp_optimization(opt)
+        assert res[0].recommended_throat == "B"
+        opt.water_price = 0.05
+        res = milp_optimization(opt)
+        assert res[0].recommended_throat == "A"
+
+    def test_lambda_can_shut_a_well_in(self):
+        """When no config's oil covers its priced water, the well is shut in."""
+        opt = _stub_optimizer(budget=10_000)
+        opt.water_price = 1.0  # 100 BOPD never pays for 300+ BPD
+        assert milp_optimization(opt) == []
+
+    def test_legacy_marginal_wc_maps_to_the_same_price(self):
+        from woffl.assembly.optimization_algorithms import marginal_wc_to_lambda, water_price
+
+        assert marginal_wc_to_lambda(1.0) == 0.0
+        assert marginal_wc_to_lambda(0.9) == pytest.approx(1.0 / 9.0)
+        opt = _stub_optimizer(budget=10_000)
+        opt.marginal_watercut = 0.9  # gate: r < 0.111 excluded -> A (0.2) and B ok
+        assert water_price(opt) == pytest.approx(1.0 / 9.0)
+        opt.water_price = 0.3
+        assert water_price(opt) == 0.3  # explicit price wins
+
+    def test_derive_lambda_is_the_crossing_ratio(self):
+        from woffl.assembly.optimization_algorithms import derive_lambda
+
+        # frontier: (300 BPD, 80) then (500 BPD, 100): segments 0.267, 0.10
+        opt = _stub_optimizer(budget=0)
+        df = pd.DataFrame(
+            {"nozzle": ["12", "12"], "throat": ["B", "A"], "qoil_std": [80.0, 100.0], "lift_wat": [300.0, 500.0]}
+        )
+        lam, slack = derive_lambda({"MPX-1": df}, cap=400.0)
+        assert not slack and lam == pytest.approx(0.10)  # the 2nd segment crosses 400
+        lam, slack = derive_lambda({"MPX-1": df}, cap=10_000.0)
+        assert slack and lam == 0.0
+
+    def test_milp_and_mckp_agree_on_the_priced_objective(self):
+        from woffl.assembly.optimization_algorithms import mckp_optimization
+
+        opt = _stub_optimizer(budget=10_000)
+        opt.water_price = 0.15
+        df = opt.batch_results["MPX-1"].df
+        df["lift_wat"] = [500.0, 300.0]
+        df["form_wat"] = [2000.0, 1500.0]
+        df["totl_wat"] = [2500.0, 1800.0]
+        df["error"] = "na"
+        a = milp_optimization(opt)
+        b = mckp_optimization(opt)
+        assert [(r.recommended_nozzle, r.recommended_throat) for r in a] == [
+            (r.recommended_nozzle, r.recommended_throat) for r in b
+        ]
+
+
 def test_lift_key_budgets_lift_water_only():
     # Budget 600 admits config A on lift water (500) even though its total
     # water (2500) is huge — formation water must NOT count.

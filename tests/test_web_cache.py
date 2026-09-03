@@ -315,6 +315,89 @@ def test_an_unwarmed_entry_still_expires_into_a_blocking_recompute():
         set_warm_retention(0.0)
 
 
+# ---------------------------------------------------------------------------
+# cache_prime - one fleet query filling every per-well key
+# ---------------------------------------------------------------------------
+
+
+def test_a_primed_entry_is_served_without_ever_calling_the_function():
+    """Why it exists: one fleet-wide statement already holds every well's rows,
+    so filling ~90 per-well keys must not cost ~90 warehouse queries."""
+    calls = []
+
+    @ttl_cache(60.0)
+    def fn(well):
+        calls.append(well)
+        return f"queried:{well}"
+
+    assert fn.cache_prime("from the fleet frame", "MPB-28") is True
+
+    assert fn("MPB-28") == "from the fleet frame"
+    assert calls == [], "a primed key must never reach the fetcher"
+    # And only that key: priming is not a blanket fill.
+    assert fn("MPC-45") == "queried:MPC-45"
+    assert calls == ["MPC-45"]
+
+
+def test_a_primed_entry_carries_the_warm_retention_floor():
+    """A primed entry is the warm loop's own write, so it gets the same floor
+    cache_refresh gives - otherwise the fleet warm would be deleted one TTL
+    later and the next reader would pay the per-well query anyway."""
+    calls = []
+
+    @ttl_cache(ttl=0.05)
+    def fn(well):
+        calls.append(well)
+        return "queried"
+
+    set_warm_retention(30.0)
+    try:
+        assert fn.cache_prime("primed", "MPB-28") is True
+        time.sleep(0.2)  # well past fresh + 2 x ttl
+        assert fn("MPB-28") == "primed"
+        assert calls == []
+    finally:
+        set_warm_retention(0.0)
+
+
+def test_a_clear_between_capture_and_prime_discards_the_prime():
+    """Read-your-writes, extended to the fleet path: the value was fetched
+    before the write landed, so it must not be stored after it - exactly what
+    the version guard does for an ordinary in-flight fetch."""
+    calls = []
+
+    @ttl_cache(60.0)
+    def fn(well):
+        calls.append(well)
+        return "post-write"
+
+    version = fn.cache_version()  # captured before the fleet fetch
+    fn.cache_clear()  # a save landed while that fetch was in flight
+
+    assert fn.cache_prime("pre-write", "MPB-28", version=version) is False
+    assert fn("MPB-28") == "post-write"
+    assert calls == ["MPB-28"]
+
+
+def test_a_prime_defers_to_an_in_flight_refresh():
+    """Single-flight, like cache_refresh: the refresh already running is about
+    to store a value fetched no earlier than this one."""
+
+    @ttl_cache(60.0)
+    def fn(well):
+        return "queried"
+
+    key = (("MPB-28",), ())
+    fn._cache.try_begin_refresh(key)
+    try:
+        assert fn.cache_prime("primed", "MPB-28") is False
+    finally:
+        fn._cache.end_refresh(key)
+
+    assert fn.cache_prime("primed", "MPB-28") is True
+    assert fn("MPB-28") == "primed"
+
+
 def test_refresher_refuses_an_uncached_function():
     """A warm target list that silently became a list of no-ops is the failure
     mode this guards: the loop would report success and warm nothing."""

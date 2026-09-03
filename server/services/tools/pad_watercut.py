@@ -1,7 +1,7 @@
 """Pad Water Cut - daily pad-level WC over time for pads G/H/I/J.
 
-Port of woffl/gui/scotts_tools/pad_watercut.py. That tab was one client call
-wrapped in Plotly; all of the physics/aggregation already lives in
+Port of the retired Streamlit tool. That tab was one client call wrapped in
+Plotly; all of the physics/aggregation already lives in
 ``woffl.assembly.pad_watercut_client.fetch_pad_watercut``, so this is a cache
 plus a JSON shaping step.
 

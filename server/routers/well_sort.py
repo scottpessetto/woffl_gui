@@ -1,5 +1,5 @@
 """Well Sort endpoints: field tables, down events, marginal WC, triage,
-bench workbook. Port of woffl/gui/well_sort_page.py's three tabs.
+bench workbook. Port of the retired Streamlit page's three tabs.
 
 POPs config travels as repeatable query params (?pops_pad=E&pops_pad=S...)
 so results stay GET-cacheable and shareable; the SPA owns the selection

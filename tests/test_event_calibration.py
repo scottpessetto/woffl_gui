@@ -416,3 +416,118 @@ def test_job_streams_fitter_progress_into_envelope(client, monkeypatch):
     assert payload["method"] == "event"
     # After the fit the envelope names the evidence step, not the last pass.
     assert "field evidence" in job["progress"]
+
+
+# ---------------------------------------------------------------------------
+# The fit on the process pool (threads via the pool seam; a real child could
+# not see the monkeypatched fitter)
+# ---------------------------------------------------------------------------
+
+from concurrent.futures import ThreadPoolExecutor  # noqa: E402
+
+import woffl.assembly.parallelism as common_mod  # noqa: E402
+from server import pool  # noqa: E402
+
+
+@pytest.fixture()
+def thread_pool(monkeypatch):
+    monkeypatch.setattr(common_mod, "worker_ceiling", lambda: 2)
+    monkeypatch.setattr(pool, "_EXECUTOR_CLS", ThreadPoolExecutor)
+    pool.stop()
+    started = pool.start()
+    yield started
+    pool.stop()
+
+
+def _slow_fitter(lines, delay=0.7):
+    """A fitter that reports progress, then keeps the worker busy long
+    enough for the parent's poll loop to catch each line."""
+
+    def fit(cfg, nz, th, built, progress=None, **kw):
+        for line in lines:
+            if progress:
+                progress(line)
+            time.sleep(delay)
+        return _fit_result()
+
+    return fit
+
+
+def test_fit_runs_on_the_pool_and_relays_progress(monkeypatch, thread_pool):
+    import woffl.gui.fric_calibration as fc
+
+    assert thread_pool == 2
+    seen: list[str] = []
+
+    class _Job(dict):
+        def __setitem__(self, k, v):
+            if k == "progress":
+                seen.append(v)
+            super().__setitem__(k, v)
+
+    monkeypatch.setattr(fc, "calibrate_multipoint", _slow_fitter(["fitting 12 points - seed (evaluation 10)", "fitting 12 points - floor escape (evaluation 20)"]))
+    job = _Job()
+    res = ec._fit_multipoint(job, _cfg(), "12", "B", _built(), lambda m: job.__setitem__("progress", m))
+    assert res.best_ken == _fit_result().best_ken  # the worker result came back intact
+    # the worker's lines were relayed through the file into the envelope
+    assert "fitting 12 points - seed (evaluation 10)" in seen
+    assert "fitting 12 points - floor escape (evaluation 20)" in seen
+    assert any("pool worker" in m for m in seen)
+    # the gate slot is released once the future settles
+    assert pool.submit_all(lambda x: x, [(1,), (2,)]) == [1, 2]
+
+
+def test_fit_falls_back_in_thread_when_the_pool_is_down(monkeypatch):
+    import woffl.gui.fric_calibration as fc
+
+    pool.stop()
+    assert pool.workers() == 0
+    calls: list[str] = []
+    monkeypatch.setattr(
+        fc, "calibrate_multipoint", lambda cfg, nz, th, built, progress=None, **kw: (progress("in-thread line"), _fit_result())[1]
+    )
+    job: dict = {}
+    res = ec._fit_multipoint(job, _cfg(), "12", "B", _built(), lambda m: calls.append(m))
+    assert res.best_kth == _fit_result().best_kth
+    assert calls == ["in-thread line"]  # the direct callback, no file
+    assert "progress" not in job  # nothing claimed a pool worker
+
+
+def test_fit_falls_back_when_submit_is_refused(monkeypatch, thread_pool):
+    import woffl.gui.fric_calibration as fc
+
+    monkeypatch.setattr(pool, "submit", lambda fn, *a: None)
+    monkeypatch.setattr(fc, "calibrate_multipoint", lambda cfg, nz, th, built, progress=None, **kw: _fit_result())
+    res = ec._fit_multipoint({}, _cfg(), "12", "B", _built(), lambda m: None)
+    assert res.best_kdi == _fit_result().best_kdi
+
+
+def test_worker_exception_surfaces_like_the_in_thread_path(monkeypatch, thread_pool):
+    import woffl.gui.fric_calibration as fc
+
+    def boom(cfg, nz, th, built, progress=None, **kw):
+        raise RuntimeError("fitter exploded")
+
+    monkeypatch.setattr(fc, "calibrate_multipoint", boom)
+    with pytest.raises(RuntimeError, match="fitter exploded"):
+        ec._fit_multipoint({}, _cfg(), "12", "B", _built(), lambda m: None)
+    # and the slot is free again afterwards
+    assert pool.submit_all(lambda x: x + 1, [(1,)]) == [2]
+
+
+def test_progress_file_is_cleaned_up(monkeypatch, thread_pool, tmp_path):
+    import woffl.gui.fric_calibration as fc
+
+    created: list[str] = []
+    real_mkstemp = ec.tempfile.mkstemp
+
+    def spy(**kw):
+        fd, path = real_mkstemp(dir=str(tmp_path), **kw)
+        created.append(path)
+        return fd, path
+
+    monkeypatch.setattr(ec.tempfile, "mkstemp", spy)
+    monkeypatch.setattr(fc, "calibrate_multipoint", _slow_fitter(["one line"], delay=0.2))
+    ec._fit_multipoint({}, _cfg(), "12", "B", _built(), lambda m: None)
+    assert created and not any(ec.os.path.exists(p) for p in created)
+    assert not list(tmp_path.iterdir())

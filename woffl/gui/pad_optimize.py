@@ -62,7 +62,7 @@ from_pump, to_pump, oil_given_up, pf_saved}`` dicts).
 
 from __future__ import annotations
 
-from typing import Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from woffl.gui.pad_plant_base import PadPlant
 from woffl.flow.inflow import InFlow
@@ -112,26 +112,138 @@ def settled_header(
     cap = plant.max_header_psi
     if total_pf <= 0:
         return (min(cap, fallback) if cap is not None else fallback), False
-    p = plant.header_at_flow(total_pf, n_pumps)
-    if p is None:
+    # Setpoint below the knee, frontier above (redesign §3): the plant holds
+    # its setpoint whenever the frontier can deliver more at this flow, and
+    # recirculates below its minimum flow instead of "collapsing to suction".
+    deliver = getattr(plant, "delivered_header", None)
+    if deliver is None:
+        # a duck-typed plant (tests, ad-hoc stubs): apply the base rule
+        header, over = PadPlant.delivered_header(plant, total_pf, None, n_pumps)  # type: ignore[arg-type]
+    else:
+        header, over = deliver(total_pf, None, n_pumps)
+    if header is None:
         return plant.suction_psi(), True
-    return (min(cap, p) if cap is not None else p), False
+    return (min(cap, header) if cap is not None else header), over
 
 
 def _next_header(
     plant: PadPlant, total_pf: float, trial_psi: float, n_pumps: int | None
 ) -> tuple[float, bool]:
-    """Fixed-point loop update. A fixed_curve plant evaluates its curve even
-    at zero flow (the S-Pad curve tops out near shut-in head); a free_pressure
-    plant holds the trial when there's no draw (the I/M pages' behavior)."""
+    """Fixed-point loop update for the SCENARIO evaluators. A fixed_curve
+    plant evaluates its curve even at zero flow (the S-Pad curve tops out
+    near shut-in head); a free_pressure plant holds its setpoint (the trial
+    when it has no cap) below the knee."""
     if plant.coupling == "fixed_curve":
-        return plant.header_at_flow(total_pf, n_pumps), False
+        h = plant.header_at_flow(total_pf, n_pumps)
+        return (h, False) if h is not None else (plant.suction_psi(), True)
     return settled_header(plant, total_pf, trial_psi, n_pumps)
 
 
 def _history_key(plant: PadPlant) -> str:
     # preserved verbatim from the pages: the iteration table's column name
     return "curve_psi" if plant.coupling == "fixed_curve" else "frontier_psi"
+
+
+# Halvings the bracketed settle is allowed. The clamp band is at most
+# 1,000-5,000 psi wide, so 12 halvings locate the crossing to under 1 psi -
+# well inside any tol_psi a caller would pass.
+_SCENARIO_BISECT_STEPS = 12
+
+
+def _settle_scenario_coupling(
+    plant: PadPlant,
+    n_pumps: int | None,
+    evaluate: Callable[[float], tuple[float, float, float, Any]],
+    warm_start: float,
+    *,
+    tol_psi: float = 10.0,
+    relax: float = 0.6,
+    max_iter: int = 8,
+    on_step: Optional[Callable[[int, int, float, float, float, Any], None]] = None,
+) -> tuple[float, bool, Any]:
+    """Settle the plan <-> header coupling for a FIXED plan.
+
+    A fixed plan has no decision to sweep (that is ``run_optimization``'s
+    job), but the delivered header still depends on the plan's own PF draw
+    and the draw depends on the header - every well is re-solved at it - so
+    the two have to be solved together. That is a ROOT FIND on
+
+        ``g(P) = delivered_header(draw(P)) - P``
+
+    over the plant's ``clamp_window``, not a fixed-point iteration:
+    bisection on a bracketed root converges monotonically in a bounded
+    number of steps, where the damped iteration the pages ran could
+    oscillate to the cap and report ``converged=False`` (P0-9).
+
+    ``evaluate(P)`` runs the plan at header ``P`` and returns
+    ``(P_clamped, delivered_psi, total_pf, payload)``; ``payload`` is
+    whatever the caller needs from that evaluation (its rows and totals).
+    ``on_step(index, budget, trial_psi, total_pf, delivered_psi, payload)``
+    fires once per evaluation, in evaluation order.
+
+    The damped loop is kept as the FALLBACK for the one case bisection
+    cannot handle: no strict sign change across the band, i.e. ``g`` never
+    crosses zero there. That covers the degenerate free-pressure case where
+    nothing draws (``g == 0`` all the way up the band - the plant would
+    "hold" any trial), which is not an identification of a header. Then the
+    old semantics apply verbatim, ``converged=False`` on exhaustion
+    included.
+
+    Returns ``(header_psi, converged, payload)`` - the payload of the
+    evaluation the returned header belongs to.
+    """
+    lo_p, hi_p = plant.clamp_window(n_pumps)
+    budget = 2 + max(_SCENARIO_BISECT_STEPS, int(max_iter))
+    step = 0
+
+    def _probe(p: float) -> tuple[float, float, float, Any]:
+        nonlocal step
+        ppf_c, delivered, total_pf, payload = evaluate(p)
+        step += 1
+        if on_step:
+            on_step(step, budget, ppf_c, total_pf, delivered, payload)
+        return ppf_c, delivered, total_pf, payload
+
+    a, a_new, a_pf, a_payload = _probe(lo_p)
+    g_a = a_new - a
+    if a_pf > 0 and abs(g_a) <= tol_psi:
+        return a_new, True, a_payload
+    b, b_new, b_pf, b_payload = _probe(hi_p)
+    g_b = b_new - b
+    if b_pf > 0 and abs(g_b) <= tol_psi:
+        return b_new, True, b_payload
+
+    if g_a > 0.0 > g_b:
+        header, payload, converged = b_new, b_payload, False
+        for _ in range(_SCENARIO_BISECT_STEPS):
+            mid = 0.5 * (a + b)
+            m_c, m_new, _m_pf, payload = _probe(mid)
+            g_m = m_new - m_c
+            header = m_new
+            if abs(g_m) <= tol_psi or 0.5 * (b - a) <= tol_psi:
+                converged = True
+                break
+            if g_m > 0:
+                a = m_c
+            else:
+                b = m_c
+        return header, converged, payload
+
+    # ── fallback: the pages' damped fixed point, unchanged ──
+    ppf = warm_start
+    header, payload, converged = float(ppf), b_payload, False
+    for _ in range(max(0, int(max_iter))):
+        ppf_c, new_ppf, _total_pf, payload = _probe(ppf)
+        header = ppf_c
+        if abs(new_ppf - ppf_c) <= tol_psi:
+            header, converged = new_ppf, True
+            break
+        ppf = relax * new_ppf + (1 - relax) * ppf_c
+        # after max_iter oscillating steps the damped extrapolation is the
+        # reported header while the rows come from the last trial - flagged
+        # by converged=False, exactly as before
+        header = ppf
+    return header, converged, payload
 
 
 # ---------------------------------------------------------------------------
@@ -154,296 +266,258 @@ def run_optimization(
     relax: float = 0.6,
     parsimony_bopd: float = 20.0,
     progress: Optional[Callable] = None,
+    water_price: Optional[float] = None,
+    setpoint_psi: Optional[float] = None,
+    refine_rounds: int = 2,
 ):
     """Optimize nozzle/throat across the pad, coupled to the booster plant.
 
-    Dispatches on ``plant.coupling`` (see the module docstring). ``n_steps``
-    only applies to the free_pressure sweep (I-Pad passes 11, M-Pad 9);
-    ``max_iter``/``tol_psi``/``relax`` only to the fixed_curve fixed point.
+    ONE sweep for every pad (docs/optimization_redesign_2026-09.md §4). The
+    outer decision variable is the header for a free-pressure plant (I/M/E)
+    and the total PF flow for a fixed-curve station (S: its header is a
+    function of flow, so sweeping flow IS sweeping header). At each trial the
+    knapsack (``optimize``, MILP or MCKP - both price water identically)
+    picks pumps under the plant's budget there; the sweep keeps the best
+    trial and then refines around it (``refine_rounds`` rounds of bracket
+    halving). The damped fixed point the S-Pad page used to run is retired:
+    it was a best-response equilibrium, not an optimum, and it could
+    oscillate.
 
-    ``marginal_wc``: a float is a MANUAL gate override (today's behavior,
-    unchanged). ``None`` means AUTO-DERIVE the gate from the plant's own
-    physical limits at each trial header —
-    ``woffl.assembly.optimization_algorithms.derive_pad_marginal_wc`` pools
-    every well's oil-per-water Pareto frontier and reads the gate off the
-    ratio that exhausts the plant's PF/water budget, so the economics cutoff
-    can never be looser than the pad can actually deliver.
+    Economics: ONE water price λ (bbl oil per bbl of ``plant.water_key``
+    water) in the objective of the knapsack itself.
 
-    ``parsimony_bopd``: after the optimizer picks pumps, a well is swapped
-    down to a smaller (less-water) config if that config gives up no more
-    than this many BOPD — so PF slack isn't spent upsizing a pump for a
-    noise-level oil gain. 0 disables the tie-break.
+    * ``water_price`` given -> manual λ; trials are compared on the priced
+      objective (oil − λ·water).
+    * ``water_price`` None and ``marginal_wc`` a float -> legacy gate mapped
+      to the same price, λ = (1 − wc) / wc (compat: old callers keep their
+      economics).
+    * both None -> AUTO: λ* per trial from ``derive_lambda`` (the budget's
+      own shadow price off the pooled Pareto frontier); trials are compared
+      on OIL because λ* differs by trial, and the winner reports its λ*.
 
-    Returns ``(results, optimizer, meta)`` — ``optimizer`` is the one behind
-    ``results`` (the winning sweep step for free_pressure), and
-    ``meta["reconciliation"]`` is computed from it (per-well drop reasons at
-    the winning point, P0-5). ``meta`` also carries ``marginal_wc_used``
-    (the gate actually applied at the final/winning header),
-    ``marginal_wc_source`` ("auto (plant-derived)" | "manual"), ``pf_slack``
-    (True when the demand walk never exhausted the budget there), and
-    ``parsimony_swaps`` (list of ``{well, from_pump, to_pump, oil_given_up,
-    pf_saved}`` dicts, empty when none).
+    ``setpoint_psi`` (free-pressure plants only) pins the header instead of
+    sweeping it: one trial at the clamped setpoint, no refinement. The
+    clamped value is reported back as ``meta["setpoint_psi"]``; it is None
+    on a swept run and on a fixed-curve station (which has no setpoint).
+
+    ``parsimony_bopd`` is accepted and IGNORED (λ subsumes it: a swap that
+    gives up Δoil for Δwater is taken exactly when Δoil/Δwater < λ, and the
+    freed water is re-spent by the same solve). ``max_iter``/``tol_psi``/
+    ``relax`` are accepted for signature compatibility and unused.
+
+    Returns ``(results, optimizer, meta)`` — ``optimizer`` is the winning
+    trial's; ``meta`` keeps every key the pages read (``header_psi``,
+    ``total_pf_bpd``, ``total_oil_bopd``, ``converged`` (always True - a
+    sweep has no fixed point to miss), ``history`` ([]), ``sweep``,
+    ``nozzles``, ``throats``, the plant flags, the fixed-curve station extras
+    or the free-pressure frontier extras, ``reconciliation``) plus the
+    economics: ``lambda_used``, ``lambda_source`` ("manual" | "legacy wc" |
+    "auto (plant-derived)"), ``objective_bopd_equiv`` (oil − λ·water at the
+    winner), ``pf_slack``, ``marginal_wc_used`` (the equivalent water cut
+    1/(1+λ), for the legacy label), ``marginal_wc_source``,
+    ``parsimony_swaps`` ([]), ``solver_agreement`` (when ``method`` is
+    "mckp": the MILP re-solved at the winning trial and the two objectives;
+    they must agree to CP-SAT's integer quantization).
     """
-    if plant.coupling == "fixed_curve":
-        return _run_fixed_point(
-            well_configs,
-            plant,
-            n_pumps,
-            nozzles,
-            throats,
-            method,
-            marginal_wc,
-            max_iter=max_iter,
-            tol_psi=tol_psi,
-            relax=relax,
-            parsimony_bopd=parsimony_bopd,
-            progress=progress,
-        )
-    return _run_pressure_sweep(
-        well_configs,
-        plant,
-        n_pumps,
-        nozzles,
-        throats,
-        method,
-        marginal_wc,
-        n_steps=n_steps,
-        parsimony_bopd=parsimony_bopd,
-        progress=progress,
-    )
-
-
-def _run_fixed_point(
-    well_configs,
-    plant,
-    n_pumps,
-    nozzles,
-    throats,
-    method,
-    marginal_wc,
-    *,
-    max_iter,
-    tol_psi,
-    relax,
-    parsimony_bopd=20.0,
-    progress,
-):
-    """fixed_curve: solve optimizer <-> pump-curve to a damped fixed point."""
     from woffl.assembly.network_optimizer import (
         NetworkOptimizer,
         PowerFluidConstraint,
         reconcile_wells,
     )
     from woffl.assembly.optimization_algorithms import (
-        apply_parsimony,
-        derive_pad_marginal_wc,
+        derive_lambda,
+        marginal_wc_to_lambda,
         optimize,
     )
     from woffl.assembly.parallelism import worker_ceiling
 
-    cap = plant.flow_window(n_pumps)[1]  # hydraulic (thrust) ceiling
-    ppf = plant.warm_start_psi(n_pumps)  # on the curve at 0.6 x capacity
-    lo_p, hi_p = plant.clamp_window(n_pumps)
-    history = []
-    results, optimizer, converged = [], None, False
-    mwc_used = mwc_source = pf_slack = None
-    parsimony_swaps: list = []
+    water_key = getattr(plant, "water_key", "lift_wat") or "lift_wat"
+    result_water = "predicted_lift_water" if water_key == "lift_wat" else "predicted_total_water"
 
-    for it in range(max_iter):
-        ppf_c = max(lo_p, min(hi_p, ppf))
-        for wc in well_configs:
-            wc.ppf_surf_well = ppf_c  # common header pressure for every well
-        pf = PowerFluidConstraint(
-            total_rate=cap, pressure=ppf_c, rho_pf=_RHO_PF_DEFAULT
-        )
-        optimizer = NetworkOptimizer(
-            well_configs,
-            pf,
-            nozzles,
-            throats,
-            marginal_wc if marginal_wc is not None else 1.0,
-        )
-        optimizer.run_all_batch_simulations(max_workers=worker_ceiling())
+    if water_price is not None:
+        lam_fixed, lam_source = max(0.0, float(water_price)), "manual"
+    elif marginal_wc is not None:
+        lam_fixed, lam_source = marginal_wc_to_lambda(float(marginal_wc)), "legacy wc"
+    else:
+        lam_fixed, lam_source = None, "auto (plant-derived)"
 
-        # Marginal-WC gate: manual value stays manual; None auto-derives it
-        # from the plant's OWN budget at this trial header (cheap — pools
-        # frontiers already in memory). Both branches report ``pf_slack`` —
-        # informative even when the gate is manual.
-        gate, slack = derive_pad_marginal_wc(optimizer.batch_results, cap, "lift_wat")
-        if marginal_wc is None:
-            optimizer.marginal_watercut = gate
-            mwc_used, mwc_source = gate, "auto (plant-derived)"
+    fixed_curve = plant.coupling == "fixed_curve"
+    if fixed_curve:
+        lo, hi = plant.flow_window(n_pumps)
+    else:
+        lo, hi = plant.pressure_window(n_pumps)
+    n_steps = max(3, int(n_steps))
+    coarse = [lo + (hi - lo) * i / (n_steps - 1) for i in range(n_steps)]
+    # None unless the header was actually pinned; the value is the CLAMPED
+    # setpoint the run used, so the page reports what happened, not what was
+    # asked for.
+    pinned_setpoint: Optional[float] = None
+    if setpoint_psi is not None and not fixed_curve:
+        # a pinned discharge setpoint: evaluate the plant THERE instead of
+        # sweeping (the header is the decision; the engineer just made it)
+        coarse = [max(lo, min(hi, float(setpoint_psi)))]
+        pinned_setpoint = coarse[0]
+        n_steps, refine_rounds = 1, 0
+
+    def _trial(x: float) -> Optional[dict]:
+        """Solve the knapsack at one decision point; None when the plant has
+        no budget there."""
+        if fixed_curve:
+            header = plant.header_at_flow(x, n_pumps)
+            cap = x
         else:
-            mwc_used, mwc_source = marginal_wc, "manual"
-        pf_slack = slack
-
-        results = optimize(optimizer, method=method, water_key="lift_wat")
-        # Parsimony tie-break BEFORE total_pf is computed, so the header
-        # fixed point settles on the parsimonious demand, not the raw pick.
-        results, parsimony_swaps = apply_parsimony(
-            results, optimizer, "lift_wat", parsimony_bopd
-        )
-
-        total_pf = sum(r.predicted_lift_water for r in results)
-        new_ppf, _ = _next_header(plant, total_pf, ppf_c, n_pumps)
-        history.append(
-            {
-                "iter": it + 1,
-                "trial_psi": round(ppf_c, 1),
-                "total_pf_bpd": round(total_pf, 0),
-                _history_key(plant): round(new_ppf, 1),
-            }
-        )
-        if progress:
-            progress(it + 1, max_iter, ppf_c, total_pf, new_ppf)
-        if abs(new_ppf - ppf_c) <= tol_psi:
-            ppf = new_ppf
-            converged = True
-            break
-        ppf = relax * new_ppf + (1 - relax) * ppf_c
-
-    total_pf = sum(r.predicted_lift_water for r in results)
-    meta = {
-        "n_pumps": n_pumps,
-        "header_psi": max(lo_p, min(hi_p, ppf)),
-        "total_pf_bpd": total_pf,
-        "total_oil_bopd": sum(r.predicted_oil_rate for r in results),
-        "converged": converged,
-        "history": history,
-        "sweep": [],
-        "nozzles": list(nozzles),
-        "throats": list(throats),
-        **plant.flags(total_pf, n_pumps),
-        "per_pump_bpd": (total_pf / n_pumps) if n_pumps else None,
-        "station_cap_bpd": cap,
-        "marginal_wc_used": mwc_used,
-        "marginal_wc_source": mwc_source,
-        "pf_slack": pf_slack,
-        "parsimony_swaps": parsimony_swaps,
-    }
-    # Per-well drop accounting (failed sim vs solver shut-in vs marginal-WC
-    # exclusion) — Results renders the real reasons instead of a blanket SI.
-    meta["reconciliation"] = reconcile_wells(optimizer, results)
-    return results, optimizer, meta
-
-
-def _run_pressure_sweep(
-    well_configs,
-    plant,
-    n_pumps,
-    nozzles,
-    throats,
-    method,
-    marginal_wc,
-    *,
-    n_steps,
-    parsimony_bopd=20.0,
-    progress,
-):
-    """free_pressure: sweep candidate headers, keep the most-oil pressure."""
-    from woffl.assembly.network_optimizer import (
-        NetworkOptimizer,
-        PowerFluidConstraint,
-        reconcile_wells,
-    )
-    from woffl.assembly.optimization_algorithms import (
-        apply_parsimony,
-        derive_pad_marginal_wc,
-        optimize,
-    )
-    from woffl.assembly.parallelism import worker_ceiling
-
-    p_floor, p_ceiling = plant.pressure_window(n_pumps)
-    pressures = [
-        p_floor + (p_ceiling - p_floor) * i / (n_steps - 1) for i in range(n_steps)
-    ]
-
-    sweep, best = [], None
-    for idx, P in enumerate(pressures):
-        cap = plant.budget_at_pressure(P, n_pumps)  # PF budget at this pressure
-        if not cap or cap <= 0:
-            if progress:
-                progress(idx + 1, n_steps, P, 0.0, 0.0)
-            continue
+            header = x
+            cap = plant.budget_at_pressure(x, n_pumps)
+        if header is None or not cap or cap <= 0:
+            return None
+        lo_p, hi_p = plant.clamp_window(n_pumps)
+        header = max(lo_p, min(hi_p, float(header)))
         for wc in well_configs:
-            wc.ppf_surf_well = P
-        pf = PowerFluidConstraint(total_rate=cap, pressure=P, rho_pf=_RHO_PF_DEFAULT)
+            wc.ppf_surf_well = header
+        pf = PowerFluidConstraint(total_rate=cap, pressure=header, rho_pf=_RHO_PF_DEFAULT)
         opt = NetworkOptimizer(
             well_configs,
             pf,
-            nozzles,
-            throats,
+            list(nozzles),
+            list(throats),
             marginal_wc if marginal_wc is not None else 1.0,
         )
         opt.run_all_batch_simulations(max_workers=worker_ceiling())
-
-        # Marginal-WC gate at THIS trial header — manual stays manual; None
-        # auto-derives from the plant's own budget at this pressure.
-        gate, slack = derive_pad_marginal_wc(opt.batch_results, cap, "lift_wat")
-        if marginal_wc is None:
-            opt.marginal_watercut = gate
-            trial_mwc_used, trial_mwc_source = gate, "auto (plant-derived)"
+        if lam_fixed is None:
+            lam, slack = derive_lambda(opt.batch_results, cap, water_key)
         else:
-            trial_mwc_used, trial_mwc_source = marginal_wc, "manual"
-
-        results = optimize(opt, method=method, water_key="lift_wat")
-        results, trial_swaps = apply_parsimony(results, opt, "lift_wat", parsimony_bopd)
+            _lam_auto, slack = derive_lambda(opt.batch_results, cap, water_key)
+            lam = lam_fixed
+        opt.water_price = lam
+        # the legacy attribute now reports the EQUIVALENT gate 1/(1+λ)
+        # (what the label shows); nothing gates on it any more
+        opt.marginal_watercut = 1.0 / (1.0 + lam) if lam > 0 else 1.0
+        results = optimize(opt, method=method, water_key=water_key)
         total_pf = sum(r.predicted_lift_water for r in results)
+        total_water = sum(getattr(r, result_water, r.predicted_lift_water) for r in results)
         total_oil = sum(r.predicted_oil_rate for r in results)
-        rec = {
-            "P": P,
+        return {
+            "x": x,
+            "P": header,
             "cap": cap,
             "total_pf": total_pf,
+            "total_water": total_water,
             "total_oil": total_oil,
+            "objective": total_oil - lam * total_water,
+            "lam": lam,
+            "pf_slack": slack,
             "results": results,
             "opt": opt,
-            "mwc_used": trial_mwc_used,
-            "mwc_source": trial_mwc_source,
-            "pf_slack": slack,
-            "parsimony_swaps": trial_swaps,
         }
-        sweep.append(rec)
-        if best is None or total_oil > best["total_oil"]:
-            best = rec
-        if progress:
-            progress(idx + 1, n_steps, P, total_pf, total_oil)
 
-    if best is None:
+    def _score(rec: dict) -> float:
+        return rec["objective"] if lam_fixed is not None else rec["total_oil"]
+
+    trials: list[dict] = []
+    total_steps = n_steps + 2 * max(0, int(refine_rounds))
+    step = 0
+    for x in coarse:
+        rec = _trial(x)
+        step += 1
+        if rec is not None:
+            trials.append(rec)
+        if progress:
+            progress(step, total_steps, x, rec["total_pf"] if rec else 0.0, rec["total_oil"] if rec else 0.0)
+
+    if not trials:
         raise RuntimeError(plant.infeasible_sweep_msg)
 
-    env = plant.envelope([best["total_pf"]], n_pumps)[0]
+    # Refine around the best trial: halve the bracket on each side.
+    for _ in range(max(0, int(refine_rounds))):
+        trials.sort(key=lambda r: r["x"])
+        best_i = max(range(len(trials)), key=lambda i: _score(trials[i]))
+        xs = [r["x"] for r in trials]
+        left = xs[best_i - 1] if best_i > 0 else None
+        right = xs[best_i + 1] if best_i + 1 < len(xs) else None
+        for neighbour in (left, right):
+            step += 1
+            if neighbour is None:
+                if progress:
+                    progress(step, total_steps, xs[best_i], 0.0, 0.0)
+                continue
+            mid = 0.5 * (xs[best_i] + neighbour)
+            rec = _trial(mid)
+            if rec is not None:
+                trials.append(rec)
+            if progress:
+                progress(step, total_steps, mid, rec["total_pf"] if rec else 0.0, rec["total_oil"] if rec else 0.0)
+
+    trials.sort(key=lambda r: r["x"])
+    best = max(trials, key=_score)
+    total_pf, total_oil = best["total_pf"], best["total_oil"]
+    lam = best["lam"]
+
     meta = {
         "n_pumps": n_pumps,
         "header_psi": best["P"],
-        "total_pf_bpd": best["total_pf"],
-        "total_oil_bopd": best["total_oil"],
-        "frontier_cap_bpd": best["cap"],
-        "suction_psi": plant.suction_psi(),
-        "min_total_flow": plant.flow_window(n_pumps)[0],
-        "pumps": env.get("pumps", []),
-        "converged": True,  # a sweep has no fixed point to miss
+        "total_pf_bpd": total_pf,
+        "total_oil_bopd": total_oil,
+        "converged": True,
         "history": [],
         "sweep": [
             {
-                "header_psi": s["P"],
-                "total_pf_bpd": s["total_pf"],
-                "total_oil_bopd": s["total_oil"],
+                "header_psi": r["P"],
+                "total_pf_bpd": r["total_pf"],
+                "total_oil_bopd": r["total_oil"],
+                "objective_bopd_equiv": r["objective"],
+                "lambda": r["lam"],
+                **({"total_flow_bpd": r["x"]} if fixed_curve else {}),
             }
-            for s in sweep
+            for r in trials
         ],
         "nozzles": list(nozzles),
         "throats": list(throats),
-        **plant.flags(best["total_pf"], n_pumps),
-        "marginal_wc_used": best["mwc_used"],
-        "marginal_wc_source": best["mwc_source"],
+        # the clamped header the engineer pinned, or None when swept
+        "setpoint_psi": pinned_setpoint,
+        **plant.flags(total_pf, n_pumps),
+        "lambda_used": lam,
+        "lambda_source": lam_source,
+        "objective_bopd_equiv": best["objective"],
         "pf_slack": best["pf_slack"],
-        "parsimony_swaps": best["parsimony_swaps"],
+        "water_key": water_key,
+        # legacy labels (the client still shows a water-cut gate)
+        "marginal_wc_used": 1.0 / (1.0 + lam) if lam > 0 else 1.0,
+        "marginal_wc_source": "manual" if lam_source != "auto (plant-derived)" else lam_source,
+        "parsimony_swaps": [],
+        "parsimony_note": "priced by lambda; the parsimony pass is retired",
     }
-    if "amp_limited" in env:
-        meta["amp_limited"] = env["amp_limited"]
-    if "feasible" in env:
-        meta["feasible"] = env["feasible"]
-    # Per-well drop accounting at the WINNING pressure (P0-5).
+    if fixed_curve:
+        meta["per_pump_bpd"] = (total_pf / n_pumps) if n_pumps else None
+        meta["station_cap_bpd"] = hi
+    else:
+        env = plant.envelope([total_pf], n_pumps)[0]
+        meta["frontier_cap_bpd"] = best["cap"]
+        meta["suction_psi"] = plant.suction_psi()
+        meta["min_total_flow"] = plant.flow_window(n_pumps)[0]
+        meta["pumps"] = env.get("pumps", [])
+        if "amp_limited" in env:
+            meta["amp_limited"] = env["amp_limited"]
+        if "feasible" in env:
+            meta["feasible"] = env["feasible"]
+
+    # Cross-check: the two solvers must agree on the priced objective at the
+    # winning trial (CP-SAT quantizes to 0.01, so allow that slack).
+    if method == "mckp":
+        try:
+            alt = optimize(best["opt"], method="milp", water_key=water_key)
+            alt_obj = sum(r.predicted_oil_rate for r in alt) - lam * sum(
+                getattr(r, result_water, r.predicted_lift_water) for r in alt
+            )
+            meta["solver_agreement"] = {
+                "mckp_objective": best["objective"],
+                "milp_objective": alt_obj,
+                "agree": abs(alt_obj - best["objective"]) <= 0.01 * max(1.0, len(alt)) + 1e-6,
+            }
+            # leave the optimizer holding the MCKP result the page reports
+            best["opt"].optimization_results = best["results"]
+        except Exception as exc:  # noqa: BLE001 - the cross-check never fails a run
+            meta["solver_agreement"] = {"error": str(exc)}
+
     meta["reconciliation"] = reconcile_wells(best["opt"], best["results"])
     return best["results"], best["opt"], meta
 
@@ -628,9 +702,12 @@ def evaluate_fixed_scenario(
     Like ``run_optimization`` but instead of letting the optimizer pick pumps,
     each well's pump is fixed by ``choices`` (well_name -> (nozzle, throat), or
     None to shut the well in). Still couples the delivered header to the total
-    PF (fixed point for every coupling — a fixed pump set has no pressure to
-    sweep), so the engineer sees the real oil + header for THEIR selection.
-    See ``_score_fixed_choices`` for the infeasible-pump fallback chain.
+    PF — a fixed pump set has no pressure to sweep, but the header and the
+    draw still determine each other, so ``_settle_scenario_coupling`` solves
+    the crossing (bracketed bisection; the damped loop only when the band
+    carries no sign change). The engineer sees the real oil + header for THEIR
+    selection. See ``_score_fixed_choices`` for the infeasible-pump fallback
+    chain. ``max_iter`` / ``relax`` now apply to that fallback only.
     Returns ``(per_well rows, meta)``.
     """
     from woffl.assembly.network_optimizer import NetworkOptimizer, PowerFluidConstraint
@@ -643,12 +720,10 @@ def evaluate_fixed_scenario(
     throats = sorted({c[1] for c in all_ch if c}) or ["B"]
     cap = plant.flow_window(n_pumps)[1] or _EVAL_CAP_FALLBACK_BPD
     lo_p, hi_p = plant.clamp_window(n_pumps)
-    ppf = plant.warm_start_psi(n_pumps)
-    history, per_well, total_pf, total_oil = [], [], 0.0, 0.0
-    converged = False
+    history: list[dict] = []
 
-    for it in range(max_iter):
-        ppf_c = max(lo_p, min(hi_p, ppf))
+    def _evaluate(trial: float):
+        ppf_c = max(lo_p, min(hi_p, trial))
         for wc in well_configs:
             wc.ppf_surf_well = ppf_c
         pf = PowerFluidConstraint(
@@ -658,26 +733,35 @@ def evaluate_fixed_scenario(
             well_configs, pf, nozzles, throats, marginal_watercut=_SCENARIO_MARGINAL_WC
         )
         opt.run_all_batch_simulations(max_workers=worker_ceiling())
-
-        per_well, total_pf, total_oil = _score_fixed_choices(
+        rows, tot_pf, tot_oil = _score_fixed_choices(
             opt, well_configs, choices, fallback_choices, test_rates
         )
-        new_ppf, _ = _next_header(plant, total_pf, ppf_c, n_pumps)
+        new_ppf, _ = _next_header(plant, tot_pf, ppf_c, n_pumps)
+        return ppf_c, new_ppf, tot_pf, (rows, tot_pf, tot_oil)
+
+    def _on_step(i, budget, trial_psi, tot_pf, delivered, _payload):
         history.append(
             {
-                "iter": it + 1,
-                "trial_psi": round(ppf_c, 1),
-                "total_pf_bpd": round(total_pf, 0),
-                _history_key(plant): round(new_ppf, 1),
+                "iter": i,
+                "trial_psi": round(trial_psi, 1),
+                "total_pf_bpd": round(tot_pf, 0),
+                _history_key(plant): round(delivered, 1),
             }
         )
         if progress:
-            progress(it + 1, max_iter, ppf_c, total_pf, new_ppf)
-        if abs(new_ppf - ppf_c) <= tol_psi:
-            ppf = new_ppf
-            converged = True
-            break
-        ppf = relax * new_ppf + (1 - relax) * ppf_c
+            progress(i, budget, trial_psi, tot_pf, delivered)
+
+    ppf, converged, payload = _settle_scenario_coupling(
+        plant,
+        n_pumps,
+        _evaluate,
+        plant.warm_start_psi(n_pumps),
+        tol_psi=tol_psi,
+        relax=relax,
+        max_iter=max_iter,
+        on_step=_on_step,
+    )
+    per_well, total_pf, total_oil = payload
 
     # ★ wells (Existing baseline): ripple their measured rate by the average
     # change of the UNCHANGED solving wells, then recompute totals + header.
@@ -799,7 +883,10 @@ def evaluate_existing_scenario(
     'Current' column — the model bias cancels in the ratio — and each row also
     carries that bias (model-at-current ÷ measured, ``bias``) so the engineer
     can target the loose IPR matches. Non-solving wells use the unchanged
-    solving wells' average ripple. Returns ``(per_well, scn_meta)``.
+    solving wells' average ripple. The header couples to the plan's own draw
+    through ``_settle_scenario_coupling`` (bracketed bisection; the damped
+    loop only when the band carries no sign change, which is what ``max_iter``
+    and ``relax`` now govern). Returns ``(per_well, scn_meta)``.
     """
     from woffl.assembly.network_optimizer import NetworkOptimizer, PowerFluidConstraint
     from woffl.assembly.parallelism import worker_ceiling
@@ -839,23 +926,30 @@ def evaluate_existing_scenario(
         perf = opt_base.get_pump_performance(w, cc[0], cc[1]) if cc else None
         mc[w] = (perf["oil_rate"], perf["lift_water"]) if perf else None
 
-    ppf, per_well = header_base, []
-    opt = opt_base
-    converged = False
-    for it in range(max_iter):
-        ppf_c = max(lo_p, min(hi_p, ppf))
-        opt = _run(ppf_c)
-        per_well, total_pf = _score_existing_choices(
-            opt, names, scenario_choices, mc, cur_oil, cur_pf
+    def _evaluate(trial: float):
+        ppf_c = max(lo_p, min(hi_p, trial))
+        o = _run(ppf_c)
+        rows, tot_pf = _score_existing_choices(
+            o, names, scenario_choices, mc, cur_oil, cur_pf
         )
-        new_ppf, _ = _next_header(plant, total_pf, ppf_c, n_pumps)
+        new_ppf, _ = _next_header(plant, tot_pf, ppf_c, n_pumps)
+        return ppf_c, new_ppf, tot_pf, (o, rows)
+
+    def _on_step(i, budget, trial_psi, tot_pf, delivered, _payload):
         if progress:
-            progress(it + 1, max_iter, ppf_c, total_pf, new_ppf)
-        if abs(new_ppf - ppf_c) <= tol_psi:
-            ppf = new_ppf
-            converged = True
-            break
-        ppf = relax * new_ppf + (1 - relax) * ppf_c
+            progress(i, budget, trial_psi, tot_pf, delivered)
+
+    ppf, converged, payload = _settle_scenario_coupling(
+        plant,
+        n_pumps,
+        _evaluate,
+        header_base,
+        tol_psi=tol_psi,
+        relax=relax,
+        max_iter=max_iter,
+        on_step=_on_step,
+    )
+    opt, per_well = payload
 
     # Non-solvers: average ripple of the UNCHANGED solving wells (scenario ÷
     # current), or a best-feasible estimate when there's no measured anchor.

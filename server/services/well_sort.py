@@ -1,11 +1,11 @@
 """Well Sort page data: online/offline/LTSI tables, down events, marginal WC,
 triage decisions, bench workbook.
 
-Mirrors woffl/gui/scotts_tools/well_sort.py. The decision/marginal math is
-the SINGLE canonical implementation in woffl.assembly.well_sort_engine; this
-module only fetches (TTL-cached), composes via well_sort_client, and
-serializes. TTLs mirror the Streamlit sites: 1 h for the Databricks pulls,
-5 min for live XV status.
+The decision/marginal math is the SINGLE canonical implementation in
+woffl.assembly.well_sort_engine; this module only fetches (TTL-cached),
+composes via well_sort_client, and serializes. TTLs are carried over from
+the retired Streamlit app: 1 h for the Databricks pulls, 5 min for live XV
+status.
 
 The Wells tab always queries a 180-day test window (the Streamlit tab's
 fixed "Tests window: 180 d" caption), not the client default of 120.
@@ -124,7 +124,7 @@ def warm_targets() -> list[tuple[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Pipeline (mirrors render_tab / _build_online_full)
+# Pipeline (table build -> online/offline/LTSI split)
 # ---------------------------------------------------------------------------
 
 
@@ -184,8 +184,8 @@ def _build_tables(
 
 
 def _online_full(stale_days: int, pops_pads: list[str], force_true: list[str]) -> pd.DataFrame:
-    """The marginal-WC feed: online table, ALWAYS allocated mode (mirrors
-    _build_online_full - the Wells radio never affects the marginal calcs)."""
+    """The marginal-WC feed: online table, ALWAYS allocated mode (the Wells
+    radio never affects the marginal calcs)."""
     return _build_tables("allocated", stale_days, pops_pads, force_true)["online"]
 
 

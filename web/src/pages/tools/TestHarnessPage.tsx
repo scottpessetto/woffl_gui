@@ -1,7 +1,7 @@
 /**
  * Test Harness - curated sanity cases against today's live data.
  *
- * Port of woffl/gui/scotts_tools/test_harness.py and the case registry it
+ * Port of the retired Streamlit Test Harness tool and the case registry it
  * drove. These are NOT unit tests: pytest covers the code offline and mocked.
  * Each case runs a real pipeline against live Databricks and asserts the
  * answer is physically plausible, which catches the failure pytest

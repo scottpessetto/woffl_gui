@@ -25,8 +25,10 @@ import time
 
 import pandas as pd
 import pytest
+from pandas.testing import assert_frame_equal
 
 from server import warmup
+from server.cache import clear_all_caches
 from server.services import database as database_svc
 from server.services import datasources as datasources_svc
 from server.services import history as history_svc
@@ -217,6 +219,207 @@ def test_warm_well_raises_when_no_jp_history_source_is_reachable(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# history.warm_fleet - TWO statements where the fan-out ran ~180
+#
+# The SQL warehouse bills per wake window, not per statement, so the per-well
+# fan-out's real cost was holding the warehouse up for minutes on every pass to
+# fetch rows one wide query already contains. These pin the property that makes
+# the swap safe: a primed entry is INDISTINGUISHABLE from what the per-well
+# query would have cached.
+# ---------------------------------------------------------------------------
+
+
+def _today() -> str:
+    """The `end` half of every per-well key (history._query_window)."""
+    from datetime import datetime
+
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def _fleet_jp_frame() -> pd.DataFrame:
+    """Three wells with dated installs; MPX-99 (absent) is the skip case."""
+    return pd.DataFrame(
+        {
+            "Well Name": ["MPB-28", "MPS-05", "MPC-45"],
+            "Date Set": pd.to_datetime(["2024-03-04", "2025-01-01", "2025-02-02"]),
+        }
+    )
+
+
+def _fleet_tests_frame() -> pd.DataFrame:
+    """_FLEET_TEST_QUERY's shape. The S-005 2024-06-15 row is inside the FLEET
+    window but before that well's own install, so its slice must drop it."""
+    return pd.DataFrame(
+        {
+            "well_name": ["B-028", "B-028", "S-005", "S-005"],
+            "wt_date": pd.to_datetime(
+                ["2024-06-01", "2025-06-01", "2024-06-15", "2025-03-01"]
+            ),
+            "oil_rate": [120.0, 110.0, 80.0, 75.0],
+            "fwat_rate": [900.0, 950.0, 500.0, 520.0],
+            "lift_wat": [1500.0, 1500.0, 1200.0, 1200.0],
+            "bhp": [1450.0, 1400.0, 1350.0, 1300.0],
+            "pf_tubing_prs": [3000.0, 3050.0, 2900.0, 2950.0],
+            "pf_inn_ann_prs": [50.0, 55.0, 45.0, 40.0],
+        }
+    )
+
+
+def _fleet_bhp_frame() -> pd.DataFrame:
+    """_FLEET_BHP_QUERY's shape - well_name is the join-back column the primed
+    per-well frame must NOT carry (bhp_daily selects tag_date + bhp only)."""
+    return pd.DataFrame(
+        {
+            "well_name": ["B-028", "B-028", "S-005", "S-005"],
+            "tag_date": pd.to_datetime(
+                ["2024-06-01", "2025-06-02", "2024-06-15", "2025-03-01"]
+            ),
+            "bhp": [1450.0, 1402.5, 1350.0, 1300.0],
+        }
+    )
+
+
+def _boom(_sql):
+    raise AssertionError("the warehouse must not be touched here")
+
+
+@pytest.fixture
+def fleet_queries(monkeypatch):
+    """Answer the two fleet statements from synthetic frames; record the SQL."""
+    from woffl.assembly import databricks_client
+
+    state: dict = {"sql": []}
+
+    def _execute(query, *_args, **_kwargs):
+        state["sql"].append(query)
+        if "vwt_map" in query:  # the fleet BHP join-back
+            return _fleet_bhp_frame()
+        return _fleet_tests_frame()
+
+    state["execute"] = _execute
+    monkeypatch.setattr(databricks_client, "execute_query", _execute)
+    monkeypatch.setattr(
+        history_svc.datasources, "jp_history_safe", lambda: (_fleet_jp_frame(), "databricks")
+    )
+    clear_all_caches()
+    yield state
+    clear_all_caches()
+
+
+def test_warm_fleet_primes_what_the_per_well_query_would_have_cached(
+    fleet_queries, monkeypatch
+):
+    """The load-bearing equality: the frame a request reads after a fleet warm
+    is the frame it would have read after the per-well warm - same columns,
+    same dtypes, same index, same order."""
+    from woffl.assembly import databricks_client
+
+    today = _today()
+    raw_tests = _fleet_tests_frame()
+    raw_bhp = _fleet_bhp_frame()
+    # Exactly the rows B-028's own two queries would have returned.
+    b28_tests = raw_tests[raw_tests["well_name"] == "B-028"].reset_index(drop=True)
+    b28_bhp = (
+        raw_bhp[raw_bhp["well_name"] == "B-028"]
+        .drop(columns=["well_name"])
+        .reset_index(drop=True)
+    )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(databricks_client, "execute_query", lambda _sql: b28_tests.copy())
+        expect_tests = history_svc.extended_tests("B-028", "2024-03-04", today)
+        mp.setattr(databricks_client, "execute_query", lambda _sql: b28_bhp.copy())
+        expect_bhp = history_svc.bhp_daily("B-028", "2024-03-04", today)
+    clear_all_caches()  # drop those reference entries; warm from the fleet now
+
+    summary = history_svc.warm_fleet(["MPB-28", "MPS-05", "MPC-45", "MPX-99"])
+
+    assert summary == {"wells": 3, "skipped": 1, "statements": 2}
+    assert len(fleet_queries["sql"]) == 2, "two statements for the whole fleet"
+
+    # A plain call now: served from the primed entry, never from the warehouse.
+    monkeypatch.setattr(databricks_client, "execute_query", _boom)
+    assert_frame_equal(history_svc.extended_tests("B-028", "2024-03-04", today), expect_tests)
+    assert_frame_equal(history_svc.bhp_daily("B-028", "2024-03-04", today), expect_bhp)
+
+
+def test_each_well_is_sliced_to_its_own_window_not_the_fleets(fleet_queries, monkeypatch):
+    """The fleet pull starts at the EARLIEST install anywhere, so a younger
+    well's frame would otherwise carry rows from before its first pump."""
+    from woffl.assembly import databricks_client
+
+    today = _today()
+    history_svc.warm_fleet(["MPB-28", "MPS-05"])
+
+    monkeypatch.setattr(databricks_client, "execute_query", _boom)
+    tests = history_svc.extended_tests("S-005", "2025-01-01", today)
+    bhp = history_svc.bhp_daily("S-005", "2025-01-01", today)
+
+    assert list(tests["WtDate"]) == [pd.Timestamp("2025-03-01")]
+    assert list(tests["well"]) == ["MPS-05"], "the well column is normalized as before"
+    assert list(bhp["tag_date"]) == [pd.Timestamp("2025-03-01")]
+    assert list(bhp.columns) == ["tag_date", "bhp"], "the join-back column is dropped"
+
+
+def test_the_fleet_sql_names_every_well_and_starts_at_the_earliest_install(fleet_queries):
+    history_svc.warm_fleet(["MPB-28", "MPS-05", "MPC-45"])
+
+    tests_sql, bhp_sql = fleet_queries["sql"]
+    for quoted in ("'B-028'", "'S-005'", "'C-045'"):
+        assert quoted in tests_sql, quoted
+        assert quoted in bhp_sql, quoted
+    # The outer window is the minimum per-well start, not each well's own.
+    assert "2024-03-04" in tests_sql and "2024-03-04" in bhp_sql
+
+
+def test_a_well_with_no_fleet_rows_is_primed_with_an_empty_frame(
+    fleet_queries, monkeypatch
+):
+    """An empty frame is exactly what C-045's own two queries would have
+    returned, so priming it is what keeps the request path off the warehouse."""
+    from woffl.assembly import databricks_client
+
+    today = _today()
+    history_svc.warm_fleet(["MPB-28", "MPS-05", "MPC-45"])
+
+    assert history_svc.extended_tests.cache_has("C-045", "2025-02-02", today) is True
+    assert history_svc.bhp_daily.cache_has("C-045", "2025-02-02", today) is True
+
+    monkeypatch.setattr(databricks_client, "execute_query", _boom)
+    assert history_svc.extended_tests("C-045", "2025-02-02", today).empty
+    assert history_svc.bhp_daily("C-045", "2025-02-02", today).empty
+
+
+def test_warm_fleet_propagates_a_query_failure_and_primes_nothing(
+    fleet_queries, monkeypatch
+):
+    """Failures are never cached (the caller falls back to the per-well path);
+    a half-primed cache would be worse than a cold one."""
+    from woffl.assembly import databricks_client
+
+    def _down(_sql):
+        raise RuntimeError("warehouse asleep")
+
+    monkeypatch.setattr(databricks_client, "execute_query", _down)
+
+    with pytest.raises(RuntimeError):
+        history_svc.warm_fleet(["MPB-28", "MPS-05"])
+
+    today = _today()
+    assert history_svc.extended_tests.cache_has("B-028", "2024-03-04", today) is False
+    assert history_svc.bhp_daily.cache_has("B-028", "2024-03-04", today) is False
+
+
+def test_warm_fleet_skips_a_well_with_no_dated_install(fleet_queries):
+    """Same skip rule as warm_well - and a skipped well must not widen the IN
+    list either, or the fleet query pulls rows nobody will ever read."""
+    summary = history_svc.warm_fleet(["MPX-99"])
+
+    assert summary == {"wells": 0, "skipped": 1, "statements": 0}
+    assert fleet_queries["sql"] == [], "nothing to warm means no statement at all"
+
+
+# ---------------------------------------------------------------------------
 # run_pass
 # ---------------------------------------------------------------------------
 
@@ -227,8 +430,11 @@ def stub_pass(monkeypatch):
     state = {
         "fleet_calls": [],
         "well_calls": [],
+        "skip_flags": [],
+        "history_calls": [],
         "fleet_boom": set(),
         "well_boom": set(),
+        "history_boom": False,
         "wells": [f"MPB-{i:02d}" for i in range(1, 6)],
     }
 
@@ -244,14 +450,22 @@ def stub_pass(monkeypatch):
             out.append((label, _fn))
         return out
 
-    def _one(well):
+    def _one(well, skip_history=False):
         state["well_calls"].append(well)
+        state["skip_flags"].append(skip_history)
         if well in state["well_boom"]:
             raise RuntimeError(f"{well} down")
+
+    def _fleet_history(wells):
+        state["history_calls"].append(list(wells))
+        if state["history_boom"]:
+            raise RuntimeError("warehouse asleep")
+        return {"wells": len(wells), "skipped": 0, "statements": 2}
 
     monkeypatch.setattr(warmup, "fleet_targets", _fleet)
     monkeypatch.setattr(warmup, "well_universe", lambda: list(state["wells"]))
     monkeypatch.setattr(warmup, "warm_one_well", _one)
+    monkeypatch.setattr(warmup, "warm_fleet_history", _fleet_history)
     return state
 
 
@@ -287,6 +501,75 @@ def test_a_dead_well_list_still_leaves_the_fleet_warm(stub_pass, monkeypatch):
 
     assert st["fleet_ok"] == 3
     assert st["wells_total"] == 0 and st["wells_ok"] == 0
+
+
+def test_a_pass_warms_the_fleet_history_in_one_go_and_counts_its_statements(stub_pass):
+    st = warmup.run_pass()
+
+    assert stub_pass["history_calls"] == [stub_pass["wells"]], "once, for all wells"
+    assert st["fleet_history_ok"] is True
+    # Every well still runs (the local survey parse), but with history skipped.
+    assert stub_pass["skip_flags"] == [True] * len(stub_pass["wells"])
+    # 3 fleet targets + 2 fleet history statements - NOT 3 + 2 x 5.
+    assert st["statements"] == 5
+
+
+def test_a_failed_fleet_history_pull_falls_back_to_the_per_well_queries(stub_pass):
+    stub_pass["history_boom"] = True
+
+    st = warmup.run_pass()
+
+    assert st["fleet_history_ok"] is False
+    assert sorted(stub_pass["well_calls"]) == sorted(stub_pass["wells"])
+    assert stub_pass["skip_flags"] == [False] * len(stub_pass["wells"])
+    assert st["statements"] == 3 + 2 * len(stub_pass["wells"])
+    assert st["wells_ok"] == len(stub_pass["wells"]), "freshness is never the cost"
+
+
+@pytest.fixture
+def stub_history(monkeypatch):
+    """The real run_pass -> warm_fleet_history -> history seam, with only the
+    two history entry points and the survey parse stubbed."""
+    calls: dict = {"fleet": [], "well": [], "survey": [], "boom": False}
+
+    def _fleet(wells):
+        calls["fleet"].append(list(wells))
+        if calls["boom"]:
+            raise RuntimeError("warehouse asleep")
+        return {"wells": len(wells), "skipped": 0, "statements": 2}
+
+    class _Survey:
+        def cache_refresh(self, well):
+            calls["survey"].append(well)
+            return True
+
+    monkeypatch.setattr(history_svc, "warm_fleet", _fleet)
+    monkeypatch.setattr(history_svc, "warm_well", lambda w: calls["well"].append(w))
+    monkeypatch.setattr(datasources_svc, "survey", _Survey())
+    monkeypatch.setattr(warmup, "fleet_targets", list)
+    monkeypatch.setattr(warmup, "well_universe", lambda: ["MPB-28", "MPS-05"])
+    return calls
+
+
+def test_a_pass_calls_warm_fleet_once_and_warm_well_never(stub_history):
+    """DATA-9: the per-well fan-out was 2 queries x ~90 wells x 5 passes a day.
+    On the happy path warm_well must not run at all."""
+    st = warmup.run_pass()
+
+    assert stub_history["fleet"] == [["MPB-28", "MPS-05"]]
+    assert stub_history["well"] == []
+    assert sorted(stub_history["survey"]) == ["MPB-28", "MPS-05"], "local parse still runs"
+    assert st["statements"] == 2 and st["wells_ok"] == 2
+
+
+def test_the_per_well_fan_out_returns_when_the_fleet_pull_fails(stub_history):
+    stub_history["boom"] = True
+
+    st = warmup.run_pass()
+
+    assert len(stub_history["fleet"]) == 1
+    assert sorted(stub_history["well"]) == ["MPB-28", "MPS-05"]
+    assert st["fleet_history_ok"] is False and st["statements"] == 4
 
 
 def test_wells_disabled_warms_the_fleet_only(stub_pass, monkeypatch):

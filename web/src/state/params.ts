@@ -114,11 +114,10 @@ interface ParamsState {
   setPropLock: (field: keyof PropLocks, lock: PropLock) => void;
   /** Lay IPR fit seeds over the params, skipping LOCKED fields - the
    * Streamlit contract: an anchor re-seed touches everything EXCEPT the
-   * locked WC/GOR/ResP (jetpump_solver.py's locked_fields filter) - and
-   * skipping fields the engineer set by hand. `release` is the explicit
-   * "take the fit anyway" of the Apply IPR button: it drops ownership of the
-   * seeded fields first, so the fit wins and keeps winning until the next
-   * hand edit. */
+   * locked WC/GOR/ResP - and skipping fields the engineer set by hand.
+   * `release` is the explicit "take the fit anyway" of the Apply IPR button:
+   * it drops ownership of the seeded fields first, so the fit wins and keeps
+   * winning until the next hand edit. */
   applyIprSeeds: (seeds: Partial<SimParams>, release?: boolean) => void;
   run: () => void;
 }

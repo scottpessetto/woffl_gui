@@ -3,10 +3,10 @@
  *
  * The old app hid a bare `st.text_input` at the bottom of the sidebar; typing
  * "scott" into it set `session_state["_scotts_tools"] = True` and a
- * "Scott's Tools" mode appeared in the nav (woffl/gui/app.py:217-224 at
- * 826d85c). There is no equivalent of a stray unlabeled text box in this UI,
- * so the unlock is the same WORD by the same act of typing it - just without
- * a box: a rolling keystroke buffer anywhere in the app.
+ * "Scott's Tools" mode appeared in the nav. There is no equivalent of a
+ * stray unlabeled text box in this UI, so the unlock is the same WORD by the
+ * same act of typing it - just without a box: a rolling keystroke buffer
+ * anywhere in the app.
  *
  * Differences that matter:
  *

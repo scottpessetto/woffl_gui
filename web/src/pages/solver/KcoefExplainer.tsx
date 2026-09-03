@@ -1,10 +1,10 @@
 /**
- * "What do these coefficients represent?" - port of
- * woffl/gui/explainers.py:render_kcoef_explainer, the authoritative
- * friction-coefficient explainer that sat under the Streamlit calibrate
- * button. One divergence, deliberate: the ken range reads [0.005, 0.40]
- * here because that IS fric_calibration.KEN_BOUNDS - the Streamlit text
- * still says 0.20 from before the bound was widened.
+ * "What do these coefficients represent?" - the authoritative
+ * friction-coefficient explainer, ported from the retired Streamlit app
+ * where it sat under the calibrate button. One divergence, deliberate: the
+ * ken range reads [0.005, 0.40] here because that IS
+ * fric_calibration.KEN_BOUNDS - the Streamlit text still said 0.20, from
+ * before the bound was widened.
  */
 
 const COEFS: { code: string; name: string; body: string }[] = [

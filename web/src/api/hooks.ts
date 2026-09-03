@@ -14,6 +14,8 @@ import type {
   EPadBuild,
   EquivalentsResponse,
   EventCalibrationRequest,
+  MatchTestRequest,
+  MatchTestResponse,
   IprFitRequest,
   IprFitResponse,
   IprPinResponse,
@@ -404,6 +406,13 @@ export const useStartMatchHealth = () =>
   useMutation({
     mutationFn: (req: MatchHealthRequest) =>
       post<OptimizeRunStarted>("/optimize/match-health", req),
+  });
+
+/** Gaugeless test match (synchronous compute, a few seconds): infer the
+ * anchor BHP from the test's PF rate and fit kth/kdi. Nothing persisted. */
+export const useMatchTest = () =>
+  useMutation({
+    mutationFn: (req: MatchTestRequest) => post<MatchTestResponse>("/match-test", req),
   });
 
 /** Start an event-calibration job for one well (background job server-side);

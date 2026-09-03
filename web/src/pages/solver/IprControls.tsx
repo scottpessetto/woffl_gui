@@ -1,10 +1,9 @@
 /**
- * IPR anchor + comparison-test controls: mirror of the anchor selector in
- * woffl/gui/tabs/jetpump_solver.py:_render_ipr_anchor_and_seed and the
+ * IPR anchor + comparison-test controls: the anchor selector and the
  * synced/decoupled comparison picker. "Apply IPR to inputs" lays the fit
  * seeds over the sidebar params.
  *
- * Save block (mirror of _render_ipr_pin_controls): "Save as well default"
+ * Save block: "Save as well default"
  * pins the resolved anchor test AND pushes the sidebar's current curve +
  * rate values to mpu.wells.prop_hist in one click; "Clear saved IPR"
  * un-pins. HIDDEN entirely (not disabled) when /meta reports

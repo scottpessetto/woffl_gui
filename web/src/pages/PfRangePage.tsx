@@ -1,8 +1,8 @@
 /**
  * Power Fluid Range - how oil rate trades off against PF surface pressure
- * for each candidate pump. Mirrors woffl/gui/tabs/power_fluid_range.py:
- * summary metrics, per-pump performance charts, comprehensive data and
- * best-performer views. Expensive sweep: runs only on explicit submit.
+ * for each candidate pump: summary metrics, per-pump performance charts,
+ * comprehensive data and best-performer views. Expensive sweep: runs only
+ * on explicit submit.
  */
 
 import { useMemo, useState } from "react";

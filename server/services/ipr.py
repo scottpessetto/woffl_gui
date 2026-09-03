@@ -1,10 +1,9 @@
 """IPR Vogel fitting and the saved-IPR anchor pin.
 
-Fit path mirrors the Solver tab's _render_ipr_anchor_and_seed: "recent" uses
-the global least-squares library fit (estimate_reservoir_pressure +
-compute_vogel_coefficients); "median"/"median_liq"/"specific" use the
-GUI-layer anchored fit (ipr_anchor.compute_anchored_vogel) with the field RP
-cap.
+Fit path: "recent" uses the global least-squares library fit
+(estimate_reservoir_pressure + compute_vogel_coefficients);
+"median"/"median_liq"/"specific" use the GUI-layer anchored fit
+(ipr_anchor.compute_anchored_vogel) with the field RP cap.
 
 Pin path reads prop_hist via ipr_anchor.load_saved_ipr (read-only; no write
 gate needed) and grades the pin against the current test window.
@@ -26,16 +25,16 @@ from woffl.gui import ipr_anchor
 
 log = logging.getLogger("woffl.web.ipr")
 
-# mirrors woffl/gui/tabs/jetpump_solver.py:_WEAK_IPR_R2 - below this the test
-# cloud cannot constrain reservoir pressure (negative = worse than a flat
-# mean) and the engineer is told to decide a pressure themselves.
+# Below this R2 the test cloud cannot constrain reservoir pressure
+# (negative = worse than a flat mean) and the engineer is told to decide a
+# pressure themselves.
 _WEAK_IPR_R2 = 0.2
 
 _FIT_ERROR = "need >=2 tests with BHP for a Vogel fit"
 
-# Seed clamp bounds - mirrors woffl/gui/sidebar.py:clamp_seed intent (a seed
-# must never land outside its widget's bounds); values are the
-# schemas.SimParams Field bounds so a seeded request always re-validates.
+# Seed clamp bounds - a seed must never land outside its widget's bounds;
+# values are the schemas.SimParams Field bounds so a seeded request always
+# re-validates.
 _SEED_BOUNDS: dict[str, tuple[float, float]] = {
     "qwf": (10.0, 20000.0),
     "pwf": (100.0, 2500.0),
@@ -113,8 +112,7 @@ def fit(req: schemas.IprFitRequest) -> dict[str, Any]:
 
     row: Optional[dict[str, Any]] = None
     if req.anchor_mode in ("median", "median_liq", "specific"):
-        # mirrors woffl/gui/tabs/jetpump_solver.py:_render_ipr_anchor_and_seed
-        # (anchored branch): field RP cap 1800 Schrader / 3000 Kuparuk.
+        # Anchored branch: field RP cap 1800 Schrader / 3000 Kuparuk.
         field_max_rp = 3000 if req.field_model == "Kuparuk" else 1800
         row = ipr_anchor.compute_anchored_vogel(
             df,

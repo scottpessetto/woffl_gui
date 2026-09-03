@@ -1,10 +1,10 @@
 """Well list, selection context, and survey-based well profile.
 
-``well_context`` is the server-side replay of the Streamlit sidebar's
-seeding pipeline (woffl/gui/sidebar.py:_update_well_parameters_from_data)
-in the SAME order: chars -> pump history -> IPR fit -> saved-IPR overlay ->
-live PF. Every numeric seed passes a finite check so NaN never reaches the
-JSON response (the SPA applies ``seeds`` wholesale over SimParams defaults).
+``well_context`` is the server-side replay of the retired Streamlit
+sidebar's seeding pipeline in the SAME order: chars -> pump history -> IPR
+fit -> saved-IPR overlay -> live PF. Every numeric seed passes a finite
+check so NaN never reaches the JSON response (the SPA applies ``seeds``
+wholesale over SimParams defaults).
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ log = logging.getLogger("woffl.web.wells")
 # field name (the sidebar's "res_pres" is SimParams "pres"). Kept in sync with
 # schemas.SimParams Field bounds so a seed can never fail response-side
 # validation on the client store.
-# mirrors woffl/gui/sidebar.py:SEED_BOUNDS
 _SEED_BOUNDS: dict[str, tuple[float, float]] = {
     "qwf": (10, 20000),
     "pwf": (100, 2500),
@@ -58,7 +57,6 @@ _SEED_BOUNDS: dict[str, tuple[float, float]] = {
 
 # Pad-level default PF surface pressures (psi). C/E/H/I/M/S run at 3400,
 # B/G/J at 2200 (booster pads), F at 2800. Pad K has no jet pumps.
-# mirrors woffl/gui/utils.py:PAD_PF_DEFAULTS
 _PAD_PF_DEFAULTS: dict[str, int] = {
     "B": 2200,
     "C": 3400,
@@ -118,7 +116,6 @@ def _clamp(key: str, value: float) -> float:
     silent clamp presented a replaced number as the well's own value - the
     same class of bug as the auto-matched-PF-4,300 incident (review
     2026-09-01, SRV-9).
-    # mirrors woffl/gui/sidebar.py:clamp_seed
     """
     lo, hi = _SEED_BOUNDS.get(key, (None, None))
     raw = value
@@ -134,10 +131,7 @@ def _clamp(key: str, value: float) -> float:
 
 
 def _seed(seeds: dict[str, Any], key: str, raw: Any, default: float, cast: type = float) -> None:
-    """Seed one field from well data - NaN-safe and bounds-clamped.
-
-    # mirrors woffl/gui/sidebar.py:_seed_param
-    """
+    """Seed one field from well data - NaN-safe and bounds-clamped."""
     num = frames.opt_float(raw)
     try:
         value = cast(num) if num is not None else cast(default)
@@ -180,28 +174,19 @@ def _opt_bool(value: Any) -> Optional[bool]:
 
 
 def _pad_from_mp_name(mp_name: str) -> str:
-    """MPB-30 -> B, MPI-15 -> I; '' for unknown formats.
-
-    # mirrors woffl/gui/utils.py:pad_from_mp_name
-    """
+    """MPB-30 -> B, MPI-15 -> I; '' for unknown formats."""
     if not mp_name or "-" not in mp_name:
         return ""
     return mp_name.replace("MP", "").split("-")[0]
 
 
 def _default_pad_pf(pad: str) -> int:
-    """Default PF surface pressure (psi) for a pad letter.
-
-    # mirrors woffl/gui/utils.py:default_pad_pf
-    """
+    """Default PF surface pressure (psi) for a pad letter."""
     return _PAD_PF_DEFAULTS.get(pad, _PAD_PF_FALLBACK)
 
 
 def _casing_dims(chars: dict[str, Any]) -> tuple[float, float]:
-    """(casing_od, casing_thickness) from chars; fallback 6.875 / 0.5.
-
-    # mirrors woffl/gui/scotts_tools/_common.py:casing_dims_from_chars
-    """
+    """(casing_od, casing_thickness) from chars; fallback 6.875 / 0.5."""
     od = frames.opt_float(chars.get("casing_out_dia"))
     inn = frames.opt_float(chars.get("casing_inn_dia"))
     if od is not None and inn is not None and od > inn > 0:
@@ -215,7 +200,6 @@ def _live_pf_seed(well: str, tests_df: Optional[pd.DataFrame]) -> Optional[dict[
     Priority: the most recent test's TEST-DAY reading (consistent with the
     qwf/pwf/WC/GOR seeded from that same test) -> the latest daily reading.
     v1 slices the shared test cache directly (no memory-gauge/manual layers).
-    # mirrors woffl/gui/utils.py:live_pf_for_seed
 
     Args:
         well: GUI well name, e.g. "MPB-28".
@@ -229,14 +213,12 @@ def _live_pf_seed(well: str, tests_df: Optional[pd.DataFrame]) -> Optional[dict[
         recent = tests_df.sort_values("WtDate", ascending=False).iloc[0]
         press = frames.opt_float(recent.get("pf_press"))
         if press is not None:
-            # mirrors woffl/gui/utils.py:pf_from_test_row
             return {
                 "pf_press": press,
                 "pf_source": recent.get("pf_source"),
                 "pf_date": recent.get("WtDate"),
                 "kind": "test day",
             }
-    # mirrors woffl/gui/utils.py:latest_pf_for_well
     pf_df = datasources.pf_latest_safe()
     if pf_df is None or pf_df.empty:
         return None
@@ -326,7 +308,6 @@ def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
 
     Replays the sidebar's seeding pipeline in order (a) chars, (b) pump
     history, (c) IPR from well tests, (d) saved-IPR overlay, (e) live PF.
-    # mirrors woffl/gui/sidebar.py:_update_well_parameters_from_data
 
     Args:
         well: GUI well name, e.g. "MPB-28".
@@ -366,7 +347,6 @@ def _well_context_body(
 ) -> dict[str, Any]:
 
     # -- (a) chars seeds -----------------------------------------------------
-    # mirrors woffl/gui/sidebar.py:_update_well_parameters_from_data
     _seed(seeds, "tubing_od", row.get("out_dia"), 4.5)
     _seed(seeds, "tubing_thickness", row.get("thick"), 0.5)
     casing_od, casing_thick = _casing_dims(row)
@@ -397,7 +377,6 @@ def _well_context_body(
     _seed(seeds, "wat_sg", row.get("wat_sg"), 1.02)
 
     # -- (b) pump identity from JP history -----------------------------------
-    # mirrors woffl/gui/sidebar.py:_populate_pump_from_history
     pump: Optional[dict[str, Any]] = None
     jp_hist_df, _jp_src = datasources.jp_history_safe()
     if jp_hist_df is not None:
@@ -425,7 +404,6 @@ def _well_context_body(
             }
 
     # -- (c) IPR from well tests ----------------------------------------------
-    # mirrors woffl/gui/sidebar.py:_auto_populate_from_ipr
     tests_df = tests_svc.tests_for_well(well, months, cap)
     test_count = int(len(tests_df)) if tests_df is not None else 0
 
@@ -530,7 +508,6 @@ def _well_context_body(
         ipr_source = "single_test"
 
     # -- (d) saved-IPR overlay -------------------------------------------------
-    # mirrors woffl/gui/sidebar.py:_seed_saved_ipr
     prop_locks: dict[str, dict[str, Any]] = {
         key: {"locked": False, "value": None} for key in _LOCK_SEED_KEYS
     }
@@ -623,7 +600,6 @@ def _well_context_body(
         )
 
     # -- (e) live PF seed --------------------------------------------------------
-    # mirrors woffl/gui/sidebar.py:_seed_pf_from_live
     from woffl.gui.pump_identity import tracker_direction
 
     trk = tracker_direction(jp_hist_df, well)
@@ -664,7 +640,6 @@ def _well_context_body(
         seeds["jpump_direction"] = direction
 
     # -- as-built locks + raw chars ------------------------------------------------
-    # mirrors woffl/gui/sidebar.py:as_built_from_props
     # A local-override row (jp_data/local_well_overrides.csv) carries typed
     # placeholders, not prop_hist measurements: nothing on it is as-built,
     # so nothing on it locks (DATA-7).
@@ -760,7 +735,6 @@ def well_profile_payload(
     Builds the profile from the local deviation survey when one exists;
     otherwise falls back to the field-model preset rebuilt at the effective
     jetpump TVD. Raw rays are downsampled evenly to <= 1500 points.
-    # mirrors woffl/gui/utils.py:create_well_profile_from_survey
 
     Args:
         well: GUI well name, e.g. "MPB-28".
@@ -802,7 +776,6 @@ def well_profile_payload(
             wp = None
 
     if wp is None:
-        # mirrors woffl/gui/utils.py:create_well_profile
         model = (field_model or "Schrader").lower()
         wp = WellProfile.kuparuk() if model == "kuparuk" else WellProfile.schrader()
         try:

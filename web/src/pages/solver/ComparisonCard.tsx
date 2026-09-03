@@ -1,8 +1,7 @@
 /**
  * Sidebar-conditions comparison: modeled vs the selected test as one compact
- * table (mirror of woffl/gui/tabs/jetpump_solver.py:_render_comparison_block),
- * or the four dewatering metrics + mach caption when modeling as 100% water
- * (mirror of the params.model_as_water block in render_tab).
+ * table, or the four dewatering metrics + mach caption when modeling as
+ * 100% water.
  */
 
 import clsx from "clsx";
@@ -38,7 +37,6 @@ export function ComparisonCard({
   }
 
   if (solve.dewatering) {
-    // mirrors woffl/gui/tabs/jetpump_solver.py:render_tab (model_as_water block)
     return (
       <Section title="Dewatering Solve">
         <Card className="space-y-3">

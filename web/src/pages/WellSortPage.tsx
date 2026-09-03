@@ -1,8 +1,8 @@
 /**
- * Well Sort - field-wide online/offline triage workspace. Port of
- * woffl/gui/well_sort_page.py (Wells | Triage | Marginal WC) on the web
- * stack: one shared POPs configuration (zustand, localStorage) drives all
- * three views, replacing the Streamlit session keys.
+ * Well Sort - field-wide online/offline triage workspace. Port of the
+ * retired Streamlit page (Wells | Triage | Marginal WC) on the web stack:
+ * one shared POPs configuration (zustand, localStorage) drives all three
+ * views, replacing the Streamlit session keys.
  */
 
 import { Settings2 } from "lucide-react";

@@ -1,8 +1,8 @@
 """Shared helpers for Scott's Tools - the Streamlit-free port.
 
-Port of ``woffl/gui/scotts_tools/_common.py``. The original was built on
-``@st.cache_data`` fetchers and ``load_well_characteristics``; here the data
-comes from the server's own cached datasources, so a tool never issues a
+Port of the retired Streamlit tools' shared helpers. The original was built
+on ``@st.cache_data`` fetchers and ``load_well_characteristics``; here the
+data comes from the server's own cached datasources, so a tool never issues a
 per-well query the fleet caches already answer (the cardinal rule).
 
 The physics builders (``build_well_config`` / ``create_well_objects``) are

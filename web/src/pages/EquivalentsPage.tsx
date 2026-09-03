@@ -1,6 +1,6 @@
 /**
  * Pump Equivalents - cross-brand jet pump equivalence table for a chosen
- * nozzle/throat combination. Mirrors woffl/gui/tabs/pump_equivalent.py.
+ * nozzle/throat combination.
  *
  * Local nozzle/throat state is seeded ONCE from the sidebar params and is
  * independent afterwards - browsing equivalents never disturbs the solver.

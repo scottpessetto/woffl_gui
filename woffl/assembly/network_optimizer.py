@@ -265,6 +265,7 @@ class NetworkOptimizer:
         nozzle_options: list[str],
         throat_options: list[str],
         marginal_watercut: float = 0.94,
+        water_price: Optional[float] = None,
     ):
         """Initialize network optimizer
 
@@ -273,13 +274,22 @@ class NetworkOptimizer:
             power_fluid: Power fluid constraint
             nozzle_options: Available nozzle sizes to test
             throat_options: Available throat sizes to test
-            marginal_watercut: Economic watercut threshold
+            marginal_watercut: Economic watercut threshold (legacy gate; when
+                ``water_price`` is None it is converted to the equivalent
+                water price (1 - wc) / wc, so old callers keep their economics)
+            water_price: λ, bbl oil per bbl of budgeted water, priced in the
+                objective of both solvers (docs/optimization_redesign_2026-09.md).
+                None = derive from ``marginal_watercut``.
         """
         self.wells = wells
         self.power_fluid = power_fluid
         self.nozzle_options = nozzle_options
         self.throat_options = throat_options
         self.marginal_watercut = marginal_watercut
+        # [LIBRARY change -> upstream PR to kwellis/woffl] water price λ
+        # (docs/upstream_sync.md #36)
+        self.water_price = water_price
+        self.lambda_used: Optional[float] = None  # set by the solvers
 
         # Results storage
         self.batch_results: dict[str, BatchPump] = {}

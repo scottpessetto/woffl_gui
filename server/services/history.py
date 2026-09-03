@@ -4,8 +4,6 @@ Server-side port of the JP History tab's data layer: install rows from the
 enriched tracker frame, well tests back to the earliest install, and the
 daily BHP series. v1 serves the Databricks path only - the Streamlit
 memory-gauge overlay layers have no server equivalent.
-
-mirrors woffl/gui/tabs/jp_history_tab.py (queries + fetch flow)
 """
 
 from __future__ import annotations
@@ -20,9 +18,8 @@ from server import config
 from server.cache import ttl_cache
 from server.services import datasources, frames
 
-# mirrors woffl/gui/tabs/jp_history_tab.py:_EXTENDED_TEST_QUERY
-# (lifted verbatim; the em dash in the original SQL comment is written as
-# "-" per the ASCII house rule)
+# Lifted verbatim from the retired Streamlit app; the em dash in the
+# original SQL comment is written as "-" per the ASCII house rule.
 _EXTENDED_TEST_QUERY = """\
 SELECT
     vwt.well_name,
@@ -56,7 +53,6 @@ WHERE vwt.well_name = '{well_name}'
 ORDER BY vwt.wt_date
 """
 
-# mirrors woffl/gui/tabs/jp_history_tab.py:_BHP_DAILY_QUERY
 _BHP_DAILY_QUERY = """\
 SELECT
     vbdc.tag_date,
@@ -72,38 +68,93 @@ AND vbdc.tag_date BETWEEN '{start_date}' AND '{end_date}'
 ORDER BY vbdc.tag_date
 """
 
-
-# mirrors woffl/gui/tabs/jp_history_tab.py:_cached_extended_tests
+# --- Fleet forms of the same two pulls -------------------------------------
 #
-# maxsize sizing: the key carries `end` = today, so every well gets a NEW key at
-# midnight. It must therefore hold at least TWO days x the fleet, or the day's
-# fresh entries evict each other while yesterday's are still resident.
-@ttl_cache(config.TTL_EXTENDED_TESTS, maxsize=512)
-def extended_tests(db_name: str, start: str, end: str) -> pd.DataFrame:
-    """Well tests for an extended date range without requiring BHP.
+# Identical SELECT / JOIN shape to the two per-well queries above, widened to
+# an IN list and the fleet's outer date window. `warm_fleet` runs each ONCE and
+# slices the result per well, so a warm pass costs 2 statements instead of
+# 2 x ~90. That matters because the SQL warehouse bills per WAKE WINDOW, not
+# per statement: ~180 serialized per-well queries held the warehouse up for
+# minutes on every pass.
+_FLEET_TEST_QUERY = """\
+SELECT
+    vwt.well_name,
+    vwt.wt_date,
+    vwt.form_oil AS oil_rate,
+    vwt.form_wat AS fwat_rate,
+    vwt.lift_wat,
+    round(vbdc.bhp_cln_value, 2) AS bhp,
+    vpd.tubing_prs AS pf_tubing_prs,
+    vpd.inn_ann_prs AS pf_inn_ann_prs
+FROM mpu.wells.vw_well_test vwt
+LEFT JOIN mpu.wells.vw_bhp_daily_clean vbdc
+    ON vwt.enthid = vbdc.enthid
+    AND to_date(vwt.wt_date) = vbdc.tag_date
+LEFT JOIN (
+    -- Test-day PF pressure (same aggregated join as well_test_client) -
+    -- feeds the Pump Report Card's per-era PF context and the chart overlay.
+    SELECT
+        enthid,
+        sample_date,
+        max(tubing_prs) AS tubing_prs,
+        max(inn_ann_prs) AS inn_ann_prs
+    FROM mpu.wells.vw_pressure_daily
+    GROUP BY enthid, sample_date
+) vpd
+    ON vwt.enthid = vpd.enthid
+    AND to_date(vwt.wt_date) = vpd.sample_date
+WHERE vwt.well_name IN ({well_list})
+    AND vwt.wt_date BETWEEN '{start_date}' AND '{end_date}'
+    AND vwt.allocated = True
+ORDER BY vwt.well_name, vwt.wt_date
+"""
 
-    Args:
-        db_name: Databricks-format well name (e.g. "B-028" - the output of
-            well_test_client._denormalize_well_name).
-        start: window start, YYYY-MM-DD.
-        end: window end, YYYY-MM-DD.
+# The per-well form resolves enthid with a scalar subquery; the fleet form
+# needs the mapping BACK to well_name to slice the result, so the same
+# vw_well_test lookup joins as a distinct (well_name, enthid) table.
+#
+# One deliberate difference: the per-well subquery is `LIMIT 1`, so a well with
+# two enthids in vw_well_test gets ONE of them, arbitrarily (no ORDER BY). The
+# join takes all of them, which for such a well means more rows per tag_date
+# than the per-well pull would have cached. Every well seen in-tree maps to a
+# single enthid (prop_hist_client raises on >1 match when it resolves one), so
+# this is a note for whoever meets the first counter-example, not a known bug.
+_FLEET_BHP_QUERY = """\
+SELECT
+    vwt_map.well_name,
+    vbdc.tag_date,
+    round(vbdc.bhp_cln_value, 2) AS bhp
+FROM mpu.wells.vw_bhp_daily_clean vbdc
+JOIN (
+    SELECT DISTINCT well_name, enthid
+    FROM mpu.wells.vw_well_test
+    WHERE well_name IN ({well_list})
+) vwt_map
+    ON vbdc.enthid = vwt_map.enthid
+WHERE vbdc.tag_date BETWEEN '{start_date}' AND '{end_date}'
+ORDER BY vwt_map.well_name, vbdc.tag_date
+"""
 
-    Returns:
-        Test frame sorted by WtDate with resolved pf_press/pf_source columns.
-        Raises on query failure (failures are never cached).
+
+# ---------------------------------------------------------------------------
+# Post-query shaping
+#
+# Factored out of the two fetchers so the FLEET pull can produce byte-identical
+# per-well frames from a slice of one wide result. Every caller (per-well query,
+# fleet slice) runs the same function, which is the only reason a primed entry
+# is safe to hand to the request path unchanged.
+# ---------------------------------------------------------------------------
+
+
+def _shape_tests(df: pd.DataFrame) -> pd.DataFrame:
+    """Raw ``_EXTENDED_TEST_QUERY`` rows -> the frame `extended_tests` returns.
+
+    An empty frame is returned untouched (that is what a well with no tests in
+    the window has always produced, and `frames.records` handles it).
     """
-    from woffl.assembly.databricks_client import execute_query
     from woffl.assembly.pf_pressure import add_pf_columns
-    from woffl.assembly.sql_guards import validate_iso_date, validate_well_name
     from woffl.assembly.well_test_client import _normalize_well_name
 
-    df = execute_query(
-        _EXTENDED_TEST_QUERY.format(
-            well_name=validate_well_name(db_name),
-            start_date=validate_iso_date(start),
-            end_date=validate_iso_date(end),
-        )
-    )
     if df.empty:
         return df
 
@@ -133,7 +184,50 @@ def extended_tests(db_name: str, start: str, end: str) -> pd.DataFrame:
     return df.sort_values("WtDate")
 
 
-# mirrors woffl/gui/tabs/jp_history_tab.py:_cached_bhp_daily
+def _shape_bhp(df: pd.DataFrame) -> pd.DataFrame:
+    """Raw ``_BHP_DAILY_QUERY`` rows -> the frame `bhp_daily` returns."""
+    if df.empty:
+        return df
+
+    if "tag_date" in df.columns:
+        df["tag_date"] = pd.to_datetime(df["tag_date"], utc=True).dt.tz_localize(None)
+    if "bhp" in df.columns:
+        df["bhp"] = pd.to_numeric(df["bhp"], errors="coerce")
+
+    return df.dropna(subset=["tag_date", "bhp"]).sort_values("tag_date")
+
+
+# maxsize sizing: the key carries `end` = today, so every well gets a NEW key at
+# midnight. It must therefore hold at least TWO days x the fleet, or the day's
+# fresh entries evict each other while yesterday's are still resident.
+@ttl_cache(config.TTL_EXTENDED_TESTS, maxsize=512)
+def extended_tests(db_name: str, start: str, end: str) -> pd.DataFrame:
+    """Well tests for an extended date range without requiring BHP.
+
+    Args:
+        db_name: Databricks-format well name (e.g. "B-028" - the output of
+            well_test_client._denormalize_well_name).
+        start: window start, YYYY-MM-DD.
+        end: window end, YYYY-MM-DD.
+
+    Returns:
+        Test frame sorted by WtDate with resolved pf_press/pf_source columns.
+        Raises on query failure (failures are never cached).
+    """
+    from woffl.assembly.databricks_client import execute_query
+    from woffl.assembly.sql_guards import validate_iso_date, validate_well_name
+
+    return _shape_tests(
+        execute_query(
+            _EXTENDED_TEST_QUERY.format(
+                well_name=validate_well_name(db_name),
+                start_date=validate_iso_date(start),
+                end_date=validate_iso_date(end),
+            )
+        )
+    )
+
+
 # Same rolling-`end` key as extended_tests - see its maxsize note.
 @ttl_cache(config.TTL_EXTENDED_TESTS, maxsize=512)
 def bhp_daily(db_name: str, start: str, end: str) -> pd.DataFrame:
@@ -151,22 +245,15 @@ def bhp_daily(db_name: str, start: str, end: str) -> pd.DataFrame:
     from woffl.assembly.databricks_client import execute_query
     from woffl.assembly.sql_guards import validate_iso_date, validate_well_name
 
-    df = execute_query(
-        _BHP_DAILY_QUERY.format(
-            well_name=validate_well_name(db_name),
-            start_date=validate_iso_date(start),
-            end_date=validate_iso_date(end),
+    return _shape_bhp(
+        execute_query(
+            _BHP_DAILY_QUERY.format(
+                well_name=validate_well_name(db_name),
+                start_date=validate_iso_date(start),
+                end_date=validate_iso_date(end),
+            )
         )
     )
-    if df.empty:
-        return df
-
-    if "tag_date" in df.columns:
-        df["tag_date"] = pd.to_datetime(df["tag_date"], utc=True).dt.tz_localize(None)
-    if "bhp" in df.columns:
-        df["bhp"] = pd.to_numeric(df["bhp"], errors="coerce")
-
-    return df.dropna(subset=["tag_date", "bhp"]).sort_values("tag_date")
 
 
 # DataFrame column -> JSON key for the install rows (JpInstallRow contract).
@@ -245,9 +332,9 @@ def _installs_for(jp_hist: pd.DataFrame, well: str) -> pd.DataFrame:
 def _query_window(well: str, well_jp: pd.DataFrame) -> tuple[str, str, str]:
     """(db_name, start, end) for this well's extended_tests / bhp_daily pulls.
 
-    THE single source of those two cache keys: ``warm_well`` and
-    ``jp_history_payload`` must agree exactly or the warmup fills entries no
-    request ever reads. ``end`` is today, so the keys roll over at midnight -
+    THE single source of those two cache keys: ``warm_well``, ``warm_fleet``
+    and ``jp_history_payload`` must agree exactly or the warmup fills entries
+    no request ever reads. ``end`` is today, so the keys roll over at midnight -
     see the maxsize notes on the two fetchers.
     """
     from woffl.assembly.well_test_client import _denormalize_well_name
@@ -264,7 +351,9 @@ def warm_well(well: str) -> bool:
 
     These are the app's only genuinely per-well warehouse queries, and they are
     why a well used to be slow on its first open and instant for the rest of the
-    day. Called by ``server.warmup`` for every well in the fleet.
+    day. ``server.warmup`` now covers the fleet with ``warm_fleet``'s two
+    statements and calls this only as the FALLBACK when that fails; it is also
+    the on-demand path for warming a single well.
 
     Returns:
         True when the tracker had a dated install and both fetchers were
@@ -295,13 +384,121 @@ def warm_well(well: str) -> bool:
     return True
 
 
+def _fleet_slice(
+    df: pd.DataFrame, well_col: str, date_col: str, db_name: str, start: str, end: str
+) -> pd.DataFrame:
+    """One well's rows out of a fleet frame, over ITS OWN [start, end] window.
+
+    Reproduces the per-well query's WHERE clause in pandas: the same
+    ``BETWEEN`` bounds (inclusive, midnight-anchored like the SQL string
+    comparison) against the same UTC-naive date normalisation the shaping
+    functions apply, on the raw column names, before any renaming. The index is
+    reset so the primed frame is indistinguishable from a fresh query result.
+    """
+    if df.empty or well_col not in df.columns or date_col not in df.columns:
+        return df.iloc[0:0].reset_index(drop=True)
+    dates = pd.to_datetime(df[date_col], utc=True, errors="coerce").dt.tz_localize(None)
+    mask = (df[well_col] == db_name) & dates.between(pd.Timestamp(start), pd.Timestamp(end))
+    return df.loc[mask].reset_index(drop=True)
+
+
+def warm_fleet(wells: list[str]) -> dict[str, Any]:
+    """Warm every well's two per-well caches with TWO fleet statements.
+
+    ``warm_well`` per well is 2 warehouse queries x ~90 wells = ~180 statements
+    holding the SQL warehouse awake for minutes on every pass, and the warehouse
+    bills per WAKE WINDOW rather than per statement. The two windowed pulls are
+    the same SELECT/JOIN shape widened to an IN list, so one statement each
+    answers the whole fleet; every well's slice is shaped by the SAME
+    ``_shape_tests`` / ``_shape_bhp`` the per-well fetchers use and primed under
+    the exact key ``jp_history_payload`` reads.
+
+    A well with no rows in a fleet frame is primed with an EMPTY frame - that is
+    precisely what its per-well query would have returned, and priming it is
+    what keeps the request path off the warehouse.
+
+    Args:
+        wells: canonical GUI well names (e.g. "MPB-28").
+
+    Returns:
+        {"wells": primed, "skipped": no dated install, "statements": issued}.
+
+    Raises:
+        RuntimeError: when no JP-history source is reachable. Query failures
+        propagate too (failures are NEVER cached), so the caller can fall back
+        to the per-well path.
+    """
+    from woffl.assembly.databricks_client import execute_query
+    from woffl.assembly.sql_guards import validate_iso_date, validate_well_name
+
+    jp_hist, source = datasources.jp_history_safe()
+    if jp_hist is None or source is None:
+        raise RuntimeError("JP history unavailable (Databricks and Excel fallback both failed)")
+
+    # Same skip rule as warm_well: a well with no dated install has nothing to
+    # query, so it must not widen the IN list either.
+    windows: list[tuple[str, str, str]] = []
+    skipped = 0
+    for well in wells:
+        well_jp = _installs_for(jp_hist, well)
+        if well_jp.empty:
+            skipped += 1
+            continue
+        windows.append(_query_window(well, well_jp))
+    if not windows:
+        return {"wells": 0, "skipped": skipped, "statements": 0}
+
+    # The outer window: earliest install anywhere in the fleet, through today.
+    # Each well is then sliced back to its own [start, end], so a well never
+    # gets rows from before its first pump.
+    fleet_start = min(start for _db, start, _end in windows)
+    fleet_end = max(end for _db, _start, end in windows)
+    sql_args = {
+        "well_list": ", ".join(
+            f"'{validate_well_name(db)}'" for db in sorted({db for db, _s, _e in windows})
+        ),
+        "start_date": validate_iso_date(fleet_start),
+        "end_date": validate_iso_date(fleet_end),
+    }
+
+    # Captured BEFORE the fetch: a write that clears these caches while the
+    # fleet query is in flight must discard the primes, exactly as it discards
+    # an in-flight per-well fetch (server/cache.py clear() version guard).
+    tests_version = extended_tests.cache_version()  # type: ignore[attr-defined]
+    bhp_version = bhp_daily.cache_version()  # type: ignore[attr-defined]
+
+    tests_raw = execute_query(_FLEET_TEST_QUERY.format(**sql_args))
+    bhp_raw = execute_query(_FLEET_BHP_QUERY.format(**sql_args))
+
+    primed = 0
+    for db_name, start, end in windows:
+        tests_df = _shape_tests(
+            _fleet_slice(tests_raw, "well_name", "wt_date", db_name, start, end)
+        )
+        # Drop the join-back column: bhp_daily's own query selects only
+        # (tag_date, bhp), and a primed frame must match it column for column.
+        bhp_df = _shape_bhp(
+            _fleet_slice(bhp_raw, "well_name", "tag_date", db_name, start, end).drop(
+                columns=["well_name"], errors="ignore"
+            )
+        )
+        stored_tests = extended_tests.cache_prime(  # type: ignore[attr-defined]
+            tests_df, db_name, start, end, version=tests_version
+        )
+        stored_bhp = bhp_daily.cache_prime(  # type: ignore[attr-defined]
+            bhp_df, db_name, start, end, version=bhp_version
+        )
+        if stored_tests and stored_bhp:
+            primed += 1
+    return {"wells": primed, "skipped": skipped, "statements": 2}
+
+
 def jp_history_payload(well: str) -> dict[str, Any]:
     """JpHistoryResponse payload for one well.
 
-    mirrors woffl/gui/tabs/jp_history_tab.py:render_tab +
-    _fetch_extended_well_tests (Databricks path): installs filtered/sorted by
-    Date Set, and the test/BHP window running from the earliest install to
-    today. The tab pads only the chart's x-range (15 days, display-only);
+    The Databricks path: installs filtered/sorted by Date Set, and the
+    test/BHP window running from the earliest install to today. The retired
+    Streamlit tab padded only the chart's x-range (15 days, display-only);
     the queries themselves start AT the earliest Date Set, so this does too.
 
     Args:

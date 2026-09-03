@@ -1,5 +1,5 @@
 /**
- * Vogel IPR math - exact mirror of woffl/gui/vogel.py (and InFlow.vogel_qmax).
+ * Vogel IPR math - exact mirror of the Python InFlow.vogel_qmax.
  * Mirrored client-side so the IPR curve redraws instantly as reservoir
  * pressure or the anchor changes, with zero server round trips.
  * Keep in lockstep with the Python: any change there must land here too.

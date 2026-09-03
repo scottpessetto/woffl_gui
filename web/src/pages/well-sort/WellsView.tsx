@@ -1,6 +1,6 @@
 /**
  * Wells view - the full online / offline / LTSI / 30-day-change picture.
- * Port of woffl/gui/scotts_tools/well_sort.py:render_tab. Classification:
+ * Port of the retired Streamlit Well Sort tab. Classification:
  * Online = ProdXV open AND not in vw_shut_in (or in the log but XV shows
  * open - the log lags up to 24 h either way); ProdXV closed forces shut-in.
  */

@@ -432,7 +432,8 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         req.method,
         req.marginal_wc,
         n_steps=req.n_steps if req.n_steps is not None else defaults["n_steps"],
-        parsimony_bopd=req.parsimony_bopd,
+        water_price=req.lambda_bopd_per_bpd,
+        setpoint_psi=req.setpoint_psi,
         progress=cb,
     )
 
@@ -472,8 +473,10 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         "header_psi", "total_pf_bpd", "total_oil_bopd", "n_pumps", "converged",
         "in_range", "recirc", "over_capacity", "feasible", "sweep", "history",
         "marginal_wc_used", "marginal_wc_source", "pf_slack", "parsimony_swaps",
+        "lambda_used", "lambda_source", "objective_bopd_equiv", "water_key",
+        "solver_agreement",
         "reconciliation", "per_pump_bpd", "station_cap_bpd", "frontier_cap_bpd",
-        "amp_limited",
+        "amp_limited", "setpoint_psi",
     )
     return _plain(
         {

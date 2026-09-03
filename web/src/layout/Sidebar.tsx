@@ -1,8 +1,8 @@
 /**
- * The 300px parameter sidebar - the full SimParams control tree, mirroring
- * woffl/gui/sidebar.py's layout: sticky Run action, Well Selection, Field
- * Model, Pump, Pressures, then collapsible Inflow & Formation, Geometry,
- * and Advanced sections. All values live in useParamsStore.
+ * The 300px parameter sidebar - the full SimParams control tree: sticky Run
+ * action, Well Selection, Field Model, Pump, Pressures, then collapsible
+ * Inflow & Formation, Geometry, and Advanced sections. All values live in
+ * useParamsStore.
  */
 
 import { useState } from "react";
@@ -53,11 +53,11 @@ const LOCK_META: Record<keyof PropLocks, { label: string; paramKey: "form_wc" | 
 };
 
 /**
- * The WC/GOR/ResP lock toggle (port of the Solver's 🔒 checkboxes,
- * jetpump_solver._render_ipr_pin_controls lock block). Locking pins the
- * sidebar's CURRENT value in the same click; unlocking hands the field back
- * to the automated seed. Writes off -> falls back to the passive saved-lock
- * chip; hypothetical wells have nothing to lock.
+ * The WC/GOR/ResP lock toggle (port of the Solver's 🔒 checkboxes from
+ * the retired Streamlit app). Locking pins the sidebar's CURRENT value in
+ * the same click; unlocking hands the field back to the automated seed.
+ * Writes off -> falls back to the passive saved-lock chip; hypothetical
+ * wells have nothing to lock.
  */
 function PropLockToggle({ field }: { field: keyof PropLocks }) {
   const well = useParamsStore((s) => s.well);
@@ -172,7 +172,7 @@ function WindowInput({
   );
 }
 
-/** Provenance caption under the PF pressure field (mirrors _render_pf_live_caption). */
+/** Provenance caption under the PF pressure field. */
 function PfProvenance() {
   const context = useParamsStore((s) => s.context);
   const ppfSurf = useParamsStore((s) => s.params.ppf_surf);

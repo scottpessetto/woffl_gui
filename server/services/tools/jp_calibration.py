@@ -1,6 +1,6 @@
 """JP Friction Calibration - fit ken/kth/kdi per well against measured BHP.
 
-Port of woffl/gui/scotts_tools/jp_calibration.py (engine only).
+Port of the retired Streamlit tool (engine only).
 
 READ-ONLY, as the tab was: it renders SQL for a human to run against
 vw_prop_mech, it has never executed a write and must not start.
@@ -35,8 +35,8 @@ from server.services.tools._common import (
     pad_from_mp_name,
 )
 
-# PAD_PF_DEFAULTS / PAD_PF_FALLBACK / _default_pad_pf are now imported above
-# from woffl.gui.utils — single source of truth shared with sidebar.py.
+# PAD_PF_DEFAULTS / PAD_PF_FALLBACK / _default_pad_pf are imported above from
+# server.services.tools._common - the single source of truth for pad PF.
 
 
 def _latest_bhp_whp_paired_per_well(months_back: int) -> dict[str, dict]:

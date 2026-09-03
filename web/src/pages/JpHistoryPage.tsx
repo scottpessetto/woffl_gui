@@ -3,8 +3,7 @@
  * eras, with a pumps-in-hole timeline strip under the main chart and the
  * install history table below. The figure itself is the shared
  * components/HistoryStrip (also rendered on the Solver page) so the two
- * views can never drift - mirror of the plotly builder's contract in
- * woffl/gui/tabs/jp_history_tab.py:build_history_with_strip_figure.
+ * views can never drift.
  */
 
 import { useState } from "react";

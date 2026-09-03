@@ -8,8 +8,15 @@ exactly the reported symptom - a well is slow once and instant afterwards.
 
 Two distinct causes, both handled here:
 
-1. **Nothing per-well was warmed.** ``run_pass`` walks the whole well list and
-   fills the per-well caches, so no user is ever the one who pays.
+1. **Nothing per-well was warmed.** ``run_pass`` fills every well's per-well
+   caches, so no user is ever the one who pays. It does that with TWO
+   fleet-wide statements (``history.warm_fleet``), not two per well: the
+   warehouse bills per WAKE WINDOW, and ~180 serialized per-well queries held
+   it up for 2-3 minutes on every pass to fetch data one wide query already
+   contains. The per-well fan-out (``history.warm_well`` x fleet) survives only
+   as the fallback for a pass where the fleet pull fails. The per-well loop
+   still runs either way - it also refreshes each well's deviation-survey CSV,
+   which is a local parse and costs the warehouse nothing.
 2. **A one-shot warm decays.** ``ttl_cache`` serves a stale entry for one extra
    TTL and then DELETES it (``server/cache.py`` ``put`` / ``get``), at which
    point the next reader blocks on a cold miss. On a server that has been up for
@@ -45,8 +52,12 @@ Design notes:
   handshakes. ``WOFFL_WARM_WORKERS`` is a warehouse-concurrency knob (default 6),
   deliberately separate from ``WOFFL_MAX_WORKERS`` (a CPU/ProcessPool cap) -
   this work is pure I/O wait, so it is NOT bounded by the 2 vCPU tier. It was
-  3, which put a full pass at ~5.5 min (90 wells x ~11 s each): a window after
-  every deploy where an engineer still hits an 8-22 s cold read. 6 halves it.
+  3, which put a full pass at ~5.5 min (90 wells x ~11 s each); 6 halved that,
+  and the fleet-statement warm removes the fan-out entirely - the per-well
+  pass is now local CSV work unless the fleet pull failed.
+* **Statements per pass.** ~1 per fleet target + 2 for the whole fleet's
+  history (~19 total). On the fallback path it is 1 per fleet target +
+  2 x wells (~197). The pass logs the number it issued.
 * **Never raises.** A warmer that propagated would kill the loop and leave the
   process permanently cold. Every failure is logged and counted.
 * **One process.** ``app.yaml`` runs a single bare ``uvicorn server.main:app``,
@@ -56,7 +67,9 @@ Design notes:
 Env knobs:
 
 * ``WOFFL_WARM_INTERVAL_SEC`` - seconds between passes (default 21600 = 6 h;
-  ``0`` means a single pass and no loop).
+  ``0`` means a single pass and no loop). The DEPLOYED value is 43200 (12 h,
+  set in ``app.yaml``): two wake windows a day instead of five, the second one
+  landing inside the workday.
 * ``WOFFL_WARM_WORKERS`` - concurrent warehouse connections (default 6, 1..8).
 * ``WOFFL_WARM_WELLS`` - falsy skips the per-well pass (fleet frames only);
   useful for local ``uvicorn --reload``, where every restart would otherwise
@@ -282,20 +295,28 @@ def well_universe() -> list[str]:
     return [w["name"] for w in payload.get("wells", []) if w.get("name")]
 
 
-def warm_one_well(well: str) -> None:
+def warm_one_well(well: str, skip_history: bool = False) -> None:
     """Pre-pay everything a first request for ``well`` would block on.
 
-    ``history.warm_well`` covers the two per-well warehouse queries (the real
-    cost); ``datasources.survey`` covers the local deviation-survey CSV parse
-    behind /wells/{name}/profile. The profile payload itself is NOT warmed - its
-    cache key carries the client's jpump_tvd/field_model, so warming a guessed
-    triple would fill an entry no request reads.
+    ``history.warm_well`` covers the two per-well warehouse queries;
+    ``datasources.survey`` covers the local deviation-survey CSV parse behind
+    /wells/{name}/profile. The profile payload itself is NOT warmed - its cache
+    key carries the client's jpump_tvd/field_model, so warming a guessed triple
+    would fill an entry no request reads.
+
+    Args:
+        well: canonical GUI well name.
+        skip_history: True when ``history.warm_fleet`` already primed this
+            well's two entries from the fleet frames - the whole point of that
+            path is NOT to issue the per-well queries again. The survey refresh
+            still runs; it is a local parse, not a warehouse statement.
     """
     from server.cache import refresher
     from server.services import datasources
     from server.services import history as history_svc
 
-    history_svc.warm_well(well)
+    if not skip_history:
+        history_svc.warm_well(well)
     # Local CSV parse, so cheap - but forced like everything else, so the entry
     # carries the retention floor instead of being deleted one TTL later.
     refresher(datasources.survey, well)()
@@ -322,6 +343,11 @@ _STATUS: dict[str, Any] = {
     "fleet_total": 0,
     "fleet_ok": 0,
     "fleet_failed": [],
+    # The two fleet history statements landed (False = this pass fell back to
+    # the per-well fan-out, which is ~180 statements instead of 2).
+    "fleet_history_ok": False,
+    # Warehouse statements this pass issued, by the code path it took.
+    "statements": 0,
     "wells_total": 0,
     "wells_ok": 0,
     "wells_failed": 0,
@@ -366,9 +392,22 @@ def _run_labelled(
     return failed
 
 
+def warm_fleet_history(wells: list[str]) -> dict[str, Any]:
+    """The two fleet statements that replace 2 x len(wells) per-well queries.
+
+    A thin seam over ``history.warm_fleet`` so the import stays local (the
+    service module drags in pandas + the Databricks client) and so the pass can
+    tell "fleet warm failed" from "one well failed".
+    """
+    from server.services import history as history_svc
+
+    return history_svc.warm_fleet(wells)
+
+
 def run_pass() -> dict[str, Any]:
     """One full warm: fleet frames first (the per-well pass reads the JP-history
-    frame they fill), then every well. Never raises; returns the new status."""
+    frame they fill), then the fleet's history in TWO statements, then every
+    well's local survey. Never raises; returns the new status."""
     from server.cache import set_warm_retention
 
     t0 = time.monotonic()
@@ -388,16 +427,39 @@ def run_pass() -> dict[str, Any]:
     wells: list[str] = []
     wells_ok = 0
     wells_failed: list[str] = []
+    fleet_history_ok = False
+    history_statements = 0
     if wells_enabled():
         try:
             wells = well_universe()
         except Exception as exc:  # noqa: BLE001
             log.warning("warm: well universe unavailable: %s", exc)
         if wells:
+            # Two statements for the whole fleet's history. On failure the
+            # per-well fan-out below still runs, so a bad fleet pull costs
+            # warehouse time, never freshness.
+            try:
+                summary = warm_fleet_history(wells)
+                fleet_history_ok = True
+                history_statements = int(summary.get("statements", 2))
+                log.info(
+                    "warm: fleet history primed %s wells (%s skipped) in %s statements",
+                    summary.get("wells"),
+                    summary.get("skipped"),
+                    history_statements,
+                )
+            except Exception as exc:  # noqa: BLE001 - the per-well path covers it
+                log.warning(
+                    "warm: fleet history pull failed, falling back to %d per-well "
+                    "queries: %s",
+                    2 * len(wells),
+                    exc,
+                )
+                history_statements = 2 * len(wells)
             with ThreadPoolExecutor(
                 max_workers=n, thread_name_prefix="warm-well"
             ) as pool:
-                futures = {pool.submit(warm_one_well, w): w for w in wells}
+                futures = {pool.submit(warm_one_well, w, fleet_history_ok): w for w in wells}
                 for fut in as_completed(futures):
                     well = futures[fut]
                     try:
@@ -408,6 +470,9 @@ def run_pass() -> dict[str, Any]:
                         log.warning("warm well failed (%s): %s", well, exc)
 
     elapsed = time.monotonic() - t0
+    # One statement per fleet target is the approximation (a couple of targets
+    # issue more); the per-well half is exact and is the half that moved.
+    statements = len(targets) + history_statements
     with _LOCK:
         _STATUS.update(
             passes=_STATUS["passes"] + 1,
@@ -420,18 +485,23 @@ def run_pass() -> dict[str, Any]:
             fleet_total=len(targets),
             fleet_ok=len(targets) - len(fleet_failed),
             fleet_failed=list(fleet_failed),
+            fleet_history_ok=fleet_history_ok,
+            statements=statements,
             wells_total=len(wells),
             wells_ok=wells_ok,
             wells_failed=len(wells_failed),
             wells_failed_sample=wells_failed[:_FAILURE_SAMPLE],
         )
     log.info(
-        "cache warm pass done in %.1fs: fleet %d/%d, wells %d/%d",
+        "cache warm pass done in %.1fs: fleet %d/%d, wells %d/%d, "
+        "~%d warehouse statements (history: %s)",
         elapsed,
         len(targets) - len(fleet_failed),
         len(targets),
         wells_ok,
         len(wells),
+        statements,
+        "2 fleet" if fleet_history_ok else "per-well fallback",
     )
     return status()
 

@@ -1,7 +1,7 @@
 """JP Friction Trend - fitted friction coefficients over a well's test history.
 
-Port of woffl/gui/scotts_tools/jp_fric_trend.py (engine only; the Streamlit
-rendering is replaced by the React page).
+Port of the retired Streamlit tool (engine only; the Streamlit rendering is
+replaced by the React page).
 
 Two-step per test: calibrate the PF pressure that reproduces the measured
 lift water, then fit the friction coefficients that reproduce the measured
@@ -210,7 +210,7 @@ _BOOL_COLS = (
 def _format_jp(nozzle, throat) -> str:
     """Format nozzle + throat into a pump label like '12B'.
 
-    Mirrors jp_history_tab._format_jp but defensive against non-numeric
+    Mirrors the JP History pump label but defensive against non-numeric
     nozzles (e.g. 'G' in some legacy history rows) — falls back to the raw
     string instead of crashing on int().
     """
@@ -233,7 +233,7 @@ def _add_jpco_overlays(
 ) -> None:
     """Overlay vertical dashed lines + JPCO labels on a time-series figure.
 
-    Mirrors the pattern in jp_history_tab._create_history_chart. Shows
+    Mirrors the JP History chart's JPCO overlay pattern. Shows
     every JP change in the JP history whose Date Set falls within a
     generous range around the chart's data window so the "what pump is in
     at the start" context is visible without distorting the axis.

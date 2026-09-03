@@ -34,7 +34,9 @@ a sweep.
 Sizing is ``worker_ceiling()`` and nothing else - the same budget every other
 ProcessPool in the tree obeys. app.yaml pins 2 for the 2-vCPU tier.
 
-``submit_all`` is the only entry point. It is deliberately all-or-nothing:
+``submit_all`` is the sweep entry point; ``submit`` hands ONE long task (the
+multi-minute event calibration) to a worker and returns its Future so the
+caller can relay progress while it waits. ``submit_all`` is deliberately all-or-nothing:
 any pool-level failure returns None and the caller reruns its own serial
 loop, matching the fallback contract in ``network_optimizer`` and
 ``sensitivity._solve_parallel``. Nothing here retries a task - a task that
@@ -46,7 +48,7 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import threading
-from concurrent.futures import Executor, ProcessPoolExecutor, as_completed
+from concurrent.futures import Executor, Future, ProcessPoolExecutor, as_completed
 from typing import Any, Callable, Iterable, Optional, TypeVar
 
 log = logging.getLogger("woffl.web.pool")
@@ -169,6 +171,46 @@ def workers() -> int:
     """Live worker count; 0 when the pool is down and callers must go serial."""
     with _LOCK:
         return _WORKERS
+
+
+def submit(fn: Callable[..., T], *args: Any) -> Optional[Future]:
+    """Hand ONE task to a worker and return its Future; None when the pool
+    is down (the caller runs the task in-thread instead).
+
+    Made for the multi-minute event calibration: the job thread waits on
+    the Future with a short timeout, relaying progress the worker writes
+    elsewhere, and the GIL is free for everyone else meanwhile. One gate
+    slot is held until the Future settles, so a long task borrows one
+    worker from the sweeps and never more.
+
+    Args:
+        fn: A module-level callable (picklable) doing the work.
+        *args: Picklable arguments.
+
+    Returns:
+        Future | None. A task that RAISES re-raises from ``Future.result``,
+        exactly as the in-thread path would; a broken pool is torn down and
+        reported as None.
+    """
+    with _LOCK:
+        pool, gate = _POOL, _GATE
+    if pool is None or gate is None:
+        return None
+    gate.acquire()
+    try:
+        fut = pool.submit(fn, *args)
+    except Exception as exc:  # noqa: BLE001 - caller runs in-thread
+        gate.release()
+        from concurrent.futures.process import BrokenProcessPool
+
+        if isinstance(exc, BrokenProcessPool):
+            log.warning("process pool broke, falling back to serial for the process life")
+            with _LOCK:
+                _shutdown_locked()
+            return None
+        raise
+    fut.add_done_callback(lambda _f: gate.release())
+    return fut
 
 
 def submit_all(fn: Callable[..., T], jobs: Iterable[tuple]) -> Optional[list[T]]:

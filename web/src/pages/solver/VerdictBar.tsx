@@ -1,7 +1,6 @@
 /**
  * Row A of the Solver workbench: "{well} - {pump}" plus the one-line
- * verdict (MATCH GOOD/FAIR/POOR, WHAT-IF, NO ACTUAL). Mirror of
- * woffl/gui/tabs/jetpump_solver.py:_render_verdict_bar with the solve
+ * verdict (MATCH GOOD/FAIR/POOR, WHAT-IF, NO ACTUAL), with the solve
  * status folded in as an inline chip.
  */
 

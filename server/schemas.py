@@ -161,6 +161,8 @@ class WarmupStatus(BaseModel):
     fleet_total: int = 0
     fleet_ok: int = 0
     fleet_failed: list[str] = []  # target labels that raised
+    fleet_history_ok: bool = False  # False = fell back to the per-well fan-out
+    statements: int = 0  # warehouse statements the last pass issued
     wells_total: int = 0
     wells_ok: int = 0
     wells_failed: int = 0
@@ -365,10 +367,23 @@ class OptimizeRunRequest(BaseModel):
     # when a PF booster pump is down and a changeout costs a day per pump.
     strategy: Literal["jpco", "choke"] = "jpco"
     method: Literal["milp", "mckp"] = "milp"
-    marginal_wc: Optional[float] = Field(None, ge=0.0, le=1.0)  # None = auto-derive
+    # Water price λ (BOPD given up per BPD of lift water) in the knapsack
+    # objective, oil − λ·water. None = auto: the plant budget's own shadow
+    # price off the pooled Pareto frontier (docs/optimization_redesign_2026-09.md).
+    # Takes precedence over marginal_wc when both are given.
+    lambda_bopd_per_bpd: Optional[float] = Field(None, ge=0.0, le=10.0)
+    # Legacy gate, mapped to the same price: λ = (1 − wc) / wc. None = auto.
+    marginal_wc: Optional[float] = Field(None, ge=0.0, le=1.0)
+    # DEPRECATED 2026-09: accepted and ignored (λ prices the swap it made).
     parsimony_bopd: float = Field(20.0, ge=0.0, le=500.0)
     n_pumps: Optional[int] = Field(None, ge=1, le=3)
     n_steps: Optional[int] = Field(None, ge=3, le=21)
+    # Pins the header for free-pressure pads (I/M/E) to ONE trial instead of
+    # sweeping it: the engineer has already made the pressure decision and
+    # wants the plan AT that setpoint. None = sweep (the default). Ignored
+    # for the fixed-curve S-Pad, whose header is a function of flow, so
+    # there is no setpoint to pin.
+    setpoint_psi: Optional[float] = Field(None, ge=1000.0, le=5000.0)
     # cfp-run knobs (mirror cfp_pad_page Configure stage)
     p0_psi: float = Field(2792.0, ge=2300.0, le=2900.0)
     psi_per_kbpd: float = Field(13.69, ge=9.0, le=17.5)
@@ -760,6 +775,79 @@ class CalibrateResponse(BaseModel):
     message: Optional[str] = None
 
 
+class MatchTestRequest(BaseModel):
+    """Gaugeless test match: infer the anchor BHP from a test's power-fluid
+    rate and fit the discharge coefficients so the installed pump reproduces
+    the test's oil AND PF (woffl.gui.gaugeless_match). For wells with no
+    downhole gauge - the PF rate through the nozzle IS the pressure
+    measurement. Read-only compute; the client applies the result to the
+    sidebar and an explicit save keeps it."""
+
+    well: str
+    params: SimParams
+    # the test being matched (the page's comparison test)
+    test_oil: float = Field(..., gt=0.0, le=20_000.0)  # STBOPD
+    test_water: float = Field(0.0, ge=0.0, le=50_000.0)  # formation BWPD
+    test_pf: float = Field(..., gt=0.0, le=50_000.0)  # power fluid BWPD
+    # test-day conditions; None/invalid falls back to the sidebar values
+    test_whp: Optional[float] = None
+    test_pf_press: Optional[float] = None
+    test_date: Optional[str] = None
+
+
+class MatchTestScanPoint(BaseModel):
+    pwf: float
+    psu: Optional[float] = None
+    oil: Optional[float] = None
+    pf: Optional[float] = None
+    sonic: Optional[bool] = None
+
+
+class MatchTestResponse(BaseModel):
+    match_quality: Literal["good", "fair", "poor", "failed"]
+    converged: bool
+    bounded: bool
+    sonic: bool
+    # the fit
+    pwf: Optional[float] = None  # inferred anchor BHP, psi
+    qwf_liq: float  # anchor TOTAL liquid (test oil + formation water), BLPD
+    form_wc: float  # the test's water cut
+    kth: float
+    kdi: float
+    ken: float  # held
+    # the model at the fit
+    modeled_bhp: Optional[float] = None
+    modeled_oil: Optional[float] = None
+    modeled_water: Optional[float] = None
+    modeled_pf: Optional[float] = None
+    score: Optional[float] = None  # RMS fractional error over (oil, PF)
+    oil_error_pct: Optional[float] = None
+    pf_error_pct: Optional[float] = None
+    # what the fit ran at
+    pwh_used: float
+    ppf_surf_used: float
+    seed_pwf: Optional[float] = None
+    scan: list[MatchTestScanPoint] = []
+    iterations: int
+    starts_tried: int
+    message: Optional[str] = None
+    caveat: str
+    # False = the test's PF lies outside what the catalog nozzle can pass at
+    # any BHP at the fit's PF pressure: the BHP is NOT identified.
+    pf_reachable: bool = True
+    pf_model_min: Optional[float] = None
+    pf_model_max: Optional[float] = None
+    # BHP change worth a 2 % PF error along the model's PF-vs-BHP slope, psi
+    # (how sharply the PF rate resolves the BHP on this well).
+    bhp_resolution_psi: Optional[float] = None
+    pf_per_100psi: Optional[float] = None
+    # Only when pf_reachable is False: the nozzle AREA factor that would let
+    # the catalog nozzle pass the test's PF at the fitted point,
+    # (pf_test / modeled_pf) ** 2. Comparable to the sidebar's
+    # nozzle_area_factor knob (bounded 0.8 - 1.3).
+    area_factor_needed: Optional[float] = None
+
+
 class SensitivityPoint(BaseModel):
     """One solve at one swept value. Nulls mean the solver failed there."""
 
@@ -1031,9 +1119,9 @@ class IprPinResponse(BaseModel):
 
 
 class SaveIprRequest(BaseModel):
-    """The Solver's "Save as well default" payload - mirror of the Streamlit
-    button (_render_ipr_pin_controls): pin the resolved anchor test AND push
-    the sidebar's current curve/rate values in one click. Bounds mirror the
+    """The Solver's "Save as well default" payload - carried over from the
+    retired Streamlit button: pin the resolved anchor test AND push the
+    sidebar's current curve/rate values in one click. Bounds mirror the
     SimParams widget bounds; ipr_anchor.save_ipr_values re-caps WC at 0.99."""
 
     qwf_liq: float = Field(..., gt=0.0, le=50_000.0)  # TOTAL LIQUID (BLPD), stored verbatim

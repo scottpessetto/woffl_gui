@@ -18,6 +18,8 @@ def optimize_jet_pumps(
     qpf_tot: float,
     water_key: str = "lift_wat",
     allow_shutin: bool = False,
+    water_price: float = 0.0,
+    all_configs: bool = False,
 ) -> pd.DataFrame:
     """Optimize Jet Pumps via Multiple-Choice Knapsack
 
@@ -30,6 +32,13 @@ def optimize_jet_pumps(
         qpf_tot (float): Total surface pump capacity, BWPD
         water_key (str): Column for capacity constraint, "lift_wat" or "totl_wat"
         allow_shutin (bool): If True, solver may shut in a well when its water is better used elsewhere
+        water_price (float): λ, bbl oil per bbl of ``water_key`` water. The
+            objective becomes Σ (oil − λ·water); 0.0 (default) is the
+            original oil-only objective, bit-identical.
+        all_configs (bool): If True, every converged row (``error == "na"``,
+            or all rows when there is no ``error`` column) is a candidate
+            instead of the ``semi`` subset. The GUI fork passes True so this
+            solver and the MILP see the same candidate set.
 
     Returns:
         df (DataFrame): One row per well with selected pump and rates
@@ -38,13 +47,25 @@ def optimize_jet_pumps(
         ValueError: If any well has no semi-finalists
         RuntimeError: If the problem is infeasible (capacity too small)
     """
-    # collect semi-finalist candidates per well
+    # [LIBRARY change -> upstream PR to kwellis/woffl] water_price / all_configs:
+    # the fork prices machine water in the objective and hands both solvers
+    # one candidate set (docs/optimization_redesign_2026-09.md). Defaults keep
+    # the upstream behaviour exactly.
     candidates = []
     for well in well_list:
-        df_semi = well.df[well.df["semi"]].reset_index(drop=True)
-        if df_semi.empty:
-            raise ValueError(f"Well '{well.wellname}' has no semi-finalists")
-        candidates.append(df_semi)
+        if all_configs:
+            df_c = well.df
+            if "error" in df_c.columns:
+                err = df_c["error"]
+                df_c = df_c[err.isna() | err.astype(str).str.strip().isin(("na", ""))]
+            df_c = df_c[df_c["qoil_std"].notna()].reset_index(drop=True)
+            if df_c.empty:
+                raise ValueError(f"Well '{well.wellname}' has no converged config")
+        else:
+            df_c = well.df[well.df["semi"]].reset_index(drop=True)
+            if df_c.empty:
+                raise ValueError(f"Well '{well.wellname}' has no semi-finalists")
+        candidates.append(df_c)
 
     model = cp_model.CpModel()
 
@@ -66,11 +87,14 @@ def optimize_jet_pumps(
             water_terms.append(int(np.ceil(wat * SCALE)) * x[i][j])
     model.add(sum(water_terms) <= capacity_scaled)
 
-    # objective: maximize total oil
+    # objective: maximize Σ (oil − λ·water); λ = 0 is the original oil-only
+    # objective. CP-SAT needs integers, so the value is scaled by SCALE and
+    # floored (a negative value floors away from zero, which is conservative).
     oil_terms = []
     for i, df_semi in enumerate(candidates):
-        for j, oil in enumerate(df_semi["qoil_std"]):
-            oil_terms.append(int(np.floor(oil * SCALE)) * x[i][j])
+        for j, (oil, wat) in enumerate(zip(df_semi["qoil_std"], df_semi[water_key])):
+            value = float(oil) - float(water_price) * float(wat)
+            oil_terms.append(int(np.floor(value * SCALE)) * x[i][j])
     model.maximize(sum(oil_terms))
 
     # solve

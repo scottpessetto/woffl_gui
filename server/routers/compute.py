@@ -95,6 +95,20 @@ def post_calibrate(req: schemas.CalibrateRequest) -> schemas.CalibrateResponse:
         raise _invalid(exc) from exc
 
 
+@router.post("/match-test", response_model=schemas.MatchTestResponse)
+def post_match_test(req: schemas.MatchTestRequest) -> schemas.MatchTestResponse:
+    """Gaugeless test match: infer the anchor BHP from the test's PF rate
+    and fit kth/kdi so the installed pump reproduces the test's oil and PF
+    (read-only compute; the client applies the result, an explicit save
+    keeps it)."""
+    try:
+        return schemas.MatchTestResponse(**solve.match_test(req))
+    except solve.SolveFailure as exc:
+        raise _solver_error(exc) from exc
+    except ValueError as exc:
+        raise _invalid(exc) from exc
+
+
 @router.post("/sensitivity", response_model=schemas.SensitivityResponse)
 def post_sensitivity(req: schemas.SensitivityRequest) -> schemas.SensitivityResponse:
     """Per-knob sensitivity of the four match quantities (suction BHP, oil,

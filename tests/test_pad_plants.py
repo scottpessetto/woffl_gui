@@ -390,3 +390,20 @@ def test_m_pad_operating_envelope():
     assert off_curve["feasible"] is False
     assert off_curve["max_discharge_psi"] is None
     assert off_curve["pumps"] == []
+
+
+def test_water_key_follows_what_each_pad_pump_handles():
+    """E and M pumps see formation + lift water (POPS_PUMP_HANDLES "total"),
+    I and S pumps see returned power fluid only. The optimizer budgets and
+    prices whichever stream the plant actually moves (redesign section 5,
+    decided 2026-09-02)."""
+    from woffl.assembly.well_sort_engine import POPS_PUMP_HANDLES
+    from woffl.gui.e_pad_plant import EPadPlant
+    from woffl.gui.pad_plant_base import IPadPlant, MPadPlant, PadPlant, SPadPlant
+
+    expected = {"total": "totl_wat", "lift": "lift_wat"}
+    assert EPadPlant.water_key == expected[POPS_PUMP_HANDLES["E"]] == "totl_wat"
+    assert MPadPlant.water_key == expected[POPS_PUMP_HANDLES["M"]] == "totl_wat"
+    assert IPadPlant.water_key == expected[POPS_PUMP_HANDLES["I"]] == "lift_wat"
+    assert SPadPlant.water_key == expected[POPS_PUMP_HANDLES["S"]] == "lift_wat"
+    assert PadPlant.water_key == "lift_wat"  # the default for any new pad

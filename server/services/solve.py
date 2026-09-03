@@ -26,7 +26,6 @@ from woffl.gui.params import SimulationParams
 
 log = logging.getLogger("woffl.web.solve")
 
-# mirrors woffl/gui/utils.py:GOR_AUTO_RECOVERY_VALUE
 GOR_AUTO_RECOVERY_VALUE = 250.0
 
 
@@ -51,8 +50,8 @@ class SolveFailure(Exception):
 def _check_all_water(sp: schemas.SimParams) -> None:
     """All-water pre-check - a 100% WC well has no oil anchor to solve on.
 
-    mirrors woffl/gui/tabs/jetpump_solver.py's watered-out dead-end guard:
-    the engineer either enables dewatering (model as water) or lowers WC.
+    The watered-out dead-end guard: the engineer either enables dewatering
+    (model as water) or lowers WC.
     """
     if sp.form_wc >= 1.0 and not sp.model_as_water:
         raise SolveFailure(
@@ -74,9 +73,8 @@ def _run_solver(
 ) -> tuple[float, bool, float, float, float, float]:
     """Run the assembly jetpump solver, mapping errors to SolveFailure.
 
-    mirrors woffl/gui/utils.py:run_jetpump_solver - power fluid is the field
-    model's FormWater preset conditioned (0, 60); errors are mapped instead
-    of rendered.
+    Power fluid is the field model's FormWater preset conditioned (0, 60);
+    errors are mapped instead of rendered.
     """
     from woffl.assembly.solopump import jetpump_solver
     from woffl.flow.errors import ConvergenceError, ThroatEntryNoSolution
@@ -104,8 +102,8 @@ def _run_solver(
     except ConvergenceError as exc:
         raise SolveFailure("convergence", str(exc)) from exc
     except ValueError as exc:
-        # mirrors woffl/gui/utils.py:run_jetpump_solver's generic ValueError
-        # branch (well cannot lift at max suction pressure).
+        # The generic ValueError branch: the well cannot lift at max suction
+        # pressure.
         raise SolveFailure("convergence", str(exc)) from exc
 
 
@@ -149,8 +147,7 @@ def solve_single(well: str, sp: schemas.SimParams) -> dict[str, Any]:
 def _success_stats(df: pd.DataFrame) -> tuple[int, int, float]:
     """(total, successful, success_pct) for a batch sweep dataframe.
 
-    mirrors woffl/gui/tabs/batch_run.py:batch_success_stats - "successful"
-    means the solver converged, i.e. qoil_std is not NaN.
+    "successful" means the solver converged, i.e. qoil_std is not NaN.
     """
     total = len(df)
     if total == 0:
@@ -162,8 +159,7 @@ def _success_stats(df: pd.DataFrame) -> tuple[int, int, float]:
 def _augment_with_formation_marginals(batch: Any) -> None:
     """Compute mofwr and coeff_form for the formation-water axis.
 
-    mirrors woffl/gui/tabs/batch_run.py:_augment_with_formation_marginals -
-    the library's process_results only fits total/lift water; formation-water
+    The library's process_results only fits total/lift water; formation-water
     marginals are a GUI-side augmentation.
     """
     from woffl.assembly.batchpump import batch_curve_fit, gradient_back
@@ -197,9 +193,9 @@ def _augment_with_formation_marginals(batch: Any) -> None:
 def _recommend(batch: Any, marginal_watercut: float, water_type: str) -> Optional[dict[str, Any]]:
     """Recommend a jet pump by marginal watercut, or None when impossible.
 
-    mirrors woffl/gui/utils.py:recommend_jetpump for the two axes the API
-    exposes ("total" / "formation"; the GUI radio never offers "lift").
-    Failures return None - same as the performance graph's try/except.
+    Wraps recommend_jetpump for the two axes the API exposes ("total" /
+    "formation"; the GUI radio never offers "lift"). Failures return None -
+    same as the performance graph's try/except.
     """
     from woffl.assembly.batchpump import exp_model, rev_exp_deriv
 
@@ -291,8 +287,8 @@ def _recommend(batch: Any, marginal_watercut: float, water_type: str) -> Optiona
 def _fit_curve(batch: Any, water_type: str) -> Optional[dict[str, list[float]]]:
     """Sampled exponential fit curve {x, y}, or None when no fit exists.
 
-    mirrors woffl/gui/tabs/batch_run.py:_render_performance_graph curve
-    sampling: linspace(0, max water of the mode, 200), oil clipped >= 0.
+    Curve sampling: linspace(0, max water of the mode, 200), oil clipped
+    >= 0.
     """
     from woffl.assembly.batchpump import exp_model
 
@@ -336,7 +332,6 @@ def run_batch(well: str, sp: schemas.SimParams) -> dict[str, Any]:
     _jetpump, wellbore, inflow, res_mix, wp = factories.build_sim_objects(sp, well)
     prop_pf = factories.power_fluid(p.field_model)
 
-    # mirrors woffl/gui/utils.py:run_batch_pump
     jp_list = BatchPump.jetpump_list(
         list(sp.nozzle_batch_options),
         list(sp.throat_batch_options),
@@ -383,8 +378,7 @@ def run_batch(well: str, sp: schemas.SimParams) -> dict[str, Any]:
     total, successful, success_pct = _success_stats(batch.df)
 
     # The GUI radio offers total/formation and passes it straight through to
-    # recommend_jetpump (see batch_run.py:_render_performance_graph); "lift"
-    # is a library-only axis the app never uses.
+    # recommend_jetpump; "lift" is a library-only axis the app never uses.
     recommended = _recommend(batch, float(sp.marginal_watercut), sp.water_type)
 
     return {
@@ -406,10 +400,10 @@ def pressure_sweep_range(
 ) -> np.ndarray:
     """PF-pressure sweep points, inclusive of an exact-multiple max.
 
-    mirrors woffl/gui/utils.py:pressure_sweep_range - arange's exclusive stop
-    would drop an exact-multiple max, and naively extending the stop can
-    overshoot it, so clip back to power_fluid_max (+ epsilon for float
-    rounding). A swept point can never land outside the requested range.
+    arange's exclusive stop would drop an exact-multiple max, and naively
+    extending the stop can overshoot it, so clip back to power_fluid_max
+    (+ epsilon for float rounding). A swept point can never land outside
+    the requested range.
     """
     pressure_range = np.arange(
         power_fluid_min, power_fluid_max + power_fluid_step, power_fluid_step
@@ -517,9 +511,8 @@ def run_pf_range(well: str, sp: schemas.SimParams) -> dict[str, Any]:
     # an empty 200 instead of the 422 the serial version raised.
     factories.build_sim_objects(sp, well)
 
-    # mirrors woffl/gui/utils.py:run_power_fluid_range_batch, with per-point
-    # isolation added: the Streamlit loop let one bad pressure kill the whole
-    # sweep; the API drops only that point.
+    # Per-point isolation added: the Streamlit loop let one bad pressure
+    # kill the whole sweep; the API drops only that point.
     sp_json = sp.model_dump_json()
     jobs = [(well, sp_json, float(pressure)) for pressure in pressures]
     parts = pool.submit_all(_pf_point, jobs)
@@ -554,8 +547,7 @@ def _powerfluid_pressure_profile(
 ) -> np.ndarray:
     """Segmented single-phase PF pressure column from surface to the JP.
 
-    mirrors woffl/gui/tabs/pressure_profile.py:_powerfluid_pressure_profile -
-    static head plus Darcy friction over the same outflow_spacing(100) grid
+    Static head plus Darcy friction over the same outflow_spacing(100) grid
     the production traverse uses.
     """
     from woffl.flow import singlephase as sph
@@ -599,9 +591,8 @@ def _powerfluid_pressure_profile(
 def pressure_profile(well: str, sp: schemas.SimParams) -> dict[str, Any]:
     """Production and PF pressure traverses plus their differential.
 
-    mirrors woffl/gui/tabs/pressure_profile.py:render_tab - solve the
-    operating point first, then walk both strings top-down over the common
-    outflow_spacing(100) MD grid.
+    Solve the operating point first, then walk both strings top-down over
+    the common outflow_spacing(100) MD grid.
 
     Args:
         well: Selected well name.
@@ -741,4 +732,98 @@ def calibrate(req: schemas.CalibrateRequest) -> dict[str, Any]:
         "iterations": int(result.iterations),
         "starts_tried": int(result.starts_tried),
         "message": result.message,
+    }
+
+
+def match_test(req: schemas.MatchTestRequest) -> dict[str, Any]:
+    """Gaugeless test match (MatchTestResponse shape).
+
+    Mechanics live in woffl.gui.gaugeless_match.match_test: the IPR is
+    anchored on the test's own oil rate at a trial BHP and (pwf, kth, kdi)
+    are fitted so the installed pump reproduces the test's oil and PF rates.
+    Sim objects come from the same factories as a solve; the inflow is
+    rebuilt per trial through factories.create_inflow (oil basis, the
+    InFlow contract). Test-day WHP / PF pressure win over the sidebar when
+    measured (the single-point calibration's rule). knz stays at 0.01 and
+    ken at the sidebar value - both held. Nothing is written.
+    """
+    from woffl.gui.gaugeless_match import match_test as _match
+
+    if req.params.model_as_water:
+        raise ValueError("water mode has no oil-anchored match")
+    p = req.params.to_simulation_params(req.well)
+    _jetpump, wellbore, _inflow, res_mix, wp = factories.build_sim_objects(req.params, req.well)
+    prop_pf = factories.power_fluid(p.field_model)
+    pres = float(p.pres)
+
+    whp = frames.opt_float(req.test_whp)
+    pwh = whp if whp is not None and whp > 0 else float(p.surf_pres)
+    pfp = frames.opt_float(req.test_pf_press)
+    ppf_surf = pfp if pfp is not None and pfp > 0 else float(p.ppf_surf)
+
+    result = _match(
+        well_name=req.well,
+        oil_test=float(req.test_oil),
+        water_test=float(req.test_water),
+        pf_test=float(req.test_pf),
+        pres=pres,
+        make_inflow=lambda oil, pwf: factories.create_inflow(oil, pwf, pres),
+        pwh=float(pwh),
+        tsu=float(p.form_temp),
+        ppf_surf=float(ppf_surf),
+        nozzle=p.nozzle_no,
+        throat=p.area_ratio,
+        knz=0.01,
+        ken=float(p.ken),
+        seed_kth=float(p.kth),
+        seed_kdi=float(p.kdi),
+        wellbore=wellbore,
+        wellprof=wp,
+        prop_su=res_mix,
+        prop_pf=prop_pf,
+        jpump_direction=p.jpump_direction,
+        nozzle_area_factor=float(getattr(p, "nozzle_area_factor", None) or 1.0),
+        mach_crit=float(getattr(p, "mach_crit", None) or 1.0),
+    )
+    return {
+        "match_quality": result.match_quality,
+        "converged": bool(result.converged),
+        "bounded": bool(result.bounded),
+        "sonic": bool(result.sonic),
+        "pwf": frames.opt_float(result.pwf),
+        "qwf_liq": float(result.qwf_liq),
+        "form_wc": float(result.form_wc),
+        "kth": float(result.kth),
+        "kdi": float(result.kdi),
+        "ken": float(result.ken),
+        "modeled_bhp": frames.opt_float(result.modeled_bhp),
+        "modeled_oil": frames.opt_float(result.modeled_oil),
+        "modeled_water": frames.opt_float(result.modeled_water),
+        "modeled_pf": frames.opt_float(result.modeled_pf),
+        "score": frames.opt_float(result.score),
+        "oil_error_pct": frames.opt_float(result.oil_error_pct),
+        "pf_error_pct": frames.opt_float(result.pf_error_pct),
+        "pwh_used": float(pwh),
+        "ppf_surf_used": float(ppf_surf),
+        "seed_pwf": frames.opt_float(result.seed_pwf),
+        "scan": [
+            {
+                "pwf": float(s["pwf"]),
+                "psu": frames.opt_float(s["psu"]),
+                "oil": frames.opt_float(s["oil"]),
+                "pf": frames.opt_float(s["pf"]),
+                "sonic": s["sonic"],
+            }
+            for s in result.scan
+        ],
+        "iterations": int(result.iterations),
+        "starts_tried": int(result.starts_tried),
+        "message": result.message,
+        "caveat": result.caveat,
+        "pf_reachable": bool(result.pf_reachable),
+        "pf_model_min": frames.opt_float(result.pf_model_min),
+        "pf_model_max": frames.opt_float(result.pf_model_max),
+        "bhp_resolution_psi": frames.opt_float(result.bhp_resolution_psi),
+        "pf_per_100psi": frames.opt_float(result.pf_per_100psi),
+        "area_factor_needed": frames.opt_float(result.area_factor_needed),
     }

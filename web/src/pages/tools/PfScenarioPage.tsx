@@ -1,7 +1,7 @@
 /**
  * PF Scenario - oil and BHP at two power-fluid pressures.
  *
- * Port of woffl/gui/scotts_tools/pf_scenario.py. Sibling of Header Impact:
+ * Port of the retired Streamlit PF Scenario tool. Sibling of Header Impact:
  * that one sweeps wellhead pressure holding PF fixed, this sweeps PF holding
  * wellhead pressure fixed.
  */

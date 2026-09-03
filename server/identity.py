@@ -9,8 +9,8 @@ Write attribution: prop_hist writes stamp entry_user via
 registered below. The provider reads a ContextVar bound per request
 (``bind_entry_user``), so concurrent requests on the shared host each stamp
 their OWN engineer - an env var cannot do that (process-global). This is the
-FastAPI equivalent of the Streamlit app's ``set_entry_user_provider``
-registration in app.py.
+FastAPI equivalent of the retired Streamlit app's
+``set_entry_user_provider`` registration.
 """
 
 from __future__ import annotations

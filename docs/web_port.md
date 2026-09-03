@@ -118,6 +118,18 @@ a key nobody has filled and no retention floor can help. Per-well cache
 `GET /meta/warmup` reports `interval_sec` and `retention_sec` alongside the
 pass counters.
 
+**Addendum 2026-09-02 (warehouse load).** The per-well half above is no longer
+a per-well fan-out: `history.warm_fleet` pulls the fleet's extended tests and
+daily BHP in TWO windowed statements, slices each well out over its own
+[earliest install, today] window, and primes the per-well keys through
+`cache.cache_prime` (same key, same retention floor as `cache_refresh`).
+`warm_well` survives as the fallback when that pull fails and as the on-demand
+path; the per-well loop still runs for the local deviation-survey parse. With
+the deployed interval at 12 h (`app.yaml`, `WOFFL_WARM_INTERVAL_SEC=43200` -
+the warehouse bills per wake window), a pass is ~19 warehouse statements and
+there are 2 passes a day, against ~200 statements x 5 passes before.
+`GET /meta/warmup` also reports `fleet_history_ok` and `statements`.
+
 Static assets: /assets/* are content-hashed and served
 `immutable` (1 y); index.html is `no-cache` so redeploys pick up new asset
 hashes immediately. API JSON is gzipped. On Databricks Apps this matters

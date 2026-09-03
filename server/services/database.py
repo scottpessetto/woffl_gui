@@ -1,7 +1,7 @@
 """Well Database page data: chars table, aging jet pumps, prop_hist audit.
 
-Server-side port of woffl/gui/well_database_page.py (table + aging filters)
-and woffl/gui/prop_history.py (save-history fetch + shaping). Read-only.
+Read-only: the chars table + aging filters and the save-history fetch and
+shaping, ported unchanged from the retired Streamlit app.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from server.cache import ttl_cache
 from server.services import datasources, frames
 
 # DataFrame column -> JSON key for the chars table rows.
-# mirrors woffl/gui/well_database_page.py:run_well_database_page display_cols
+# Order is the retired Streamlit app's display_cols, carried over unchanged.
 _CHARS_COLUMNS: dict[str, str] = {
     "Well": "well",
     "is_sch": "is_sch",
@@ -49,7 +49,6 @@ def database_rows() -> dict[str, Any]:
     }
 
 
-# mirrors woffl/gui/well_database_page.py:_latest_test_dates
 _LATEST_TEST_QUERY = """\
 SELECT well_name,
        max(wt_date) AS last_test,
@@ -59,7 +58,6 @@ GROUP BY well_name
 """
 
 
-# mirrors woffl/gui/well_database_page.py:_latest_test_dates
 @ttl_cache(config.TTL_CHARS, maxsize=1)
 def latest_test_dates() -> tuple[dict[str, Any], dict[str, Any]]:
     """({well: latest test}, {well: latest ALLOCATED test}) - the online proxy.
@@ -112,11 +110,10 @@ _AGING_COLUMNS: dict[str, str] = {
 def aging_pumps(known_only: bool, online_only: bool, online_days: int, min_days: int) -> dict[str, Any]:
     """AgingPumpsResponse payload: current-pump tenure per well, filtered.
 
-    mirrors woffl/gui/well_database_page.py:run_well_database_page (the
-    "Aging jet pumps" section): pump_ages over the enriched JP-history
+    The "Aging jet pumps" view: pump_ages over the enriched JP-history
     frame, the wells-in-chars filter, and the recently-online filter. The
-    page's age threshold flags rows; here `min_days` filters them (the API
-    consumer renders exactly what it asked for).
+    retired Streamlit page's age threshold flagged rows; here `min_days`
+    filters them (the API consumer renders exactly what it asked for).
 
     Args:
         known_only: drop tracker wells absent from the chars table
@@ -175,8 +172,8 @@ def aging_pumps(known_only: bool, online_only: bool, online_days: int, min_days:
     return {"rows": frames.records(ages, _AGING_COLUMNS)}
 
 
-# mirrors woffl/gui/prop_history.py:fetch_prop_history (query lifted verbatim,
-# f-string braces made str.format-safe)
+# Query lifted verbatim from the retired Streamlit app, with the f-string
+# braces made str.format-safe.
 _PROP_HISTORY_QUERY = """\
 SELECT ph.prop_id,
        coalesce(x.prop_name, ph.prop_id) AS prop_name,
@@ -203,8 +200,8 @@ ORDER BY ph.entry_datetime DESC, ph.prop_id
 """
 
 
-# mirrors woffl/gui/prop_history.py:fetch_prop_history (5 min TTL - the page
-# an engineer refreshes right after a save, so a long TTL would show a lie).
+# 5 min TTL - this is the page an engineer refreshes right after a save, so a
+# long TTL would show a lie.
 # maxsize must exceed the well fleet (~90): at 64 a fleet-wide walk evicted
 # wells it had already loaded.
 @ttl_cache(config.TTL_PROP_HISTORY, maxsize=256)
@@ -255,10 +252,9 @@ _PROP_COLUMNS: dict[str, str] = {
 def prop_history_payload(well: str) -> Optional[dict[str, Any]]:
     """PropHistoryResponse payload, or None when the well has no enthid.
 
-    mirrors woffl/gui/prop_history.py:shape_history (the ordering + latest
-    per-prop marking; display strings and Alaska-time columns stay
-    client-side): history = all rows newest-first, current = each prop's
-    live row ordered by category then name.
+    The ordering + latest per-prop marking (display strings and Alaska-time
+    columns stay client-side): history = all rows newest-first, current =
+    each prop's live row ordered by category then name.
 
     Args:
         well: canonical GUI well name (e.g. "MPB-28").

@@ -34,7 +34,10 @@ def get_meta(request: Request) -> MetaResponse:
 @router.get("/meta/warmup", response_model=WarmupStatus)
 def get_warmup_status() -> WarmupStatus:
     """Fleet cache warmup progress. `wells_ok == wells_total` after the first
-    pass means no user will pay a cold per-well Databricks query."""
+    pass means no user will pay a cold per-well Databricks query.
+    `fleet_history_ok` says the fleet's history came from the two fleet
+    statements; False means that pass fell back to the per-well fan-out, which
+    `statements` (the pass's warehouse-statement count) shows the cost of."""
     from server import warmup
 
     return WarmupStatus(**warmup.status())

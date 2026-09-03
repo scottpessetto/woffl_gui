@@ -1,8 +1,7 @@
 /**
- * Full-width well-test history table. Mirror of
- * woffl/gui/tabs/jetpump_solver.py:_render_well_test_table with row-click
- * comparison selection added (clicking a row un-syncs the comparison test
- * from the IPR anchor and compares against that row).
+ * Full-width well-test history table, with row-click comparison selection
+ * added (clicking a row un-syncs the comparison test from the IPR anchor
+ * and compares against that row).
  */
 
 import type { WellTestRow } from "../../api/types";

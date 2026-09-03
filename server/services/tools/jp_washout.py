@@ -1,6 +1,6 @@
 """JP Wash-Out detection - which pumps need more PF pressure than we have.
 
-Port of woffl/gui/scotts_tools/jp_washout.py.
+Port of the retired Streamlit tool.
 
 The question: for every JP producer whose latest test measured ``lift_wat``,
 what power-fluid SURFACE pressure would the model need to produce that much
