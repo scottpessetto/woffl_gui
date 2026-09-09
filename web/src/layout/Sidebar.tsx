@@ -399,7 +399,7 @@ export function Sidebar() {
                 locked={asBuiltLocks.jpump_tvd}
               />
               <NumberField
-                label="Power Fluid Density (lbm/ft3)"
+                label="PF Density at 60 F (lbm/ft3)"
                 field="rho_pf"
                 step={0.1}
                 dp={1}

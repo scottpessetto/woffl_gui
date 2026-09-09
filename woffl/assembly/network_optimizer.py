@@ -5,7 +5,7 @@ given constrained power fluid resources.
 """
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 import numpy as np
@@ -133,13 +133,21 @@ class WellConfig:
     kdi_well: Optional[float] = None
     mach_crit_well: Optional[float] = None
     fnz_well: Optional[float] = None
+    # [LIBRARY change -> upstream PR to kwellis/woffl] opt-in scoped hardware candidates.
+    # True: all fitted losses/area belong to installed hardware; clean candidates
+    # have separate identities, even at the same size. False preserves legacy API.
+    pump_calibration_scoped: bool = False
     installed_nozzle: Optional[str] = None
     installed_throat: Optional[str] = None
     jpump_direction: str = "reverse"
     pad: str = ""
+    # [LIBRARY change -> upstream PR to kwellis/woffl] Independent lift water.
+    rho_pf: Optional[float] = None  # lbm/ft3 at 0 psig / 60 degF
 
     def __post_init__(self):
         """Validate configuration on initialization"""
+        if self.rho_pf is not None and not 50.0 <= self.rho_pf <= 70.0:
+            raise ValueError("rho_pf must be finite and between 50 and 70 lbm/ft3")
         if self.jpump_md is None:
             self.jpump_md = self.jpump_tvd
 
@@ -193,7 +201,7 @@ class PowerFluidConstraint:
 
     total_rate: float
     pressure: float
-    rho_pf: float = 62.4
+    rho_pf: Optional[float] = None
 
     def __post_init__(self):
         """Validate constraints"""
@@ -203,7 +211,7 @@ class PowerFluidConstraint:
             raise ValueError(
                 f"pressure must be between 1000-5000 psi, got {self.pressure}"
             )
-        if not (50.0 <= self.rho_pf <= 70.0):
+        if self.rho_pf is not None and not (50.0 <= self.rho_pf <= 70.0):
             raise ValueError(f"rho_pf must be between 50-70 lbm/ft³, got {self.rho_pf}")
 
 
@@ -236,6 +244,8 @@ class OptimizationResult:
     marginal_oil_rate: float
     sonic_status: bool
     mach_te: float
+    # [LIBRARY change -> upstream PR to kwellis/woffl] hardware action survives allocation.
+    pump_state: Optional[str] = None
 
     @property
     def predicted_total_water(self) -> float:
@@ -281,7 +291,12 @@ class NetworkOptimizer:
                 objective of both solvers (docs/optimization_redesign_2026-09.md).
                 None = derive from ``marginal_watercut``.
         """
-        self.wells = wells
+        # [LIBRARY change -> upstream PR to kwellis/woffl] Carry resolved PF
+        # density in WellConfig so workers and exact response-cache keys agree.
+        # Explicit per-well density wins; the shared constraint is a fallback.
+        self.wells = [replace(w, rho_pf=power_fluid.rho_pf)
+                      if w.rho_pf is None and power_fluid.rho_pf is not None else w
+                      for w in wells]
         self.power_fluid = power_fluid
         self.nozzle_options = nozzle_options
         self.throat_options = throat_options
@@ -334,7 +349,7 @@ class NetworkOptimizer:
         Returns:
             tuple: (wellbore, wellprofile, inflow, res_mix, prop_pf)
         """
-        from woffl.assembly.sim_factories import create_pvt_components
+        from woffl.assembly.sim_factories import create_pvt_components, create_power_fluid
 
         # Create tubing and casing, then combine into PipeInPipe
         tube = Pipe(out_dia=well.tubing_od, thick=well.tubing_thickness)
@@ -363,7 +378,7 @@ class NetworkOptimizer:
         res_mix = ResMix(
             wc=well.form_wc, fgor=well.form_gor, oil=oil, wat=water, gas=gas
         )
-        prop_pf = water.condition(0, 60)
+        prop_pf = create_power_fluid(well.field_model, well.rho_pf)
 
         return wellbore, well_profile, inflow, res_mix, prop_pf
 
@@ -388,6 +403,16 @@ class NetworkOptimizer:
         self.batch_results = {}
         total_wells = len(self.wells)
         workers = max(1, int(max_workers))
+
+        # [LIBRARY change -> upstream PR to kwellis/woffl] The web host owns
+        # one reusable pool/cache. No server dependency or nested child pools.
+        from woffl.assembly import compute_runtime
+        if compute_runtime.batch_runner is not None:
+            self.batch_results = compute_runtime.batch_runner(
+                self.wells, self.power_fluid.pressure, self.nozzle_options,
+                self.throat_options, progress_callback,
+            )
+            return self.batch_results
 
         def _run_serial():
             for idx, well in enumerate(self.wells):
@@ -446,7 +471,7 @@ class NetworkOptimizer:
         return self.batch_results
 
     def get_power_fluid_requirement(
-        self, well_name: str, nozzle: str, throat: str
+        self, well_name: str, nozzle: str, throat: str, pump_state: Optional[str] = None
     ) -> Optional[float]:
         """Get power fluid requirement for specific pump configuration
 
@@ -465,6 +490,12 @@ class NetworkOptimizer:
 
         # Find the row with matching nozzle and throat
         mask = (batch_pump.df["nozzle"] == nozzle) & (batch_pump.df["throat"] == throat)
+        # [LIBRARY change -> upstream PR to kwellis/woffl] resolve duplicate catalog sizes.
+        if "pump_state" in batch_pump.df:
+            if pump_state is not None:
+                mask &= batch_pump.df["pump_state"] == pump_state
+            elif (mask & (batch_pump.df["pump_state"] == "installed")).any():
+                mask &= batch_pump.df["pump_state"] == "installed"
         matching_rows = batch_pump.df[mask]
 
         if matching_rows.empty:
@@ -480,7 +511,7 @@ class NetworkOptimizer:
         return float(lift_wat)
 
     def get_pump_performance(
-        self, well_name: str, nozzle: str, throat: str
+        self, well_name: str, nozzle: str, throat: str, pump_state: Optional[str] = None
     ) -> Optional[dict]:
         """Get complete performance metrics for specific pump configuration
 
@@ -499,6 +530,12 @@ class NetworkOptimizer:
 
         # Find the row with matching nozzle and throat
         mask = (batch_pump.df["nozzle"] == nozzle) & (batch_pump.df["throat"] == throat)
+        # [LIBRARY change -> upstream PR to kwellis/woffl] resolve duplicate catalog sizes.
+        if "pump_state" in batch_pump.df:
+            if pump_state is not None:
+                mask &= batch_pump.df["pump_state"] == pump_state
+            elif (mask & (batch_pump.df["pump_state"] == "installed")).any():
+                mask &= batch_pump.df["pump_state"] == "installed"
         matching_rows = batch_pump.df[mask]
 
         if matching_rows.empty:
@@ -511,6 +548,7 @@ class NetworkOptimizer:
             return None
 
         return {
+            "pump_state": row.get("pump_state"),
             "oil_rate": float(row["qoil_std"]),
             "formation_water": float(row["form_wat"]),
             "lift_water": float(row["lift_wat"]),
@@ -596,6 +634,8 @@ class NetworkOptimizer:
                     "Marginal Oil Rate": r.marginal_oil_rate,
                     "Sonic": r.sonic_status,
                     "Mach Number": r.mach_te,
+                    # [LIBRARY change -> upstream PR to kwellis/woffl]
+                    **({"Pump State": r.pump_state} if r.pump_state else {}),
                     "Total Watercut": r.total_watercut,
                 }
             )
@@ -655,6 +695,17 @@ def _simulate_single_well(
                 and jp.rat_ar == well.installed_throat
             ):
                 jp.dnz = jp.dnz * dnz_scale
+
+    # [LIBRARY change -> upstream PR to kwellis/woffl] explicit application policy;
+    # the upstream/legacy API retains its previous coefficient behavior.
+    if well.pump_calibration_scoped:
+        from woffl.assembly.pump_candidates import scoped_pumps
+        jp_list = scoped_pumps(nozzle_options, throat_options,
+            (well.installed_nozzle, well.installed_throat),
+            {key: value for key, value in {
+                "ken": well.ken_well, "kth": well.kth_well, "kdi": well.kdi_well,
+                "nozzle_area_factor": well.fnz_well,
+            }.items() if value is not None})
 
     batch_pump = BatchPump(
         pwh=well.surf_pres,

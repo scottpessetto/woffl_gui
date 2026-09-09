@@ -50,7 +50,7 @@ from woffl.assembly import cfp_plant as _cfp
 # get it from here rather than reaching into the plant module.
 from woffl.gui.cfp_pad_plant import CFPMachineSubsetUnvalidated, CFPPlant  # noqa: F401
 
-_RHO_PF_DEFAULT = 62.4
+_RHO_PF_DEFAULT = None  # keep the per-well lift-water density
 # PowerFluidConstraint validates 1000 <= pressure <= 5000. A pad's delivered PF
 # can fall below that at a low discharge, so clamp and REPORT rather than raise.
 _PF_MIN, _PF_MAX = 1000.0, 5000.0

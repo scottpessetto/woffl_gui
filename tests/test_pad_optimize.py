@@ -257,6 +257,7 @@ class TestFixedCurveSweep:
         # the sweep covers the station's flow window and every trial carries
         # the flow it was solved at
         assert len(meta["sweep"]) == 11 and len(progress) == 11
+        assert [p[2] for p in progress] == pytest.approx([r["header_psi"] for r in meta["sweep"]])
         assert meta["sweep"][0]["total_flow_bpd"] == pytest.approx(10000.0)
         assert meta["sweep"][-1]["total_flow_bpd"] == pytest.approx(50000.0)
         # ties on the priced objective go to the SMALLEST flow, so the
@@ -299,6 +300,43 @@ class TestFixedCurveSweep:
 
 
 class TestPressureSweepRun:
+    def test_winning_well_configs_retain_winning_pressure(self, fake_core):
+        fake_core.optimize_fn = lambda opt: [
+            _result("W1", 1000.0, 5000.0 - abs(opt.power_fluid.pressure - 2500.0))
+        ]
+        _, optimizer, meta = po.run_optimization(
+            _wells("W1"), FreePlant(), None, ["12"], ["B"], "milp", 1.0,
+            n_steps=3, refine_rounds=0,
+        )
+        assert optimizer.well_configs[0].ppf_surf_well == meta["header_psi"]
+
+    def test_plant_reporting_uses_machine_water_and_winning_pressure(self, fake_core):
+        class TotalWaterPlant(FreePlant):
+            water_key = "totl_wat"
+
+            def flags(self, q_total, n_pumps=None):
+                self.flag_flow = q_total
+                return super().flags(q_total, n_pumps)
+
+            def envelope(self, flows, n_pumps=None, at_pressure=None):
+                self.envelope_flows = flows
+                self.envelope_pressure = at_pressure
+                return super().envelope(flows, n_pumps, at_pressure)
+
+        plant = TotalWaterPlant()
+        result = _result("W1", 1000.0, 100.0)
+        result.predicted_total_water = 9000.0
+        fake_core.optimize_fn = lambda opt: [result]
+        _, _, meta = po.run_optimization(
+            _wells("W1"), plant, None, ["12"], ["B"], "milp", 1.0,
+            setpoint_psi=2500.0,
+        )
+        assert plant.flag_flow == 9000.0
+        assert plant.envelope_flows == [9000.0]
+        assert plant.envelope_pressure == 2500.0
+        assert meta["total_pf_bpd"] == 1000.0
+        assert meta["total_machine_water_bpd"] == 9000.0
+
     def test_keeps_max_oil_pressure_and_winning_optimizer(self, fake_core):
         # oil peaks at 2600 psi across the 2000..3000 sweep (11 steps of 100)
         fake_core.optimize_fn = lambda opt: [
@@ -721,13 +759,7 @@ class TestMatchCheck:
 
 
 class TestRhoPfDefault:
-    """docs/code_review_2026-07-01.md P1-13: the 5 PowerFluidConstraint call
-    sites in this module used to spell out ``rho_pf=62.4`` independently.
-    They now share one ``_RHO_PF_DEFAULT`` constant. Confirms (a) the
-    constant is numerically identical to PowerFluidConstraint's own default
-    (so de-duplicating it changed no behavior — rho_pf isn't read anywhere
-    downstream of the dataclass's own range validation) and (b) it actually
-    reaches the constructed PowerFluidConstraint at every call site."""
+    """Plant SG now supplies a density fallback; per-well values can override."""
 
     def test_constant_matches_dataclass_default(self):
         from woffl.assembly.network_optimizer import PowerFluidConstraint
@@ -739,17 +771,19 @@ class TestRhoPfDefault:
 
     def test_fixed_curve_run(self, fake_core):
         fake_core.optimize_fn = lambda opt: [_result("W1", 10000.0, 100.0)]
+        plant = CurvePlant()
+        plant.specific_gravity = lambda: 1.04
         _, optimizer, _ = po.run_optimization(
-            _wells("W1"), CurvePlant(), 3, ["12"], ["B"], "milp", 0.7
+            _wells("W1"), plant, 3, ["12"], ["B"], "milp", 0.7
         )
-        assert optimizer.power_fluid.rho_pf == po._RHO_PF_DEFAULT
+        assert optimizer.power_fluid.rho_pf == pytest.approx(1.04 * 62.4)
 
     def test_free_pressure_run(self, fake_core):
         fake_core.optimize_fn = lambda opt: [_result("W1", 1000.0, 50.0)]
         _, optimizer, _ = po.run_optimization(
             _wells("W1"), FreePlant(), None, ["12"], ["B"], "mckp", 1.0, n_steps=5
         )
-        assert optimizer.power_fluid.rho_pf == po._RHO_PF_DEFAULT
+        assert optimizer.power_fluid.rho_pf == 62.4
 
     def test_evaluate_fixed_scenario(self, fake_core):
         fake_core.Optimizer.perf_table = {
@@ -757,7 +791,7 @@ class TestRhoPfDefault:
         }
         po.evaluate_fixed_scenario(_wells("W1"), CurvePlant(), 3, {"W1": ("12", "B")})
         opt = fake_core.Optimizer.instances[-1]
-        assert opt.power_fluid.rho_pf == po._RHO_PF_DEFAULT
+        assert opt.power_fluid.rho_pf == 62.4
 
     def test_evaluate_existing_scenario(self, fake_core):
         fake_core.Optimizer.perf_table = {
@@ -772,7 +806,7 @@ class TestRhoPfDefault:
             test_rates={"W1": (100.0, 200.0)},
         )
         opt = fake_core.Optimizer.instances[-1]
-        assert opt.power_fluid.rho_pf == po._RHO_PF_DEFAULT
+        assert opt.power_fluid.rho_pf == 62.4
 
     def test_match_check(self, fake_core):
         fake_core.Optimizer.perf_table = {
@@ -786,7 +820,7 @@ class TestRhoPfDefault:
             {"W1": (100.0, 200.0)},
         )
         opt = fake_core.Optimizer.instances[-1]
-        assert opt.power_fluid.rho_pf == po._RHO_PF_DEFAULT
+        assert opt.power_fluid.rho_pf == 62.4
 
 
 # ── marginal-WC auto-derive + parsimony (feature integration) ──────────────

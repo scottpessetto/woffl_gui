@@ -47,7 +47,7 @@ class TestSimulationParamsDefaults:
         p = SimulationParams()
         assert p.surf_pres == 210
         assert p.jpump_tvd == 4065
-        assert p.rho_pf == 62.4
+        assert p.rho_pf == 63.648
         assert p.ppf_surf == 3168
 
     def test_inflow_defaults(self):

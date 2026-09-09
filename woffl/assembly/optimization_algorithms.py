@@ -150,6 +150,11 @@ def _valid_configs(df: "pd.DataFrame") -> "pd.DataFrame":
         valid = df
     if "qoil_std" in valid.columns:
         valid = valid[valid["qoil_std"].notna()]
+    # [LIBRARY change -> upstream PR to kwellis/woffl] no changeout for an
+    # exactly identical modeled outcome. Keep both candidates in batch reports.
+    if "pump_state" in valid:
+        keys = [k for k in ("nozzle", "throat", "qoil_std", "lift_wat", "form_wat", "psu_solv", "sonic_status", "mach_te") if k in valid]
+        valid = valid.sort_values("pump_state", kind="stable").drop_duplicates(keys)
     return valid
 
 
@@ -358,7 +363,7 @@ def apply_parsimony(
         best = candidates.iloc[0]
         new_nozzle, new_throat = str(best["nozzle"]), str(best["throat"])
 
-        perf = optimizer.get_pump_performance(r.well_name, new_nozzle, new_throat)
+        perf = optimizer.get_pump_performance(r.well_name, new_nozzle, new_throat, **({"pump_state": best["pump_state"]} if "pump_state" in best else {}))
         if perf is None:
             new_results.append(r)
             continue
@@ -375,6 +380,8 @@ def apply_parsimony(
             marginal_oil_rate=perf.get(marg_perf_key, 0.0),
             sonic_status=perf["sonic_status"],
             mach_te=perf["mach_te"],
+                # [LIBRARY change -> upstream PR to kwellis/woffl]
+                pump_state=perf.get("pump_state"),
         )
         new_results.append(new_r)
         swaps.append(
@@ -424,11 +431,22 @@ def milp_optimization(
     Raises:
         ValueError: If batch results haven't been run or water_key unknown
     """
-    from scipy.optimize import Bounds, LinearConstraint, milp
+    from scipy.optimize import Bounds, LinearConstraint, milp as scipy_milp
+    import warnings
     from scipy.sparse import csc_array
     from scipy.sparse import vstack as sp_vstack
 
     from woffl.assembly.network_optimizer import OptimizationResult
+
+    def milp(**kwargs):
+        # [LIBRARY change -> upstream PR to kwellis/woffl] SciPy forwards
+        # HiGHS options not in its small public option set. Bound native
+        # threads as well as process count; suppress only this known notice.
+        kwargs.setdefault("options", {})["threads"] = 1
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Unrecognized options detected:.*threads.*",
+                                    category=RuntimeWarning)
+            return scipy_milp(**kwargs)
 
     if not optimizer.batch_results:
         raise ValueError("Must run batch simulations before optimization")
@@ -466,7 +484,7 @@ def milp_optimization(
         batch_pump = optimizer.batch_results[wn]
         successful = _valid_configs(batch_pump.df)
         for _, row in successful.iterrows():
-            perf = optimizer.get_pump_performance(wn, row["nozzle"], row["throat"])
+            perf = optimizer.get_pump_performance(wn, row["nozzle"], row["throat"], **({"pump_state": row["pump_state"]} if "pump_state" in row else {}))
             if perf is None:
                 continue
             configs.append(
@@ -517,13 +535,26 @@ def milp_optimization(
     bounds = Bounds(lb=np.zeros(n), ub=np.ones(n))
     integrality = np.ones(n)  # all binary
 
-    result = milp(c=c, constraints=constraints, bounds=bounds, integrality=integrality)
+    result = milp(c=c, constraints=constraints, bounds=bounds, integrality=integrality,
+                  options={"mip_rel_gap": 0.0})
 
     if not result.success:
         optimizer.optimization_results = []
         return []
 
     # ── Extract selected configurations ───────────────────────────────────
+    # [LIBRARY change -> upstream PR to kwellis/woffl] O02: preserve the
+    # optimal priced objective, then maximize oil among tied allocations.
+    if lam > 0:
+        oil_objective = -np.array([cfg["perf"]["oil_rate"] for cfg in configs])
+        tied = milp(
+            c=oil_objective,
+            constraints=[constraints, LinearConstraint(c, result.fun, result.fun)],
+            bounds=bounds, integrality=integrality,
+            options={"mip_rel_gap": 0.0},
+        )
+        if tied.success and float(c @ np.rint(tied.x)) <= result.fun + 1e-7:
+            result = tied
     selected = np.where(result.x > 0.5)[0]
 
     results = []
@@ -543,6 +574,8 @@ def milp_optimization(
                 marginal_oil_rate=perf[marg_key],
                 sonic_status=perf["sonic_status"],
                 mach_te=perf["mach_te"],
+                # [LIBRARY change -> upstream PR to kwellis/woffl]
+                pump_state=perf.get("pump_state"),
             )
         )
 
@@ -649,7 +682,7 @@ def mckp_optimization(
         throat = str(row["throat"])
 
         # Look up full performance from batch results
-        perf = optimizer.get_pump_performance(well_name, nozzle, throat)
+        perf = optimizer.get_pump_performance(well_name, nozzle, throat, **({"pump_state": row["pump_state"]} if "pump_state" in row else {}))
         if perf is None:
             continue
 
@@ -668,6 +701,8 @@ def mckp_optimization(
                 marginal_oil_rate=perf[marg_perf_key],
                 sonic_status=perf["sonic_status"],
                 mach_te=perf["mach_te"],
+                # [LIBRARY change -> upstream PR to kwellis/woffl]
+                pump_state=perf.get("pump_state"),
             )
         )
 
@@ -692,9 +727,13 @@ def optimize(
     Raises:
         ValueError: If method is not recognized
     """
-    if method == "milp":
-        return milp_optimization(optimizer, water_key=water_key)
-    elif method == "mckp":
-        return mckp_optimization(optimizer, water_key=water_key)
-    else:
-        raise ValueError(f"Unknown optimization method: {method}. Use 'milp' or 'mckp'")
+    # [LIBRARY change -> upstream PR to kwellis/woffl] Standalone defaults
+    # are no-op contexts; the host coordinates allocations with physics jobs.
+    from woffl.assembly import compute_runtime
+    with compute_runtime.cpu_slot(), compute_runtime.measure("compute.allocation"):
+        if method == "milp":
+            return milp_optimization(optimizer, water_key=water_key)
+        elif method == "mckp":
+            return mckp_optimization(optimizer, water_key=water_key)
+        else:
+            raise ValueError(f"Unknown optimization method: {method}. Use 'milp' or 'mckp'")

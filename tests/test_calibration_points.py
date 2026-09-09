@@ -96,7 +96,7 @@ def test_era_gating_drops_pre_era_daily_and_test_rows():
 
     res = _build(daily, pf, tests)
     assert res["era_start"] == "2026-06-01"
-    assert res["pump"] == {"nozzle": "12", "throat": "B", "date_set": "2026-06-01"}
+    assert res["pump"] == {"nozzle": "12", "throat": "B", "date_set": "2026-06-01T00:00:00"}
     assert res["n_test"] == 1  # the 05-15 test predates the era
     dates = [p["date"] for p in res["points"]]
     assert "2026-05-20" not in dates

@@ -36,6 +36,8 @@ def _saved(friction: dict) -> dict:
 def context(monkeypatch):
     """Run well_context for MPB-28 against a stubbed pipeline; the test picks
     the saved-fit record by mutating `saved` before calling."""
+    from server.services import pump_calibration
+    monkeypatch.setattr(pump_calibration, "snapshot", lambda: {})
     saved: dict[str, dict] = {}
     chars = pd.DataFrame([{"Well": "MPB-28", "res_pres": 1700.0}])
     monkeypatch.setattr(
@@ -58,32 +60,26 @@ def context(monkeypatch):
     return saved, run
 
 
-def test_event_cal_knobs_restore_into_seeds(context):
+def test_legacy_friction_is_reported_but_not_inherited(context):
     saved, run = context
-    saved["MPB-28"] = _saved(
-        {"ken": 0.05, "nozzle_area_factor": 1.12, "mach_crit": 1.6}
-    )
-    seeds = run()["seeds"]
-    assert seeds["ken"] == pytest.approx(0.05)
-    assert seeds["nozzle_area_factor"] == pytest.approx(1.12)  # full precision
-    assert seeds["mach_crit"] == pytest.approx(1.6)
+    saved["MPB-28"] = _saved({"ken": .005, "nozzle_area_factor": 1.12, "mach_crit": 1.6})
+    ctx = run()
+    assert ctx["pump_calibration"]["status"] == "legacy"
+    assert ctx["seeds"]["ken"] == .03
+    assert ctx["seeds"]["nozzle_area_factor"] == 1.
+    assert ctx["seeds"]["mach_crit"] == 1.
 
 
-def test_event_cal_seeds_are_clamped_to_widget_bounds(context):
-    """A stored row outside the SimParams bounds must not poison the client
-    store (seeds are applied wholesale over defaults)."""
+def test_invalid_legacy_coefficients_cannot_poison_hydration(context):
     saved, run = context
     saved["MPB-28"] = _saved({"nozzle_area_factor": 2.5, "mach_crit": 9.0})
-    seeds = run()["seeds"]
-    assert seeds["nozzle_area_factor"] == pytest.approx(1.3)
-    assert seeds["mach_crit"] == pytest.approx(2.5)
+    assert run()["seeds"]["nozzle_area_factor"] == 1.
 
 
-def test_no_saved_fit_leaves_knobs_unseeded(context):
-    """Never-calibrated wells carry NO explicit knob seeds - the client's
-    SimParams defaults (1.0 / 1.0) stand."""
-    _saved_map, run = context
-    seeds = run()["seeds"]
-    assert "nozzle_area_factor" not in seeds
-    assert "mach_crit" not in seeds
-    assert "ken" not in seeds
+def test_unfitted_well_uses_explicit_reference_coefficients(context):
+    from woffl.assembly.pump_candidates import CLEAN_PUMP
+    _, run = context
+    ctx = run()
+    assert ctx["pump_calibration"]["status"] == "none"
+    for key, value in CLEAN_PUMP.items():
+        assert ctx["seeds"][key] == value

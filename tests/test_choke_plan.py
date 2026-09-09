@@ -289,7 +289,7 @@ def test_meta_carries_the_chart_contract(monkeypatch):
         assert key in meta, key
     assert meta["mode"] == "choke"
     assert meta["n_pumps"] == 3
-    assert meta["sweep"][0].keys() == {"header_psi", "total_pf_bpd", "total_oil_bopd"}
+    assert meta["sweep"][0].keys() == {"header_psi", "total_pf_bpd", "total_machine_water_bpd", "total_oil_bopd"}
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +523,7 @@ def _ev_row(**over):
     row = {
         "floor": 350.0,
         "psu_ref": 400.0,
+        "ppf_ref": 3000.0,
         "beta": 0.1,
         "beta_source": "well",
         "n_days": 30,
@@ -582,8 +583,8 @@ def test_evidence_correction_declines_the_staircase_and_charges_chokes(monkeypat
     b = next(r for r in rows if r["well"] == "B")
     # A: choked to 2500; oil now costs (staircase declines)
     assert a["action"] == "choke" and a["delivered_psi"] == 2500.0
-    assert a["oil"] == pytest.approx(100.0 * _vogel_ratio(450.0, 400.0, 1000.0))
-    assert a["oil_full"] == pytest.approx(100.0)  # anchored at k*
+    assert a["oil"] == pytest.approx(100.0 * _vogel_ratio(450.0, 500.0, 1000.0))
+    assert a["oil_full"] == pytest.approx(100.0 * _vogel_ratio(400.0, 500.0, 1000.0))  # correct local model BHP
     assert a["d_oil_vs_full"] < 0.0  # chokes cost oil now
     # psu rises with choke depth (beta * dP off the psu_ref anchor)
     assert a["psu_full"] == pytest.approx(400.0)
@@ -655,10 +656,10 @@ def test_measured_response_falsifies_a_confirmed_floor(monkeypatch):
     assert a["floor_violation_psi"] == pytest.approx(10.0)
     # the corrected staircase declines: choking costs real oil now
     oil_by_header = {s["header_psi"]: s["total_oil_bopd"] for s in meta["sweep"]}
-    assert oil_by_header[3000.0] == pytest.approx(100.0)
+    assert oil_by_header[3000.0] == pytest.approx(100.0 * _vogel_ratio(400.0, 500.0, 1000.0))
     assert (
         oil_by_header[2000.0]
-        == pytest.approx(100.0 * _vogel_ratio(400.0 + 0.08 * 1000.0, 400.0, 1000.0))
+        == pytest.approx(100.0 * _vogel_ratio(400.0 + 0.08 * 1000.0, 500.0, 1000.0))
     )
     assert oil_by_header[2000.0] < oil_by_header[2500.0] < oil_by_header[3000.0]
 
@@ -766,8 +767,8 @@ def test_psu_e_at_or_above_res_pres_zeroes_deep_levels(monkeypatch):
     oil_by_header = {s["header_psi"]: s["total_oil_bopd"] for s in meta["sweep"]}
     assert oil_by_header[2000.0] == pytest.approx(0.0)
     assert oil_by_header[2500.0] == pytest.approx(0.0)
-    assert oil_by_header[3000.0] == pytest.approx(100.0)
-    assert rows[0]["oil"] == pytest.approx(100.0)  # full open at the anchor
+    assert oil_by_header[3000.0] == pytest.approx(100.0 * _vogel_ratio(400.0, 500.0, 600.0))
+    assert rows[0]["oil"] == oil_by_header[3000.0]
 
 
 def test_psu_ref_at_or_above_res_pres_is_unusable(monkeypatch):
@@ -794,8 +795,8 @@ def test_decision_ladder_charges_oil_for_chokes_on_a_corrected_well(monkeypatch)
         evidence={"A": _ev_row()},
     )
     rung = next(r for r in meta["ladder"] if r["drop_psi"] == pytest.approx(500.0))
-    oil_2000 = 100.0 * _vogel_ratio(500.0, 400.0, 1000.0)
-    oil_2500 = 100.0 * _vogel_ratio(450.0, 400.0, 1000.0)
+    oil_2000 = 100.0 * _vogel_ratio(500.0, 500.0, 1000.0)
+    oil_2500 = 100.0 * _vogel_ratio(450.0, 500.0, 1000.0)
     # run-all at the rung: A + B priced from the corrected grid at 2500
     assert rung["run_all_oil_bopd"] == pytest.approx(oil_2500 + 75.0)
     # best response holds 3000 and chokes A to 2000 - and PAYS for it

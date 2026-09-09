@@ -91,7 +91,7 @@ function performanceOption(
   for (const r of rows) {
     (r.semi ? semiData : elimData).push({
       value: [r[waterKey], r.qoil_std],
-      name: pumpCode(r.nozzle, r.throat),
+      name: `${pumpCode(r.nozzle, r.throat)} (${r.pump_state === "replacement" ? "clean" : "installed"})`,
       row: r,
     });
   }
@@ -176,6 +176,7 @@ function performanceOption(
 }
 
 interface RecommenderRow extends Record<string, unknown> {
+  pump_state?: "installed" | "replacement" | null;
   nozzle: string;
   throat: string;
   qoil_std: number;
@@ -227,6 +228,7 @@ export default function BatchPage() {
         const ratio = r[ratioKey];
         const finite = typeof ratio === "number" && Number.isFinite(ratio) ? ratio : null;
         return {
+          pump_state: r.pump_state,
           nozzle: r.nozzle,
           throat: r.throat,
           qoil_std: r.qoil_std,
@@ -240,6 +242,7 @@ export default function BatchPage() {
   const resultColumns: Column<BatchRow>[] = [
     { key: "nozzle", label: "Nozzle" },
     { key: "throat", label: "Throat" },
+    { key: "pump_state", label: "Hardware", render: (r) => r.pump_state === "replacement" ? "Clean replacement" : "Installed" },
     { key: "qoil_std", label: "Oil Rate (BOPD)", align: "right", render: (r) => fmtNum(r.qoil_std) },
     { key: "form_wat", label: "Formation Water (BWPD)", align: "right", render: (r) => fmtNum(r.form_wat) },
     { key: "lift_wat", label: "Lift Water (BWPD)", align: "right", render: (r) => fmtNum(r.lift_wat) },
@@ -253,6 +256,7 @@ export default function BatchPage() {
   const recommenderColumns: Column<RecommenderRow>[] = [
     { key: "nozzle", label: "Nozzle" },
     { key: "throat", label: "Throat" },
+    { key: "pump_state", label: "Hardware", render: (r) => r.pump_state === "replacement" ? "Clean replacement" : "Installed" },
     { key: "qoil_std", label: "Oil Rate (BOPD)", align: "right", render: (r) => fmtNum(r.qoil_std) },
     { key: "water", label: `${waterLabel} (BWPD)`, align: "right", render: (r) => fmtNum(r.water) },
     { key: "ratio", label: ratioLabel, align: "right", render: (r) => fmtNum(r.ratio, 3) },
@@ -356,6 +360,7 @@ export default function BatchPage() {
           {rec && (
             <Section title="Recommended Jet Pump">
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+                <Metric label="Hardware" value={rec.pump_state === "replacement" ? "Clean replacement" : "Keep installed"} />
                 <Metric label="Nozzle Size" value={rec.nozzle} />
                 <Metric label="Throat Ratio" value={rec.throat} />
                 <Metric label="Oil Rate" value={`${fmtNum(rec.qoil_std, 1)} BOPD`} />
@@ -400,7 +405,7 @@ export default function BatchPage() {
             <DataTable
               columns={resultColumns}
               rows={okRows}
-              rowKey={(r) => pumpCode(r.nozzle, r.throat)}
+              rowKey={(r) => `${pumpCode(r.nozzle, r.throat)}:${r.pump_state ?? ""}`}
               highlightRow={(r) => r.semi}
               maxHeight="28rem"
             />
@@ -427,9 +432,9 @@ export default function BatchPage() {
             <DataTable
               columns={recommenderColumns}
               rows={recommenderRows}
-              rowKey={(r) => pumpCode(r.nozzle, r.throat)}
+              rowKey={(r) => `${pumpCode(r.nozzle, r.throat)}:${r.pump_state ?? ""}`}
               highlightRow={(r) =>
-                rec !== null && r.nozzle === rec.nozzle && r.throat === rec.throat
+                rec !== null && r.nozzle === rec.nozzle && r.throat === rec.throat && r.pump_state === rec.pump_state
               }
               emptyLabel="No semi-finalist jet pumps found"
             />

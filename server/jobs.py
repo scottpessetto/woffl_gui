@@ -40,7 +40,8 @@ _JOBS: dict[str, dict[str, Any]] = {}
 _JOBS_LOCK = threading.Lock()
 
 # How many jobs may RUN at once (the rest queue, with a progress line saying
-# so). 2 matches the deployed 2-vCPU tier; raise locally via WOFFL_MAX_JOBS.
+# so). Local default is 2; app.yaml sets 1 on Medium so each job can use
+# both shared workers without competing with another background study.
 try:
     _MAX_JOBS = max(1, int(os.getenv("WOFFL_MAX_JOBS", "2")))
 except ValueError:
@@ -89,7 +90,7 @@ def get(job_id: str, kinds: Optional[tuple[str, ...]] = None) -> Optional[dict[s
             "result": job["result"],
             "error": job["error"],
             "started_at": job["started_at"],
-            "seconds": round(time.monotonic() - job["started_mono"], 1),
+            "seconds": round((job["settled_mono"] or time.monotonic()) - job["started_mono"], 1),
         }
 
 
@@ -134,7 +135,10 @@ def start(kind: str, run: Runner, progress: str = "starting...") -> str:
             job["progress"] = f"queued - waiting for a job slot (max {_MAX_JOBS} at once)"
             _JOB_SLOTS.acquire()
         try:
-            job["result"] = run(job)
+            from server import performance
+            performance.record("job.queue", time.monotonic() - job["started_mono"])
+            with performance.measure("job.run"):
+                job["result"] = run(job)
             job["status"] = "done"
             job["progress"] = "done"
         except Exception as exc:  # noqa: BLE001 - job surface, never crash the server

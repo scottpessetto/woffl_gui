@@ -479,11 +479,11 @@ class TestFrictionSave:
             p: v for (_, p, v, _) in pushes
             if p in ("jpfric_nozzle_area", "jp_mach_crit")
         }
-        assert fric == {"jpfric_nozzle_area": 1.12, "jp_mach_crit": 1.6}
-        assert n == 8
+        assert fric == {"jpfric_nozzle_area": 1.12}  # retired Mach is not saved
+        assert n == 7
         assert "BHP-calibrated friction" in msg
 
-    def test_event_cal_unchanged_stored_writes_no_history_noise(
+    def test_explicit_save_clears_old_mach_without_replaying_nozzle_wear(
         self, pushes, monkeypatch
     ):
         stored = {
@@ -493,9 +493,8 @@ class TestFrictionSave:
         }
         monkeypatch.setattr(ia, "load_saved_ipr", lambda w: stored)
         self._save(nozzle_area_factor=1.12, mach_crit=1.6)
-        assert not any(
-            p in ("jpfric_nozzle_area", "jp_mach_crit") for (_, p, _, _) in pushes
-        )
+        fric = {p: v for (_, p, v, _) in pushes if p in ("jpfric_nozzle_area", "jp_mach_crit")}
+        assert fric == {"jp_mach_crit": 1.0}
 
     def test_event_cal_revert_to_unity_pushes_over_a_stored_override(
         self, pushes, monkeypatch

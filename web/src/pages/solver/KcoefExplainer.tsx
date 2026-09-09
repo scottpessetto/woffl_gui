@@ -55,7 +55,7 @@ const WHY_CHANGE: string[] = [
 ];
 
 const READING_HIGH: string[] = [
-  "Rule out the cheap explanations first. The coefficients absorb ALL model error, so a wrong power-fluid pressure, IPR, or GOR inflates them too - that's why calibration is gated on a good PF-rate match.",
+  "Rule out the cheap explanations first. The coefficients absorb ALL model error, so a wrong water cut, power-fluid pressure, IPR, or GOR can shift them too. Check the PF residual as well as BHP.",
   "A rising trend beats a single value. Erosion is progressive, so a coefficient climbing across successive tests is the real wear signal, not one high number (Streamlit: Scott's Tools - JP Fric Trend).",
   "Classic nozzle wash-out is geometric, not a friction term. An eroded, enlarged nozzle passes too much power fluid - a PF-rate mismatch, not a high coefficient (JP Wash-Out catches those).",
   'Pinned at a bound (the "sits on its search bound" note on a result) usually means friction alone cannot close the BHP gap - suspect a sonic-pinned throat or a wrong IPR rather than just wear.',
@@ -99,10 +99,11 @@ export function KcoefExplainer() {
             ))}
           </ul>
           <p className="mt-1">
-            Calibrating per-well fits a one-number-per-component "wear / efficiency factor" so
+            Calibrating this installation fits an effective loss factor per component so
             the model matches the measured BHP. The coefficients absorb whatever the pump
             physics + simplified model couldn't predict from spec-sheet geometry alone.
           </p>
+          <p className="mt-1">Saved pump coefficients stay with this installation. Clean replacements use ken 0.03, kth 0.30, kdi 0.40 and catalog nozzle area, while retaining the well and fluid inputs.</p>
         </div>
 
         <div>

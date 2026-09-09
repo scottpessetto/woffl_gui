@@ -1,0 +1,37 @@
+{
+  "qualified": true,
+  "energy_closure": [
+    {
+      "mach_crit": 1.0,
+      "operating_ke": 520.9599646915024,
+      "choking_ke": 520.9599646915024,
+      "relative_energy_mismatch": 0.0,
+      "qualified": true
+    },
+    {
+      "mach_crit": 1.5,
+      "operating_ke": 520.9599646915024,
+      "choking_ke": 520.9599646915024,
+      "relative_energy_mismatch": 0.0,
+      "qualified": true
+    },
+    {
+      "mach_crit": 2.0,
+      "operating_ke": 520.9599646915024,
+      "choking_ke": 520.9599646915024,
+      "relative_energy_mismatch": 0.0,
+      "qualified": true
+    },
+    {
+      "mach_crit": 2.5,
+      "operating_ke": 520.9599646915024,
+      "choking_ke": 520.9599646915024,
+      "relative_energy_mismatch": 0.0,
+      "qualified": true
+    }
+  ],
+  "model_version": "entry-energy-v1",
+  "field_validated": false,
+  "qualification_scope": "agreement of the two entry energy calculations only",
+  "limitation": "Mach multiplier retired. Shared energy checks do not establish field validity; isothermal PVT and phase-release assumptions still require validation."
+}

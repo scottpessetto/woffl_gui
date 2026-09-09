@@ -88,6 +88,22 @@ def create_pvt_components(
     return oil, water, gas
 
 
+def create_power_fluid(field_model=None, rho_pf=None) -> FormWater:
+    """Independent lift water, with density specified at 0 psig / 60 degF.
+
+    Args:
+        field_model (str | None): Field preset when density is omitted.
+        rho_pf (float | None): Standard-condition density, lbm/ft3.
+    """
+    if rho_pf is None:
+        _, water, _ = create_pvt_components(field_model)
+    else:
+        if not 50.0 <= rho_pf <= 70.0:
+            raise ValueError("rho_pf must be finite and between 50 and 70 lbm/ft3")
+        water = FormWater(wat_sg=rho_pf / 62.4)
+    return water.condition(0, 60)
+
+
 def create_reservoir_mix(
     wc,
     gor,
@@ -169,8 +185,7 @@ def run_jetpump_solver(
     from woffl.flow.errors import ThroatEntryNoSolution
 
     # Create power fluid properties from field model water
-    _, prop_pf, _ = create_pvt_components(field_model)
-    prop_pf = prop_pf.condition(0, 60)
+    prop_pf = create_power_fluid(field_model, rho_pf)
 
     try:
         return jetpump_solver(

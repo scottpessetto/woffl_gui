@@ -109,7 +109,7 @@ class SimulationParams:
     # Well parameters
     surf_pres: int = 210
     jpump_tvd: int = 4065
-    rho_pf: float = 62.4
+    rho_pf: float = 63.648
     ppf_surf: int = 3168
 
     # Inflow parameters

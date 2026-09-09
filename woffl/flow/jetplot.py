@@ -674,42 +674,10 @@ def throat_entry_book(
         qoil_std (float): Oil Rate, STBOPD
         te_book (JetBook): Book of values for inside the throat entry
     """
-    # [LIBRARY change -> upstream PR to kwellis/woffl] solver must evaluate the
-    # IPR on Vogel, not straight-line PI (restores ee3886e, which the woffl-2.0
-    # sync clobbered).
-    qoil_std = ipr_su.oil_flow(psu, method="vogel")  # oil standard flow, bopd
-
-    prop_su = prop_su.condition(psu, tsu)
-    qtot = sum(prop_su.insitu_volm_flow(qoil_std))
-    vte = sp.velocity(qtot, ate)
-
-    te_book = JetBook(
-        psu, vte, prop_su.rho_mix(), prop_su.cmix(), jf.enterance_ke(ken, vte)
-    )
-
-    ray_len = 50  # number of elements in the array
-    # [LIBRARY change -> upstream PR to kwellis/woffl] the low end must sit BELOW
-    # psu so the flipped book runs high->low. For the normal psu>200 case this is
-    # the original 200-psi floor (bit-identical). For a low-pressure well
-    # (psu<=200) the old linspace(200, psu) swept the WRONG direction after the
-    # flip (low->high); drop the floor below psu instead.
-    lo = 200.0 if psu > 200.0 else max(psu - 100.0, 50.0)
-    pte_ray = np.linspace(lo, psu, ray_len)  # throat entry pressures
-    pte_ray = np.flip(pte_ray, axis=0)  # start with high pressure and go low
-
-    for pte in pte_ray[
-        1:
-    ]:  # start with the second value, psu is the first and is used to create array
-
-        prop_su = prop_su.condition(pte, tsu)
-        qtot = sum(prop_su.insitu_volm_flow(qoil_std))
-        vte = sp.velocity(qtot, ate)
-
-        te_book.append(
-            pte, vte, prop_su.rho_mix(), prop_su.cmix(), jf.enterance_ke(ken, vte)
-        )
-
-    return qoil_std, te_book
+    # [LIBRARY change -> upstream PR to kwellis/woffl] Diagnostics must use
+    # the same pressure work and reachable branch as the operating solver.
+    from woffl.flow.entry_energy import entry_book
+    return entry_book(psu, tsu, ken, ate, ipr_su, prop_su)
 
 
 def diffuser_book(

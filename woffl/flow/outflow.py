@@ -206,7 +206,8 @@ def powerfluid_top_down_friction(
     length = wellprof.jetpump_md  # distance down wellbore to jet pump
 
     prop_pf = prop_pf.condition(ptop, ttop)
-    qwat_fts = sp.bpd_to_ft3s(qwat_bpd)
+    # [LIBRARY change -> upstream PR to kwellis/woffl] qwat_bpd is standard volume.
+    qwat_fts = sp.bpd_to_ft3s(qwat_bpd) * prop_pf.volume_factor()
     vel = sp.velocity(qwat_fts, area)
     NRe = sp.reynolds(prop_pf.density, vel, hyd_dia, prop_pf.viscosity)
     rel_ruff = sp.relative_roughness(hyd_dia, abs_ruff)

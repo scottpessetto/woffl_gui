@@ -65,7 +65,7 @@ def start_match_health(req: schemas.MatchHealthRequest) -> Any:
 def start_event_calibration(req: schemas.EventCalibrationRequest) -> Any:
     """Start a multi-point event-calibration job for one well: hydrate its
     saved fit, gather every measured operating point in the current pump
-    era and fit (ken, kth, kdi, fnz, mach_crit) against all of them at
+    era and fit (ken, kth, kdi, fnz) against all of them at
     once. Read-only compute; poll GET /optimize/run/{job_id}."""
     return {"job_id": event_calibration.start_event_calibration(req.well)}
 

@@ -1,7 +1,8 @@
+import { isMissingJob } from "../../api/client";
 /**
  * "Calibrate to field data" - the solver page's ONE calibration action.
  * The server tries the multi-point era fit first: the full knob set
- * (ken/kth/kdi + nozzle washout + choking Mach) against the installed pump
+ * (ken/kth/kdi + estimated nozzle area) against the installed pump
  * era's daily (PF pressure, BHP, PF rate) history, as a background job
  * (POST /optimize/event-calibration, polled through the shared
  * /optimize/run/{job_id} monitor like match-health). When the era is too
@@ -13,20 +14,45 @@
  * Nothing lands on the sidebar automatically: "Apply to inputs" lays the
  * result over the params store via setMany, so the applied fields become
  * engineer-owned (manualFields) and the open-time IPR fit stops
- * overwriting them. An event fit applies all five knobs; a single-point
- * match applies ken/kth/kdi ONLY - one BHP point cannot see nozzle wear or
- * the choking Mach, so those stay untouched.
+ * overwriting them. An event fit applies four coefficients and resets the
+ * retired Mach field to 1. A single-point match applies ken/kth/kdi only;
+ * one BHP observation cannot determine nozzle area.
  */
 
 import { Activity } from "lucide-react";
 import { useEffect } from "react";
 
-import { useOptimizeJob, useStartEventCalibration } from "../../api/hooks";
-import type { EventCalibrationResult } from "../../api/types";
+import { useMeta, useSavePumpCalibration, useOptimizeJob, useStartEventCalibration } from "../../api/hooks";
+import type { EventCalibrationResult, WellContext } from "../../api/types";
 import { Button } from "../../components/ui";
 import { fmtNum } from "../../lib/format";
 import { useOptimizeStore } from "../../state/optimize";
 import { useParamsStore } from "../../state/params";
+
+function matchesInstallation(result: EventCalibrationResult, pump: WellContext["pump"] | undefined) {
+  return !!pump?.date_set && pump.source === "databricks" &&
+    `${pump.nozzle_no}${pump.throat_ratio}` === result.pump &&
+    new Date(pump.date_set).getTime() === new Date(result.installation_date_set ?? result.era_start ?? "").getTime();
+}
+
+function SaveFit({ result, jobId }: { result: EventCalibrationResult; jobId: string }) {
+  const context = useParamsStore((s) => s.context);
+  const meta = useMeta();
+  const save = useSavePumpCalibration(result.well);
+  const valid = matchesInstallation(result, context?.pump);
+  const hasFit = !result.refusal && (result.fit || (result.single && !["pinned", "failed"].includes(result.single.match_quality)));
+  if (!hasFit) return null;
+  return <div className="basis-full space-y-1 text-xs text-slate-500">
+    <Button size="sm" variant="secondary" disabled={!valid || !meta.data?.writes_enabled || save.isPending}
+      busy={save.isPending} onClick={() => save.mutate(jobId)}>Save installed-pump calibration</Button>
+    <p>Calibration uses saved well inputs and in-era tests. Save changed well inputs before refitting.</p>
+    <p>Saves this fit for {result.pump}, installed {result.era_start?.slice(0, 10)}. Well inputs are saved separately under IPR.</p>
+    {!valid && <p className="text-amber-700">The installation could not be verified against this fit. Refresh the well and calibrate again.</p>}
+    {!meta.data?.writes_enabled && <p>Saving is unavailable while this app is in read-only mode. Apply remains available for this session.</p>}
+    {save.data && <p className="text-emerald-700">{save.data.message}</p>}
+    {save.isError && <p className="text-amber-700">{save.error.message}</p>}
+  </div>;
+}
 
 /** Coefficient in the scorecard's shorthand: 3 decimals, trailing zeros and
  *  the leading "0" dropped - 0.024 -> ".024", 0.240 -> ".24". */
@@ -43,7 +69,9 @@ const BETA_TOL = 0.03;
  * (single-point) because the era fit was impossible. Amber-tinted so it
  * reads as "provisional", with the unlock condition spelled out. */
 function SinglePointBlock({ result }: { result: EventCalibrationResult }) {
-  const setMany = useParamsStore((s) => s.setMany);
+  const applyFit = useParamsStore((s) => s.applyPumpFit);
+  const context = useParamsStore((s) => s.context);
+  const validScope = matchesInstallation(result, context?.pump);
   const single = result.single;
 
   if (!single) {
@@ -60,15 +88,15 @@ function SinglePointBlock({ result }: { result: EventCalibrationResult }) {
     `Young pump era - ${result.fallback_reason ?? "not enough era history"}. ` +
     `Matched the latest test BHP instead (single-point): modeled ` +
     `${fmtNum(single.modeled_bhp)} vs target ${fmtNum(single.target_bhp)} psi ` +
-    `(${single.match_quality}). Full field calibration unlocks as this pump ` +
+    `(${single.match_quality}). Event calibration becomes available as this pump ` +
     "accumulates daily history.";
 
   const applyTitle = pinned
     ? "Nothing was fitted - the coefficients came back at their seeds, so there is nothing to apply."
     : failed
       ? "The solver found no valid operating point, so there is nothing to apply."
-      : "Lay the matched ken/kth/kdi over the sidebar. Nozzle wear and choking Mach " +
-        "are untouched - a single-point match cannot see them. Save as well default to keep them.";
+      : "Apply the matched ken/kth/kdi to the sidebar. Nozzle area stays at its current estimate; " +
+        "a single BHP observation cannot determine it. Use Save installed-pump calibration to keep this fit.";
 
   return (
     <div className="basis-full space-y-1 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2">
@@ -87,9 +115,9 @@ function SinglePointBlock({ result }: { result: EventCalibrationResult }) {
       <Button
         variant="secondary"
         size="sm"
-        disabled={pinned || failed}
+        disabled={pinned || failed || !validScope}
         title={applyTitle}
-        onClick={() => setMany({ ken: single.ken, kth: single.kth, kdi: single.kdi })}
+        onClick={() => applyFit(result, { ken: single.ken, kth: single.kth, kdi: single.kdi, nozzle_area_factor: result.current.nozzle_area_factor ?? 1 })}
       >
         Apply to inputs
       </Button>
@@ -98,7 +126,9 @@ function SinglePointBlock({ result }: { result: EventCalibrationResult }) {
 }
 
 function ResultBlock({ result }: { result: EventCalibrationResult }) {
-  const setMany = useParamsStore((s) => s.setMany);
+  const applyFit = useParamsStore((s) => s.applyPumpFit);
+  const context = useParamsStore((s) => s.context);
+  const validScope = matchesInstallation(result, context?.pump);
   const fit = result.fit;
 
   if (result.method === "single_point") return <SinglePointBlock result={result} />;
@@ -118,17 +148,17 @@ function ResultBlock({ result }: { result: EventCalibrationResult }) {
   const wearPct = (fit.fnz - 1) * 100;
   const wearPhrase =
     wearPct >= 0.5
-      ? `nozzle ${wearPct.toFixed(0)}% washed out`
+      ? `estimated nozzle area ${wearPct.toFixed(0)}% above catalog`
       : wearPct <= -0.5
-        ? `nozzle ${Math.abs(wearPct).toFixed(0)}% restricted`
+        ? `estimated nozzle area ${Math.abs(wearPct).toFixed(0)}% below catalog`
         : "nozzle at catalog size";
   const headline =
-    `Matched ${fit.n_used} days of this pump's history (${eraStart} - today): ` +
-    `${wearPhrase}, model tracks measured BHP within ${Math.round(fit.rms_bhp_psi)} psi.`;
+    `Matched ${fit.n_used} points from this pump's history (${eraStart} - today): ` +
+    `${wearPhrase}, BHP fit RMS error ${Math.round(fit.rms_bhp_psi)} psi.`;
 
   const paramsLine =
     `ken ${coef(fit.ken)} | kth ${coef(fit.kth)} | kdi ${coef(fit.kdi)} | ` +
-    `nozzle area ${fit.fnz.toFixed(2)} | mach crit ${fit.mach_crit.toFixed(2)}`;
+    `nozzle area ${fit.fnz.toFixed(2)}`;
 
   const qualityLine =
     `RMS BHP ${Math.round(fit.rms_bhp_psi)} psi | PF ${fit.rms_pf_pct.toFixed(1)}%` +
@@ -147,9 +177,9 @@ function ResultBlock({ result }: { result: EventCalibrationResult }) {
     .filter((k) => cur[k] !== null)
     .map((k) => `${k} ${coef(cur[k] as number)}`);
   const applyTitle =
-    "Lay the fitted coefficients, nozzle area factor and critical Mach over the sidebar" +
+    "Apply the fitted coefficients and nozzle area factor to the sidebar" +
     (curParts.length ? ` (replaces ${curParts.join(" / ")})` : "") +
-    ". Save as well default to keep them.";
+    ". Use Save installed-pump calibration to keep this fit.";
 
   return (
     <div className="basis-full space-y-1 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2">
@@ -179,13 +209,14 @@ function ResultBlock({ result }: { result: EventCalibrationResult }) {
         variant="secondary"
         size="sm"
         title={applyTitle}
+        disabled={!validScope}
         onClick={() =>
-          setMany({
+          applyFit(result, {
             ken: fit.ken,
             kth: fit.kth,
             kdi: fit.kdi,
             nozzle_area_factor: fit.fnz,
-            mach_crit: fit.mach_crit,
+            mach_crit: 1.0,
           })
         }
       >
@@ -209,8 +240,8 @@ export function EventCalibration({ well }: { well: string }) {
 
   // Expired job (server restart): drop the stale id quietly.
   useEffect(() => {
-    if (jobId && job.isError) setLastJob(jobKey, null);
-  }, [jobId, job.isError, jobKey, setLastJob]);
+    if (jobId && isMissingJob(job.error)) setLastJob(jobKey, null);
+  }, [jobId, job.error, jobKey, setLastJob]);
 
   // A bench with no named well has no era history to fit against.
   if (well === "Custom") return null;
@@ -264,6 +295,7 @@ export function EventCalibration({ well }: { well: string }) {
         </span>
       )}
       {result !== null && <ResultBlock result={result} />}
+      {result !== null && jobId && <SaveFit key={jobId} result={result} jobId={jobId} />}
     </>
   );
 }

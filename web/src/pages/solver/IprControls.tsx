@@ -3,7 +3,7 @@
  * synced/decoupled comparison picker. "Apply IPR to inputs" lays the fit
  * seeds over the sidebar params.
  *
- * Save block: "Save as well default"
+ * Save block: "Save well inputs"
  * pins the resolved anchor test AND pushes the sidebar's current curve +
  * rate values to mpu.wells.prop_hist in one click; "Clear saved IPR"
  * un-pins. HIDDEN entirely (not disabled) when /meta reports
@@ -114,14 +114,6 @@ export function IprControls({
         form_wc: p.form_wc,
         form_gor: p.form_gor,
         surf_pres: p.surf_pres,
-        // BHP-calibrated friction; the server skips unchanged/default values.
-        ken: p.ken,
-        kth: p.kth,
-        kdi: p.kdi,
-        // Event-calibration knobs share the friction skip discipline
-        // (1.0 no-op skipped unless a saved override exists).
-        nozzle_area_factor: p.nozzle_area_factor,
-        mach_crit: p.mach_crit,
         // Characterization values ride along ONLY when the engineer moved
         // them off the seed the server assembled. resvr_bubb / resvr_temp are
         // canonical props: re-pushing the seed on every click would fill
@@ -312,13 +304,13 @@ export function IprControls({
                   anchorTest?.wt_uid != null
                     ? `Saves test ${anchorTest.date} as this well's default IPR anchor AND ` +
                       "the sidebar's current curve + rate values (mpu.wells.prop_hist) so the " +
-                      "well opens exactly like this in every future session."
+                      "well inputs are restored in future sessions. Pump calibration is saved separately."
                     : "No pinnable anchor test (manual/provisional) - saves the sidebar's " +
                       "current curve + rate values only."
                 }
                 onClick={onSave}
               >
-                Save as well default
+                Save well inputs
               </Button>
               {(pin?.status === "applied" || pin?.status === "stale") && (
                 <button

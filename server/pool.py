@@ -48,7 +48,8 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import threading
-from concurrent.futures import Executor, Future, ProcessPoolExecutor, as_completed
+from concurrent.futures import Executor, Future, ProcessPoolExecutor, wait, FIRST_COMPLETED
+from contextlib import contextmanager
 from typing import Any, Callable, Iterable, Optional, TypeVar
 
 log = logging.getLogger("woffl.web.pool")
@@ -62,11 +63,25 @@ _EXECUTOR_CLS: Optional[type] = None
 
 _POOL: Optional[Executor] = None
 _LOCK = threading.RLock()
-# Bounds how many sweeps may be in the pool at once. Without it three
-# concurrent sweeps oversubscribe two workers and every one of them slows
-# down; with it they queue and each finishes at full speed.
+# One token per active worker task or synchronous CPU operation. Sweep
+# callers use a bounded submission window and share these same tokens.
 _GATE: Optional[threading.Semaphore] = None
 _WORKERS = 0
+_SERIAL_GATE = threading.BoundedSemaphore(1)
+
+
+@contextmanager
+def cpu_slot():
+    """Synchronous allocation shares the same CPU tokens as worker tasks."""
+    from server.performance import measure
+    with _LOCK:
+        gate = _GATE if _GATE is not None else _SERIAL_GATE
+    with measure("compute.queue"):
+        gate.acquire()
+    try:
+        yield
+    finally:
+        gate.release()
 
 
 def _context():
@@ -196,7 +211,9 @@ def submit(fn: Callable[..., T], *args: Any) -> Optional[Future]:
         pool, gate = _POOL, _GATE
     if pool is None or gate is None:
         return None
-    gate.acquire()
+    from server.performance import measure
+    with measure("compute.queue"):
+        gate.acquire()
     try:
         fut = pool.submit(fn, *args)
     except Exception as exc:  # noqa: BLE001 - caller runs in-thread
@@ -235,13 +252,25 @@ def submit_all(fn: Callable[..., T], jobs: Iterable[tuple]) -> Optional[list[T]]
     if pool is None or gate is None:
         return None
 
-    # Queue behind other sweeps rather than oversubscribing the workers.
-    gate.acquire()
+    # One token per TASK, not one per sweep. Bound queued futures as well
+    # as active processes; a large run cannot enqueue its entire grid ahead
+    # of interactive requests or copy hundreds of payloads into IPC buffers.
+    futures = {}
     try:
         results: list[Any] = [None] * len(jobs)
-        futures = {pool.submit(fn, *job): i for i, job in enumerate(jobs)}
-        for fut in as_completed(futures):
-            results[futures[fut]] = fut.result()
+        next_index = 0
+        window = max(1, workers())
+        while next_index < len(jobs) or futures:
+            while next_index < len(jobs) and len(futures) < window:
+                fut = submit(fn, *jobs[next_index])
+                if fut is None:
+                    wait(futures)
+                    return None
+                futures[fut] = next_index
+                next_index += 1
+            done, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for fut in done:
+                results[futures.pop(fut)] = fut.result()
         return results
     except Exception as exc:  # noqa: BLE001 - caller reruns serially
         from concurrent.futures.process import BrokenProcessPool
@@ -255,4 +284,7 @@ def submit_all(fn: Callable[..., T], jobs: Iterable[tuple]) -> Optional[list[T]]
             return None
         raise
     finally:
-        gate.release()
+        for fut in futures:
+            fut.cancel()
+        if futures:
+            wait(futures)  # drain before a caller retries serially

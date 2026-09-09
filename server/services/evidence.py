@@ -16,7 +16,7 @@ Per well the evidence is a PLAIN DICT (woffl/gui never imports server code):
 
 - floor:   min(p5 of flowing daily BHP, min well-test BHP) - the measured
            cavitation floor.
-- psu_ref: median BHP over the last PSU_REF_DAYS flowing days - today's
+- psu_ref / ppf_ref: paired mean BHP / PF over the last PSU_REF_DAYS flowing days - today's
            operating suction anchor.
 - beta:    -median(dBHP/dPpf) over qualifying flowing-day pairs (Theil-Sen
            style median of pairwise slopes), clamped to BETA_CLAMP.
@@ -243,7 +243,10 @@ def well_evidence(
         # on the current era the daily series is the same instrument.
         floor = min(floor, float(min_test_bhp))
 
-    psu_ref = float(median(bhps[-PSU_REF_DAYS:]))
+    # Keep the reference in the current pump era and on aligned observations.
+    reference = era.tail(PSU_REF_DAYS)
+    psu_ref = float(reference["btmhole_prs"].mean()) if not reference.empty else None
+    ppf_ref = float(reference["ppf"].mean()) if not reference.empty else None
 
     # PF "events": days where the resolved PF moved by >= DPF_MIN_PSI from
     # the previous flowing day. A beta is only "well-earned" when its pairs
@@ -285,6 +288,7 @@ def well_evidence(
         "floor": floor,
         "floor_source": floor_source,
         "psu_ref": psu_ref,
+        "ppf_ref": ppf_ref,
         "beta": beta,
         # Unclamped median slope: a NEGATIVE value (BHP rising with PF) is a
         # data-quality / pump-identity signal that the clamp hid (EVID-F5).

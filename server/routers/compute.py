@@ -20,9 +20,9 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from server import schemas
+from server import pool, schemas
 from server.identity import bind_entry_user
-from server.services import ipr, sensitivity, solve
+from server.services import ipr, sensitivity, solve, wc_uncertainty
 
 router = APIRouter(tags=["compute"])
 
@@ -42,9 +42,20 @@ def _solver_error(exc: solve.SolveFailure) -> HTTPException:
 def post_solve(req: schemas.SolveRequest) -> schemas.SolveResult:
     """Solve one well/pump operating point."""
     try:
-        return schemas.SolveResult(**solve.solve_single(req.well, req.params))
+        with pool.cpu_slot():
+            return schemas.SolveResult(**solve.solve_single(req.well, req.params))
     except solve.SolveFailure as exc:
         raise _solver_error(exc) from exc
+    except ValueError as exc:
+        raise _invalid(exc) from exc
+
+
+@router.post("/solve/wc-uncertainty", response_model=schemas.WcUncertaintyResponse)
+def post_wc_uncertainty(req: schemas.WcUncertaintyRequest) -> schemas.WcUncertaintyResponse:
+    """Read-only WC envelope; bounded serial work under the shared CPU limit."""
+    try:
+        with pool.cpu_slot():
+            return wc_uncertainty.run(req)
     except ValueError as exc:
         raise _invalid(exc) from exc
 
@@ -53,7 +64,8 @@ def post_solve(req: schemas.SolveRequest) -> schemas.SolveResult:
 def post_batch(req: schemas.BatchRequest) -> schemas.BatchResponse:
     """Nozzle x throat batch sweep with recommendation + fit curve."""
     try:
-        return schemas.BatchResponse(**solve.run_batch(req.well, req.params))
+        with pool.cpu_slot():
+            return schemas.BatchResponse(**solve.run_batch(req.well, req.params))
     except solve.SolveFailure as exc:
         raise _solver_error(exc) from exc
     except ValueError as exc:
@@ -75,7 +87,8 @@ def post_pf_range(req: schemas.PfRangeRequest) -> schemas.PfRangeResponse:
 def post_pressure_profile(req: schemas.PressureProfileRequest) -> schemas.PressureProfileResponse:
     """Production + PF pressure traverses and their differential."""
     try:
-        return schemas.PressureProfileResponse(**solve.pressure_profile(req.well, req.params))
+        with pool.cpu_slot():
+            return schemas.PressureProfileResponse(**solve.pressure_profile(req.well, req.params))
     except solve.SolveFailure as exc:
         raise _solver_error(exc) from exc
     except ValueError as exc:
@@ -88,7 +101,8 @@ def post_calibrate(req: schemas.CalibrateRequest) -> schemas.CalibrateResponse:
     BHP (read-only compute; nothing persisted - the client applies coefs to
     the sidebar, an explicit save keeps them)."""
     try:
-        return schemas.CalibrateResponse(**solve.calibrate(req))
+        with pool.cpu_slot():
+            return schemas.CalibrateResponse(**solve.calibrate(req))
     except solve.SolveFailure as exc:
         raise _solver_error(exc) from exc
     except ValueError as exc:
@@ -102,7 +116,8 @@ def post_match_test(req: schemas.MatchTestRequest) -> schemas.MatchTestResponse:
     (read-only compute; the client applies the result, an explicit save
     keeps it)."""
     try:
-        return schemas.MatchTestResponse(**solve.match_test(req))
+        with pool.cpu_slot():
+            return schemas.MatchTestResponse(**solve.match_test(req))
     except solve.SolveFailure as exc:
         raise _solver_error(exc) from exc
     except ValueError as exc:
@@ -244,3 +259,14 @@ def post_prop_lock(name: str, req: schemas.PropLockRequest, request: Request) ->
     _writes_gate()
     bind_entry_user(request)
     return schemas.PropLockResponse(**ipr.set_lock(name, req))
+
+
+@router.post("/wells/{name}/pump-calibration")
+def post_pump_calibration(name: str, req: schemas.SavePumpCalibrationRequest, request: Request):
+    _writes_gate()
+    bind_entry_user(request)
+    from server.services import pump_calibration
+    try:
+        return pump_calibration.save_fit(name, req.job_id)
+    except ValueError as exc:
+        raise _invalid(exc) from exc

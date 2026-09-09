@@ -1,0 +1,92 @@
+{
+  "physics_model": "entry-energy-v2",
+  "snapshot_time": "2026-09-08T16:51:05.471842+00:00",
+  "field_validated": false,
+  "read_only": true,
+  "snapshot_sha256": "272ffd9b58576259e61fe94e2c4a2ddaafad172c5db9a5c0c3acdaf0669dd117",
+  "wells": [
+    {
+      "physics_model": "entry-energy-v2",
+      "well": "MPM-64",
+      "train_points": 67,
+      "fit_points": 20,
+      "held_points": 31,
+      "train_end": "2026-07-30",
+      "held_start": "2026-08-10",
+      "refusal": null,
+      "training_rms_bhp_psi": 37.8271657013639,
+      "train_test_count": 2,
+      "field_validated": false,
+      "training_watercut": 0.39326689988235247,
+      "held_test_median_watercut": 0.16004074178139926,
+      "failed_solves": 0,
+      "railed": [
+        "ken",
+        "kdi"
+      ],
+      "held_rms_bhp_psi": 48.551972116937826,
+      "held_rms_pf_pct": 4.901895864444983,
+      "held_rms_oil_bopd": 270.8846570429919,
+      "held_oil_tests": 1,
+      "held_rms_dbhp_psi": null,
+      "held_response_pairs": 0,
+      "limitation": "Retrospective event holdout under supplied geometry/reservoir pressure; engineering review required."
+    },
+    {
+      "physics_model": "entry-energy-v2",
+      "well": "MPM-28",
+      "train_points": 29,
+      "fit_points": 20,
+      "held_points": 28,
+      "train_end": "2026-08-02",
+      "held_start": "2026-08-15",
+      "refusal": null,
+      "training_rms_bhp_psi": 43.305496666310674,
+      "train_test_count": 1,
+      "field_validated": false,
+      "training_watercut": 0.40818920487521765,
+      "held_test_median_watercut": 0.5474066916080363,
+      "failed_solves": 0,
+      "railed": [
+        "ken"
+      ],
+      "held_rms_bhp_psi": 23.154875023096526,
+      "held_rms_pf_pct": 0.7388448025458966,
+      "held_rms_oil_bopd": 108.21934489741324,
+      "held_oil_tests": 3,
+      "held_rms_dbhp_psi": null,
+      "held_response_pairs": 0,
+      "limitation": "Retrospective event holdout under supplied geometry/reservoir pressure; engineering review required."
+    },
+    {
+      "physics_model": "entry-energy-v2",
+      "well": "MPM-45",
+      "train_points": 47,
+      "fit_points": 20,
+      "held_points": 31,
+      "train_end": "2026-07-24",
+      "held_start": "2026-08-10",
+      "refusal": null,
+      "training_rms_bhp_psi": 62.434223145110316,
+      "train_test_count": 2,
+      "field_validated": false,
+      "training_watercut": 0.4132374509409438,
+      "held_test_median_watercut": 0.6281513598738667,
+      "failed_solves": 0,
+      "railed": [
+        "ken"
+      ],
+      "held_rms_bhp_psi": 58.95784039404862,
+      "held_rms_pf_pct": 5.037546044607463,
+      "held_rms_oil_bopd": 26.208790422303196,
+      "held_oil_tests": 1,
+      "held_rms_dbhp_psi": 165.86611854487043,
+      "held_response_pairs": 28,
+      "limitation": "Retrospective event holdout under supplied geometry/reservoir pressure; engineering review required."
+    }
+  ],
+  "local_replay_artifacts": [
+    "build/field-validation-snapshot.json",
+    "build/field-holdout-report.json"
+  ]
+}

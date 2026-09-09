@@ -167,7 +167,7 @@ def test_happy_path_payload_and_kind(client):
     assert r["single"] is None
     assert r["mined_beta"] == 0.062
     assert r["mined_beta_source"] == "well"
-    assert r["current"] == {"ken": 0.05, "kth": 0.30, "kdi": 0.30}
+    assert r["current"] == {"ken": 0.05, "kth": 0.30, "kdi": 0.30, "nozzle_area_factor": 1.0}
 
     fit = r["fit"]
     assert fit == {

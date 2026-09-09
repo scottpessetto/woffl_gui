@@ -3,7 +3,7 @@
 The engineer's ONE calibration button ("Calibrate to field data"): hydrate
 the well exactly as an optimization run would (saved fit -> WellConfig),
 gather every measured operating point in the CURRENT pump era
-(calibration_points), and fit (ken, kth, kdi, fnz, mach_crit) against all
+(calibration_points), and fit (ken, kth, kdi, fnz) against all
 of them at once (fric_calibration.calibrate_multipoint). Identifiability
 comes from data spread; when the builder refuses (young era / no data /
 no spread) the job falls back to the single-point latest-test BHP match
@@ -19,9 +19,12 @@ persisting an accepted fit is the save path's job.
 
 from __future__ import annotations
 
+from woffl.flow.entry_energy import MODEL_VERSION
+
 import logging
 import os
 import tempfile
+import pandas as pd
 from typing import Any, Optional
 
 from server import jobs, pool
@@ -105,7 +108,7 @@ def _pump_label(nozzle: Any, throat: Any) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
-def _latest_test_target(well: str) -> Optional[dict[str, Any]]:
+def _latest_test_target(well: str, era_start=None) -> Optional[dict[str, Any]]:
     """Newest test row carrying a measured BHP - the same row the web
     client's test picker defaults to (tests_json is newest-first, 6-month
     window like GET /wells/{name}/tests). None when no test has a BHP."""
@@ -115,13 +118,19 @@ def _latest_test_target(well: str) -> Optional[dict[str, Any]]:
         log.warning("well tests unavailable for %s: %s", well, exc)
         return None
     for row in rows:
+        if era_start is not None:
+            date = pd.to_datetime(row.get("date"), utc=True, errors="coerce")
+            start = pd.to_datetime(era_start, utc=True, errors="coerce")
+            if pd.isna(date) or pd.isna(start) or date < start:
+                continue
         if _num(row.get("bhp")) is not None:
             return row
     return None
 
 
 def _single_point_fallback(
-    job: dict[str, Any], well: str, config: Any, nozzle: str, throat: str
+    job: dict[str, Any], well: str, config: Any, nozzle: str, throat: str,
+    era_start=None,
 ) -> Optional[dict[str, Any]]:
     """Run the /calibrate single-point path from the hydrated config.
 
@@ -134,7 +143,7 @@ def _single_point_fallback(
     from woffl.gui import fric_calibration
 
     job["progress"] = "young era - matching latest test BHP instead..."
-    test = _latest_test_target(well)
+    test = _latest_test_target(well, era_start) if era_start is not None else _latest_test_target(well)
     if test is None:
         return None
 
@@ -164,6 +173,10 @@ def _single_point_fallback(
         ipr_su=inflow,
         prop_su=res_mix,
         prop_pf=prop_pf,
+        seed_kth=_num(getattr(config, "kth_well", None)) or fric_calibration.NEUTRAL_KTH,
+        seed_kdi=_num(getattr(config, "kdi_well", None)) or fric_calibration.NEUTRAL_KDI,
+        nozzle_area_factor=_num(getattr(config, "fnz_well", None)) or 1.0,
+        mach_crit=_num(getattr(config, "mach_crit_well", None)) or 1.0,
         jpump_direction=getattr(config, "jpump_direction", "reverse"),
     )
     return single_payload(result)
@@ -337,9 +350,12 @@ def _run_event_calibration_job(job: dict[str, Any], well: str) -> dict[str, Any]
     method = "event"
     fallback_reason: Optional[str] = None
     single: Optional[dict[str, Any]] = None
-    if builder_refused and nozzle and throat:
+    if builder_refused and nozzle and throat and (built or {}).get("era_start"):
         try:
-            single = _single_point_fallback(job, well, config, str(nozzle), str(throat))
+            single = _single_point_fallback(
+                job, well, config, str(nozzle), str(throat),
+                era_start=(built or {}).get("era_start"),
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning("single-point fallback failed for %s: %s", well, exc)
             single = None
@@ -368,9 +384,11 @@ def _run_event_calibration_job(job: dict[str, Any], well: str) -> dict[str, Any]
 
     return optimizer_runs._plain(
         {
+            "physics_model": MODEL_VERSION,
             "well": well,
             "pump": _pump_label(nozzle, throat),
             "era_start": (built or {}).get("era_start"),
+            "installation_date_set": ((built or {}).get("pump") or {}).get("date_set"),
             "n_daily": int((built or {}).get("n_daily") or 0),
             "n_test": int((built or {}).get("n_test") or 0),
             "ppf_spread": float((built or {}).get("ppf_spread") or 0.0),
@@ -382,6 +400,7 @@ def _run_event_calibration_job(job: dict[str, Any], well: str) -> dict[str, Any]
             "mined_beta": mined_beta,
             "mined_beta_source": mined_beta_source,
             "current": {
+                "nozzle_area_factor": _num(getattr(config, "fnz_well", None)) or 1.0,
                 "ken": _num(getattr(config, "ken_well", None)),
                 "kth": _num(getattr(config, "kth_well", None)),
                 "kdi": _num(getattr(config, "kdi_well", None)),

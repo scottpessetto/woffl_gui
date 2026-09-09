@@ -7,6 +7,7 @@ jet pump geometry is accomplished in a seperate module.
 from __future__ import annotations  # jetplot <-> jetflow import cycle: defer annotations
 
 import math
+from copy import deepcopy
 
 import numpy as np
 from scipy.integrate import trapezoid
@@ -16,6 +17,29 @@ from woffl.flow import singlephase as sp
 from woffl.flow.errors import ConvergenceError, JetPumpError, ThroatEntryNoSolution
 from woffl.flow.inflow import InFlow
 from woffl.pvt.resmix import ResMix
+from woffl.pvt.formwat import FormWater
+
+
+# [LIBRARY change -> upstream PR to kwellis/woffl]
+def water_nozzle(pni, pte, temp, knz, anz, prop_pf):
+    """Water nozzle: (exit velocity ft/s, standard BWPD), consistent PVT work."""
+    if pni <= pte:
+        raise ThroatEntryNoSolution("nozzle inlet pressure must exceed throat entry")
+    velocity = math.sqrt(2*prop_pf.pressure_work(pte, pni, temp)/(1+knz))
+    prop_pf.condition(pte, temp)
+    standard_rate = sp.ft3s_to_bpd(velocity*anz) * prop_pf.density/prop_pf.density_std
+    return velocity, standard_rate
+
+
+def throat_mixture(qoil_std, qnz_std, prop_su, prop_pf):
+    """Mix formation and lift water while conserving their standard masses."""
+    wc, fwat = throat_wc(qoil_std, prop_su.wc, qnz_std)
+    water_total = fwat+qnz_std
+    sg = ((fwat*prop_su.wat.wat_sg + qnz_std*prop_pf.wat_sg)/water_total
+          if water_total > 0 else prop_su.wat.wat_sg)
+    mix = ResMix(wc, prop_su.fgor, deepcopy(prop_su.oil), FormWater(sg),
+                 deepcopy(prop_su.gas), model_as_water=prop_su.model_as_water)
+    return wc, fwat, mix
 
 
 def enterance_ke(ken: float, vte: float) -> float:
@@ -54,323 +78,51 @@ def incremental_ee(prs_ray: np.ndarray, rho_ray: np.ndarray) -> float:
     return ee_inc
 
 
-# change this to a function that just creates the book?
-# this only goes past crossing the zero tde line
-# throat-entry sweep step and floor, shared by BOTH walks below so a book
-# built by one can seed the other (see throat_entry_zero_tde's ``seed_book``)
-_TE_PDEC = 25  # pressure decrease per step, psi
-_TE_PMIN = 50  # sweep floor, psig
-
-
-def _seed_zero_tde_book(seed_book: jp.JetBook) -> jp.JetBook:
-    """Copy of ``seed_book`` truncated where the zero-tde walk would have stopped.
-
-    [LIBRARY change -> upstream PR to kwellis/woffl] SOLV-F9: the zero-tde walk
-    and the Mach-one walk start from the same psu, take the same 25-psi steps
-    and evaluate the same PVT at each step - only their STOP rules differ. So a
-    Mach-one book (what ``psu_minimize`` hands back) already contains every
-    point the zero-tde walk would compute, up to the first point where
-    ``tde <= 0`` or ``prs <= _TE_PMIN``; anything past that is dropped, and
-    ``throat_entry_zero_tde`` extends from the last kept point if the stop was
-    never reached. The result is bit-identical to a fresh walk.
-    """
-    book = seed_book.copy()
-    for i, (tde, prs) in enumerate(zip(book.tde, book.prs)):
-        if not (tde > 0 and prs > _TE_PMIN):
-            keep = i + 1
-            for name in ("prs", "vel", "rho", "snd", "kde", "ede", "tde", "mach", "grad"):
-                del getattr(book, name)[keep:]
-            book._arrays.clear()
-            break
-    return book
-
-
+# [LIBRARY change -> upstream PR to kwellis/woffl] Entry energy v1:
+# Both public walks use the same physical kinetic term and pressure integral.
+# Function names and the deprecated Mach argument remain for source compatibility.
 def throat_entry_zero_tde(
-    psu: float,
-    tsu: float,
-    ken: float,
-    ate: float,
-    ipr_su: InFlow,
-    prop_su: ResMix,
-    *,
-    seed_book: jp.JetBook | None = None,
+    psu: float, tsu: float, ken: float, ate: float, ipr_su: InFlow,
+    prop_su: ResMix, *, seed_book: jp.JetBook | None = None,
 ) -> tuple[float, jp.JetBook]:
-    """Throat Entry Differential Energy at Zero
+    """Operating throat-entry energy book (psig, degF, ft2, oil STB/day).
 
-    Create a throat entry book where the differential energy crosses zero.
-    Throat entry book can
-    Use IPR to find the expected well production rate at the specific psu.
-
-    Args:
-        psu (float): Suction Pressure, psig
-        tsu (float): Suction Temp, deg F
-        ken (float): Throat Entry Friction, unitless
-        ate (float): Throat Entry Area, ft2
-        ipr_su (InFlow): IPR of Reservoir
-        prop_su (ResMix): Properties of Suction Fluid
-        seed_book (JetBook | None): Optional UNSCALED (mach_crit = 1) throat
-            entry book already swept from this same psu (e.g. the one
-            ``psu_minimize`` returns). Reused only when its first pressure is
-            exactly ``psu``; otherwise ignored. Keyword-only.
-            [LIBRARY change -> upstream PR to kwellis/woffl] SOLV-F9: skips
-            re-sweeping the throat entry the solver just computed.
-
-    Returns:
-        qoil_std (float): Oil Rate, STBOPD
-        te_book (JetBook): Book of values for inside the throat entry
+    The reachable energy minimum bounds the operating root. Wood Mach is
+    diagnostic. Seed books are not trusted without all input provenance;
+    the scoped material path supplies reuse instead.
     """
-    # [LIBRARY change -> upstream PR to kwellis/woffl] solver must evaluate the
-    # IPR on Vogel, not straight-line PI (restores ee3886e, which the woffl-2.0
-    # sync clobbered).
-    qoil_std = ipr_su.oil_flow(psu, method="vogel")  # oil standard flow, bopd
-
-    if seed_book is not None and len(seed_book.prs) > 0 and seed_book.prs[0] == psu:
-        te_book = _seed_zero_tde_book(seed_book)
-    else:
-        prop_su = prop_su.condition(psu, tsu)
-        qtot = sum(prop_su.insitu_volm_flow(qoil_std))
-        vte = sp.velocity(qtot, ate)
-
-        te_book = jp.JetBook(
-            psu, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte)
-        )
-
-    pdec = _TE_PDEC  # pressure decrease
-    pmin = _TE_PMIN
-
-    while (te_book.tde_ray[-1] > 0) and (te_book.prs_ray[-1] > pmin):
-        pte = te_book.prs_ray[-1] - pdec
-
-        prop_su = prop_su.condition(pte, tsu)
-        qtot = sum(prop_su.insitu_volm_flow(qoil_std))
-        vte = sp.velocity(qtot, ate)
-
-        te_book.append(
-            pte, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte)
-        )
-
-        # re-evaluate criteria for this...
-        # ensures crossing zero tde while below mach limit
-        # if (te_book.mach_ray[-1] > 1) and (te_book.tde_ray[-2] > 100):
-        # raise ValueError(f"Suction Pressure of {psu} psig is too low. Select higher Psu.")
-
-    # pte, vte, rho_te, mach_te = te_book.dete_zero()
-    return qoil_std, te_book
+    from woffl.flow.entry_energy import entry_book
+    return entry_book(psu, tsu, ken, ate, ipr_su, prop_su)
 
 
-# this goes until the mach number reaches the critical threshold (1 by default)
 def throat_entry_mach_one(
-    psu: float,
-    tsu: float,
-    ken: float,
-    ate: float,
-    ipr_su: InFlow,
-    prop_su: ResMix,
-    mach_crit: float = 1.0,
+    psu: float, tsu: float, ken: float, ate: float, ipr_su: InFlow,
+    prop_su: ResMix, mach_crit: float = 1.0,
 ) -> tuple[float, float, jp.JetBook]:
-    """Throat Entry Differential Energy at Mach One
+    """Energy at the reachable entry limit (ft2/s2), rate and shared book.
 
-    Find the numerical value of the dEte (differential energy throat entry) equation
-    when the gradient (slope?) is a zero value. The physical meaning of the when the slope
-    is zero is when the transistion from subsonic (mach < 1) to sonic (mach > 1) flow. A
-    detailed derivation that shows the difference relationship to dEte and Ma value can
-    be produced by Kaelin Ellis upon request
-
-    [LIBRARY change -> upstream PR to kwellis/woffl] The choking threshold is
-    generalized to a calibratable critical Mach number ``mach_crit``: the
-    kinetic differential energy inside THIS throat-entry walk is scaled by
-    1/mach_crit^2, which moves the tde minimum (d(tde)/dp = 0, the choke)
-    from homogeneous Ma = 1 to homogeneous Ma = mach_crit. Physical
-    interpretation: effective choking at homogeneous-computed Mach =
-    mach_crit, i.e. an effective sonic velocity of mach_crit x the
-    homogeneous (Wood/Wallis) speed - a calibratable slip closure for
-    gas-liquid throat-entry flow, whose homogeneous sound speed
-    underestimates the true choking velocity and pins modeled suction
-    pressures on an artificially high cavitation floor. The scaling is
-    confined to this walk's JetBook kde/tde columns: the stored velocities,
-    densities and sound speeds stay unscaled, so downstream momentum/mixing
-    consume homogeneous values and reported mach_te stays on the homogeneous
-    scale. The default (1.0) reproduces the historical behavior
-    bit-identically; the function name is kept for API stability.
-
-    Args:
-        psu (float): Suction Pressure, psig
-        tsu (float): Suction Temp, deg F
-        ken (float): Enterance Friction Factor, unitless
-        ate (float): Throat Entry Area, ft2
-        ipr_su (InFlow): IPR of Reservoir
-        prop_su (ResMix): Properties of Suction Fluid
-        mach_crit (float): Critical Mach number (homogeneous scale) where the
-            throat entry chokes, unitless. Default 1.0 (historic behavior).
-
-    Returns:
-        tde_fin (float): Total Differential Energy at Mach mach_crit, ft2/s2
-        qoil_std (float): Oil Produced at psu with set IPR, bopd
-        te_book (JetBook): Book of values for inside the throat entry
+    Despite the historical name, the limit is an energy turning point or
+    pressure bound. mach_crit is retired and cannot scale energy or flow.
     """
-    # [LIBRARY change -> upstream PR to kwellis/woffl] solver must evaluate the
-    # IPR on Vogel, not straight-line PI (restores ee3886e, which the woffl-2.0
-    # sync clobbered).
-    qoil_std = ipr_su.oil_flow(psu, method="vogel")  # oil standard flow, bopd
-
-    prop_su = prop_su.condition(psu, tsu)
-    qtot = sum(prop_su.insitu_volm_flow(qoil_std))
-    vte = sp.velocity(qtot, ate)
-
-    # kinetic term scaled by 1/mach_crit^2 (slip closure, see docstring);
-    # exact no-op at the 1.0 default (IEEE754 division by 1.0 is identity)
-    ke_scale = 1.0 / (mach_crit * mach_crit)
-    te_book = jp.JetBook(
-        psu, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte) * ke_scale
-    )
-
-    pdec = _TE_PDEC  # pressure decrease
-    pmin = _TE_PMIN  # minimum pressure
-
-    # keep mach under the critical threshold, and pte above pmin, so it doesn't go negative
-    while (te_book.mach_ray[-1] <= mach_crit) and (te_book.prs_ray[-1] > pmin):
-        pte = te_book.prs_ray[-1] - pdec
-
-        prop_su = prop_su.condition(pte, tsu)
-        qtot = sum(prop_su.insitu_volm_flow(qoil_std))
-        vte = sp.velocity(qtot, ate)
-
-        te_book.append(
-            pte, vte, prop_su.rho_mix(), prop_su.cmix(), enterance_ke(ken, vte) * ke_scale
-        )
-
-    # the length clause was added because some throats were too small and the jp was mach'in out on the first run
-    if te_book.mach_ray[-1] >= mach_crit and len(te_book.mach_ray) > 1:
-        # [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-9: interpolate
-        # tde AT Mach = mach_crit between the last sub-threshold point and the
-        # first point past it. The old "nearest value" (tde_ray[-2]) sat ABOVE
-        # the true Mach-crit minimum by the 25-psi step's discretization gap
-        # (~0.5-2 % of the entry kinetic energy), so psu_minimize solved
-        # tde = 0 against a biased residual and pinned the choke floor high.
-        tde_fin = _tde_at_mach(te_book, mach_crit)
-    else:
-        tde_fin = te_book.tde_ray[-1]
-
-    return tde_fin, qoil_std, te_book  # type: ignore
-
-
-def _tde_at_mach(te_book: jp.JetBook, mach_crit: float) -> float:
-    """Linear interpolation of tde at ``mach_crit`` between the last two sweep points.
-
-    [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-9 helper. The sweep
-    stops at the first point whose Mach exceeds ``mach_crit``, so the last two
-    points bracket the threshold: ``mach[-2] <= mach_crit <= mach[-1]``. A
-    degenerate (equal-Mach) pair falls back to the sub-threshold value.
-    """
-    m1, m2 = te_book.mach_ray[-2], te_book.mach_ray[-1]
-    t1, t2 = te_book.tde_ray[-2], te_book.tde_ray[-1]
-    if m2 == m1:
-        return float(t1)
-    return float(t1 + (t2 - t1) * (mach_crit - m1) / (m2 - m1))
-
-
-# FLOW-9: psu_minimize also requires the choke residual itself to be small -
-# |tee| within this fraction of the entry kinetic energy at psu (kde_ray[0]).
-_TEE_TOL_FRAC = 0.01
+    from woffl.flow.entry_energy import retired_mach
+    retired_mach(mach_crit)
+    rate, book = throat_entry_zero_tde(psu, tsu, ken, ate, ipr_su, prop_su)
+    return book.minimum_energy, rate, book
 
 
 def psu_minimize(
-    tsu: float,
-    ken: float,
-    ate: float,
-    ipr_su: InFlow,
-    prop_su: ResMix,
-    mach_crit: float = 1.0,
+    tsu: float, ken: float, ate: float, ipr_su: InFlow,
+    prop_su: ResMix, mach_crit: float = 1.0,
 ) -> tuple[float, float, jp.JetBook]:
-    """Minimize psu
+    """Lowest feasible suction (psig), oil (STB/day), and shared entry book.
 
-    Find the smallest psu possible where the throat is choked. (Ma = mach_crit)
-    This psu is the theoretically smallest psu possible for a set jetpump and ipr combo.
-    Even with an infinite amount of power fluid, you could not get below this psu.
-
-    [LIBRARY change -> upstream PR to kwellis/woffl] ``mach_crit`` (default 1.0,
-    historic behavior) generalizes the choking threshold - see
-    ``throat_entry_mach_one``.
-
-    Args:
-        tsu (float): Suction Temp, deg F
-        ken (float): Throat Entry Friction, unitless
-        ate (float): Throat Entry Area, ft2
-        ipr_su (InFlow): IPR of Reservoir
-        prop_su (ResMix): Properties of Suction Fluid
-        mach_crit (float): Critical Mach number where the throat entry chokes,
-            unitless. Default 1.0 (historic behavior).
-
-    Returns:
-        psu_min (float): Suction Pressure Minimized, psig
-        qoil_std (float): Oil Rate, STBOPD
-        te_book (JetBook): Throat entry book of the converged psu_min
-
-    Raises:
-        ThroatEntryNoSolution: the throat entry chokes before its energy
-            balance closes even at the reservoir-pressure bound (``pres - 10``)
-            - the pump cannot be fed at any admissible suction. [LIBRARY
-            change -> upstream PR to kwellis/woffl] FLOW-9: this used to exit
-            "converged" after clamping to the bound twice, and the solver then
-            fabricated a choked operating point there.
-        ConvergenceError: the secant did not settle within 15 iterations.
+    Solves zero energy at the FIRST minimum reachable from suction. A
+    pressure-bound limit carries that reason and must not be called sonic.
+    mach_crit is a deprecated compatibility argument with no effect.
     """
-    # seeds floored so low-pressure reservoirs can't produce negative psu guesses
-    psu_list = [max(ipr_su.pres - 200, 60.0), max(ipr_su.pres - 300, 50.0)]
-    # store values of tee near the mach=mach_crit pressure
-    seed_a = throat_entry_mach_one(psu_list[0], tsu, ken, ate, ipr_su, prop_su, mach_crit)
-    seed_b = throat_entry_mach_one(psu_list[1], tsu, ken, ate, ipr_su, prop_su, mach_crit)
-    tee_list = [seed_a[0], seed_b[0]]
-    qoil_std, te_book = seed_b[1], seed_b[2]
-
-    psu_diff = 5  # criteria for when you've converged to an answer
-    psu_hi = ipr_su.pres - 10  # upper clamp
-    n = 0  # loop counter
-
-    def _choke_residual_ok(tee: float, book: jp.JetBook) -> bool:
-        # The residual is a CHOKE residual only when the sweep actually crossed
-        # mach_crit. A sweep that ran into the 50-psig floor first (pure water:
-        # Mach 0.04 at 4,800 ft/s) returns tde at the floor - a numerical guard
-        # whose floor pressure jumps between iterates - so the historic
-        # |dpsu| exit stays the rule there (bit-identical for those solves).
-        crossed = book.mach_ray[-1] >= mach_crit and len(book.mach_ray) > 1
-        return (not crossed) or abs(tee) <= _TEE_TOL_FRAC * book.kde_ray[0]
-
-    # [LIBRARY change -> upstream PR to kwellis/woffl] FLOW-9: converged means
-    # BOTH successive suctions within psu_diff AND the choke residual itself
-    # within _TEE_TOL_FRAC of the entry kinetic energy - |dpsu| alone let two
-    # clamps at a bound exit "converged" with a residual nowhere near zero.
-    while abs(psu_list[-2] - psu_list[-1]) > psu_diff or not _choke_residual_ok(
-        tee_list[-1], te_book
-    ):
-        if psu_list[-1] == psu_list[-2]:
-            # clamped onto the same bound twice: the residual cannot move
-            if psu_list[-1] >= psu_hi:
-                raise ThroatEntryNoSolution(
-                    "throat entry chokes before its energy balance closes at every "
-                    f"suction up to {psu_hi:.0f} psig (tde at Mach {mach_crit:g} is "
-                    f"{tee_list[-1]:.0f} ft2/s2, {100 * tee_list[-1] / te_book.kde_ray[0]:.0f}% "
-                    "of the entry kinetic energy): the pump cannot be fed at any suction"
-                )
-            # pinned at the 50-psig lower clamp with tee < 0: the choke floor is
-            # below the admissible range, and 50 is the floor (historic result)
-            break
-        # keep suction pressure above 50 and below the reservoir pressure so a
-        # secant overshoot can't feed a non-physical psu into the IPR
-        psu_nxt = min(
-            max(psu_secant(psu_list[-2], psu_list[-1], tee_list[-2], tee_list[-1]), 50),
-            psu_hi,
-        )
-        tee_nxt, qoil_std, te_book = throat_entry_mach_one(
-            psu_nxt, tsu, ken, ate, ipr_su, prop_su, mach_crit
-        )
-        psu_list.append(psu_nxt)
-        tee_list.append(tee_nxt)
-        n = n + 1
-        if n == 15:
-            raise ConvergenceError("psu_minimize did not converge")
-    # pte, vte, rho_te, mach_te = te_book.dete_zero()
-    return psu_list[-1], qoil_std, te_book
+    from woffl.flow.entry_energy import retired_mach, suction_limit
+    retired_mach(mach_crit)
+    return suction_limit(tsu, ken, ate, ipr_su, prop_su)
 
 
 def psu_secant(psu1: float, psu2: float, dete1: float, dete2: float) -> float:
@@ -659,7 +411,14 @@ def throat_discharge(
     ath = anz + ate  # area of the throat
     mtm = mnz + mte  # mass flow of total mixture
 
-    ptm_list = [3 * pte, 2 * pte]  # initial guesses, 3 and 2 times pte
+    # [LIBRARY change -> upstream PR to kwellis/woffl] Outlet momentum is
+    # positive, so pressure cannot exceed inlet pressure plus inlet momentum.
+    # Bound secant excursions before evaluating the finite-domain water PVT.
+    from woffl.pvt.water_properties import PSI_MPA
+    upper = min(pte + sp.mom_to_psi(mom_nz+mom_te, ath), 100/PSI_MPA-14.7)
+    ptm_list = [min(3*pte, upper), min(2*pte, upper)]
+    if ptm_list[0] == ptm_list[1]:
+        ptm_list[1] = (15.+upper)/2
     bal_list = []
 
     # generate the first two guesses to work off of
@@ -674,9 +433,9 @@ def throat_discharge(
     # (checking bal_list[-2] returned a point whose own residual was never tested)
     n = 0
     while abs(bal_list[-1]) > 1:  # attempt to find ptm convergence
-        ptm = max(
+        ptm = min(upper, max(
             ptm_secant(ptm_list[-2], ptm_list[-1], bal_list[-2], bal_list[-1]), 15
-        )  # force ptm to never go below 15 psig
+        ))  # force ptm to never go below 15 psig
 
         rho_tm = prop_tm.condition(ptm, tte).rho_mix()  # density of total mixture
         vtm = sp.velocity(mtm / rho_tm, ath)
@@ -704,12 +463,12 @@ def throat_discharge(
                 m_tm, m_fr = throat_outlet_momentum(kth, v, ath, rho)
                 return throat_momentum_balance(pte, p, mom_nz, mom_te, m_tm, m_fr, ath)
 
-            return _throat_discharge_bracketed(_bal, pte)
+            return _throat_discharge_bracketed(_bal, pte, upper=upper)
 
     return ptm_list[-1]
 
 
-def _throat_discharge_bracketed(bal_fn, pte: float) -> float:
+def _throat_discharge_bracketed(bal_fn, pte: float, *, upper=None) -> float:
     """Bracketed fallback for :func:`throat_discharge` when the secant stalls.
 
     Scans the throat-discharge pressure ``ptm`` over a generous range for a sign
@@ -735,6 +494,7 @@ def _throat_discharge_bracketed(bal_fn, pte: float) -> float:
     # The discharge sits a little above the throat-entry pressure for a working
     # pump (initial secant guesses were 2*pte, 3*pte); scan well past that.
     for hi in (max(6.0 * pte, 300.0), max(15.0 * pte, 1500.0)):
+        hi = min(hi, upper) if upper is not None else hi
         grid = np.linspace(lo, hi, 60)
         prev_p = grid[-1]
         prev_v = bal_fn(prev_p)
@@ -762,11 +522,14 @@ def _throat_discharge_bracketed(bal_fn, pte: float) -> float:
     from scipy.optimize import minimize_scalar
 
     hi = max(15.0 * pte, 1500.0)
+    hi = min(hi, upper) if upper is not None else hi
     v_hi = bal_fn(hi)
     for _ in range(3):
         if v_hi < 0.0:
             break
-        hi *= 4.0  # hump extends past the scan range: push the top end out
+        if upper is not None and hi >= upper:
+            break
+        hi = min(hi*4., upper) if upper is not None else hi*4.
         v_hi = bal_fn(hi)
     if v_hi < 0.0:
         peak = minimize_scalar(
@@ -963,23 +726,13 @@ def jetpump_base_calcs(
     )
     pte, vte, rho_te, mach_te = te_book.dete_zero()
 
-    vnz = nozzle_velocity(pni, pte, knz, rho_ni)
-    qnz_ft3s, qnz_bwpd = nozzle_rate(vnz, anz)
-
-    wc_tm, fwat_bwpd = throat_wc(qoil_std, prop_su.wc, qnz_bwpd)
-
-    # Propagate water-pump mode into the internally-built throat mixture so a
-    # 100%-water solve stays water-anchored through the diffuser.
-    # [LIBRARY change -> upstream PR to kwellis/woffl]
-    prop_tm = ResMix(
-        wc_tm,
-        prop_su.fgor,
-        prop_su.oil,
-        prop_su.wat,
-        prop_su.gas,
-        model_as_water=prop_su.model_as_water,
-    )
-    ptm = throat_discharge(pte, tsu, kth, vnz, anz, rho_ni, vte, ate, rho_te, prop_tm)
+    # rho_ni is supplied at nozzle inlet conditions. Recover its reference
+    # density for standard-rate conversion and mass-conserving water mixing.
+    prop_pf = FormWater(1.).condition(pni, tsu)
+    prop_pf = FormWater(rho_ni/prop_pf.density).condition(pni, tsu)
+    vnz, qnz_bwpd = water_nozzle(pni, pte, tsu, knz, anz, prop_pf)
+    wc_tm, fwat_bwpd, prop_tm = throat_mixture(qoil_std, qnz_bwpd, prop_su, prop_pf)
+    ptm = throat_discharge(pte, tsu, kth, vnz, anz, prop_pf.density, vte, ate, rho_te, prop_tm)
     qtm_std = _throat_mixture_anchor(qoil_std, qnz_bwpd, wc_tm, prop_su.model_as_water)
     vtm, pdi = diffuser_discharge(ptm, tsu, kdi, ath, adi, qtm_std, prop_tm)
     return pte, ptm, pdi, qoil_std, fwat_bwpd, qnz_bwpd, mach_te, prop_tm

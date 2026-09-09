@@ -65,6 +65,29 @@ def test_no_errors() -> None:
     assert (df["error"] == "na").all(), "All pumps should solve without error"
 
 
+def test_conserved_mixture_batch_discharge_balance() -> None:
+    """R01: changed reference values must still balance the actual pump.
+
+    Recompute independently of the solver's stored convergence flag/rates.
+    Sonic points are supply-limited and do not require a zero residual.
+    """
+    from woffl.assembly.solopump import discharge_residual
+
+    pumps = {p.noz_no + p.rat_ar: p for p in jp_list}
+    for row in df.itertuples():
+        if row.sonic_status:
+            continue
+        residual, oil, water, pf, _mach = discharge_residual(
+            row.psu_solv, surf_pres, tsu, ppf_surf,
+            pumps[row.nozzle + row.throat], wellbore, e41_profile,
+            e41_ipr, e41_res, mpu_wat, "reverse",
+        )
+        assert abs(residual) <= 10.0  # solver's existing acceptance tolerance
+        assert oil == pytest.approx(row.qoil_std)
+        assert water == pytest.approx(oil * form_wc / (1-form_wc))
+        assert pf > 0
+
+
 def test_sonic_count() -> None:
     # 7 -> 6 with the 9b20c65 Beggs-Brill corrections (see note below): the
     # higher discharge back-pressure dropped one marginal combo below Mach 1
@@ -72,9 +95,11 @@ def test_sonic_count() -> None:
     # 6 -> 3 on 2026-09-01 (upstream_sync.md #16, Payne re-floor): the
     # discharge back-pressure rose again and 9A, 12X, 13X came off the
     # throat-entry choke. Remaining sonic: 9X, 10X, 11X.
-    assert df["sonic_status"].sum() == 3
+    # R01 conservation correction restores dissolved-gas mass to phase
+    # velocities. 12X now also reaches the choke floor.
+    assert df["sonic_status"].sum() == 4
     sonic = df[df["sonic_status"]]
-    assert sorted(sonic["nozzle"] + sonic["throat"]) == ["10X", "11X", "9X"]
+    assert sorted(sonic["nozzle"] + sonic["throat"]) == ["10X", "11X", "12X", "9X"]
 
 
 # Reference values re-baselined 2026-06 after fixing the solopump psu secant
@@ -179,7 +204,10 @@ def test_9X_reference() -> None:
     row = df[(df["nozzle"] == "9") & (df["throat"] == "X")].iloc[0]
     assert row["qoil_std"] == pytest.approx(58.95, rel=0.01)
     assert row["totl_wat"] == pytest.approx(1932.59, rel=0.01)
-    assert row["mach_te"] == pytest.approx(0.8488, rel=0.01)
+    # Entry-energy-v1 evaluates the turning point itself, rather than
+    # the final subsonic sample of a 25-psi Mach-threshold walk.
+    assert row["mach_te"] == pytest.approx(0.93804, rel=0.01)
+    assert bool(row["sonic_status"])
     assert row["psu_solv"] == pytest.approx(1323.40, rel=0.01)
 
 
@@ -188,7 +216,7 @@ def test_9D_reference() -> None:
     row = df[(df["nozzle"] == "9") & (df["throat"] == "D")].iloc[0]
     assert row["qoil_std"] == pytest.approx(131.78, rel=0.01)
     assert row["totl_wat"] == pytest.approx(2454.76, rel=0.01)
-    assert row["mach_te"] == pytest.approx(0.1941, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.20147, rel=0.01)
     assert row["psu_solv"] == pytest.approx(1222.98, rel=0.01)
 
 
@@ -197,17 +225,19 @@ def test_12B_reference() -> None:
     row = df[(df["nozzle"] == "12") & (df["throat"] == "B")].iloc[0]
     assert row["qoil_std"] == pytest.approx(190.45, rel=0.01)
     assert row["totl_wat"] == pytest.approx(4456.81, rel=0.01)
-    assert row["mach_te"] == pytest.approx(0.3513, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.37352, rel=0.01)
     assert row["psu_solv"] == pytest.approx(1136.49, rel=0.01)
 
 
 def test_16E_reference() -> None:
     """Nozzle 16, Throat E — largest pump."""
     row = df[(df["nozzle"] == "16") & (df["throat"] == "E")].iloc[0]
-    assert row["qoil_std"] == pytest.approx(38.37, rel=0.01)
-    assert row["totl_wat"] == pytest.approx(7010.63, rel=0.01)
-    assert row["mach_te"] == pytest.approx(0.0056, rel=0.02)
-    assert row["psu_solv"] == pytest.approx(1350.57, rel=0.01)
+    # Fluid v2 intentionally changes this compatibility pin; independent
+    # energy/mass checks and output deltas are in the fluid-followup report.
+    assert row["qoil_std"] == pytest.approx(32.45012, rel=0.01)
+    assert row["totl_wat"] == pytest.approx(6959.52, rel=0.01)
+    assert row["mach_te"] == pytest.approx(0.004884, rel=0.02)
+    assert row["psu_solv"] == pytest.approx(1358.30659, rel=0.01)
 
 
 def test_oil_always_positive() -> None:

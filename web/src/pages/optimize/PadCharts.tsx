@@ -68,8 +68,8 @@ interface HistoryRow {
   totalBpd: number | null;
 }
 
-/** Sweep trial as [header_psi, oil_bopd, total_pf_bpd]. */
-type SweepPoint = [number, number, number];
+/** Sweep trial as [header_psi, oil_bopd, lift_water_bpd, machine_water_bpd]. */
+type SweepPoint = [number, number, number, number];
 
 const NO_DUTY: Duty = { headerPsi: null, totalBpd: null, perPumpBpd: null };
 
@@ -77,7 +77,7 @@ const NO_DUTY: Duty = { headerPsi: null, totalBpd: null, perPumpBpd: null };
  *  split in the meta; the rest divide the station total. */
 function readDuty(meta: Record<string, unknown> | null, nPumps: number | null): Duty {
   if (meta === null) return NO_DUTY;
-  const totalBpd = metaNum(meta, "total_pf_bpd");
+  const totalBpd = metaNum(meta, "total_machine_water_bpd") ?? metaNum(meta, "total_pf_bpd");
   const perPump = metaNum(meta, "per_pump_bpd");
   return {
     headerPsi: metaNum(meta, "header_psi"),
@@ -98,7 +98,7 @@ function readSweep(meta: Record<string, unknown> | null): SweepPoint[] {
     const oil = metaNum(r, "total_oil_bopd");
     const pf = metaNum(r, "total_pf_bpd");
     if (psi === null || oil === null || pf === null) continue;
-    out.push([psi, oil, pf]);
+    out.push([psi, oil, pf, metaNum(r, "total_machine_water_bpd") ?? pf]);
   }
   return out.sort((a, b) => a[0] - b[0]);
 }
@@ -206,7 +206,7 @@ function stationOption(
       name: "Sweep trials",
       type: "scatter",
       symbolSize: 6,
-      data: sweep.map((s) => [s[2], s[0]]),
+      data: sweep.map((s) => [s[3], s[0]]),
       itemStyle: { color: "#ffffff", borderColor: SLATE, borderWidth: 1.2 },
       z: 6,
     });

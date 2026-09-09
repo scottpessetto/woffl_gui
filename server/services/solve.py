@@ -79,7 +79,7 @@ def _run_solver(
     from woffl.assembly.solopump import jetpump_solver
     from woffl.flow.errors import ConvergenceError, ThroatEntryNoSolution
 
-    prop_pf = factories.power_fluid(p.field_model)
+    prop_pf = factories.power_fluid(p.field_model, p.rho_pf)
     try:
         return jetpump_solver(
             pwh=p.surf_pres,
@@ -227,6 +227,7 @@ def _recommend(batch: Any, marginal_watercut: float, water_type: str) -> Optiona
         if not any(below_threshold):
             best_idx = int(np.argmin(marginal_watercuts))
             return {
+                "pump_state": semi_df.iloc[best_idx].get("pump_state"),
                 "nozzle": str(semi_df.iloc[best_idx]["nozzle"]),
                 "throat": str(semi_df.iloc[best_idx]["throat"]),
                 "qoil_std": float(semi_df.iloc[best_idx]["qoil_std"]),
@@ -243,6 +244,7 @@ def _recommend(batch: Any, marginal_watercut: float, water_type: str) -> Optiona
             valid_oil = [semi_df.iloc[int(idx)]["qoil_std"] for idx in valid_indices]
             best_idx = int(valid_indices[int(np.argmax(valid_oil))])
             return {
+                "pump_state": semi_df.iloc[best_idx].get("pump_state"),
                 "nozzle": str(semi_df.iloc[best_idx]["nozzle"]),
                 "throat": str(semi_df.iloc[best_idx]["throat"]),
                 "qoil_std": float(semi_df.iloc[best_idx]["qoil_std"]),
@@ -270,7 +272,8 @@ def _recommend(batch: Any, marginal_watercut: float, water_type: str) -> Optiona
         closest_idx = int(valid_indices[int(np.argmin(distances))])
 
         return {
-            "nozzle": str(semi_df.iloc[closest_idx]["nozzle"]),
+            "pump_state": semi_df.iloc[closest_idx].get("pump_state"),
+                "nozzle": str(semi_df.iloc[closest_idx]["nozzle"]),
             "throat": str(semi_df.iloc[closest_idx]["throat"]),
             "qoil_std": float(semi_df.iloc[closest_idx]["qoil_std"]),
             "water_rate": float(semi_df.iloc[closest_idx][water_col]),
@@ -330,18 +333,12 @@ def run_batch(well: str, sp: schemas.SimParams) -> dict[str, Any]:
 
     p = sp.to_simulation_params(well)
     _jetpump, wellbore, inflow, res_mix, wp = factories.build_sim_objects(sp, well)
-    prop_pf = factories.power_fluid(p.field_model)
+    prop_pf = factories.power_fluid(p.field_model, p.rho_pf)
 
-    jp_list = BatchPump.jetpump_list(
-        list(sp.nozzle_batch_options),
-        list(sp.throat_batch_options),
-        knz=0.01,
-        ken=p.ken,
-        kth=p.kth,
-        kdi=p.kdi,
-    )
-    for jp in jp_list:
-        factories.apply_nozzle_area_factor(jp, sp.nozzle_area_factor)
+    from woffl.assembly.pump_candidates import scoped_pumps
+    jp_list = scoped_pumps(list(sp.nozzle_batch_options), list(sp.throat_batch_options),
+        (sp.nozzle_no, sp.area_ratio) if sp.pump_state == "installed" else None,
+        {"ken": p.ken, "kth": p.kth, "kdi": p.kdi, "nozzle_area_factor": sp.nozzle_area_factor})
     batch = BatchPump(
         pwh=p.surf_pres,
         tsu=p.form_temp,
@@ -436,17 +433,11 @@ def _pf_point(well: str, sp_json: str, pressure: float) -> Optional[pd.DataFrame
         sp = schemas.SimParams.model_validate_json(sp_json)
         p = sp.to_simulation_params(well)
         _jetpump, wellbore, inflow, res_mix, wp = factories.build_sim_objects(sp, well)
-        prop_pf = factories.power_fluid(p.field_model)
-        jp_list = BatchPump.jetpump_list(
-            list(sp.nozzle_batch_options),
-            list(sp.throat_batch_options),
-            knz=0.01,
-            ken=p.ken,
-            kth=p.kth,
-            kdi=p.kdi,
-        )
-        for jp in jp_list:
-            factories.apply_nozzle_area_factor(jp, sp.nozzle_area_factor)
+        prop_pf = factories.power_fluid(p.field_model, p.rho_pf)
+        from woffl.assembly.pump_candidates import scoped_pumps
+        jp_list = scoped_pumps(list(sp.nozzle_batch_options), list(sp.throat_batch_options),
+            (sp.nozzle_no, sp.area_ratio) if sp.pump_state == "installed" else None,
+            {"ken": p.ken, "kth": p.kth, "kdi": p.kdi, "nozzle_area_factor": sp.nozzle_area_factor})
         batch = BatchPump(
             pwh=p.surf_pres,
             tsu=p.form_temp,
@@ -526,6 +517,8 @@ def run_pf_range(well: str, sp: schemas.SimParams) -> dict[str, Any]:
         comprehensive["pump"] = comprehensive["nozzle"].astype(str) + comprehensive[
             "throat"
         ].astype(str)
+        if "pump_state" in comprehensive:
+            comprehensive["pump"] += comprehensive["pump_state"].map({"installed": " (installed)", "replacement": " (clean)"}).fillna("")
         rows = frames.records(comprehensive)
 
     return {"rows": rows, "pressures": [float(v) for v in pressures]}
@@ -625,7 +618,7 @@ def pressure_profile(well: str, sp: schemas.SimParams) -> dict[str, Any]:
 
     # Mixed production fluid (formation + power fluid) - same as
     # discharge_residual.
-    prop_pf = factories.power_fluid(p.field_model)
+    prop_pf = factories.power_fluid(p.field_model, p.rho_pf)
     wc_tm, _ = jf.throat_wc(qoil_std, res_mix.wc, qnz_bwpd)
     # Third throat-mixture construction site: the water-pump flag must
     # propagate here too (settled decision, AGENTS.md §8; review SRV-7).
@@ -684,7 +677,7 @@ def calibrate(req: schemas.CalibrateRequest) -> dict[str, Any]:
 
     p = req.params.to_simulation_params(req.well)
     _jetpump, wellbore, inflow, res_mix, wp = factories.build_sim_objects(req.params, req.well)
-    prop_pf = factories.power_fluid(p.field_model)
+    prop_pf = factories.power_fluid(p.field_model, p.rho_pf)
 
     # Test-day WHP when measured, else the sidebar wellhead pressure
     # (mirror of build_calibration_inputs' model_surf_pres rule).
@@ -753,7 +746,7 @@ def match_test(req: schemas.MatchTestRequest) -> dict[str, Any]:
         raise ValueError("water mode has no oil-anchored match")
     p = req.params.to_simulation_params(req.well)
     _jetpump, wellbore, _inflow, res_mix, wp = factories.build_sim_objects(req.params, req.well)
-    prop_pf = factories.power_fluid(p.field_model)
+    prop_pf = factories.power_fluid(p.field_model, p.rho_pf)
     pres = float(p.pres)
 
     whp = frames.opt_float(req.test_whp)

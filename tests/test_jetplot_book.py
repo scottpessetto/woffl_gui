@@ -62,29 +62,19 @@ def test_integer_psu_keeps_the_integer_element_type():
     assert book.prs_ray.dtype.kind == "f"
 
 
-def test_zero_tde_walk_bit_identical_to_manual_sweep():
-    """A real throat-entry sweep built through the book equals one built with
-    freshly-materialized arrays at every step (the pre-patch data flow)."""
-    from woffl.flow.inflow import InFlow
-    from woffl.geometry.jetpump import JetPump
-    from woffl.pvt.blackoil import BlackOil
-    from woffl.pvt.formgas import FormGas
-    from woffl.pvt.formwat import FormWater
-    from woffl.pvt.resmix import ResMix
+def test_entry_book_uses_independently_integrated_pressure_work():
+    """New entry books integrate one smooth material path, not trapezoid steps."""
+    from scipy.integrate import quad
+    from woffl.flow.entry_energy import MaterialPath
+    from tests.test_critical_mach_study import IsothermalGas
+    path = MaterialPath(100., 1500., IsothermalGas())
+    balance = path.balance(1250., 1., .03, .001)
+    book = balance.book()
+    for p, ee in zip(book.prs, book.ede):
+        exact = quad(lambda x: 144*32.174/(.01*(x+14.7)), 1250., p)[0]
+        assert ee == pytest.approx(exact, rel=2e-6, abs=.0001)
+    np.testing.assert_allclose(np.array(book.kde)+book.ede, book.tde)
 
-    ipr = InFlow(qwf=246, pwf=1049, pres=1400)
-    res = ResMix(wc=0.894, fgor=600, oil=BlackOil.schrader(), wat=FormWater.schrader(), gas=FormGas.schrader())
-    jp = JetPump("12", "B")
-    _q, book = jf.throat_entry_zero_tde(psu=1250.0, tsu=80, ken=jp.ken, ate=jp.ate, ipr_su=ipr, prop_su=res)
-    arrays = {n: getattr(book, n + "_ray").copy() for n in ("prs", "vel", "rho", "snd", "kde", "ede", "tde", "mach")}
-    # rebuild from the same inputs through np.append + scipy trapezoid
-    ede = np.array([0])
-    for i in range(1, len(arrays["prs"])):
-        inc = jf.incremental_ee(arrays["prs"][i - 1 : i + 1], arrays["rho"][i - 1 : i + 1])
-        ede = np.append(ede, ede[-1] + inc)
-    assert np.array_equal(ede, arrays["ede"])
-    assert np.array_equal(arrays["kde"] + ede, arrays["tde"])
-    assert np.array_equal(arrays["vel"] / arrays["snd"], arrays["mach"])
 
 
 # ------------------------------------------------------------------ FLOW-5

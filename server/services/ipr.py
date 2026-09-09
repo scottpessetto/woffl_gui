@@ -385,11 +385,6 @@ def save(well: str, req: schemas.SaveIprRequest) -> dict[str, Any]:
         form_wc=req.form_wc,
         form_gor=req.form_gor,
         surf_pres=req.surf_pres,
-        ken=req.ken,
-        kth=req.kth,
-        kdi=req.kdi,
-        nozzle_area_factor=req.nozzle_area_factor,
-        mach_crit=req.mach_crit,
         bubble_point=req.bubble_point,
         form_temp=req.form_temp,
         comment=req.comment,
@@ -498,7 +493,12 @@ def _pad_fit(pad: str, extra: tuple[str, ...]) -> dict[str, Any]:
             info = ipr_anchor.load_saved_ipr(name)
         except Exception:
             info = None
-        return _fit_row(name, well_pad, info)
+        from server.services import pump_calibration
+        scope = pump_calibration.resolve_current(name, (info or {}).get("friction"))
+        row = _fit_row(name, well_pad, info)
+        row.update(pump_calibration=scope, has_friction=scope["status"] == "active",
+                   friction_keys=list(scope["coefficients"]))
+        return row
 
     pad_by_name = {w["name"]: w.get("pad", "") for w in universe}
     return {

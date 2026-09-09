@@ -18,6 +18,18 @@ env:
   - name: WOFFL_MAX_WORKERS
     value: "2"
 
+  # Medium stays at two CPUs. Prevent native linear-algebra libraries from
+  # multiplying threads inside each worker. One heavy background job may
+  # use both workers; additional jobs queue while page reads remain available.
+  - name: OMP_NUM_THREADS
+    value: "1"
+  - name: OPENBLAS_NUM_THREADS
+    value: "1"
+  - name: MKL_NUM_THREADS
+    value: "1"
+  - name: WOFFL_MAX_JOBS
+    value: "1"
+
   # Fleet cache warm cadence (server/warmup.py; code default is 6 h, which
   # local runs keep). 12 h here because the SQL warehouse bills per WAKE
   # WINDOW, not per statement: at 6 h the loop woke it five times a day -

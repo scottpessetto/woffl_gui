@@ -99,6 +99,9 @@ def optimize_jet_pumps(
 
     # solve
     solver = cp_model.CpSolver()
+    # [LIBRARY change -> upstream PR to kwellis/woffl] One native thread
+    # per allocation; well simulations share the host's two-CPU budget.
+    solver.parameters.num_search_workers = 1
     status = solver.solve(model)
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -107,6 +110,21 @@ def optimize_jet_pumps(
             f"MCKP infeasible: {qpf_tot:.0f} bwpd capacity cannot serve all wells. "
             f"Minimum required: {min_water:.0f} bwpd."
         )
+
+    # [LIBRARY change -> upstream PR to kwellis/woffl] O02: a producing
+    # choice wins ties in the integer priced objective, without sacrificing
+    # any primary objective units. Do not lock an unproven incumbent.
+    if water_price > 0 and status == cp_model.OPTIMAL:
+        primary = sum(oil_terms)
+        model.add(primary == solver.value(primary))
+        model.maximize(sum(
+            int(np.floor(float(oil) * SCALE)) * x[i][j]
+            for i, df in enumerate(candidates)
+            for j, oil in enumerate(df["qoil_std"])
+        ))
+        status = solver.solve(model)
+        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            raise RuntimeError("MCKP oil tie-break failed")
 
     # extract solution
     results = []
@@ -117,6 +135,8 @@ def optimize_jet_pumps(
                 row = df_semi.iloc[j]
                 results.append(
                     {
+                        # [LIBRARY change -> upstream PR to kwellis/woffl]
+                        **({"pump_state": row["pump_state"]} if "pump_state" in row else {}),
                         "wellname": well.wellname,
                         "nozzle": row["nozzle"],
                         "throat": row["throat"],

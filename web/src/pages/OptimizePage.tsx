@@ -35,7 +35,8 @@ const INPUT_CLS =
 function FitStatus({ row }: { row: PadFitWell }) {
   const missing: string[] = [];
   if (!row.has_curve) missing.push("IPR");
-  if (!row.has_friction) missing.push("friction");
+  if (!row.has_friction) missing.push("reference pump");
+  if (row.pump_calibration?.quality?.provisional) missing.push("review pump fit");
   if (missing.length === 0) {
     return (
       <span className="inline-flex items-center gap-1 text-emerald-700">
@@ -139,7 +140,7 @@ function PadReadiness({ pad }: { pad: string }) {
                 <th className="px-3 py-2 font-semibold">Well</th>
                 <th className="px-3 py-2 font-semibold">IPR saved</th>
                 <th className="px-3 py-2 font-semibold">By</th>
-                <th className="px-3 py-2 font-semibold">Friction</th>
+                <th className="px-3 py-2 font-semibold">Pump calibration</th>
                 <th className="px-3 py-2 font-semibold">Fit status</th>
                 <th className="px-3 py-2 text-center font-semibold">Offline</th>
                 <th className="w-8 px-2 py-2"></th>
@@ -173,7 +174,7 @@ function PadReadiness({ pad }: { pad: string }) {
                       {row.saved_by ? row.saved_by.split("@")[0] : "-"}
                     </td>
                     <td className="whitespace-nowrap px-3 py-1.5 text-slate-600">
-                      {row.has_friction ? row.friction_keys.join(" ") : "-"}
+                      {row.has_friction ? `${row.pump_calibration?.pump ?? "Installed"} fit` : row.pump_calibration?.status === "legacy" ? "Older fit - refit" : "Reference"}
                     </td>
                     <td className="px-3 py-1.5">
                       <FitStatus row={row} />
@@ -209,9 +210,9 @@ function PadReadiness({ pad }: { pad: string }) {
                       {donor?.saved_by ? donor.saved_by.split("@")[0] : "-"}
                     </td>
                     <td className="px-3 py-1.5 text-slate-600">
-                      {donor?.has_friction ? donor.friction_keys.join(" ") : "-"}
+                      Clean reference
                     </td>
-                    <td className="px-3 py-1.5">{donor ? <FitStatus row={donor} /> : "-"}</td>
+                    <td className="px-3 py-1.5">{donor?.has_curve ? "Donor well inputs saved" : "Review donor IPR"}</td>
                     <td className="px-3 py-1.5 text-center text-[11px] text-slate-400">planned</td>
                     <td className="px-2 py-1.5">
                       <button

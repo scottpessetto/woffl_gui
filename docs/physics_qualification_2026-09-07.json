@@ -1,0 +1,34 @@
+{
+  "qualified": false,
+  "energy_closure": [
+    {
+      "mach_crit": 1.0,
+      "operating_ke": 520.9599646915023,
+      "choking_ke": 520.9599646915023,
+      "relative_energy_mismatch": 0.0,
+      "qualified": true
+    },
+    {
+      "mach_crit": 1.5,
+      "operating_ke": 520.9599646915023,
+      "choking_ke": 231.5377620851121,
+      "relative_energy_mismatch": 0.5555555555555556,
+      "qualified": false
+    },
+    {
+      "mach_crit": 2.0,
+      "operating_ke": 520.9599646915023,
+      "choking_ke": 130.23999117287556,
+      "relative_energy_mismatch": 0.75,
+      "qualified": false
+    },
+    {
+      "mach_crit": 2.5,
+      "operating_ke": 520.9599646915023,
+      "choking_ke": 83.35359435064036,
+      "relative_energy_mismatch": 0.84,
+      "qualified": false
+    }
+  ],
+  "limitation": "FLOW-4: critical-Mach and operating energy closures disagree above 1; field validation pending."
+}

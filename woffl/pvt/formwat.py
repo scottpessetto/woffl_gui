@@ -1,3 +1,8 @@
+from woffl.pvt.water_properties import liquid_properties, PSI_MPA
+from copy import deepcopy
+import math
+
+
 class FormWater:
     def __init__(self, wat_sg: float) -> None:
         """Initialize a water stream
@@ -15,6 +20,9 @@ class FormWater:
             raise ValueError(f"Water SG {wat_sg} Outside Range")
 
         self.wat_sg = wat_sg
+        # [LIBRARY change -> upstream PR to kwellis/woffl] Preserve the SG
+        # reference at 0 psig / 60 F; use IF97 for relative P/T response.
+        self.condition(0., 60.)
 
     def __repr__(self) -> str:
         return f"Water {self.wat_sg} Specific Gravity"
@@ -83,49 +91,41 @@ class FormWater:
             rho_wat (float): water density, lbm/ft3
         """
 
-        # leave it simple now, asume no compressibility
-        rho_wat = self.wat_sg * 62.4
-        rho_wat = round(rho_wat, 3)
+        reference = liquid_properties(14.7*PSI_MPA, (60.-32.)*5/9+273.15)[0]
+        return self.density_std * self._properties()[0] / reference
 
-        return rho_wat
+    @property
+    def density_std(self) -> float:
+        """Standard water density (lbm/ft3), fixed by the measured SG input."""
+        return self.wat_sg * 62.4
+
+    def _properties(self):
+        return liquid_properties(self.pabs*PSI_MPA, (self.temp-32.)*5/9+273.15)
 
     @property
     def viscosity(self) -> float:
-        """Water Viscosity
-
-        Calculate water viscosity
-
-        Args:
-            None
-
-        Returns:
-            uwat (float): water viscosity, cP
-        """
-
-        # come back later and rewrite
-        uwat = 0.75  # leave as 0.75 cP for now
-        return uwat
+        """Pure-water viscosity (cP) at P/T; no unmeasured salinity correction."""
+        return self._properties()[2]
 
     @property
     def compress(self) -> float:
-        """Water Isothermal Compressibility
+        """Isothermal compressibility (1/psi), derivative of the density path."""
+        return self._properties()[1] * PSI_MPA
 
-        Calculate isothermal water compressibility.
-        Inverse of the bulk modulus of elasticity.
-        Used water compressibility at 62.4 lbm/ft3 since we don't change density.
+    def volume_factor(self) -> float:
+        """Water volume factor Bw (reservoir bbl / standard bbl)."""
+        return self.density_std / self.density
 
-        Args:
-            None
+    def pressure_work(self, low: float, high: float, temp: float) -> float:
+        """Isothermal pressure work (ft2/s2) between pressures (psig).
 
-        Returns:
-            wo (float): water compressibility, psi**-1
-
-        References:
-            https://roymech.org/Related/Fluids/Fluids_Water_Props.html
+        Three-point Gauss integration; no mutation of this fluid's state.
         """
-        cw_si = 0.0004543  # 1/MPa
-        cw = cw_si / 145.038  # 1/psi
-        return cw
+        fluid = deepcopy(self)
+        mid, half = (high+low)/2, (high-low)/2
+        integral = sum(w/fluid.condition(mid+half*x, temp).density
+                       for x, w in ((-math.sqrt(3/5), 5/9), (0., 8/9), (math.sqrt(3/5), 5/9)))
+        return 144*32.174*half*integral
 
     @property
     def tension(self) -> float:

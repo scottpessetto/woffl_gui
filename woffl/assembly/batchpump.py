@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+from woffl.flow.entry_energy import scoped_paths
 
 # [LIBRARY change -> upstream PR to kwellis/woffl] matplotlib and
 # scipy.optimize are imported LAZILY inside the plotting / curve-fit /
@@ -66,10 +67,9 @@ class BatchPump:
             prop_pf (FormWater): Powerfluid Properties
             jpump_direction (str): Jet Pump Direction, "reverse" or "forward"
             wellname (str): A unique identifier of the wellname
-            mach_crit (float): Critical Mach number where the throat entry
-                chokes, unitless. Default 1.0 (historic behavior).
-                [LIBRARY change -> upstream PR to kwellis/woffl] calibratable
-                choking threshold, forwarded to every jetpump_solver call.
+            mach_crit (float): Deprecated compatibility value, unitless.
+                Entry-energy-v1 ignores it; nondefault values warn.
+                [LIBRARY change -> upstream PR to kwellis/woffl]
         """
         self.pwh = pwh
         self.tsu = tsu
@@ -152,6 +152,9 @@ class BatchPump:
             jp_list.append(JetPump(nozzle, throat, knz, ken, kth, kdi))
         return jp_list
 
+    # [LIBRARY change -> upstream PR to kwellis/woffl] Reuse the same immutable
+    # material path across pump sizes, within this batch only.
+    @scoped_paths
     def _run_core(
         self, jetpumps: list[JetPump], debug: bool = False
     ) -> pd.DataFrame:
@@ -230,6 +233,9 @@ class BatchPump:
                         # and an arbitrary third-party exception may not.
                         "error": repr(exc),
                     }
+            # [LIBRARY change -> upstream PR to kwellis/woffl] preserve hardware action.
+            if hasattr(jetpump, "pump_state"):
+                result["pump_state"] = jetpump.pump_state
             results.append(result)
         return pd.DataFrame(results)
 

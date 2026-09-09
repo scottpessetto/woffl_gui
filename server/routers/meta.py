@@ -10,6 +10,14 @@ from server.schemas import MetaResponse, WarmupStatus
 router = APIRouter(tags=["meta"])
 
 
+@router.get("/meta/performance")
+def get_performance():
+    """In-memory counters only; never wakes the warehouse."""
+    from server import performance, pool, surface_cache
+    return {"timings": performance.snapshot(), "workers": pool.workers(),
+            "surface_cache": surface_cache.status()}
+
+
 @router.get("/meta", response_model=MetaResponse)
 def get_meta(request: Request) -> MetaResponse:
     """App version, request user, and deployment flags."""

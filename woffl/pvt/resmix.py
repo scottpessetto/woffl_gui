@@ -55,7 +55,9 @@ class ResMix:
         # store standard densities so you don't have to call continually
         pstd = 0  # psig standard pressure
         tstd = 60  # deg f standard temperature
-        self.rho_oil_std = oil.condition(pstd, tstd).density
+        # [LIBRARY change -> upstream PR to kwellis/woffl] R01: stock-tank
+        # oil excludes dissolved gas; the live correlation at 0 psig does not.
+        self.rho_oil_std = 62.42796 * 141.5 / (oil.oil_api + 131.5)
         self.rho_wat_std = wat.condition(pstd, tstd).density
         self.rho_gas_std = gas.condition(pstd, tstd).density
         self._cache: dict = {}
@@ -124,7 +126,13 @@ class ResMix:
         """
         return self._cached(
             "rho_comp",
-            lambda: (self.oil.density, self.wat.density, self.gas.density),
+            # Reconcile Bo with conserved component masses, using the same
+            # standard gas density for dissolved and free gas.
+            lambda: (
+                (self.rho_oil_std + self.oil.gas_solubility()
+                 * self.rho_gas_std * 7.48052 / 42) / self.oil.oil_fvf(),
+                self.wat.density, self.gas.density,
+            ),
         )
 
     def rho_two(self) -> tuple[float, float]:
@@ -401,7 +409,8 @@ class ResMix:
                 qoil_std, self.rho_wat_std, self.wat.density, ywat, ygas
             )
         qoil, qwat, qgas = self._static_insitu_volm_flow(
-            qoil_std, self.rho_oil_std, self.oil.density, yoil, ywat, ygas
+            qoil_std, self.rho_oil_std, self.rho_comp()[0], yoil, ywat, ygas,
+            self.oil.gas_solubility() * self.rho_gas_std * 7.48052 / 42,
         )
         return qoil, qwat, qgas
 
@@ -413,6 +422,7 @@ class ResMix:
         yoil: float,
         ywat: float,
         ygas: float,
+        dissolved_mass_per_oil_volume: float = 0.0,
     ) -> tuple[float, float, float]:
         """Insitu Volumetric Flow of Components
 
@@ -425,6 +435,8 @@ class ResMix:
             yoil (float): Volm Fraction Oil Insitu Cond, ft3/ft3
             ywat (float): Volm Fraction Water Insitu Cond, ft3/ft3
             ygas (float): Volm Fraction Gas Insitu Cond, ft3/ft3
+            dissolved_mass_per_oil_volume (float): dissolved gas mass per
+                standard oil volume, lbm/ft3; zero for a gas-free stream.
 
         Returns:
             qoil (float): Oil Volumetric Flow, Insitu ft3/s
@@ -435,7 +447,9 @@ class ResMix:
         qoil_cfs = (
             qoil_std * 42 / (24 * 60 * 60 * 7.48052)
         )  # ft3/s at standard conditions
-        moil = qoil_cfs * rho_oil_std  # mass flow of oil
+        # [LIBRARY change -> upstream PR to kwellis/woffl] Include dissolved
+        # gas in live-oil phase mass before recovering all phase flows.
+        moil = qoil_cfs * (rho_oil_std + dissolved_mass_per_oil_volume)
         qoil = moil / rho_oil  # actual flow, ft3/s
 
         # Oil volume fraction is zero only at 100% water cut, where recovering
@@ -510,11 +524,12 @@ class ResMix:
             mwat (float): Water Mass Flow, lbm/s
             mgas (float): Gas Mass Flow, lbm/s
         """
-        xoil, xwat, xgas = self.mass_fract()
-        moil, mwat, mgas = self._static_insitu_mass_flow(
-            qoil_std, self.rho_oil_std, xoil, xwat, xgas
-        )
-        return moil, mwat, mgas
+        # [LIBRARY change -> upstream PR to kwellis/woffl] R01: the mass
+        # and volume interfaces must describe the same conserved stream,
+        # including the opt-in water-rate anchor at 100% watercut.
+        oil, water, gas = self.insitu_volm_flow(qoil_std)
+        rho_oil, rho_water, rho_gas = self.rho_comp()
+        return oil * rho_oil, water * rho_water, gas * rho_gas
 
     @staticmethod
     def _static_insitu_mass_flow(
@@ -580,14 +595,14 @@ class ResMix:
             Derivations from Kaelin available on request
         """
         # mass based gas solubility
-        mrs = (7.48 / 42) * rs * rho_gas_std / rho_oil_std
+        mrs = (7.48052 / 42) * min(rs, fgor) * rho_gas_std / rho_oil_std
         # mass formation gas oil ratio, convert from scf/bbl to scf/cf
-        mfgor = (7.48 / 42) * fgor * rho_gas_std / rho_oil_std
+        mfgor = (7.48052 / 42) * fgor * rho_gas_std / rho_oil_std
         # mass watercut
         mwc = rho_wat_std * wc / (rho_wat_std * wc + rho_oil_std * (1 - wc))
         # mass formation gas to liquid ratio
         mfglr = (
-            (7.48 / 42)
+            (7.48052 / 42)
             * fgor
             * rho_gas_std
             * (1 - wc)

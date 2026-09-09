@@ -260,7 +260,34 @@ def settle(choices: dict, surfaces: Surfaces, plant: AnchoredPlant,
             break
         pressure = new_pressure
     oil, water, missing = _totals(pressure)
-    feasible = not missing
+    expected, at_trip = plant.pressure_at(water)
+    residual = expected - pressure
+    converged = not missing and abs(residual) < tol_psi
+    if not converged:
+        # Fixed-point iteration can oscillate on steep demand. Search each
+        # continuous surface interval; never bridge a missing model point.
+        from scipy.optimize import brentq
+
+        def residual_at(p):
+            _oil, w, absent = _totals(p)
+            if absent:
+                raise ValueError("missing surface")
+            return plant.pressure_at(w)[0] - p
+
+        knots = sorted(set(surfaces.p_grid + [plant.p0]))
+        for lo, hi in zip(knots, knots[1:]):
+            try:
+                root = brentq(residual_at, lo, hi, xtol=1e-6)
+            except ValueError:
+                continue
+            pressure = root
+            oil, water, missing = _totals(pressure)
+            expected, at_trip = plant.pressure_at(water)
+            residual = expected - pressure
+            converged = not missing and abs(residual) < tol_psi
+            if converged:
+                break
+    feasible = not missing and converged
     return {
         "pressure": pressure,
         "oil": oil if feasible else float("-inf"),
@@ -268,6 +295,8 @@ def settle(choices: dict, surfaces: Surfaces, plant: AnchoredPlant,
         "at_trip": at_trip,
         "choices": dict(choices),
         "feasible": feasible,
+        "converged": converged,
+        "pressure_residual_psi": residual,
         "infeasible": sorted(missing),
     }
 
@@ -593,7 +622,7 @@ def build_response_surfaces(
         opt = NetworkOptimizer(
             wells,
             PowerFluidConstraint(
-                total_rate=500000.0, pressure=constraint_psi, rho_pf=62.4
+                total_rate=500000.0, pressure=constraint_psi, rho_pf=None
             ),
             noz,
             thr,
@@ -604,21 +633,21 @@ def build_response_surfaces(
             ws = surfaces.wells[wc.well_name]
             for n in noz:
                 for t in thr:
-                    perf = opt.get_pump_performance(wc.well_name, n, t)
-                    label = f"{n}{t}"
-                    entry = ws.options.setdefault(
-                        label,
-                        {
-                            "nozzle": n,
-                            "throat": t,
-                            "_grid": grid,
-                            "oil": [None] * len(grid),
-                            "water": [None] * len(grid),
-                        },
-                    )
-                    if perf is not None:
-                        entry["oil"][i] = float(perf["oil_rate"])
-                        entry["water"][i] = float(perf["total_water"])
+                    scoped = getattr(wc, "pump_calibration_scoped", False)
+                    states = ["replacement"] if scoped else [None]
+                    if scoped and (n, t) == (wc.installed_nozzle, wc.installed_throat):
+                        states.insert(0, "installed")
+                    for state in states:
+                        perf = opt.get_pump_performance(wc.well_name, n, t,
+                            **({"pump_state": state} if state else {}))
+                        label = f"{n}{t}" + (" (clean)" if state == "replacement" else "")
+                        entry = ws.options.setdefault(label, {
+                            "nozzle": n, "throat": t, "pump_state": state,
+                            "_grid": grid, "oil": [None] * len(grid), "water": [None] * len(grid),
+                        })
+                        if perf is not None:
+                            entry["oil"][i] = float(perf["oil_rate"])
+                            entry["water"][i] = float(perf["total_water"])
         if progress:
             progress(i + 1, len(grid), pressure)
 

@@ -62,6 +62,7 @@ from_pump, to_pump, oil_given_up, pf_saved}`` dicts).
 
 from __future__ import annotations
 
+from copy import copy
 from typing import Any, Callable, Iterable, Optional
 
 from woffl.gui.pad_plant_base import PadPlant
@@ -76,18 +77,10 @@ _SCENARIO_MARGINAL_WC = 1.0
 # non-binding PF budget.
 _EVAL_CAP_FALLBACK_BPD = 120000.0
 
-# [P1-13] PowerFluidConstraint.rho_pf default (fresh-water density, lbm/ft3).
-# Every pad-optimize call site used to spell this literal out independently
-# (~5 places) instead of relying on the dataclass default. NetworkOptimizer
-# never reads PowerFluidConstraint.rho_pf downstream (grepped: only the
-# __post_init__ range check touches it) so this is a display-only value,
-# same as the sidebar's "Power Fluid Density" widget (see
-# docs/code_review_2026-07-01.md P1-13) — it is NOT the I/M plant's real PF
-# SG (~1.03-1.04). Naming it here removes the duplication without changing
-# any numeric result; actually wiring plant-specific PF density into the
-# physics is a separate, behavior-changing task (see utils.py's
-# run_jetpump_solver/run_batch_pump/run_power_fluid_range_batch docstrings).
-_RHO_PF_DEFAULT = 62.4
+# Default for contexts without an identified plant; explicit well values win.
+_RHO_PF_DEFAULT = None
+from woffl.gui.pad_plant_base import power_fluid_density
+
 
 
 # ---------------------------------------------------------------------------
@@ -372,11 +365,14 @@ def run_optimization(
             return None
         lo_p, hi_p = plant.clamp_window(n_pumps)
         header = max(lo_p, min(hi_p, float(header)))
-        for wc in well_configs:
+        # Keep each trial's inputs with its batch results: later sweep points
+        # must not overwrite the winning optimizer's per-well pressure.
+        trial_configs = [copy(wc) for wc in well_configs]
+        for wc in trial_configs:
             wc.ppf_surf_well = header
-        pf = PowerFluidConstraint(total_rate=cap, pressure=header, rho_pf=_RHO_PF_DEFAULT)
+        pf = PowerFluidConstraint(total_rate=cap, pressure=header, rho_pf=power_fluid_density(plant))
         opt = NetworkOptimizer(
-            well_configs,
+            trial_configs,
             pf,
             list(nozzles),
             list(throats),
@@ -414,15 +410,37 @@ def run_optimization(
         return rec["objective"] if lam_fixed is not None else rec["total_oil"]
 
     trials: list[dict] = []
+    retained = None
+
+    def remember(rec):
+        nonlocal retained
+        # Keep only the winning trial's mutable optimizer and batch frames.
+        # Ties match the final pressure-sorted selection (lowest x wins).
+        if retained is None or (_score(rec), -rec["x"]) > (_score(retained), -retained["x"]):
+            if retained is not None:
+                retained.pop("opt", None)
+                retained.pop("results", None)
+            retained = rec
+        else:
+            rec.pop("opt", None)
+            rec.pop("results", None)
+        trials.append(rec)
+
     total_steps = n_steps + 2 * max(0, int(refine_rounds))
     step = 0
+
+    def report_progress(x, rec=None):
+        if progress:
+            header = rec["P"] if rec else (plant.header_at_flow(x, n_pumps) if fixed_curve else x)
+            progress(step, total_steps, header,
+                     rec["total_pf"] if rec else 0.0, rec["total_oil"] if rec else 0.0)
+
     for x in coarse:
         rec = _trial(x)
         step += 1
         if rec is not None:
-            trials.append(rec)
-        if progress:
-            progress(step, total_steps, x, rec["total_pf"] if rec else 0.0, rec["total_oil"] if rec else 0.0)
+            remember(rec)
+        report_progress(x, rec)
 
     if not trials:
         raise RuntimeError(plant.infeasible_sweep_msg)
@@ -437,15 +455,13 @@ def run_optimization(
         for neighbour in (left, right):
             step += 1
             if neighbour is None:
-                if progress:
-                    progress(step, total_steps, xs[best_i], 0.0, 0.0)
+                report_progress(xs[best_i], trials[best_i])
                 continue
             mid = 0.5 * (xs[best_i] + neighbour)
             rec = _trial(mid)
             if rec is not None:
-                trials.append(rec)
-            if progress:
-                progress(step, total_steps, mid, rec["total_pf"] if rec else 0.0, rec["total_oil"] if rec else 0.0)
+                remember(rec)
+            report_progress(mid, rec)
 
     trials.sort(key=lambda r: r["x"])
     best = max(trials, key=_score)
@@ -456,6 +472,7 @@ def run_optimization(
         "n_pumps": n_pumps,
         "header_psi": best["P"],
         "total_pf_bpd": total_pf,
+        "total_machine_water_bpd": best["total_water"],
         "total_oil_bopd": total_oil,
         "converged": True,
         "history": [],
@@ -463,6 +480,7 @@ def run_optimization(
             {
                 "header_psi": r["P"],
                 "total_pf_bpd": r["total_pf"],
+                "total_machine_water_bpd": r["total_water"],
                 "total_oil_bopd": r["total_oil"],
                 "objective_bopd_equiv": r["objective"],
                 "lambda": r["lam"],
@@ -474,7 +492,7 @@ def run_optimization(
         "throats": list(throats),
         # the clamped header the engineer pinned, or None when swept
         "setpoint_psi": pinned_setpoint,
-        **plant.flags(total_pf, n_pumps),
+        **plant.flags(best["total_water"], n_pumps),
         "lambda_used": lam,
         "lambda_source": lam_source,
         "objective_bopd_equiv": best["objective"],
@@ -490,7 +508,9 @@ def run_optimization(
         meta["per_pump_bpd"] = (total_pf / n_pumps) if n_pumps else None
         meta["station_cap_bpd"] = hi
     else:
-        env = plant.envelope([total_pf], n_pumps)[0]
+        env = plant.envelope(
+            [best["total_water"]], n_pumps, at_pressure=best["P"]
+        )[0]
         meta["frontier_cap_bpd"] = best["cap"]
         meta["suction_psi"] = plant.suction_psi()
         meta["min_total_flow"] = plant.flow_window(n_pumps)[0]
@@ -538,7 +558,20 @@ def _best_feasible_pump(opt, well: str) -> Optional[tuple[str, str]]:
     if feas.empty:
         return None
     r = feas.loc[feas["qoil_std"].idxmax()]
-    return str(r["nozzle"]), str(r["throat"])
+    choice = (str(r["nozzle"]), str(r["throat"]))
+    return choice + ((r["pump_state"],) if "pump_state" in r else ())
+
+
+def _pump_perf(opt, well, choice):
+    """Old two-part choices mean keep installed; a third part selects hardware."""
+    return opt.get_pump_performance(well, choice[0], choice[1],
+        **({"pump_state": choice[2]} if len(choice) > 2 else {}))
+
+
+def _same_hardware(a, b):
+    if not a or not b:
+        return False
+    return tuple(a[:2]) == tuple(b[:2]) and (a[2] if len(a) > 2 else "installed") == (b[2] if len(b) > 2 else "installed")
 
 
 def _score_fixed_choices(opt, well_configs, choices, fallback_choices, test_rates):
@@ -564,7 +597,7 @@ def _score_fixed_choices(opt, well_configs, choices, fallback_choices, test_rate
             )
             continue
 
-        perf = opt.get_pump_performance(wc.well_name, ch[0], ch[1])
+        perf = _pump_perf(opt, wc.well_name, ch)
         note = ""
         if perf is None and test_rates and wc.well_name in test_rates:
             # "Existing" comparison: a well the model can't solve falls back to
@@ -588,18 +621,18 @@ def _score_fixed_choices(opt, well_configs, choices, fallback_choices, test_rate
             # else the best feasible pump in the batch. Flag the swap.
             fb = (fallback_choices or {}).get(wc.well_name)
             if fb:
-                perf = opt.get_pump_performance(wc.well_name, fb[0], fb[1])
+                perf = _pump_perf(opt, wc.well_name, fb)
                 if perf is not None:
                     note, ch = f"{ch[0]}{ch[1]}✗→{fb[0]}{fb[1]}", fb
             if perf is None:
                 best = _best_feasible_pump(opt, wc.well_name)
                 if best is not None:
-                    fbn, fbt = best
-                    perf = opt.get_pump_performance(wc.well_name, fbn, fbt)
+                    fbn, fbt = best[:2]
+                    perf = _pump_perf(opt, wc.well_name, best)
                     if perf is not None:
                         note, ch = (
                             f"{choices[wc.well_name][0]}{choices[wc.well_name][1]}✗→{fbn}{fbt}",
-                            (fbn, fbt),
+                            best,
                         )
 
         if perf is None:
@@ -619,6 +652,7 @@ def _score_fixed_choices(opt, well_configs, choices, fallback_choices, test_rate
             {
                 "well": wc.well_name,
                 "pump": note or f"{ch[0]}{ch[1]}",
+                "pump_state": perf.get("pump_state"),
                 "oil": perf["oil_rate"],
                 "pf": perf["lift_water"],
                 "note": note,
@@ -639,7 +673,7 @@ def _ripple_rescale_stars(per_well, choices, current_choices, test_rates) -> boo
         if r.get("note") == "star":
             continue
         ch, cur = choices.get(r["well"]), (current_choices or {}).get(r["well"])
-        unchanged = ch is not None and cur is not None and tuple(ch) == tuple(cur)
+        unchanged = _same_hardware(ch, cur)
         tr = test_rates.get(r["well"])
         if unchanged and tr and tr[0] and r["oil"] > 0:
             oil_ratios.append(r["oil"] / tr[0])
@@ -727,7 +761,7 @@ def evaluate_fixed_scenario(
         for wc in well_configs:
             wc.ppf_surf_well = ppf_c
         pf = PowerFluidConstraint(
-            total_rate=cap, pressure=ppf_c, rho_pf=_RHO_PF_DEFAULT
+            total_rate=cap, pressure=ppf_c, rho_pf=power_fluid_density(plant)
         )
         opt = NetworkOptimizer(
             well_configs, pf, nozzles, throats, marginal_watercut=_SCENARIO_MARGINAL_WC
@@ -788,7 +822,7 @@ def _score_existing_choices(opt, names, scenario_choices, mc, cur_oil, cur_pf):
                 {"well": w, "pump": "SHUT IN", "oil": 0.0, "pf": 0.0, "note": ""}
             )
             continue
-        ms = opt.get_pump_performance(w, ch[0], ch[1])
+        ms = _pump_perf(opt, w, ch)
         mcw = mc.get(w)
         if ms and mcw and mcw[0] > 0 and mcw[1] > 0:
             so = cur_oil[w] * (ms["oil_rate"] / mcw[0])
@@ -836,7 +870,7 @@ def _ripple_rescale_existing(
         if r["note"] == "star":
             continue
         ch, cc = scenario_choices.get(r["well"]), current_choices.get(r["well"])
-        if ch and cc and tuple(ch) == tuple(cc) and cur_oil[r["well"]] > 0:
+        if _same_hardware(ch, cc) and cur_oil[r["well"]] > 0:
             oil_ratios.append(r["oil"] / cur_oil[r["well"]])
             if cur_pf[r["well"]] > 0:
                 pf_ratios.append(r["pf"] / cur_pf[r["well"]])
@@ -854,7 +888,7 @@ def _ripple_rescale_existing(
         else:
             best = _best_feasible_pump(opt, w)
             if best is not None:
-                perf = opt.get_pump_performance(w, best[0], best[1])
+                perf = _pump_perf(opt, w, best)
                 if perf:
                     r["oil"], r["pf"] = float(perf["oil_rate"]), float(
                         perf["lift_water"]
@@ -910,7 +944,7 @@ def evaluate_existing_scenario(
         for wc in well_configs:
             wc.ppf_surf_well = ppf_c
         pf = PowerFluidConstraint(
-            total_rate=cap, pressure=ppf_c, rho_pf=_RHO_PF_DEFAULT
+            total_rate=cap, pressure=ppf_c, rho_pf=power_fluid_density(plant)
         )
         opt = NetworkOptimizer(
             well_configs, pf, nozzles, throats, marginal_watercut=_SCENARIO_MARGINAL_WC
@@ -923,7 +957,7 @@ def evaluate_existing_scenario(
     mc = {}
     for w in names:
         cc = current_choices.get(w)
-        perf = opt_base.get_pump_performance(w, cc[0], cc[1]) if cc else None
+        perf = _pump_perf(opt_base, w, cc) if cc else None
         mc[w] = (perf["oil_rate"], perf["lift_water"]) if perf else None
 
     def _evaluate(trial: float):
@@ -1026,7 +1060,7 @@ def match_check(
     pf = PowerFluidConstraint(
         total_rate=plant.match_check_budget_bpd(total_pf, n_pumps),
         pressure=header,
-        rho_pf=_RHO_PF_DEFAULT,
+        rho_pf=power_fluid_density(plant),
     )
     opt = NetworkOptimizer(
         well_configs, pf, nozzles, throats, marginal_watercut=_SCENARIO_MARGINAL_WC
@@ -1036,7 +1070,7 @@ def match_check(
     rows = []
     for w in names:
         cc = current_choices.get(w)
-        perf = opt.get_pump_performance(w, cc[0], cc[1]) if cc else None
+        perf = _pump_perf(opt, w, cc) if cc else None
         mo = float(perf["oil_rate"]) if perf else None
         mp = float(perf["lift_water"]) if perf else None
         to, tp = (cur_oil[w] or None), (cur_pf[w] or None)
@@ -1098,7 +1132,7 @@ def _model_at_forced_header(well_configs, header_psi: float, current_choices: di
     for wc in well_configs:
         wc.ppf_surf_well = header_psi
     pf = PowerFluidConstraint(
-        total_rate=_EVAL_CAP_FALLBACK_BPD, pressure=header_psi, rho_pf=_RHO_PF_DEFAULT
+        total_rate=_EVAL_CAP_FALLBACK_BPD, pressure=header_psi, rho_pf=None
     )
     opt = NetworkOptimizer(
         well_configs, pf, nozzles, throats, marginal_watercut=_SCENARIO_MARGINAL_WC
@@ -1109,7 +1143,7 @@ def _model_at_forced_header(well_configs, header_psi: float, current_choices: di
     for wc in well_configs:
         w = wc.well_name
         cc = current_choices.get(w)
-        perf = opt.get_pump_performance(w, cc[0], cc[1]) if cc else None
+        perf = _pump_perf(opt, w, cc) if cc else None
         out[w] = (
             (
                 float(perf["oil_rate"]),
@@ -1405,13 +1439,14 @@ def _apply_suction_evidence(
     denies - and the evidence + Vogel anchor are usable, replace every
     solvable level k <= k* with the field response::
 
-        psu_e = psu_ref + beta * (levels[k*] - levels[k])
-        oil_e = 0 if psu_e >= res_pres else oil_full * q(psu_e) / q(psu_ref)
+        psu_e = max(0, psu_ref + beta * (ppf_ref - levels[k]))
+        oil_e = 0 if psu_e >= res_pres else oil_model[k] * q(psu_e) / q(psu_model[k])
 
     PF stays the model's (validated hydraulics); the sonic flag is cleared
-    (corrected points are not cavitation-pinned). At k* the point anchors to
-    (oil_full, psu_ref) exactly. A psu_ref at or above the fit's res_pres is
-    unusable (InFlow rejects it) -> skip, no correction.
+    (corrected points are not cavitation-pinned). The fixed (ppf_ref, psu_ref)
+    comes from paired observations; missing references are not inferred from
+    the sweep ceiling. Oil correction uses each point's own model BHP.
+    A psu_ref at or above the fit's res_pres is unusable -> skip.
 
     Mutates ``grid`` in place and returns bookkeeping for row assembly:
     ``{well: {"floor", "violation", "beta", "beta_source", "gate"}}`` where
@@ -1433,7 +1468,6 @@ def _apply_suction_evidence(
         if k_star is None:
             continue  # never solvable: nothing to correct
         v = grid[k_star][w]
-        oil_full = float(v[0])
         psu_model = float(v[2]) if len(v) > 2 and v[2] is not None else None
         sonic = v[3] if len(v) > 3 else None
         if sonic is not True:
@@ -1458,7 +1492,8 @@ def _apply_suction_evidence(
         if not (floor_violated or response_shown):
             continue  # evidence CONFIRMS the model (floor and response)
         psu_ref = ev.get("psu_ref")
-        if psu_ref is None or beta is None:
+        ppf_ref = ev.get("ppf_ref")
+        if psu_ref is None or ppf_ref is None or beta is None:
             continue
         inflow = _oil_vogel(configs_by_name.get(w))
         if inflow is None:
@@ -1467,19 +1502,24 @@ def _apply_suction_evidence(
         beta = float(beta)
         if psu_ref >= inflow.pres:
             continue  # measured suction above the fit's res_pres: unusable
-        q_ref = inflow.oil_flow(psu_ref)
-        if q_ref <= 0.0:
+        if inflow.oil_flow(psu_ref) <= 0.0:
             continue
         for k in range(k_star + 1):
             vk = grid[k].get(w)
             if vk is None:
                 continue
             pf_k = float(vk[1])
-            psu_e = psu_ref + beta * (levels[k_star] - levels[k])
+            psu_e = max(0.0, psu_ref + beta * (float(ppf_ref) - levels[k]))
+            model_bhp = float(vk[2]) if len(vk) > 2 and vk[2] is not None else None
+            if model_bhp is None or model_bhp >= inflow.pres:
+                continue
+            q_model = inflow.oil_flow(model_bhp)
+            if q_model <= 0:
+                continue
             oil_e = (
                 0.0
                 if psu_e >= inflow.pres
-                else oil_full * inflow.oil_flow(psu_e) / q_ref
+                else float(vk[0]) * inflow.oil_flow(psu_e) / q_model
             )
             grid[k][w] = (oil_e, pf_k, psu_e, None)
         corrected[w] = {
@@ -1592,6 +1632,23 @@ def run_choke_optimization(
             "decision variable"
         )
 
+    water_key = getattr(plant, "water_key", "lift_wat")
+    formation_per_oil = {}
+    for wc in well_configs:
+        if water_key == "totl_wat":
+            cut = getattr(wc, "form_wc", None)
+            if cut is None or not 0 <= cut < 1:
+                raise ValueError(f"{wc.well_name}: total-water choke planning needs watercut below 1")
+            formation_per_oil[wc.well_name] = cut / (1 - cut)
+        else:
+            formation_per_oil[wc.well_name] = 0.0
+
+    def machine_grid(points):
+        # All allocation arithmetic uses machine water. Convert back to PF
+        # only at the reporting boundary; formation water changes with oil.
+        return {w: ((v[0], v[1] + v[0] * formation_per_oil[w], *v[2:])
+                    if v is not None else None) for w, v in points.items()}
+
     names = [wc.well_name for wc in well_configs]
     # IPR context for the landing table: reservoir pressure per well
     res_pres = {
@@ -1632,11 +1689,20 @@ def run_choke_optimization(
 
     # -- today anchor: the header the plant settles to for the measured PF
     #    draw; per-well model-at-today is the bias reference for projections
-    pf_today = sum(float((test_rates.get(w) or (0, 0))[1] or 0.0) for w in names)
+    grid = [machine_grid(g) for g in grid]
+    pf_today = sum(float((test_rates.get(w) or (0, 0))[1] or 0.0)
+                   + float((test_rates.get(w) or (0, 0))[0] or 0.0) * formation_per_oil[w]
+                   for w in names)
     header_today, _ = settled_header(
         plant, pf_today, plant.warm_start_psi(n_pumps), n_pumps
     )
     today = _model_at_forced_header(well_configs, header_today, current_choices)
+    if evidence:
+        _apply_suction_evidence(
+            [today], [header_today], names, evidence,
+            {wc.well_name: wc for wc in well_configs},
+        )
+    today = machine_grid(today)
     if progress:
         progress(n_levels + 1, n_levels + 1, header_today, pf_today, 0.0)
 
@@ -1658,6 +1724,7 @@ def run_choke_optimization(
                     )
             oil_t = float((test_rates.get(w) or (0, 0))[0] or 0.0)
             pf_t = float((test_rates.get(w) or (0, 0))[1] or 0.0)
+            pf_t += oil_t * formation_per_oil[w]
             if pts:
                 opts = _choke_frontier(pts + [(None, 0.0, 0.0, None)])
                 # RAW full-open reference: the highest ladder level that
@@ -1693,7 +1760,10 @@ def run_choke_optimization(
         sweep.append(
             {
                 "header_psi": level,
-                "total_pf_bpd": total_pf,
+                "total_pf_bpd": total_pf - sum(
+                    st["opts"][st["idx"]][1] * formation_per_oil[st["well"]] for st in wells
+                ),
+                "total_machine_water_bpd": total_pf,
                 "total_oil_bopd": total_oil,
             }
         )
@@ -1717,6 +1787,9 @@ def run_choke_optimization(
         w = st["well"]
         psi, oil, pf, psu = st["opts"][st["idx"]]
         psi_f, oil_f, pf_f, psu_f = st["full_raw"]
+        machine_water = pf
+        pf -= oil * formation_per_oil[w]
+        pf_f -= oil_f * formation_per_oil[w]
         action = _classify_action(st["basis"], psi, oil, pf, best["P"])
         counts[action] += 1
 
@@ -1736,7 +1809,7 @@ def run_choke_optimization(
         nxt = None
         if st["idx"] + 1 < len(st["opts"]):
             _, oil_1, pf_1, _ = st["opts"][st["idx"] + 1]
-            nxt = (oil - oil_1) / (pf - pf_1) if pf > pf_1 else None
+            nxt = (oil - oil_1) / (machine_water - pf_1) if machine_water > pf_1 else None
 
         # evidence provenance: floor/violation for ANY model-basis well with
         # an evidence row; beta/beta_source only when the suction response
@@ -1778,6 +1851,7 @@ def run_choke_optimization(
                 "res_pres": res_pres.get(w),
                 "ipr_curve": ipr_curves.get(w) if st["basis"] == "model" else None,
                 "pf": pf,
+                "machine_water": machine_water,
                 "oil": oil,
                 "d_oil_vs_full": oil - oil_f,
                 "d_pf_vs_full": pf - pf_f,
@@ -1826,7 +1900,7 @@ def run_choke_optimization(
                 # never modelable: held at measured rates (header-independent)
                 tr = test_rates.get(w) or (0, 0)
                 run_all_oil += float(tr[0] or 0.0)
-                demand += float(tr[1] or 0.0)
+                demand += float(tr[1] or 0.0) + float(tr[0] or 0.0) * formation_per_oil[w]
             # modelable but no solution AT this level: cannot lift here -> 0
         cap = plant.budget_at_pressure(P, n_pumps)
         if not cap or cap <= 0 or demand <= 0:
@@ -1869,7 +1943,9 @@ def run_choke_optimization(
         "mode": "choke",
         "n_pumps": n_pumps,
         "header_psi": best["P"],
-        "total_pf_bpd": best["total_pf"],
+        "total_pf_bpd": sum(row["pf"] for row in rows),
+        "total_machine_water_bpd": best["total_pf"],
+        "water_key": water_key,
         "total_oil_bopd": best["total_oil"],
         "frontier_cap_bpd": best["budget"],
         "pf_slack": best["total_pf"] < best["budget"] - 1e-6,

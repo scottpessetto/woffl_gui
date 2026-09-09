@@ -154,14 +154,13 @@ def _new_connection():
     )
 
 
-def _execute_via_connector(runner: Callable[[Any], Any]) -> Any:
+def _execute_via_connector(runner: Callable[[Any], Any], *, retry_execution: bool = True) -> Any:
     """Run `runner(cursor)` on the per-thread cached connection.
 
-    Shared retry machinery for both the read path (`_query_via_connector`)
-    and the write path (`_write_via_connector`): one retry with a fresh
-    connection (and a forced token refresh) covers the stale-session cases --
-    warehouse idle-stop, network blips, token expiry mid-session. A
-    genuinely bad statement fails twice and raises.
+    Reads can retry once with a fresh connection. Writes pass
+    retry_execution=False: only failures before entering the runner may
+    retry, because an execution error can mean a committed write whose
+    response was lost. Cleanup errors never replay an operation.
 
     # [LIBRARY change -> upstream PR to kwellis/woffl]
     `_new_connection()` is called INSIDE the try below (not before it) so a
@@ -171,6 +170,7 @@ def _execute_via_connector(runner: Callable[[Any], Any]) -> Any:
     last_err: Exception | None = None
     for attempt in range(2):
         conn = None
+        execution_started = False
         try:
             conn = getattr(_CONN_LOCAL, "conn", None)
             if conn is None:
@@ -178,9 +178,19 @@ def _execute_via_connector(runner: Callable[[Any], Any]) -> Any:
                 _CONN_LOCAL.conn = conn
             cursor = conn.cursor()
             try:
+                execution_started = True
                 return runner(cursor)
             finally:
-                cursor.close()
+                try:
+                    cursor.close()
+                except Exception:
+                    # Cleanup cannot change a successful execution into a
+                    # retry (particularly an already-committed INSERT).
+                    _CONN_LOCAL.conn = None
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
         except Exception as e:
             last_err = e
             if _is_statement_error(e):
@@ -200,6 +210,8 @@ def _execute_via_connector(runner: Callable[[Any], Any]) -> Any:
                     pass
             with _TOKEN_LOCK:
                 _TOKEN_CACHE["token"] = None  # force refresh on the retry
+            if execution_started and not retry_execution:
+                raise  # write outcome may be committed; never replay it
     raise last_err  # type: ignore[misc]
 
 
@@ -227,7 +239,9 @@ def _query_via_connector(query: str) -> pd.DataFrame:
         columns = [desc[0] for desc in (cursor.description or [])]
         return pd.DataFrame(result, columns=columns)
 
-    return _execute_via_connector(_run)
+    from woffl.assembly import compute_runtime
+    with compute_runtime.measure("data.sql_read"):
+        return _execute_via_connector(_run)
 
 
 def execute_query(query: str) -> pd.DataFrame:
@@ -296,7 +310,7 @@ def _write_via_connector(sql: str, parameters: dict) -> int:
         cursor.execute(sql, parameters)
         return cursor.rowcount
 
-    return _execute_via_connector(_run)
+    return _execute_via_connector(_run, retry_execution=False)
 
 
 def execute_write(sql: str, parameters: Optional[dict] = None) -> int:

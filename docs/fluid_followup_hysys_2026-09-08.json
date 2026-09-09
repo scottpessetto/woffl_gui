@@ -1,0 +1,26 @@
+{
+  "mass_fracs.oil": {
+    "max_relative_error": 0.008313558126705999,
+    "max_absolute_error": 0.0054057827987462614
+  },
+  "mass_fracs.wat": {
+    "max_relative_error": 0.008794204873795541,
+    "max_absolute_error": 0.002627959314640993
+  },
+  "mass_fracs.gas": {
+    "max_relative_error": 0.05462455468797416,
+    "max_absolute_error": 0.002782531889220549
+  },
+  "volm_fracs.oil": {
+    "max_relative_error": 0.027701848745641137,
+    "max_absolute_error": 0.012744726851227017
+  },
+  "volm_fracs.wat": {
+    "max_relative_error": 0.040264028548451944,
+    "max_absolute_error": 0.008903956594639079
+  },
+  "volm_fracs.gas": {
+    "max_relative_error": 0.06388577164383062,
+    "max_absolute_error": 0.015203905483917729
+  }
+}

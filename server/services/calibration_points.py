@@ -202,6 +202,7 @@ def points_for_well(
     fallback_qtot: Optional[float] = None,
     fallback_wc: Optional[float] = None,
     fallback_fgor: Optional[float] = None,
+    include_full: bool = False,
 ) -> dict[str, Any]:
     """Builder result dict for one well. PURE given its inputs - no I/O.
 
@@ -248,7 +249,7 @@ def points_for_well(
     result["pump"] = {
         "nozzle": pump.get("nozzle_no"),
         "throat": pump.get("throat_ratio"),
-        "date_set": era_start.date().isoformat(),
+        "date_set": pd.Timestamp(pump["date_set"]).isoformat(),
     }
     result["era_start"] = era_start.date().isoformat()
 
@@ -381,6 +382,7 @@ def points_for_well(
                     {
                         "date": row["date"].date().isoformat(),
                         "kind": "daily",
+                        "anchor_date": anchor["WtDate"].date().isoformat() if anchor is not None else None,
                         "ppf": ppf,
                         "bhp": bhp,
                         "pf_rate": rate,
@@ -409,6 +411,8 @@ def points_for_well(
     kept_dailies = _stratified_daily_cap(daily_points, slots)
     points = sorted(test_points + kept_dailies, key=lambda p: (p["date"], p["kind"]))
 
+    if include_full:
+        result["validation_points"] = sorted(test_points+daily_points, key=lambda p: (p["date"], p["kind"]))
     result["points"] = points
     result["ppf_spread"] = float(spread)
     result["n_daily"] = len(kept_dailies)
@@ -427,6 +431,7 @@ def pad_points(
     res_pres: Optional[dict[str, float]] = None,
     surf_pres: Optional[dict[str, float]] = None,
     fallbacks: Optional[dict[str, dict[str, float]]] = None,
+    include_full: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Builder result dicts for a pad's wells, keyed by app well name.
 
@@ -466,6 +471,7 @@ def pad_points(
                 fallback_qtot=fb.get("qtot"),
                 fallback_wc=fb.get("wc"),
                 fallback_fgor=fb.get("fgor"),
+                include_full=include_full,
             )
         except Exception:
             log.warning("calibration point assembly failed for %s", well, exc_info=True)

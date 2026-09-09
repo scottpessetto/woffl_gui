@@ -1,4 +1,5 @@
 import math
+from functools import lru_cache
 import warnings
 
 import numpy as np
@@ -218,8 +219,41 @@ class BlackOil:
             )
         return cls._CO_FLOOR
 
+    @property
+    def effective_bubblepoint(self) -> float:
+        """Gas-inventory-limited bubble point, psig; 0 is the reference bound.
+
+        Invert the same Rs correlation used by the material balance. A capped
+        stream becomes undersaturated before the preset oil bubble point.
+        [LIBRARY change -> upstream PR to kwellis/woffl]
+        """
+        return self._effective_bubblepoint(self.oil_api, self.gas_sg, self.pbp,
+                                          self.temp, getattr(self, "_rs_max", None))
+
+    @staticmethod
+    @lru_cache(maxsize=1024)
+    def _effective_bubblepoint(api, sg, pbp, temp, cap):
+        rsb = BlackOil.solubility_kartoatmodjo(pbp, temp, api, sg)
+        if cap is None or cap >= rsb:
+            return pbp
+        if not math.isfinite(cap) or cap < 0:
+            raise ValueError("solution GOR cap must be finite and non-negative")
+        exponent = 1.0014 if api <= 30 else 1.0937
+        return max(0., (pbp+14.7)*(cap/rsb)**(1/exponent)-14.7)
+
+    def _compression_integral(self, pbp):
+        """Exact integral of the floored Vasquez-Beggs A/p compressibility."""
+        p0, p1 = pbp+14.7, self.press+14.7
+        a = self.compressibility_vasquez_above(self.press, self.temp,
+                 self.oil_api, self.gas_sg, self.gas_solubility()) * p1
+        cross = a / self._CO_FLOOR
+        if cross <= p0:
+            return self._CO_FLOOR*(p1-p0)
+        end = min(p1, cross)
+        return a*math.log(end/p0) + self._CO_FLOOR*max(0., p1-cross)
+
     def _compute_compressibility(self) -> float:
-        if self.press > self.pbp:  # above bubblepoint
+        if self.press > self.effective_bubblepoint:  # undersaturated for this gas inventory
             # Vasquez above-bubble takes Rs at the bubble point (Rsb), which is
             # exactly what gas_solubility() returns above the bubble point (it
             # caps the evaluation pressure at pbp).
@@ -268,8 +302,8 @@ class BlackOil:
         # Vasquez-Beggs evaluated with the gas ACTUALLY in solution at the
         # current pressure (gas_solubility() returns Rs(p) below the bubble
         # point and Rsb above it). Above the bubble point this is exactly the
-        # same call as _compute_compressibility, so the two are bit-identical
-        # there and the value is continuous across Pb.
+        # same correlation as _compute_compressibility, with a separate
+        # acoustic floor; this diagnostic is not the entry-energy derivative.
         rs = self.gas_solubility()
         co = self.compressibility_vasquez_above(
             self.press, self.temp, self.oil_api, self.gas_sg, rs
@@ -285,7 +319,7 @@ class BlackOil:
         (press, temp), with no mass transfer to a gas phase: the quantity
         Wood's equation needs for the mixture speed of sound. Vasquez-Beggs
         form evaluated with Rs at the current pressure, so it is continuous
-        across the bubble point (above Pb it equals ``compress`` exactly).
+        across the bubble point. Its acoustic floor can exceed ``compress``.
 
         Why not ``compress``: below Pb that property is the McCain material-
         balance co, which includes the liberated-gas volume and is 1-2 orders
@@ -309,10 +343,10 @@ class BlackOil:
     def _compute_oil_fvf(self) -> float:
         rs = self.gas_solubility()
         bo = self.fvf_kartoatmodjo_below(self.temp, self.oil_api, self.gas_sg, rs)
-        if self.press > self.pbp:  # above bubblepoint pressure
-            bob = bo
-            co = self.compress
-            bo = self.fvf_vasquez_above(self.press, self.pbp, bob, co)
+        if self.press > self.effective_bubblepoint:  # undersaturated for this gas inventory
+            # Integrating co(P), rather than holding its endpoint value over
+            # the whole interval, makes -d(log Bo)/dP agree with compress.
+            bo *= math.exp(-self._compression_integral(self.effective_bubblepoint))
         return bo
 
     def oil_fvf(self) -> float:
@@ -351,9 +385,9 @@ class BlackOil:
     def _compute_viscosity(self) -> float:
         uod = self.viscosity_dead_kartoatmodjo(self.temp, self.oil_api)
         uol = self.viscosity_live_kartoatmodjo_below(uod, self.gas_solubility())
-        if self.press > self.pbp:  # above bubblepoint
+        if self.press > self.effective_bubblepoint:  # undersaturated for this gas inventory
             uob = uol
-            uol = self.viscosity_live_kartoatmodjo_above(uob, self.press, self.pbp)
+            uol = self.viscosity_live_kartoatmodjo_above(uob, self.press, self.effective_bubblepoint)
         return uol
 
     @property

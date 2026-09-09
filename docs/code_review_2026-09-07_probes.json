@@ -1,0 +1,129 @@
+{
+  "syntax_inventory": {
+    "parsed_python_files": 219,
+    "python_lines": 74688
+  },
+  "mixture_conservation": [
+    {
+      "pressure": 0.0,
+      "water_bpd": 399.8739260386124,
+      "expected_water_bpd": 400.0,
+      "oil_rbpd": 101.64703080489092,
+      "oil_from_fvf": 101.69171176259108,
+      "mass_lbm_s": 2.0421020496359787
+    },
+    {
+      "pressure": 500.0,
+      "water_bpd": 395.6109614654681,
+      "expected_water_bpd": 400.0,
+      "oil_rbpd": 103.27565008335449,
+      "oil_from_fvf": 104.43148884830728,
+      "mass_lbm_s": 2.0203316662089215
+    },
+    {
+      "pressure": 1000.0,
+      "water_bpd": 391.430568626271,
+      "expected_water_bpd": 400.0,
+      "oil_rbpd": 104.43113652362412,
+      "oil_from_fvf": 106.72477542719858,
+      "mass_lbm_s": 1.9989829654577158
+    },
+    {
+      "pressure": 2000.0,
+      "water_bpd": 385.317966262766,
+      "expected_water_bpd": 400.0,
+      "oil_rbpd": 105.86332634310347,
+      "oil_from_fvf": 109.90030837681665,
+      "mass_lbm_s": 1.9677667320343895
+    },
+    {
+      "pressure": 3000.0,
+      "water_bpd": 385.317966262766,
+      "expected_water_bpd": 400.0,
+      "oil_rbpd": 105.5456294812966,
+      "oil_from_fvf": 109.57049649305095,
+      "mass_lbm_s": 1.96776673203439
+    }
+  ],
+  "saved_watercut": [
+    {
+      "saved_wc": 0.974,
+      "restored_wc": 0.97,
+      "saved_oil": 26.00000000000002,
+      "restored_oil": 30.00000000000003,
+      "optimizer_accepts": true,
+      "reported_clamps": []
+    },
+    {
+      "saved_wc": 0.986,
+      "restored_wc": 0.99,
+      "saved_oil": 14.000000000000012,
+      "restored_oil": 10.000000000000009,
+      "optimizer_accepts": false,
+      "reported_clamps": []
+    }
+  ],
+  "batch_wear": {
+    "single_well_batch": {
+      "12B": 1.1999999999999997,
+      "13B": 1.1999999999999997
+    },
+    "network_batch": {
+      "12B": 1.1999999999999997,
+      "13B": 1.0
+    }
+  },
+  "calibration_fallback": {
+    "seed_kth": "not forwarded",
+    "seed_kdi": "not forwarded",
+    "nozzle_area_factor": "not forwarded",
+    "mach_crit": "not forwarded"
+  },
+  "cfp_settling": {
+    "reported_pressure": 2665.5173229656534,
+    "feasible": true,
+    "pressure_from_reported_water": 2500.0,
+    "residual_psi": -165.51732296565342
+  },
+  "auto_price": {
+    "derived_lambda": 1.0,
+    "auto_oil": 0,
+    "unpriced_oil": 80.0
+  },
+  "geometry": {
+    "api_accepts": true,
+    "annulus_area": 0.0,
+    "annulus_hyd_dia": 0.0
+  },
+  "evidence_reference": [
+    {
+      "sweep_top": 3200.0,
+      "evaluated_pressure": 3000.0,
+      "corrected_bhp": 520.0
+    },
+    {
+      "sweep_top": 3500.0,
+      "evaluated_pressure": 3000.0,
+      "corrected_bhp": 550.0
+    }
+  ],
+  "retry_after_commit": {
+    "successful_executions": 2,
+    "expected_executions": 1
+  },
+  "wear_after_replacement": {
+    "wear_saved": "2025-01-01",
+    "new_pump_set": "2026-09-01",
+    "new_pump": "13",
+    "restored_area_factor": 1.2
+  },
+  "multipart_dependency": {
+    "declared": false,
+    "startup_guard": "Form data requires \"python-multipart\" to be installed. \nYou can install \"python-multipart\" with: \n\npip install python-multipart\n"
+  },
+  "choke_machine_budget": {
+    "capacity_bpd": 1000.0,
+    "selected_pf_bpd": 900.0,
+    "selected_total_water_bpd": 1800.0000000000002
+  }
+}

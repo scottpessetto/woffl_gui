@@ -1,3 +1,4 @@
+import { isMissingJob } from "../../api/client";
 /**
  * Match-health scorecard - the model-vs-field picture per well, one pad.
  *
@@ -129,8 +130,8 @@ export function MatchHealthPanel({ pad }: { pad: RunPad }) {
 
   // Expired job (server restart): drop the stale id quietly.
   useEffect(() => {
-    if (jobId && job.isError) setLastJob(jobKey, null);
-  }, [jobId, job.isError, jobKey, setLastJob]);
+    if (jobId && isMissingJob(job.error)) setLastJob(jobKey, null);
+  }, [jobId, job.error, jobKey, setLastJob]);
 
   const running = job.data?.status === "running" || start.isPending;
   const result =

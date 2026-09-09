@@ -12,6 +12,7 @@ from woffl.flow import InFlow
 from woffl.flow import jetflow as jf
 from woffl.flow import outflow as of
 from woffl.flow import singlephase as sp
+from woffl.flow.entry_energy import scoped_paths
 from woffl.flow.errors import ConvergenceError, JetPumpError, ThroatEntryNoSolution
 from woffl.flow.jetplot import JetBook, ThroatEntryChoked
 from woffl.geometry import JetPump, PipeInPipe, WellProfile
@@ -45,7 +46,7 @@ def powerfluid_residual(
         jpump (JetPump): Jet Pump Class
         wellbore (PipeInPipe): Wellbore Geometry of Tubing and Casing
         wellprof (WellProfile): Well Profile Class
-        prop_pf (FormWater): Power Fluid Properties, assumed to be the same as formation water
+        prop_pf (FormWater): Independent Power Fluid Properties
         flowpath (str): Where the flow is occuring, either "tubing" or "annulus"
 
     Returns:
@@ -57,8 +58,9 @@ def powerfluid_residual(
         ppf_surf, tpf_surf, qpf_guess, prop_pf, wellbore, wellprof, flowpath
     )
     pni = ppf_surf - dp_stat - dp_fric
-    vnz = jf.nozzle_velocity(pni, pte, jpump.knz, prop_pf.density)
-    _, qpf_calc = jf.nozzle_rate(vnz, jpump.anz)  # bwpd, power fluid flowrate
+    # [LIBRARY change -> upstream PR to kwellis/woffl] Variable-density
+    # nozzle work and standard-volume rate use the same conserved water mass.
+    vnz, qpf_calc = jf.water_nozzle(pni, pte, tpf_surf, jpump.knz, jpump.anz, prop_pf)
     return qpf_guess - qpf_calc, vnz, pni
 
 
@@ -117,7 +119,7 @@ def discharge_residual(
         wellprof (WellProfile): Well Profile Class
         ipr_su (InFlow): Inflow Performance Class
         prop_su (ResMix): Reservoir Mixture Conditions
-        prop_pf (FormWater): Power Fluid Properties, assumed to be the same as formation water
+        prop_pf (FormWater): Independent Power Fluid Properties
         jpump_direction (str): Jet Pump Direction, "forward" or "reverse" Circulating
         te_seed (JetBook | None): Optional unscaled throat-entry book already
             swept from this psu (``psu_minimize``'s); reused instead of
@@ -158,7 +160,7 @@ def discharge_residual(
 
     # iterate on powerfluid flowrate to account for annular differential pressure
     dp_stat = sp.diff_press_static(
-        prop_pf.density, -1 * wellprof.jetpump_vd
+        prop_pf.condition(ppf_surf, tsu).density, -1 * wellprof.jetpump_vd
     )  # static power fluid pressure
     qpf_list = [2000.0, 3000.0]  # bwpd, power fluid flowrate guess at 1 and 2
     res_list = []  # power fluid residual list
@@ -207,21 +209,10 @@ def discharge_residual(
     # print(f"Iterated PowerFluid and Residual {dict(zip(qpf_list, res_list))}")
     # print(f"Frictional Loss: {pni + dp_stat - ppf_surf:.1f} psi")
 
-    # should I do something with pni???
-    qnz_bwpd = qpf_list[-1]
-    wc_tm, fwat_bwpd = jf.throat_wc(qoil_std, prop_su.wc, qnz_bwpd)
-
-    # Propagate water-pump mode into the throat mixture so a 100%-water solve
-    # stays water-anchored through the diffuser discharge.
-    # [LIBRARY change -> upstream PR to kwellis/woffl]
-    prop_tm = ResMix(
-        wc_tm,
-        prop_su.fgor,
-        prop_su.oil,
-        prop_su.wat,
-        prop_su.gas,
-        model_as_water=prop_su.model_as_water,
-    )
+    # Use the actual nozzle mass rate; the flow iteration closes its own
+    # residual within 5 BWPD, but that tolerance must not create mixture mass.
+    qnz_bwpd = sp.ft3s_to_bpd(vnz*jpump.anz)*prop_pf.density/prop_pf.density_std
+    wc_tm, fwat_bwpd, prop_tm = jf.throat_mixture(qoil_std, qnz_bwpd, prop_su, prop_pf)
     ptm = jf.throat_discharge(
         pte,
         tsu,
@@ -468,6 +459,9 @@ def _refine_feasibility_edge(
     return best
 
 
+# [LIBRARY change -> upstream PR to kwellis/woffl] Share the material path
+# between limiting and operating calculations; no global mutable PVT cache.
+@scoped_paths
 def jetpump_solver(
     pwh: float,
     tsu: float,
@@ -497,12 +491,11 @@ def jetpump_solver(
         wellprof (WellProfile): Well Profile Class
         ipr_su (InFlow): Inflow Performance Class
         prop_su (ResMix): Reservoir Mixture Conditions
-        prop_pf (FormWater): Power Fluid Properties, assumed to be the same as formation water
+        prop_pf (FormWater): Independent Power Fluid Properties
         jpump_direction (str): Jet Pump Direction, "forward" or "reverse" Circulating
-        mach_crit (float): Critical Mach number where the throat entry chokes,
-            unitless. Default 1.0 (historic behavior).
-            [LIBRARY change -> upstream PR to kwellis/woffl] calibratable
-            choking threshold, keyword-only; forwarded to jf.psu_minimize.
+        mach_crit (float): Deprecated compatibility argument, unitless.
+            Entry-energy-v1 ignores the former multiplier and warns for
+            nondefault values. Refit calibrations made with that multiplier.
 
     Returns:
         psu (float): Suction Pressure, psig
@@ -520,7 +513,10 @@ def jetpump_solver(
         prop_su=prop_su,
         mach_crit=mach_crit,
     )
-    psu_floor = psu_min  # the Mach = mach_crit throat-entry choke floor
+    psu_floor = psu_min
+    # A numerical pressure bound is not acoustic choking. Compatibility for
+    # plain diagnostic/mock books is limited to their historical behavior.
+    energy_limit = getattr(te_book, "limit_reason", "energy_minimum") == "energy_minimum"
     psu_max = ipr_su.pres - 10  # max suction pressure that can be used
 
     # Lower-bracket residual. The inner throat-mixture solve can be infeasible
@@ -533,11 +529,8 @@ def jetpump_solver(
     # probe returns it unchanged, so converged solves stay bit-identical.
     # [LIBRARY change -> upstream PR to kwellis/woffl]
     #
-    # SOLV-F9: psu_minimize already swept the throat entry at psu_min; hand
-    # that book to the endpoint probe so discharge_residual does not sweep it
-    # again (~10 % of a sonic solve). Only at the historic mach_crit = 1.0 -
-    # the Mach-one walk scales kde by 1/mach_crit^2, so any other threshold
-    # must re-sweep unscaled. [LIBRARY change -> upstream PR to kwellis/woffl]
+    # Both stages use the scoped material path and unscaled energy balance.
+    # The seed argument remains source-compatible; no mismatched book is used.
     psu_min, res_min, (qoil_std, fwat_bwpd, qnz_bwpd, mach_te) = _residual_walk_inward(
         psu_min,
         psu_max,
@@ -551,7 +544,7 @@ def jetpump_solver(
         prop_su,
         prop_pf,
         jpump_direction,
-        te_seed=te_book if mach_crit == 1.0 else None,
+        te_seed=te_book,
     )
 
     # if the jetpump (available) discharge is above the outflow (required) discharge at lowest suction
@@ -559,20 +552,16 @@ def jetpump_solver(
     if res_min > 0:
         # [LIBRARY change -> upstream PR to kwellis/woffl] SOLV-F2: "sonic"
         # means the operating point IS the throat-entry choke floor psu_minimize
-        # solved for (tde at Mach = mach_crit is zero there by construction).
+        # solved for (zero energy at the reachable energy minimum).
         # When the walk had to move the suction inward and the residual is
         # still positive at the feasibility edge, the pump is pinned by
         # throat-MIXTURE feasibility at a subsonic entry (11A: Mach 0.50) and
         # must not be reported as choked - fric_calibration would refuse the
         # well as "pinned" and Header Impact would call it sonic-decoupled.
-        # NOTE a mach_te threshold is deliberately NOT used: at the floor the
-        # reported mach_te is the last SUBSONIC point of the 25-psi sweep
-        # (E-41 9X/10X/11X read 0.89/0.89/0.88 while choked), so any
-        # threshold loose enough for them would mislabel marginal pumps.
-        # "At the floor" allows the walk's edge tolerance: a floor probe that
-        # FLOW-5 rejected (its discrete clamp just over tolerance) is refined
-        # to within _EDGE_TOL_PSI of the floor and is still the choke.
-        sonic_status = bool(psu_min - psu_floor <= _EDGE_TOL_PSI)
+        # Wood Mach is diagnostic: its acoustic model differs from the
+        # material expansion path. The limit reason and position identify
+        # energy choking; a pressure-bound or mixture-feasibility edge does not.
+        sonic_status = bool(energy_limit and psu_min - psu_floor <= _EDGE_TOL_PSI)
         return psu_min, sonic_status, qoil_std, fwat_bwpd, qnz_bwpd, mach_te
 
     psu_max, res_max, _ = _residual_walk_inward(

@@ -103,7 +103,8 @@ class PipeInPipe:
         Returns:
             Self
         """
-        if inn_pipe.out_dia > out_pipe.inn_dia:
+        # [LIBRARY change -> upstream PR to kwellis/woffl] Reject zero-area annuli.
+        if inn_pipe.out_dia >= out_pipe.inn_dia:
             raise ValueError("Inner pipe will not fit into the outer pipe")
 
         self.inn_pipe = inn_pipe

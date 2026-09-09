@@ -1,3 +1,4 @@
+import { isMissingJob } from "../../api/client";
 /**
  * Combined permutations - the question single-knob sensitivity cannot
  * answer: can ANY combination inside the engineer's ranges reach the
@@ -91,8 +92,8 @@ export function CombinePanel({
   // Expired job (server restart, cleared registry): drop the stale id
   // quietly, exactly as the optimization run panel does.
   useEffect(() => {
-    if (jobId !== null && job.isError) setCombineJob(well, null);
-  }, [well, jobId, job.isError, setCombineJob]);
+    if (jobId !== null && isMissingJob(job.error)) setCombineJob(well, null);
+  }, [well, jobId, job.error, setCombineJob]);
 
   const plan = useMemo(() => {
     const entries: { knob: SensitivityKnob; req: CombineKnob }[] = [];

@@ -86,6 +86,9 @@ def test_pad_run_lifecycle_and_hydration(client, monkeypatch):
         captured["n_steps"] = kw.get("n_steps")
         captured["water_price"] = kw.get("water_price")
         captured["marginal_wc"] = marginal_wc
+        # A skipped plant-curve point has no header; progress must still work.
+        kw["progress"](1, 3, None, 0., 0.)
+        kw["progress"](2, 3, 2450., 9000., 750.)
         return [_FakeResult(c.well_name) for c in configs], object(), {
             "header_psi": 2450.0,
             "total_pf_bpd": 9000.0,
@@ -454,7 +457,8 @@ def test_cfp_pads_filter_and_water_enrichment(client, monkeypatch):
     assert "no active wells" in body3["error"]
 
 
-def test_cfp_offline_wells_are_bring_online_candidates(client, monkeypatch):
+@pytest.mark.parametrize("with_future", [False, True])
+def test_cfp_offline_wells_are_bring_online_candidates(client, monkeypatch, with_future):
     """SRV-4 / OPT-A10 (review 2026-09-01): a board-offline well must reach
     the CFP engine with online=False - it IS the bring-online candidate.
     Until the fix it was dropped before hydration, so the SI/BOL ladder
@@ -474,7 +478,10 @@ def test_cfp_offline_wells_are_bring_online_candidates(client, monkeypatch):
     seeds = {"pres": 1700.0, "qwf": 900.0, "pwf": 600.0, "form_wc": 0.7}
     monkeypatch.setattr(wells_svc, "list_wells", lambda: universe)
     monkeypatch.setattr(wells_svc, "well_context", lambda well, months, cap: {"seeds": dict(seeds)})
-    monkeypatch.setattr(runs, "_current_and_tests", lambda names: ({n: "12B" for n in names}, {}))
+    monkeypatch.setattr(
+        runs, "_current_and_tests",
+        lambda names: ({n: ("12", "B") for n in names if n != "FUTURE-G"}, {}),
+    )
     monkeypatch.setattr(datasources, "pf_latest_safe", lambda: pd.DataFrame())
     monkeypatch.setattr(pf_pressure, "pad_pf_cluster", lambda df, **kw: {})
 
@@ -482,6 +489,8 @@ def test_cfp_offline_wells_are_bring_online_candidates(client, monkeypatch):
 
     def fake_surfaces(pad_configs, online, current, plant, **kw):
         captured["online"] = dict(online)
+        captured["current"] = dict(current)
+        captured["pads"] = {c.well_name: c.pad for cs in pad_configs.values() for c in cs}
         wells = {
             c.well_name: SimpleNamespace(pad=c.pad, online=online[c.well_name])
             for ws in pad_configs.values()
@@ -507,13 +516,19 @@ def test_cfp_offline_wells_are_bring_online_candidates(client, monkeypatch):
     monkeypatch.setattr(cfp_moves, "moves_summary", fake_summary)
     monkeypatch.setattr(cfp_moves, "option_at", lambda ws, label, pressure: (0.0, 0.0))
 
-    r = client.post(
-        "/api/optimize/run", json={"kind": "cfp", "cfp_pads": ["B", "G"], "offline": ["MPG-01"]}
-    )
+    request = {"kind": "cfp", "cfp_pads": ["B", "G"], "offline": ["MPG-01"]}
+    if with_future:
+        request["future"] = [{"name": "FUTURE-G", "match": "MPM-01", "pad": "G"}]
+    r = client.post("/api/optimize/run", json=request)
     assert r.status_code == 200
     body = _wait_done(client, r.json()["job_id"])
     assert body["status"] == "done", body.get("error")
-    assert captured["online"] == {"MPB-28": True, "MPG-01": False}
+    expected = {"MPB-28": True, "MPG-01": False}
+    if with_future:
+        expected["FUTURE-G"] = False
+        assert captured["pads"]["FUTURE-G"] == "G"
+        assert captured["current"]["FUTURE-G"] == ("12", "B")
+    assert captured["online"] == expected
 
 
 def test_pad_run_forwards_the_header_setpoint(client, monkeypatch):

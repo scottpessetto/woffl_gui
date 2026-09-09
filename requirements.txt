@@ -1,13 +1,15 @@
-matplotlib>=3.8.2
-numpy>=1.26.3
-pandas>=2.1.4
-scipy>=1.11.4
-ortools>=9.15
-woffl
-databricks-sql-connector>=3.0.0
-databricks-sdk>=0.20.0
-python-dotenv>=1.0.0
-python-dateutil>=2.8.0
-openpyxl>=3.0.0
-fastapi>=0.115
-uvicorn>=0.30
+# Physics is vendored in ./woffl; do not install the unrelated PyPI copy.
+# The application dependency set requires Python >=3.11.
+-c requirements-constraints.txt
+matplotlib==3.10.9
+numpy==2.4.4
+pandas==2.3.3
+scipy==1.17.1
+ortools==9.15.6755
+databricks-sql-connector==4.2.6
+python-dotenv==1.2.2
+python-dateutil==2.9.0.post0
+openpyxl==3.1.5
+fastapi==0.141.1
+python-multipart==0.0.27
+uvicorn==0.46.0

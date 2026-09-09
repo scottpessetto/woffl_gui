@@ -64,6 +64,8 @@ def client() -> TestClient:
 @pytest.fixture()
 def recorder(monkeypatch):
     """Capture every would-be prop_hist write; block the Databricks reads."""
+    from server.services import pump_calibration
+    monkeypatch.setattr(pump_calibration, "snapshot", lambda: {})
     pushes: list[dict] = []
     comments: list[dict] = []
 
@@ -185,13 +187,13 @@ def test_full_save_payload(client, recorder, gate_on):
     assert comments[0]["note"] == "anchored on the 7/25 test"
 
 
-def test_changed_friction_rides_along(client, recorder, gate_on):
+def test_well_input_save_never_writes_pump_coefficients(client, recorder, gate_on):
     payload = dict(PAYLOAD, ken=0.055, comment=None)
     r = client.post(f"/api/wells/{WELL}/save-ipr", json=payload, headers=HEADERS)
     assert r.status_code == 200
     pushes, comments = recorder
     by_id = {p["prop_id"]: p for p in pushes}
-    assert by_id["jpfric_entry"]["value"] == 0.055
+    assert not set(by_id) & {"jpfric_entry", "jpfric_throat", "jpfric_diffuser", "jpfric_nozzle_area", "jp_mach_crit"}
     # kth/kdi still sit at the uncalibrated defaults with nothing stored: skipped
     assert "jpfric_throat" not in by_id and "jpfric_diffuser" not in by_id
     assert comments == []  # no note supplied

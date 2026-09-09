@@ -375,6 +375,8 @@ def _well_context_body(
     _seed(seeds, "bubble_point", bubble_raw, pbp_default)
     _seed(seeds, "gas_sg", row.get("gas_sg"), 0.65)
     _seed(seeds, "wat_sg", row.get("wat_sg"), 1.02)
+    from server.services.factories import default_power_fluid_density
+    seeds["rho_pf"] = default_power_fluid_density(well)
 
     # -- (b) pump identity from JP history -----------------------------------
     pump: Optional[dict[str, Any]] = None
@@ -440,7 +442,7 @@ def _well_context_body(
                 pwf = _need_finite(coeff["pwf"])
                 resp = _need_finite(coeff["ResP"])
 
-                seeds["form_wc"] = _clamp("form_wc", round(wc, 2))
+                seeds["form_wc"] = _clamp("form_wc", wc)
                 seeds["form_gor"] = _clamp("form_gor", max(int(fgor), 20))
                 seeds["qwf"] = _clamp("qwf", int(qwf))
                 seeds["pwf"] = _clamp("pwf", int(pwf))
@@ -486,7 +488,7 @@ def _well_context_body(
 
         if water is not None and total is not None and total > 0:
             wc = max(0.0, min(1.0, water / total))
-            seeds["form_wc"] = _clamp("form_wc", round(wc, 2))
+            seeds["form_wc"] = _clamp("form_wc", wc)
         # qwf is the test's TOTAL LIQUID (WtTotalFluid) - never the oil split.
         if total is not None:
             seeds["qwf"] = _clamp("qwf", int(total))
@@ -512,22 +514,16 @@ def _well_context_body(
         key: {"locked": False, "value": None} for key in _LOCK_SEED_KEYS
     }
     saved_ipr_info: Optional[str] = None
+    legacy_friction = {}
     try:
         from woffl.assembly.prop_hist_client import format_alaska
         from woffl.gui.ipr_anchor import load_saved_ipr, saved_wins
 
         info = load_saved_ipr(well)
         if info:
-            # BHP-calibrated friction seeds INDEPENDENTLY of the pin-vs-values
-            # precedence, at FULL precision (rounding broke reload exactness).
-            # The event-calibration knobs (nozzle_area_factor / mach_crit)
-            # ride the same channel: a saved fit IS the well's characterization.
-            for key, val in (info.get("friction") or {}).items():
-                num = frames.opt_float(val)
-                if num is not None and key in (
-                    "ken", "kth", "kdi", "nozzle_area_factor", "mach_crit"
-                ):
-                    seeds[key] = _clamp(key, num)
+            # Historical friction rows have no installation binding. Retain them
+            # for review; never silently transfer them to current/new hardware.
+            legacy_friction = info.get("friction") or {}
 
             # Field locks sit OUTSIDE the precedence: a locked WC/GOR/ResP
             # overrides every test-derived seed.
@@ -540,7 +536,7 @@ def _well_context_body(
                 if not locked or lock_val is None:
                     continue
                 if skey == "form_wc":
-                    seed_val: float = round(min(max(lock_val, 0.0), 0.99), 2)
+                    seed_val: float = min(max(lock_val, 0.0), 0.99)
                 else:  # form_gor / res_pres
                     seed_val = int(lock_val)
                 seeds[seed_key] = _clamp(seed_key, seed_val)
@@ -551,7 +547,7 @@ def _well_context_body(
                 wc_val = frames.opt_float(values.get("form_wc"))
                 wc_val = 0.5 if wc_val is None else wc_val
                 wc_val = min(max(wc_val, 0.0), 0.99)
-                seeds["form_wc"] = _clamp("form_wc", round(wc_val, 2))
+                seeds["form_wc"] = _clamp("form_wc", wc_val)
                 gor = frames.opt_float(values.get("form_gor"))
                 if gor is not None:
                     seeds["form_gor"] = _clamp("form_gor", int(gor))
@@ -598,6 +594,13 @@ def _well_context_body(
             well,
             exc_info=True,
         )
+
+    from server.services import pump_calibration
+    from woffl.assembly.pump_candidates import CLEAN_PUMP
+    calibration = pump_calibration.resolve(well, pump, legacy_friction)
+    seeds.update(CLEAN_PUMP)
+    seeds.update(calibration["coefficients"])
+    seeds["mach_crit"] = 1.0
 
     # -- (e) live PF seed --------------------------------------------------------
     from woffl.gui.pump_identity import tracker_direction
@@ -667,6 +670,7 @@ def _well_context_body(
         "as_built_locks": as_built_locks,
         "prop_locks": prop_locks,
         "pump": pump,
+        "pump_calibration": calibration,
         "pf": pf,
         "ipr_info": ipr_info,
         "ipr_source": ipr_source,

@@ -47,6 +47,12 @@ PF_CONSTRAINT_MIN_PSI = 1000.0
 PF_CONSTRAINT_MAX_PSI = 5000.0
 
 
+def power_fluid_density(plant=None) -> float:
+    """Standard lift-water density (lbm/ft3) from the plant SG, else field preset."""
+    sg = getattr(plant, "specific_gravity", None)
+    return 62.4 * float(sg()) if callable(sg) else 63.648
+
+
 def clamp_to_pf_constraint(pressure: float) -> float:
     """Clamp a header pressure into PowerFluidConstraint's [1000, 5000] band."""
     return min(max(pressure, PF_CONSTRAINT_MIN_PSI), PF_CONSTRAINT_MAX_PSI)

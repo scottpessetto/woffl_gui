@@ -30,8 +30,9 @@ jet-pump oil wells (Milne Point Unit), plus a React SPA + FastAPI web app on top
 
 Version lives in two places kept in sync by bumpver: `pyproject.toml:13` and
 `woffl/__init__.py`. Never edit one alone. No release/tagging process is documented;
-`.github/workflows/` is deliberately **empty** — there is **no CI**. Nothing runs pytest,
-black, or isort on push. You must verify locally.
+`.github/workflows/checks.yml` runs offline Python/physics tests and the frontend
+tests/build on PRs and main/master pushes. Known physics gaps appear in the job
+summary. Black/isort are not enforced. Also verify locally before handing off.
 
 ---
 
@@ -56,7 +57,7 @@ Formatting is **black + isort** (`pyproject.toml:36`), by convention only — no
 
 (`tests/test_joint_match_sweep.py` was deleted; the old `--deselect` of it is a no-op and was dropped from the command on 2026-09-02.)
 
-Green baseline: **1,667 passed** in ~26 s (2026-09-02; was 1,686 + 1 skipped in ~52 s on 2026-08-03).
+Green baseline: **1,809 passed** (2026-09-08 fluid follow-up; previously 1,667 on 2026-09-02).
 If a solopump test — especially `TestMarginalConvergence` — goes red after
 an upstream merge, a local solver patch was dropped (§4).
 
@@ -293,7 +294,17 @@ parts you will otherwise violate:
 
 ## 7. Testing
 
-There is no CI. The suite plus the in-app Test Harness page is the whole safety net.
+CI runs the offline suite and frontend checks; the in-app Test Harness adds field
+diagnostics. Entry-energy-v2 uses one unscaled balance and derives choking
+from its first reachable energy minimum. `mach_crit` is retired; do not restore
+the old multiplier or fit it. `test_entry_energy.py` guards this model; CI's
+strict consistency report is not field qualification. See
+`docs/entry_energy_implementation_2026-09-08.md` before changing the entry model.
+The v2 fluid-property changes and separate field holdout results are recorded
+in `docs/fluid_followup_2026-09-08.md`. PF density is a standard-condition input
+independent of formation-water SG; never convert standard rates to reservoir
+volume twice. Application dependencies require Python >=3.11, use the constraints
+file, and must not install the PyPI copy of the vendored `woffl` package.
 
 `tests/conftest.py` defines **no fixtures** — only the `live` marker and `--run-live`. All
 fixtures are file-local. Do **not** add a `python_files` setting to `pyproject.toml`:
@@ -322,16 +333,15 @@ Those two files are dated point-in-time review artifacts and still cite a `CLAUD
 existed — left as written on purpose. Every *live* reference in `woffl/`, `tests/`, `tools/`, and
 `docs/upstream_sync.md` now points at this file.
 
+Resolved 2026-09-08: **P1-13** now carries independent PF density, including plant
+SG defaults; **P2-1** removes PyPI `woffl` and unused `databricks-sdk`, pins runtime
+dependencies, and verifies a clean import. See `docs/fluid_followup_2026-09-08.md`.
+
 Still open:
-- **P1-13 (behavior half)** — `pad_optimize.py:194,273,532,701,801` hardcode `rho_pf=62.4`
-  against the I/M plants' real PF SG ≈1.03–1.04. Wire-or-remove decision unmade.
 - **R-1** — the three pad pages are ~75–80% triplicated across ~2,900 lines.
 - **R-2..R-5** — file splits: `header_impact.py` (3,257 lines), `jetpump_solver.py` (2,783),
   `well_sort.py`, `utils.py`, `batch_run.py`, `pdf_export.py`. Use the Python cutter pattern,
   **not** PowerShell line-slicing (mojibake lesson).
-- **P2-1** — `requirements.txt:8` still pins bare `woffl` (Databricks installs *unpatched
-  upstream* woffl into site-packages beside the vendored patched tree; it works by path-precedence
-  luck) and `:10` still lists the unused `databricks-sdk`.
 - Dead out-of-range check in `wellprofile._depth_interp` (`is False` on a numpy bool);
   orphaned `databricks_client.get_tags_for_wells`; zero-caller `WellTestProcessor`,
   `assembly/calibration.py` (+ `NetworkOptimizer.set_calibration`), `pf_calibration.robust_bracket`,

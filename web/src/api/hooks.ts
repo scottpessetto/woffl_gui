@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 
-import { api, get, post, stableStringify, upload } from "./client";
+import { api, get, post, stableStringify, upload, isMissingJob, retryJobPoll, jobPollDelay } from "./client";
 import type {
   AgingPumpsResponse,
   BatchResponse,
@@ -52,6 +52,8 @@ import type {
   WellSortTablesResponse,
   WellTestsResponse,
   WellsResponse,
+  WcUncertaintyRequest,
+  WcUncertaintyResponse,
   // Scott's Tools
   DateWindow,
   HarnessCasesResponse,
@@ -130,6 +132,17 @@ export const useSolve = (well: string, params: SimParams, enabled: boolean) =>
     retry: false,
   });
 
+/** Never carry an envelope across input changes: old bounds can look precise. */
+export const useWcUncertainty = (req: WcUncertaintyRequest, enabled: boolean) =>
+  useQuery({
+    queryKey: ["wc-uncertainty", stableStringify(req)],
+    queryFn: ({ signal }) => post<WcUncertaintyResponse>("/solve/wc-uncertainty", req, signal),
+    enabled,
+    staleTime: MIN_30,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+
 export const useIprFit = (req: IprFitRequest, enabled: boolean) =>
   useQuery({
     queryKey: ["ipr-fit", stableStringify(req)],
@@ -161,6 +174,15 @@ export const useSaveIpr = (well: string) => {
   return useMutation({
     mutationFn: (req: SaveIprRequest) =>
       post<SaveIprResponse>(`/wells/${encodeURIComponent(well)}/save-ipr`, req),
+    onSuccess: () => invalidateSavedIpr(qc, well),
+  });
+};
+
+export const useSavePumpCalibration = (well: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (job_id: string) =>
+      post<{ message: string }>(`/wells/${encodeURIComponent(well)}/pump-calibration`, { job_id }),
     onSuccess: () => invalidateSavedIpr(qc, well),
   });
 };
@@ -275,13 +297,14 @@ export const useCombineJob = (jobId: string | null) =>
     queryKey: ["combine-job", jobId],
     queryFn: ({ signal }) => get<CombineJobStatus>(`/sensitivity/combine/${jobId}`, signal),
     enabled: jobId !== null,
-    refetchInterval: (query) => (query.state.data?.status === "running" ? 1000 : false),
+    refetchInterval: (query) => (isMissingJob(query.state.error) ? false : (!query.state.data || query.state.data.status === "running" ? 1000 : false)),
     // Keep polling when the window loses focus - a big factorial runs for
     // minutes and the engineer alt-tabs; the monitor must not freeze.
     refetchIntervalInBackground: true,
     staleTime: Infinity,
     gcTime: HOUR_1,
-    retry: false,
+    retry: retryJobPoll,
+    retryDelay: jobPollDelay,
   });
 
 export const useWellProfile = (well: string, jpumpTvd: number, fieldModel: string) =>
@@ -431,13 +454,14 @@ export const useOptimizeJob = (jobId: string | null) =>
     queryKey: ["optimize-job", jobId],
     queryFn: ({ signal }) => get<OptimizeJobStatus>(`/optimize/run/${jobId}`, signal),
     enabled: jobId !== null,
-    refetchInterval: (query) => (query.state.data?.status === "running" ? 2500 : false),
+    refetchInterval: (query) => (isMissingJob(query.state.error) ? false : (!query.state.data || query.state.data.status === "running" ? 2500 : false)),
     // Keep polling when the window loses focus - an engineer kicks off a
     // multi-minute run and alt-tabs; the monitor must not freeze at 0s.
     refetchIntervalInBackground: true,
     staleTime: Infinity,
     gcTime: HOUR_1,
-    retry: false,
+    retry: retryJobPoll,
+    retryDelay: jobPollDelay,
   });
 
 /** Booster-pump curves for one pad's plant, for the S/I/M/E chart panels.

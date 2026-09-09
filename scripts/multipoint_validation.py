@@ -35,6 +35,7 @@ def main() -> None:
     from server.services.calibration_points import pad_points
     from server.services.evidence import pad_evidence
     from server.services.optimizer_runs import _build_configs, _current_and_tests
+    from woffl.assembly.parallelism import worker_ceiling
 
     notes: list = []
     prov: dict = {}
@@ -70,9 +71,10 @@ def main() -> None:
             continue
         jobs.append((by_name[w], cc[0], cc[1], b))
 
-    log(f"[{time.time() - T0:5.0f}s] fitting {len(jobs)} wells (4 workers) ...")
+    workers = min(2, worker_ceiling())
+    log(f"[{time.time() - T0:5.0f}s] fitting {len(jobs)} wells ({workers} workers) ...")
     results = {}
-    with ProcessPoolExecutor(max_workers=4) as pool:
+    with ProcessPoolExecutor(max_workers=workers) as pool:
         futs = {pool.submit(_fit_one, j): j[0].well_name for j in jobs}
         for fut in as_completed(futs):
             w = futs[fut]

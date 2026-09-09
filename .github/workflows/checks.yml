@@ -1,0 +1,63 @@
+name: Code and physics checks
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: .
+      WOFFL_MAX_WORKERS: '1'
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt pytest httpx
+      - name: Deployment import and dependency check (offline)
+        run: |
+          python -m pip check
+          python tools/deployment_smoke.py
+      - name: Python and physics regressions (offline)
+        run: python -m pytest tests/ -q -rxX --junitxml=test-results.xml
+      - name: Physics qualification report
+        if: always()
+        run: python tools/physics_qualification.py --strict --output physics-qualification.json
+      - name: Publish known physics gaps
+        if: always()
+        run: cat physics-qualification.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Frontend install, tests and build
+        working-directory: web
+        run: |
+          npm ci
+          node --test tests/*.test.mjs
+          npm run build
+      - name: Save check results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation
+          path: |
+            test-results.xml
+            physics-qualification.json
+            physics-qualification.md

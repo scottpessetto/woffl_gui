@@ -1,5 +1,35 @@
 # Model trust and event calibration - session reference (2026-08-10)
 
+**Current model, 2026-09-08:** `entry-energy-v2` extends v1 with independent PF
+density, consistent water PVT, and gas-inventory-aware oil compression. See the
+[fluid follow-up and field holdouts](fluid_followup_2026-09-08.md). V1 replaced the inconsistent Mach
+multiplier with one throat-entry energy balance and a reachable energy limit.
+Mach is no longer a fitted parameter. Hydration uses the compatibility value
+1.0; explicit saves can clear the retired override. Friction and nozzle area
+are fitted for an installed pump; older unscoped fits need review.
+The API carries a model identifier. The transition banner was removed at the user's request.
+The historical Mach discussion and five-parameter fitting description below
+are superseded by [the implementation record](entry_energy_implementation_2026-09-08.md).
+Field response evidence and calibration-era rules remain in force.
+
+
+**Installed-pump scope, 2026-09-08:** [implementation and checks](pump_calibration_scope_2026-09-08.md)
+supersede the historical persist/inherit guidance below. Save well inputs excludes
+ken/kth/kdi/fnz. Save installed-pump calibration stores a complete, versioned fit
+against tracker nozzle, throat and exact Date Set, with its quality diagnostics.
+Only a matching installation and physics model activate it. Legacy numeric
+friction rows remain in history for review, without automatic hydration.
+Resize runs distinguish keeping the installed pump from a clean same-size
+replacement. All replacements use reference loss coefficients and catalog area;
+current-pump operations retain the installed fit. This separation is a modeling
+policy, not proof that fitted losses identify wear or that a clean pump is field-qualified.
+
+**Fleet comparison, 2026-09-08:** the [current-input actuality audit](fleet_actuality_2026-09-08.md)
+reads the live sources once and scores 35 wells across nine pads. Latest-test
+BHP median absolute error is 85.6 psi; these retrospective comparisons and their
+after-save subset are separate from the three-well event-refit holdouts.
+`tools/fleet_actuality.py` replays the local snapshot without warehouse reads.
+
 Everything built in the 2026-08-10 session: what it does, where it lives, which
 knobs tune it, and how to re-run the validation harnesses. Written for the
 engineer who wants to play with it and tune it later.
@@ -57,7 +87,9 @@ it (calibration), correct what is claimed from it where measurement disagrees
 (365 d). Per well:
 - `floor` = min(p5 of flowing daily BHP, min test BHP). Flowing = valid PF
   pressure in [800, 5500], BHP > 50, BHP < saved res_pres.
-- `psu_ref` = median BHP of the last 14 flowing days.
+- `psu_ref` and `ppf_ref` = mean BHP and PF pressure of the same last 14
+  flowing observations in the current era (corrected 2026-09-07). The paired
+  means preserve a linear response reference independent of the search range.
 - `beta` = clamp(-median(dBHP/dPpf), 0, 0.5) over day pairs 3-30 days apart
   with |dPpf| >= 100 psi, never spanning a pump change. `beta_source` =
   "well" (>= 5 pairs) -> "pad" (median of siblings) -> "default" (0.09).
@@ -70,8 +102,10 @@ when the model claims sonic at the top ladder level AND either:
   (`_EVIDENCE_BETA_MIN`; field separation: insensitive wells measure <= 0.022,
   responsive >= 0.04). Pad/default betas never trigger it.
 
-**Correction**: `psu_e(level) = psu_ref + beta * (P_full - level)`; oil scales
-by the saved oil-basis Vogel ratio; PF rates stay MODEL (validated). Rows
+**Correction**: `psu_e(level) = max(0, psu_ref + beta * (ppf_ref - level))`;
+each modeled oil rate scales by `Vogel(psu_e) / Vogel(psu_model)` using that
+point's model BHP. Missing pressure references leave the model uncorrected;
+the sweep ceiling is never a measurement reference. PF rates stay MODEL. Rows
 carry `suction_basis`, `evidence_gate` ("floor"/"response"), floor/violation/
 beta provenance; the landing table badges corrected wells "field".
 Wells whose evidence CONFIRMS the model keep their free chokes - the gate
@@ -98,6 +132,15 @@ each pad tab. Use it the way the Prosper email did: fix the worst rows first.
 
 ## 6. New physics parameters
 
+**2026-09-08 qualification update:** the original `mach_crit` interpretation
+below describes the design intent, not validated behavior. Only the choke
+walk scales kinetic energy; the operating walk does not. Offline experiments
+demonstrate rejected floors, sonic misclassification and solve failures.
+The actual energy minimum also depends on the density path and entry loss,
+so it is not necessarily at the selected Wood Mach. Transferability to new
+pump geometry is unproven. See
+[the investigation and options](critical_mach_options_2026-09-08.md).
+
 - **`mach_crit`** (default 1.0, bounds 1.0-2.5): slip closure on the choking
   criterion. Implemented by scaling the throat-entry kinetic differential
   energy by 1/mach_crit^2, so choking lands at homogeneous-computed
@@ -110,6 +153,13 @@ each pad tab. Use it the way the Prosper email did: fix the worst rows first.
   A property of the INSTALLED pump: applies only to the installed
   (nozzle, throat) in batch sweeps (`WellConfig.installed_nozzle/throat`),
   JPCO candidates always solve at 1.0, resets on pump change.
+
+2026-09-07 implementation clarification: single-well batch and network batch
+retain wear for the installed/selected baseline size, and use 1.0 for different
+sizes. A same-size baseline means keeping the installed hardware; to evaluate
+a same-size clean replacement, use nozzle area factor 1.0. Hydration retains
+per-parameter save timestamps and resets old or undated nozzle wear when an
+installation date is known. Other well parameters retain their saved values.
 
 Defaults reproduce pre-change behavior bit-identically. Library edits carry
 `[LIBRARY change -> upstream PR to kwellis/woffl]` markers.

@@ -294,7 +294,7 @@ class TestSimulateSingleWellEventCalibration:
 class TestPowerFluidConstraint:
     def test_valid(self):
         pf = PowerFluidConstraint(total_rate=5000, pressure=3000)
-        assert pf.rho_pf == 62.4
+        assert pf.rho_pf is None
 
     def test_rate_zero(self):
         with pytest.raises(ValueError, match="total_rate"):

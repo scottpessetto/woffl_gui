@@ -37,6 +37,7 @@ export function CalibrateBar({
   compareTest: WellTestRow | null;
 }) {
   const modelAsWater = useParamsStore((s) => s.params.model_as_water);
+  const replacement = useParamsStore((s) => s.params.pump_state === "replacement");
   const navigate = useNavigate();
 
   if (modelAsWater) return null; // water mode has no oil-anchored match
@@ -45,7 +46,7 @@ export function CalibrateBar({
     <div className="space-y-1.5 border-t border-slate-100 pt-2.5">
       <div className="flex flex-wrap items-center gap-2">
         <EventCalibration well={well} />
-        <MatchTest well={well} compareTest={compareTest} />
+        {!replacement && <MatchTest well={well} compareTest={compareTest} />}
         <Button
           variant="secondary"
           size="sm"

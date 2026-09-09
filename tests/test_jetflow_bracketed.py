@@ -47,35 +47,6 @@ def test_no_positive_region_still_raises():
         jf._throat_discharge_bracketed(lambda p: -1.0 - 1e-6 * p, 400.0)
 
 
-# ------------------------------------------------------------------ FLOW-9
-
-
-def test_tde_at_mach_interpolates_between_bracketing_points():
-    book = JetBook(1000.0, 900.0, 50.0, 1000.0, 100.0)  # Mach 0.9
-    book.append(975.0, 1100.0, 50.0, 1000.0, 121.0)  # Mach 1.1
-    t1, t2 = book.tde_ray
-    assert jf._tde_at_mach(book, 1.0) == pytest.approx(t1 + (t2 - t1) * 0.5)
-    assert jf._tde_at_mach(book, 1.05) == pytest.approx(t1 + (t2 - t1) * 0.75)
-
-
-def test_tde_at_mach_degenerate_pair_falls_back_to_sub_threshold_value():
-    book = JetBook(1000.0, 900.0, 50.0, 1000.0, 100.0)
-    book.append(975.0, 900.0, 50.0, 1000.0, 121.0)  # same Mach twice
-    assert jf._tde_at_mach(book, 1.0) == book.tde_ray[-2]
-
-
-def test_throat_entry_mach_one_returns_the_interpolated_value():
-    from woffl.flow.inflow import InFlow
-    from woffl.geometry.jetpump import JetPump
-    from woffl.pvt.blackoil import BlackOil
-    from woffl.pvt.formgas import FormGas
-    from woffl.pvt.formwat import FormWater
-    from woffl.pvt.resmix import ResMix
-
-    ipr = InFlow(qwf=246, pwf=1049, pres=1400)
-    res = ResMix(wc=0.894, fgor=600, oil=BlackOil.schrader(), wat=FormWater.schrader(), gas=FormGas.schrader())
-    jp = JetPump("9", "X")
-    tee, _q, book = jf.throat_entry_mach_one(1300.0, 80, jp.ken, jp.ate, ipr, res)
-    assert book.mach_ray[-1] >= 1.0 > book.mach_ray[-2]
-    assert tee == jf._tde_at_mach(book, 1.0)
-    assert tee != book.tde_ray[-2]
+# FLOW-9's Mach interpolation was superseded by entry-energy-v1. The
+# independent turning-point, conservation and analytic-limit checks live in
+# test_entry_energy.py; the momentum-bracketing checks above remain active.

@@ -23,6 +23,7 @@ import { gaugeMonths, useGaugeStore } from "../state/gauge";
 import { effectiveParams, useParamsStore } from "../state/params";
 import { useSensitivityStore } from "../state/sensitivity";
 
+import { PumpScope } from "./solver/PumpScope";
 import { ComparisonCard } from "./solver/ComparisonCard";
 import { CalibrateBar } from "./solver/CalibrateBar";
 import { GaugePanel } from "./solver/GaugePanel";
@@ -33,6 +34,7 @@ import { ResponseDiagnostic } from "./solver/ResponseDiagnostic";
 import { resolveAnchorTest, testKey } from "./solver/selection";
 import { TestsTable } from "./solver/TestsTable";
 import { VerdictBar } from "./solver/VerdictBar";
+import { WcUncertaintyCard } from "./solver/WcUncertaintyCard";
 
 export default function SolverPage() {
   const well = useParamsStore((s) => s.well);
@@ -188,9 +190,12 @@ function Workbench({ well }: { well: string }) {
   // live, which is the point of the client-rendered chart. Workbench
   // remounts per well, resetting the latch.
   const settledNow =
-    (testsQ.isSuccess || testsQ.isError) &&
-    (installsQ.isSuccess || installsQ.isError) &&
-    (pinQ.isSuccess || pinQ.isError) &&
+    // Custom wells have no field queries; disabled queries never settle.
+    (well === "Custom" || (
+      (testsQ.isSuccess || testsQ.isError) &&
+      (installsQ.isSuccess || installsQ.isError) &&
+      (pinQ.isSuccess || pinQ.isError)
+    )) &&
     (!fitEnabled || ((iprFitQ.isSuccess || iprFitQ.isError) && (fitApplied || iprFitQ.isError))) &&
     // reference equality = the debounce is quiescent: the solve on screen
     // corresponds to the CURRENT params (post-auto-apply), not a stale set.
@@ -298,6 +303,8 @@ function Workbench({ well }: { well: string }) {
             ppfSurf={params.ppf_surf}
             footer={<CalibrateBar well={well} compareTest={compareTest} />}
           />
+          <PumpScope />
+          <WcUncertaintyCard well={well} params={effective} enabled={simActive} />
           <IprControls
             anchorMode={anchorMode}
             well={well}

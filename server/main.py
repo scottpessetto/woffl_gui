@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from time import perf_counter
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -60,14 +61,16 @@ async def lifespan(app: FastAPI):
     still-quiet process is both faster and safer than doing it once the
     server is holding warehouse sockets - see ``server.pool``.
     """
-    from server import pool, warmup
+    from server import pool, warmup, surface_cache
 
     pool.start()
+    surface_cache.start()
     warmup.start()
     try:
         yield
     finally:
         warmup.stop()
+        surface_cache.stop()
         pool.stop()
 
 
@@ -86,6 +89,21 @@ app = FastAPI(title="WOFFL", version=_version(), lifespan=lifespan, docs_url="/a
 # Level 6 is roughly a third of the CPU for ~2% more bytes - a trade worth
 # taking on a 2-vCPU tier, where that CPU is competing with real work.
 app.add_middleware(GZipMiddleware, minimum_size=1500, compresslevel=6)
+
+
+@app.middleware("http")
+async def request_timing(request, call_next):
+    from server.performance import record
+    started = perf_counter()
+    try:
+        response = await call_next(request)
+        response.headers["Server-Timing"] = f"app;dur={(perf_counter()-started)*1000:.2f}"
+        return response
+    finally:
+        route = request.scope.get("route")
+        # Template path only: no well names, SQL, identity or query strings.
+        name = getattr(route, "path", "static")
+        record(f"http.{request.method}.{name}", perf_counter()-started)
 
 app.include_router(meta.router, prefix="/api")
 app.include_router(wells.router, prefix="/api")

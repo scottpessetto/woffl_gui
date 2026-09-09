@@ -648,7 +648,7 @@ class TestMachCritAndNozzleAreaFactor:
         unity.dnz = unity.dnz * math.sqrt(1.0)
         assert self._solve_full(unity) == base
 
-    def test_mach_crit_lowers_psu_min_monotonically(self):
+    def test_retired_mach_does_not_move_energy_limit(self):
         jp = JetPump("12", "B")
         floors = [
             _jf.psu_minimize(
@@ -658,7 +658,7 @@ class TestMachCritAndNozzleAreaFactor:
             for mc in (1.0, 1.5, 2.0)
         ]
         print(f"\npsu_min floors at mach_crit 1.0/1.5/2.0: {floors}")
-        assert floors[0] > floors[1] > floors[2]
+        assert floors[0] == floors[1] == floors[2]
 
     def test_fnz_above_one_raises_qnz(self):
         import math
@@ -891,12 +891,10 @@ class TestPsuMinimizeChokeResidual:
             tsu=tsu, ken=jp.ken, ate=jp.ate, ipr_su=ipr, prop_su=res
         )
         tee, _qoil2, book = _jf.throat_entry_mach_one(psu_min, tsu, jp.ken, jp.ate, ipr, res)
-        assert book.mach_ray[-1] >= 1.0  # the sweep crossed Mach 1: a real choke
-        assert abs(tee) <= _jf._TEE_TOL_FRAC * book.kde_ray[0]
-        m1, m2 = book.mach_ray[-2], book.mach_ray[-1]
-        t1, t2 = book.tde_ray[-2], book.tde_ray[-1]
-        assert tee == pytest.approx(t1 + (t2 - t1) * (1.0 - m1) / (m2 - m1))
-        assert tee != t1  # not the old nearest-point value
+        assert book.limit_reason == "energy_minimum"
+        assert abs(tee) < 1e-6 * book.kde_ray[0]
+        assert abs(book.grad[-1]) < 1e-6
+        assert book.dete_zero()[0] == pytest.approx(book.limit_pressure)
 
     def test_pump_that_cannot_be_fed_raises_typed(self):
         from woffl.flow.errors import ThroatEntryNoSolution
@@ -914,19 +912,9 @@ class TestPsuMinimizeChokeResidual:
 
 
 class TestSeedBookReuse:
-    """SOLV-F9 (upstream_sync.md #35): discharge_residual reuses the throat
-    entry book psu_minimize already swept, bit-identically, without touching
-    the seed."""
+    """Legacy seed arguments cannot alter the shared energy state (#41)."""
 
-    def test_seeded_residual_is_bit_identical_and_skips_the_sweep(self, monkeypatch):
-        used = {"n": 0}
-        real = _jf._seed_zero_tde_book
-
-        def spy(book):
-            used["n"] += 1
-            return real(book)
-
-        monkeypatch.setattr(_jf, "_seed_zero_tde_book", spy)
+    def test_untrusted_seed_cannot_change_shared_energy_state(self, monkeypatch):
         for jp in (JetPump("9", "X"), JetPump("12", "B")):
             psu_min, _qoil, book = _jf.psu_minimize(
                 tsu=tsu, ken=jp.ken, ate=jp.ate, ipr_su=ipr, prop_su=res
@@ -940,4 +928,3 @@ class TestSeedBookReuse:
             # a seed swept from a different psu is ignored, never mis-applied
             other = so.discharge_residual(psu_min + 1.0, *args[1:], te_seed=book)
             assert other == so.discharge_residual(psu_min + 1.0, *args[1:])
-        assert used["n"] == 2

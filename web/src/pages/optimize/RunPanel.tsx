@@ -1,3 +1,4 @@
+import { isMissingJob } from "../../api/client";
 /**
  * One optimization run tab (S / I / M pad or CFP) - constraints form, Run
  * button, live job progress, and results. The engines are the Streamlit
@@ -130,7 +131,7 @@ const TD_CLS = "px-2 py-1 text-right tabular-nums";
 /** Which inflow curve the well's pump was picked against. A reviewed save is
  *  the point of the whole save-fits workflow; a weak auto-fit or generic
  *  defaults mean the recommended pump is only as good as a sketch. */
-function FitSource({ row }: { row: Pick<PadRunRow, "ipr_source" | "ipr_r2" | "has_friction"> }) {
+function FitSource({ row }: { row: Pick<PadRunRow, "ipr_source" | "ipr_r2" | "has_friction" | "pump_calibration"> }) {
   const r2 = row.ipr_r2;
   // R2 <= 0 means the Vogel curve tracks the tests WORSE than a flat line -
   // the pump picked against it is noise, so it reads as loud as defaults.
@@ -161,9 +162,10 @@ function FitSource({ row }: { row: Pick<PadRunRow, "ipr_source" | "ipr_r2" | "ha
   return (
     <span className={clsx("text-[11px] font-medium", tone)} title={hint}>
       {label}
+      {row.has_friction && <span className={clsx("ml-1", row.pump_calibration?.quality?.provisional ? "text-amber-700" : "text-slate-500")} title={row.pump_calibration?.message}>{row.pump_calibration?.quality?.provisional ? "pump fit - provisional" : "installed fit"}</span>}
       {!row.has_friction && (
-        <span className="ml-1 text-slate-400" title="Library friction coefficients - no BHP calibration saved.">
-          nofric
+        <span className="ml-1 text-slate-400" title="Reference pump coefficients - no verified installation calibration.">
+          reference
         </span>
       )}
     </span>
@@ -188,6 +190,13 @@ function PadResults({ result }: { result: PadRunResult }) {
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         <Metric label="Header" value={`${fmtNum(metaNum(meta, "header_psi"))} psi`} />
         <Metric label="Total PF" value={`${fmtNum(metaNum(meta, "total_pf_bpd"))} BPD`} />
+        {meta.water_key === "totl_wat" && (
+          <Metric
+            label="Machine water"
+            value={`${fmtNum(metaNum(meta, "total_machine_water_bpd"))} BPD`}
+            title="Formation water plus lift water handled by the pad pumps"
+          />
+        )}
         <Metric label="Optimized oil" value={`${fmtNum(metaNum(meta, "total_oil_bopd"))} BOPD`} />
         <Metric label="Current test oil" value={`${fmtNum(totalTestOil)} BOPD`} />
         <Metric
@@ -196,7 +205,7 @@ function PadResults({ result }: { result: PadRunResult }) {
           title={
             lam === null
               ? undefined
-              : `Oil given up per MBPD of lift water in the objective (oil - λ·water)${
+              : `Oil given up per MBPD of ${meta.water_key === "totl_wat" ? "formation plus lift" : "lift"} water in the objective (oil - λ·water)${
                   wcEquiv !== null ? `; equivalent marginal WC ${(wcEquiv * 100).toFixed(1)}%` : ""
                 }${lamSource ? `; source: ${lamSource}` : ""}`
           }
@@ -240,7 +249,7 @@ function PadResults({ result }: { result: PadRunResult }) {
           </thead>
           <tbody>
             {result.rows.map((r) => {
-              const change = r.pump !== null && r.current_pump !== null && r.pump !== r.current_pump;
+              const change = r.pump_state === "replacement" || (r.pump !== null && r.current_pump !== null && r.pump !== r.current_pump);
               return (
                 <tr key={r.well} className="border-b border-slate-100 last:border-b-0">
                   <td className="px-2 py-1 text-left font-medium text-slate-700">{r.well}</td>
@@ -256,6 +265,7 @@ function PadResults({ result }: { result: PadRunResult }) {
                     ) : (
                       <span className={clsx("font-medium", change ? "text-blue-700" : "text-slate-700")}>
                         {r.pump}
+                        {r.pump_state && <span className="block text-[10px] font-normal">{r.pump_state === "replacement" ? "Replace ? clean reference" : "Keep installed"}</span>}
                         {r.sonic && <span title="sonic throat"> *</span>}
                       </span>
                     )}
@@ -335,8 +345,8 @@ function ChokePlanResults({ result }: { result: ChokePlanResult }) {
           title={headerToday !== null ? `Today's settled header: ${fmtNum(headerToday)} psi` : undefined}
         />
         <Metric
-          label="PF / budget"
-          value={`${fmtNum(metaNum(meta, "total_pf_bpd"))} / ${fmtNum(metaNum(meta, "frontier_cap_bpd"))}`}
+          label={meta.water_key === "totl_wat" ? "Machine water / budget" : "PF / budget"}
+          value={`${fmtNum(metaNum(meta, "total_machine_water_bpd") ?? metaNum(meta, "total_pf_bpd"))} / ${fmtNum(metaNum(meta, "frontier_cap_bpd"))}`}
           title="BPD - the budget is the bank's capability frontier at this header and pump count"
         />
         <Metric label="Model oil" value={`${fmtNum(metaNum(meta, "total_oil_bopd"))} BOPD`} />
@@ -346,9 +356,9 @@ function ChokePlanResults({ result }: { result: ChokePlanResult }) {
           title="Test-anchored: measured oil x the model ratio between the plan and today (model bias cancels)"
         />
         <Metric
-          label="Marginal PF value"
+          label={meta.water_key === "totl_wat" ? "Marginal water value" : "Marginal PF value"}
           value={lam === null ? "no trims" : `${fmtNum(lam * 1000)} BOPD/MBPD`}
-          title="Oil given up per MBPD of PF freed by the last (most expensive) trim - the pad's marginal value of power fluid"
+          title="Oil given up per MBPD of machine capacity freed by the last trim"
         />
       </div>
       <p className="text-xs text-slate-500">
@@ -825,7 +835,7 @@ export function RunPanel({
   const { offline: offlineSet, autoCount } = usePadOffline(runPads);
   const offline = useMemo(() => [...offlineSet].sort(), [offlineSet]);
   const future = useMemo(
-    () => runPads.flatMap((p) => futureByPad[p] ?? []),
+    () => runPads.flatMap((p) => (futureByPad[p] ?? []).map((fw) => ({ ...fw, pad: p }))),
     [runPads, futureByPad],
   );
   const activeCount = useMemo(() => {
@@ -866,8 +876,8 @@ export function RunPanel({
 
   // Expired job (server restart): drop the stale id quietly.
   useEffect(() => {
-    if (jobId && job.isError) setLastJob(runKey, null);
-  }, [jobId, job.isError, runKey, setLastJob]);
+    if (jobId && isMissingJob(job.error)) setLastJob(runKey, null);
+  }, [jobId, job.error, runKey, setLastJob]);
 
   const running = job.data?.status === "running" || start.isPending;
 

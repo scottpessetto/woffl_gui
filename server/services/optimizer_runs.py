@@ -29,6 +29,8 @@ and never shared between jobs.
 
 from __future__ import annotations
 
+from woffl.flow.entry_energy import MODEL_VERSION
+
 import logging
 
 import math
@@ -152,6 +154,7 @@ def _config_from_seeds(name: str, pad: str, seeds: dict[str, Any]):
         oil_api=f("oil_api"),
         gas_sg=f("gas_sg"),
         wat_sg=f("wat_sg"),
+        rho_pf=f("rho_pf", 63.648),
         bubble_point=f("bubble_point"),
         ppf_surf_well=f("ppf_surf"),
         ken_well=f("ken"),
@@ -163,6 +166,7 @@ def _config_from_seeds(name: str, pad: str, seeds: dict[str, Any]):
         # cheapest source already in this flow; fail-soft None). fnz_well is
         # wear on THIS pump - _simulate_single_well scales only the matching
         # candidate, never the whole JPCO catalog.
+        pump_calibration_scoped=True,
         installed_nozzle=s("nozzle_no"),
         installed_throat=s("area_ratio"),
         jpump_direction=str(seeds.get("jpump_direction") or "reverse"),
@@ -209,11 +213,10 @@ def _build_configs(
                 # Where this well's inflow curve came from. The pump the
                 # optimizer picks is only as trustworthy as this.
                 prov[name] = {
+                    "pump_calibration": ctx.get("pump_calibration"),
                     "ipr_source": ctx.get("ipr_source"),
                     "ipr_r2": ctx.get("ipr_r2"),
-                    "has_friction": any(
-                        ctx["seeds"].get(k) is not None for k in ("ken", "kth", "kdi")
-                    ),
+                    "has_friction": (ctx.get("pump_calibration") or {}).get("status") == "active",
                 }
         except Exception as exc:  # noqa: BLE001 - fail-soft per well
             note.append(f"{name}: seeding failed ({exc})")
@@ -232,6 +235,10 @@ def _build_configs(
             note.append(f"{name}: invalid model ({exc})")
 
     for fw in future:
+        target_pad = fw.pad.strip().upper() if fw.pad is not None else pads[0]
+        if target_pad not in pads:
+            note.append(f"{fw.name}: target pad {target_pad} is outside this run - skipped")
+            continue
         seeds = seeds_by_well.get(fw.match)
         if seeds is None:
             note.append(f"{fw.name}: donor {fw.match} could not be seeded - skipped")
@@ -240,7 +247,7 @@ def _build_configs(
             # A hypothetical well has no survey: it runs on the field preset
             # profile, so the donor's MEASURED MD does not transfer.
             cfg = _config_from_seeds(
-                fw.name, pads[0], {k: v for k, v in seeds.items() if k != "jpump_md"}
+                fw.name, target_pad, {k: v for k, v in seeds.items() if k not in {"jpump_md", "nozzle_no", "area_ratio", "ken", "kth", "kdi", "nozzle_area_factor"}}
             )
             configs.append(cfg)
             note.append(f"{fw.name}: future well modeled on {fw.match}'s saved fit")
@@ -355,9 +362,10 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
 
     job["progress"] = f"simulating {len(configs)} wells..."
 
-    def cb(step: int, total: int, header: float, pf: float, oil: float) -> None:
+    def cb(step: int, total: int, header: float | None, pf: float, oil: float) -> None:
+        header_text = f"header {header:,.0f} psi" if header is not None else "header unavailable"
         job["progress"] = (
-            f"trial {step}/{total} - header {header:,.0f} psi"
+            f"trial {step}/{total} - {header_text}"
             + (f", oil {oil:,.0f} BOPD" if oil else "")
         )
 
@@ -417,6 +425,7 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
             {
                 "pad": pad,
                 "plan": plan,
+                "physics_model": MODEL_VERSION,
                 "meta": meta,
                 "notes": notes,
                 "n_wells": len(configs),
@@ -454,6 +463,7 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
                 "test_oil": tr[0] if tr else None,
                 "test_pf": tr[1] if tr else None,
                 "pump": f"{r.recommended_nozzle}{r.recommended_throat}" if r else None,
+                "pump_state": getattr(r, "pump_state", None) if r else None,
                 "oil": r.predicted_oil_rate if r else None,
                 "pf": r.allocated_power_fluid if r else None,
                 "form_water": r.predicted_formation_water if r else None,
@@ -470,7 +480,7 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         )
 
     keep = (
-        "header_psi", "total_pf_bpd", "total_oil_bopd", "n_pumps", "converged",
+        "header_psi", "total_pf_bpd", "total_machine_water_bpd", "total_oil_bopd", "n_pumps", "converged",
         "in_range", "recirc", "over_capacity", "feasible", "sweep", "history",
         "marginal_wc_used", "marginal_wc_source", "pf_slack", "parsimony_swaps",
         "lambda_used", "lambda_source", "objective_bopd_equiv", "water_key",
@@ -482,6 +492,7 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         {
             "pad": pad,
             "rows": rows,
+            "physics_model": MODEL_VERSION,
             "meta": {k: meta.get(k) for k in keep if k in meta},
             "notes": notes,
             "n_wells": len(configs),
@@ -540,15 +551,13 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
 
     names = [c.well_name for c in configs]
     job["progress"] = "reading current pumps + tests..."
-    current, _rates = _current_and_tests(names)
+    # Donors may be on a pad outside this run; fetch their tracked pumps as
+    # well so future wells can enter the bring-online response surfaces.
+    donor_names = [fw.match for fw in req.future]
+    current, _rates = _current_and_tests(list(dict.fromkeys(names + donor_names)))
 
-    # Wells without a tracked current pump cannot anchor a delta model -
-    # mirror of the Streamlit page skipping unreviewed pumps. Future wells
-    # take their donor's... no: future wells have no current pump either;
-    # they enter as bring-online candidates (online=False) with a nominal
-    # current size = their donor-derived first candidate is not defined, so
-    # they are skipped here too and noted. Bring-online planning for future
-    # wells lands with the donor-pump enhancement.
+    # Existing wells need a tracked pump to anchor the delta model. Future
+    # wells borrow the donor's pump and enter with an offline baseline.
     donors_of_future = {fw.name: fw.match for fw in req.future}
     pad_configs: dict[str, list[Any]] = {}
     online: dict[str, bool] = {}
@@ -674,6 +683,7 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
     return _plain(
         {
             "pads": sorted(pad_configs),
+            "physics_model": MODEL_VERSION,
             "notes": notes,
             "n_wells": sum(len(v) for v in pad_configs.values()),
             "p0_psi": p0,

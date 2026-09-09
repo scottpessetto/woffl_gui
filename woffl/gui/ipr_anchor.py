@@ -609,10 +609,12 @@ def _assemble_saved_ipr(latest: dict):
     )
 
     friction = {}
+    friction_at = {}
     for pid, key in FRICTION_PROPS.items():
         row = latest.get(pid)
         if row is not None and not pd.isna(row["prop_value"]):
             friction[key] = float(row["prop_value"])
+            friction_at[key] = row.get("entry_datetime")
 
     locks, lock_values = {}, {}
     for skey, (lock_id, value_id, _label) in LOCKABLE_FIELDS.items():
@@ -637,6 +639,7 @@ def _assemble_saved_ipr(latest: dict):
     return {
         "values": values if has_curve else {},
         "friction": friction,
+        "friction_at": friction_at,
         "locks": locks,
         "lock_values": lock_values,
         # back-compat aliases (pre-registry callers/tests)
@@ -865,7 +868,9 @@ def save_ipr_values(
             # 1.0 is the no-op default for both, so an uncalibrated 1.0 is
             # skipped; a revert-to-1.0 over a stored override still pushes.
             ("nozzle_area_factor", nozzle_area_factor),
-            ("mach_crit", mach_crit),
+            # Clear an old saved multiplier on an explicit user save; never
+            # persist a newly supplied multiplier that the model ignores.
+            ("mach_crit", 1.0 if mach_crit is not None else None),
         ):
             if val is None or (isinstance(val, float) and np.isnan(val)):
                 continue

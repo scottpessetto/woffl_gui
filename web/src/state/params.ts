@@ -71,6 +71,17 @@ export function mergeClamped(base: SimParams, partial: Partial<SimParams>): SimP
   return next;
 }
 
+export const CLEAN_PUMP = { ken: 0.03, kth: 0.3, kdi: 0.4, nozzle_area_factor: 1.0 };
+
+/** Hardware changes cannot carry the previous pump's fitted losses. */
+function hardwareEdit(base: SimParams, partial: Partial<SimParams>): SimParams {
+  const next = mergeClamped(base, partial);
+  if (next.nozzle_no !== base.nozzle_no || next.area_ratio !== base.area_ratio || next.pump_state === "replacement") {
+    return { ...next, ...CLEAN_PUMP, pump_state: "replacement" };
+  }
+  return next;
+}
+
 interface ParamsState {
   well: string; // "Custom" | "MPB-28" ...
   params: SimParams;
@@ -107,6 +118,9 @@ interface ParamsState {
 
   set: <K extends keyof SimParams>(key: K, value: SimParams[K]) => void;
   setMany: (partial: Partial<SimParams>) => void;
+  refreshPumpContext: (ctx: WellContext) => void;
+  useInstalledPump: () => void;
+  applyPumpFit: (result: { well: string; pump: string | null; era_start: string | null; installation_date_set?: string | null }, coefficients: Partial<SimParams>) => void;
   setWindow: (months: number, cap: number) => void;
   selectWell: (name: string) => void;
   applyContext: (ctx: WellContext) => void;
@@ -143,15 +157,49 @@ export const useParamsStore = create<ParamsState>((set) => ({
 
   set: (key, value) =>
     set((s) => ({
-      params: { ...s.params, [key]: clampToBounds(key, value) },
+      params: hardwareEdit(s.params, { [key]: value }),
       manualFields: withManual(s.manualFields, [key]),
     })),
 
   setMany: (partial) =>
     set((s) => ({
-      params: mergeClamped(s.params, partial),
+      params: hardwareEdit(s.params, partial),
       manualFields: withManual(s.manualFields, Object.keys(partial) as Array<keyof SimParams>),
     })),
+
+  refreshPumpContext: (ctx) => set((s) => {
+    if (ctx.well !== s.well || !s.context) return s;
+    const before = s.context.pump;
+    const after = ctx.pump;
+    const wasSaved = (Object.keys(CLEAN_PUMP) as Array<keyof typeof CLEAN_PUMP>).every(
+      (k) => s.params[k] === (s.context?.pump_calibration?.coefficients[k] ?? CLEAN_PUMP[k]));
+    const followSaved = s.params.pump_state !== "replacement" && wasSaved;
+    const changed = before?.date_set !== after?.date_set || before?.nozzle_no !== after?.nozzle_no || before?.throat_ratio !== after?.throat_ratio;
+    return {
+      context: { ...s.context, pump: after, pump_calibration: ctx.pump_calibration },
+      ...((changed || followSaved) ? { params: { ...s.params, ...CLEAN_PUMP, ...ctx.pump_calibration?.coefficients,
+        nozzle_no: after?.nozzle_no ?? s.params.nozzle_no, area_ratio: after?.throat_ratio ?? s.params.area_ratio,
+        pump_state: "installed" as const } } : {}),
+    };
+  }),
+
+  useInstalledPump: () => set((s) => ({ params: {
+    ...s.params, ...CLEAN_PUMP, ...s.context?.pump_calibration?.coefficients,
+    nozzle_no: s.context?.pump?.nozzle_no ?? s.params.nozzle_no,
+    area_ratio: s.context?.pump?.throat_ratio ?? s.params.area_ratio,
+    pump_state: "installed",
+  } })),
+
+  applyPumpFit: (result, coefficients) => set((s) => {
+    const pump = s.context?.pump;
+    if (s.well !== result.well || !pump?.date_set || pump.source !== "databricks" ||
+        `${pump.nozzle_no}${pump.throat_ratio}` !== result.pump ||
+        new Date(pump.date_set).getTime() !== new Date(result.installation_date_set ?? result.era_start ?? "").getTime()) return s;
+    return {
+      params: { ...s.params, ...coefficients, nozzle_no: pump.nozzle_no!, area_ratio: pump.throat_ratio!, pump_state: "installed" },
+      manualFields: withManual(s.manualFields, Object.keys(coefficients) as Array<keyof SimParams>),
+    };
+  }),
 
   // Window changes refetch the tests and re-run the fit; they are NOT a
   // reason to rebuild the bench. Nulling seededFor used to re-open the
@@ -231,5 +279,6 @@ export const useParamsStore = create<ParamsState>((set) => ({
 
 /** Effective params sent to the solver: dewatering forces form_wc = 1. */
 export function effectiveParams(params: SimParams): SimParams {
-  return params.model_as_water ? { ...params, form_wc: 1.0 } : params;
+  const p = params.pump_state === "replacement" ? { ...params, ...CLEAN_PUMP } : params;
+  return p.model_as_water ? { ...p, form_wc: 1.0 } : p;
 }

@@ -1,0 +1,167 @@
+{
+  "physics_model": "entry-energy-v2",
+  "baseline": "entry_energy_cases_2026-09-08.json",
+  "scope": "offline fixtures; no field qualification",
+  "rows": [
+    {
+      "case": "E41_reference",
+      "ppf": 2500.0,
+      "before": {
+        "psu": 1172.1928408411445,
+        "sonic": false,
+        "oil": 166.68684745798126,
+        "formation_water": 1405.830581390899,
+        "power_fluid": 2569.252002423301,
+        "mach_te": 0.2685589412572829
+      },
+      "after": {
+        "psu": 1172.8223778205604,
+        "sonic": false,
+        "oil": 166.2620249093318,
+        "formation_water": 1402.247644046629,
+        "power_fluid": 2566.619625315787,
+        "mach_te": 0.2671104522711502
+      }
+    },
+    {
+      "case": "E41_reference",
+      "ppf": 3168.0,
+      "before": {
+        "psu": 1104.8761381080226,
+        "sonic": false,
+        "oil": 210.96804973186067,
+        "formation_water": 1779.2965703800328,
+        "power_fluid": 2903.5862652415512,
+        "mach_te": 0.5034712882681482
+      },
+      "after": {
+        "psu": 1105.7334520189988,
+        "sonic": false,
+        "oil": 210.41837176317222,
+        "formation_water": 1774.6606071346791,
+        "power_fluid": 2896.894478225381,
+        "mach_te": 0.49886447191622585
+      }
+    },
+    {
+      "case": "high_watercut",
+      "ppf": 2500.0,
+      "before": {
+        "psu": 1101.7627988740435,
+        "sonic": false,
+        "oil": 34.165832663641865,
+        "formation_water": 1279.9046543995057,
+        "power_fluid": 2558.321145996872,
+        "mach_te": 0.1132828399445831
+      },
+      "after": {
+        "psu": 1100.9326915975505,
+        "sonic": false,
+        "oil": 34.20443919721794,
+        "formation_water": 1281.3509145419323,
+        "power_fluid": 2550.7901387924035,
+        "mach_te": 0.11347079021426958
+      }
+    },
+    {
+      "case": "high_watercut",
+      "ppf": 3168.0,
+      "before": {
+        "psu": 925.2779176000051,
+        "sonic": false,
+        "oil": 41.82509133135921,
+        "formation_water": 1566.8322675670706,
+        "power_fluid": 2891.334627599085,
+        "mach_te": 0.19692797356534564
+      },
+      "after": {
+        "psu": 924.7278876899197,
+        "sonic": false,
+        "oil": 41.84723860991722,
+        "formation_water": 1567.66193869459,
+        "power_fluid": 2880.0553335691625,
+        "mach_te": 0.19749601763827954
+      }
+    },
+    {
+      "case": "gassy",
+      "ppf": 2500.0,
+      "before": {
+        "psu": 327.7039447596638,
+        "sonic": true,
+        "oil": 106.85193485924121,
+        "formation_water": 427.40773943696496,
+        "power_fluid": 2831.14415694041,
+        "mach_te": 0.9749133307456519
+      },
+      "after": {
+        "psu": 327.8330765179106,
+        "sonic": true,
+        "oil": 106.8475052831965,
+        "formation_water": 427.3900211327861,
+        "power_fluid": 2816.678506620731,
+        "mach_te": 0.9748467773199816
+      }
+    },
+    {
+      "case": "gassy",
+      "ppf": 3168.0,
+      "before": {
+        "psu": 327.7039447596638,
+        "sonic": true,
+        "oil": 106.85193485924121,
+        "formation_water": 427.40773943696496,
+        "power_fluid": 3052.028405153641,
+        "mach_te": 0.9749133307456519
+      },
+      "after": {
+        "psu": 327.8330765179106,
+        "sonic": true,
+        "oil": 106.8475052831965,
+        "formation_water": 427.3900211327861,
+        "power_fluid": 3035.4965854479237,
+        "mach_te": 0.9748467773199816
+      }
+    },
+    {
+      "case": "low_gor",
+      "ppf": 2500.0,
+      "before": {
+        "psu": 582.532006208035,
+        "sonic": false,
+        "oil": 96.05017013031197,
+        "formation_water": 384.200680521248,
+        "power_fluid": 2696.1078851684288,
+        "mach_te": 0.011730968816158116
+      },
+      "after": {
+        "psu": 582.4531921871834,
+        "sonic": false,
+        "oil": 96.05414832480658,
+        "formation_water": 384.2165932992264,
+        "power_fluid": 2685.02055770734,
+        "mach_te": 0.01158693867314315
+      }
+    },
+    {
+      "case": "low_gor",
+      "ppf": 3168.0,
+      "before": {
+        "psu": 170.16291000495582,
+        "sonic": false,
+        "oil": 111.46747134306474,
+        "formation_water": 445.8698853722591,
+        "power_fluid": 3064.50262095904,
+        "mach_te": 0.19711798964838234
+      },
+      "after": {
+        "psu": 174.04061430352618,
+        "sonic": false,
+        "oil": 111.37278106329691,
+        "formation_water": 445.49112425318776,
+        "power_fluid": 3046.368306893299,
+        "mach_te": 0.19012869888244652
+      }
+    }
+  ]
+}

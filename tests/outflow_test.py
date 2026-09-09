@@ -46,7 +46,8 @@ def test_bottom_pressure() -> None:
     # the slip holdup is now re-floored at no-slip AFTER the Payne (1979)
     # multiplier. On this 600 scf/stb, 90% WC fixture Payne had been pulling
     # HL below lambda_L on most segments, understating the static gradient.
-    assert prs_ray[-1] == pytest.approx(1911.31, rel=0.001)
+    # R01: conserved live-mixture phase flows increase friction slightly.
+    assert prs_ray[-1] == pytest.approx(1909.75512, rel=0.001)
 
 
 def test_top_pressure() -> None:

@@ -31,6 +31,15 @@ async function parseError(res: Response): Promise<ApiErrorDetail> {
   }
 }
 
+/** Only a confirmed missing job invalidates its persisted handle. */
+export const isMissingJob = (error: unknown): boolean =>
+  error instanceof ApiError && (error.status === 404 || error.status === 410);
+
+export const retryJobPoll = (failureCount: number, error: unknown): boolean =>
+  !isMissingJob(error) && failureCount < 3;
+
+export const jobPollDelay = (attempt: number): number => Math.min(1000 * 2 ** attempt, 15000);
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },

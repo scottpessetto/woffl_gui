@@ -150,12 +150,20 @@ def create_reservoir_mix(
     return ResMix(wc=wc, fgor=gor, oil=oil, wat=water, gas=gas, model_as_water=model_as_water)
 
 
-# The power fluid is always the field model's FormWater preset conditioned
-# at 0 psig / 60 degF.
-def power_fluid(field_model: Optional[str]) -> FormWater:
+def default_power_fluid_density(well: str) -> float:
+    """Use the known plant SG for well hydration, without a warehouse query."""
+    from woffl.assembly.network_optimizer import derive_pad
+    from woffl.gui.pad_plant_base import power_fluid_density
+    from woffl.gui import i_pad_plant, m_pad_plant, s_pad_plant
+    plant = {"I": i_pad_plant.PLANT, "M": m_pad_plant.PLANT,
+             "S": s_pad_plant.PLANT}.get(derive_pad(well))
+    return power_fluid_density(plant)
+
+
+def power_fluid(field_model: Optional[str], rho_pf: Optional[float] = None) -> FormWater:
     """Power-fluid water properties for the field model, conditioned (0, 60)."""
-    _, prop_pf, _ = create_pvt_components(field_model)
-    return prop_pf.condition(0, 60)
+    from woffl.assembly.sim_factories import create_power_fluid
+    return create_power_fluid(field_model, rho_pf)
 
 
 # The preset-model path, used when no survey CSV exists (or the caller is

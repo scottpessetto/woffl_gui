@@ -56,6 +56,8 @@ _SAVED = {
 
 @pytest.fixture()
 def client(monkeypatch) -> TestClient:
+    from server.services import pump_calibration
+    monkeypatch.setattr(pump_calibration, "snapshot", lambda: {})
     monkeypatch.setattr(wells_svc, "list_wells", lambda: _UNIVERSE)
     monkeypatch.setattr(ipr_anchor, "warm_saved_ipr_cache", lambda force=False: 0)
     monkeypatch.setattr(ipr_anchor, "load_saved_ipr", lambda well: _SAVED.get(well))
@@ -75,8 +77,9 @@ def test_pad_rows_and_readiness(client):
     assert fitted["has_curve"] is True
     assert fitted["saved_at"].startswith("2026-08-05")
     assert fitted["saved_by"] == "engineer@example.com"
-    assert fitted["has_friction"] is True
-    assert fitted["friction_keys"] == ["ken", "kth"]
+    assert fitted["has_friction"] is False  # unscoped historical rows are not active
+    assert fitted["friction_keys"] == []
+    assert fitted["pump_calibration"]["status"] == "legacy"
     assert fitted["locks"]["form_wc"] is True
     assert fitted["pin_at"].startswith("2026-07-25")
 
@@ -95,5 +98,6 @@ def test_extra_donor_from_other_pad(client):
     donor = extras["MPB-28"]
     assert donor["pad"] == "B"  # donors keep their own pad
     assert donor["has_curve"] is False  # friction-only characterization
-    assert donor["has_friction"] is True
-    assert donor["friction_keys"] == ["kdi"]
+    assert donor["has_friction"] is False
+    assert donor["friction_keys"] == []
+    assert donor["pump_calibration"]["status"] == "legacy"

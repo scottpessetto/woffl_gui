@@ -14,6 +14,7 @@ export const THROAT_OPTIONS = ["X", "A", "B", "C", "D", "E"] as const;
 
 export interface SimParams {
   // Jetpump
+  pump_state?: "installed" | "replacement";
   nozzle_no: string;
   area_ratio: string;
   ken: number;
@@ -116,7 +117,7 @@ export const DEFAULT_PARAMS: SimParams = {
   bubble_point: 1750.0,
   surf_pres: 210,
   jpump_tvd: 4065,
-  rho_pf: 62.4,
+  rho_pf: 63.648,
   ppf_surf: 3168,
   qwf: 750,
   pwf: 500,
@@ -139,6 +140,8 @@ export const qwfWater = (p: SimParams): number => p.qwf * p.form_wc;
 // ---------------------------------------------------------------------------
 
 export interface MetaResponse {
+  physics_model: string;
+  physics_notice: string;
   app: string;
   version: string;
   user: string | null;
@@ -184,7 +187,19 @@ export interface PropLock {
   value: number | null;
 }
 
+export interface PumpCalibrationScope {
+  status: "active" | "none" | "legacy" | "stale" | "unavailable";
+  coefficients: Partial<SimParams>;
+  message?: string;
+  pump?: string;
+  date_set?: string;
+  saved_at?: string;
+  saved_by?: string;
+  quality?: { bhp?: number; dbhp?: number | null; pf?: number; n?: number; bounds?: string[]; beta?: number | null; measured_beta?: number | null; provisional?: boolean } | null;
+}
+
 export interface WellContext {
+  pump_calibration?: PumpCalibrationScope;
   well: string;
   chars: Record<string, unknown>;
   chars_source: "databricks" | "csv_fallback";
@@ -256,6 +271,40 @@ export interface ApiErrorDetail {
   suggested_gor?: number | null;
 }
 
+export interface WcUncertaintyRequest extends SolveRequest {
+  uncertainty_points: number; // percentage points, not a relative percent
+}
+
+export interface WcUncertaintyPoint {
+  wc: number;
+  oil: number | null; // BOPD
+  bhp: number | null; // psig, pump suction
+  error: string | null;
+}
+
+export interface WcMetricRange {
+  low: number;
+  base: number | null;
+  high: number;
+}
+
+export interface WcUncertaintyResponse {
+  physics_model: string;
+  well: string;
+  uncertainty_points: number;
+  wc_base: number;
+  wc_low: number;
+  wc_high: number;
+  clipped: boolean;
+  complete: boolean;
+  base_solved: boolean;
+  sample_count: number;
+  solved_count: number;
+  oil: WcMetricRange | null;
+  bhp: WcMetricRange | null;
+  points: WcUncertaintyPoint[];
+}
+
 // ---------------------------------------------------------------------------
 // IPR
 // ---------------------------------------------------------------------------
@@ -272,6 +321,7 @@ export interface PadFitWell {
   has_curve: boolean;
   saved_at: string | null;
   saved_by: string | null;
+  pump_calibration?: PumpCalibrationScope;
   has_friction: boolean;
   friction_keys: string[];
   locks: Record<string, boolean>;
@@ -298,7 +348,7 @@ export interface OptimizeRunRequest {
   kind: "pad" | "cfp";
   pad: RunPad | null;
   offline: string[];
-  future: { name: string; match: string }[];
+  future: { name: string; match: string; pad?: string }[];
   nozzles: string[];
   throats: string[];
   /** "jpco" resizes pumps; "choke" holds every installed pump and only
@@ -333,6 +383,7 @@ export interface OptimizeRunRequest {
 
 export interface PadRunRow {
   well: string;
+  pump_state?: "installed" | "replacement" | null;
   current_pump: string | null;
   test_oil: number | null;
   test_pf: number | null;
@@ -351,6 +402,7 @@ export interface PadRunRow {
   /** Vogel fit quality when ipr_source is "vogel". */
   ipr_r2: number | null;
   /** ken/kth/kdi came from a BHP calibration rather than library defaults. */
+  pump_calibration?: PumpCalibrationScope;
   has_friction: boolean;
 }
 
@@ -407,6 +459,7 @@ export interface ChokePlanRow {
   next_trim_bopd_per_bpd: number | null; // cost of one more trim step
   ipr_source: "saved" | "manual" | "vogel" | "single_test" | null;
   ipr_r2: number | null;
+  pump_calibration?: PumpCalibrationScope;
   has_friction: boolean;
 }
 
@@ -698,6 +751,7 @@ export interface SinglePointMatch {
 }
 
 export interface EventCalibrationResult {
+  installation_date_set?: string | null;
   well: string;
   pump: string | null;
   era_start: string | null;
@@ -719,7 +773,7 @@ export interface EventCalibrationResult {
   mined_beta: number | null;
   mined_beta_source: string | null;
   /** The coefficients currently saved on the well, for comparison. */
-  current: { ken: number | null; kth: number | null; kdi: number | null };
+  current: { ken: number | null; kth: number | null; kdi: number | null; nozzle_area_factor?: number };
 }
 
 /** GET /optimize/pump-curve - mirror of server.schemas.PumpCurveResponse.
@@ -1176,13 +1230,8 @@ export interface SaveIprRequest {
   form_wc: number;
   form_gor: number;
   surf_pres: number | null;
-  ken: number | null;
-  kth: number | null;
-  kdi: number | null;
   /** Event-calibration knobs; server skips values at the 1.0 no-op default
    *  unless a saved override already exists (the friction discipline). */
-  nozzle_area_factor: number | null;
-  mach_crit: number | null;
   /** Canonical characterization (resvr_bubb / resvr_temp). Sent only when the
    *  engineer moved it off the seeded value, so a save never re-writes the
    *  characterization the server handed out. */
@@ -1229,6 +1278,7 @@ export interface PropLockResponse {
 // ---------------------------------------------------------------------------
 
 export interface BatchRow {
+  pump_state?: "installed" | "replacement" | null;
   nozzle: string;
   throat: string;
   qoil_std: number;
@@ -1252,6 +1302,7 @@ export interface BatchStats {
 }
 
 export interface BatchRecommendation {
+  pump_state?: "installed" | "replacement" | null;
   nozzle: string;
   throat: string;
   qoil_std: number;
@@ -1396,6 +1447,7 @@ export interface JpHistoryResponse {
   installs: JpInstallRow[];
   tests: Record<string, unknown>[];
   bhp_daily: { date: string; bhp: number }[];
+  pump_state?: "installed" | "replacement" | null;
   current_pump: string | null;
   source: "databricks" | "excel_fallback";
 }

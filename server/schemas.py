@@ -13,9 +13,11 @@ and the exact column sets are owned by the services that build them.
 
 from __future__ import annotations
 
+from woffl.flow.entry_energy import MODEL_VERSION
+
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ---------------------------------------------------------------------------
 # Simulation parameters (mirror of woffl.gui.params.SimulationParams)
@@ -34,6 +36,7 @@ class SimParams(BaseModel):
     """
 
     # Jetpump
+    pump_state: Literal["installed", "replacement"] = "installed"
     nozzle_no: str = "12"
     area_ratio: str = "B"
     ken: float = Field(0.03, ge=0.001, le=0.40)
@@ -42,7 +45,7 @@ class SimParams(BaseModel):
     # Multi-point event calibration knobs (defaults reproduce historic solves
     # byte-identically): critical Mach choking threshold and nozzle area
     # factor (washout; applied as dnz_eff = dnz_catalog * sqrt(factor)).
-    mach_crit: float = Field(1.0, ge=1.0, le=2.5)
+    mach_crit: float = Field(1.0, ge=1.0, le=2.5, description="Deprecated: entry-energy-v1 ignores this multiplier; refit older calibrations.")
     nozzle_area_factor: float = Field(1.0, ge=0.8, le=1.3)
     jpump_direction: Literal["forward", "reverse"] = "reverse"
 
@@ -68,7 +71,7 @@ class SimParams(BaseModel):
     # Well
     surf_pres: float = Field(210, ge=10, le=600)  # psi wellhead
     jpump_tvd: float = Field(4065, ge=2500, le=8000)  # ft
-    rho_pf: float = Field(62.4, ge=50.0, le=70.0)  # lbm/ft3
+    rho_pf: float = Field(63.648, ge=50.0, le=70.0, description="Power-fluid density at 0 psig / 60 degF, lbm/ft3; independent of formation-water SG.")
     ppf_surf: float = Field(3168, ge=800, le=5500)  # psi PF surface
 
     # Inflow (qwf = TOTAL LIQUID BLPD)
@@ -88,6 +91,22 @@ class SimParams(BaseModel):
     power_fluid_min: float = Field(1800, ge=1000, le=5000)
     power_fluid_max: float = Field(3600, ge=1000, le=5000)
     power_fluid_step: float = Field(200, ge=50, le=500)
+
+    @model_validator(mode="after")
+    def clean_replacement(self):
+        if self.pump_state == "replacement":
+            from woffl.assembly.pump_candidates import CLEAN_PUMP
+            for key, value in CLEAN_PUMP.items():
+                setattr(self, key, value)
+        return self
+
+    @model_validator(mode="after")
+    def validate_pipe_clearance(self):
+        if self.tubing_od <= 2 * self.tubing_thickness:
+            raise ValueError("Tubing must have a positive inside diameter")
+        if self.casing_od - 2 * self.casing_thickness <= self.tubing_od:
+            raise ValueError("Casing inside diameter must exceed tubing outside diameter")
+        return self
 
     def to_simulation_params(self, selected_well: str, well_data: Optional[dict] = None):
         """Build the GUI dataclass the factories and solver wrappers consume."""
@@ -138,6 +157,8 @@ class SimParams(BaseModel):
 
 
 class MetaResponse(BaseModel):
+    physics_model: str = MODEL_VERSION
+    physics_notice: str = "The fluid-property and throat-entry models have changed. Power-fluid density is now active and the former critical-Mach adjustment is retired; review saved calibrations before using new recommendations."
     app: str = "WOFFL"
     version: str
     user: Optional[str] = None  # X-Forwarded-Email when hosted
@@ -230,6 +251,7 @@ class WellContext(BaseModel):
     as_built_locks: dict[str, bool]  # tubing / casing / jpump_tvd
     prop_locks: dict[str, PropLock]  # form_wc / form_gor / res_pres
     pump: Optional[PumpInfo] = None
+    pump_calibration: Optional[dict[str, Any]] = None
     pf: Optional[PfSeed] = None
     ipr_info: Optional[str] = None  # human caption, e.g. "IPR values loaded from N tests"
     saved_ipr_info: Optional[str] = None  # "Restored saved IPR values (date - user)"
@@ -297,6 +319,7 @@ class SolveRequest(BaseModel):
 
 
 class SolveResult(BaseModel):
+    physics_model: str = MODEL_VERSION
     psu: float  # suction pressure, psig
     sonic_status: bool
     qoil_std: float  # BOPD
@@ -313,6 +336,40 @@ class SolveErrorDetail(BaseModel):
     suggested_gor: Optional[float] = None  # GOR auto-recovery hint (250)
 
 
+class WcUncertaintyRequest(SolveRequest):
+    uncertainty_points: float = Field(5.0, ge=0.0, le=100.0, allow_inf_nan=False)
+
+
+class WcUncertaintyPoint(BaseModel):
+    wc: float  # formation fraction, excluding returned PF
+    oil: Optional[float] = None  # BOPD
+    bhp: Optional[float] = None  # psig, pump suction
+    error: Optional[str] = None
+
+
+class WcMetricRange(BaseModel):
+    low: float
+    base: Optional[float] = None  # None when the unperturbed solve failed
+    high: float
+
+
+class WcUncertaintyResponse(BaseModel):
+    physics_model: str = MODEL_VERSION
+    well: str
+    uncertainty_points: float
+    wc_base: float
+    wc_low: float
+    wc_high: float
+    clipped: bool
+    complete: bool
+    base_solved: bool
+    sample_count: int
+    solved_count: int
+    oil: Optional[WcMetricRange] = None
+    bhp: Optional[WcMetricRange] = None
+    points: list[WcUncertaintyPoint]
+
+
 # ---------------------------------------------------------------------------
 # IPR fit
 # ---------------------------------------------------------------------------
@@ -326,7 +383,8 @@ class PadFitWell(BaseModel):
     has_curve: bool  # saved ipr_qwf_liq + ipr_pwf pair exists
     saved_at: Optional[str] = None  # values-save timestamp (None = never)
     saved_by: Optional[str] = None
-    has_friction: bool  # any calibrated ken/kth/kdi stored
+    pump_calibration: Optional[dict[str, Any]] = None
+    has_friction: bool  # verified calibration for the current installation
     friction_keys: list[str] = []
     locks: dict[str, bool] = {}
     pin_at: Optional[str] = None
@@ -346,6 +404,7 @@ class PadFitStatusResponse(BaseModel):
 class FutureWellSpec(BaseModel):
     name: str = Field(..., min_length=1, max_length=24)
     match: str  # donor well whose saved fit models it
+    pad: Optional[str] = Field(None, min_length=1, max_length=8)
 
 
 class OptimizeRunRequest(BaseModel):
@@ -1119,10 +1178,9 @@ class IprPinResponse(BaseModel):
 
 
 class SaveIprRequest(BaseModel):
-    """The Solver's "Save as well default" payload - carried over from the
-    retired Streamlit button: pin the resolved anchor test AND push the
-    sidebar's current curve/rate values in one click. Bounds mirror the
-    SimParams widget bounds; ipr_anchor.save_ipr_values re-caps WC at 0.99."""
+    """Save transferable well/IPR/fluid inputs. Installed-pump fits have their
+    own installation-bound endpoint. The optional anchor pin is unchanged;
+    ipr_anchor.save_ipr_values re-caps WC at 0.99."""
 
     qwf_liq: float = Field(..., gt=0.0, le=50_000.0)  # TOTAL LIQUID (BLPD), stored verbatim
     pwf: float = Field(..., ge=50.0, le=5_000.0)
@@ -1130,15 +1188,6 @@ class SaveIprRequest(BaseModel):
     form_wc: float = Field(..., ge=0.0, le=1.0)
     form_gor: float = Field(..., ge=0.0, le=20_000.0)
     surf_pres: Optional[float] = Field(None, ge=0.0, le=5_000.0)
-    # BHP-calibrated friction rides along; save_ipr_values skips unchanged /
-    # never-calibrated-default values so no noise rows materialize.
-    ken: Optional[float] = None
-    kth: Optional[float] = None
-    kdi: Optional[float] = None
-    # Event-calibration knobs ride the same discipline (skip-at-1.0 unless a
-    # saved override exists). Bounds mirror SimParams.
-    nozzle_area_factor: Optional[float] = Field(None, ge=0.8, le=1.3)
-    mach_crit: Optional[float] = Field(None, ge=1.0, le=2.5)
     # Characterization values the sensitivity study can move. Both prop ids
     # (resvr_bubb / resvr_temp) already exist; the client sends one only when
     # the engineer changed it off the seeded value, so a save never re-writes
@@ -1155,6 +1204,10 @@ class SaveIprRequest(BaseModel):
     # from. Appends the cleared marker (prop_hist is append-only), never a
     # DELETE.
     unpin: bool = False
+
+
+class SavePumpCalibrationRequest(BaseModel):
+    job_id: str = Field(..., min_length=1, max_length=100)
 
 
 class SaveIprResponse(BaseModel):
@@ -1207,6 +1260,7 @@ class BatchStats(BaseModel):
 
 
 class BatchRecommendation(BaseModel):
+    pump_state: Optional[str] = None
     nozzle: str
     throat: str
     qoil_std: float

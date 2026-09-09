@@ -1,0 +1,24 @@
+{
+  "workers": 2,
+  "wells": 4,
+  "pressure_nodes": 3,
+  "pump_choices": 6,
+  "timings": {
+    "fresh_pools_seconds": 2.988427,
+    "shared_pool_start_seconds": 0.937845,
+    "shared_cold_seconds": 0.202584,
+    "cached_seconds": 0.004482
+  },
+  "bit_identical": true,
+  "cache": {
+    "entries": 24,
+    "bytes": 183800,
+    "max_bytes": 67108864,
+    "hits": 12,
+    "misses": 24,
+    "model": "848704b93997"
+  },
+  "local_testclient_read_p50_ms": 3.3428999595344067,
+  "local_testclient_read_p95_ms": 4.360000020824373,
+  "scope": "Offline local compute; not a hosted latency guarantee"
+}

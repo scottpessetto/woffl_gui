@@ -490,18 +490,14 @@ def compute_bhp_decomposition(
 # ---------------------------------------------------------------------------
 # Multi-point event calibration (Pillar 1b)
 # ---------------------------------------------------------------------------
-# Fits (ken, kth, kdi, fnz, mach_crit) against EVERY measured operating point
-# in the current pump era simultaneously. fnz is an effective nozzle-AREA
-# factor (dnz_eff = dnz_catalog * sqrt(fnz), the pf_calibration wear pattern)
-# so washout is a fitted parameter instead of a separate diagnostic.
-# mach_crit relaxes the throat-entry cavitation floor (sonic cutoff moves
-# from Mach 1.0 to mach_crit) so a well whose measured BHP level AND
-# dBHP/dPpf response sit below today's floor stays reachable. Each point
-# gets its own IPR anchor (oil-basis Vogel through that point's qtot/bhp) so
-# IPR drift stays out of the friction fit.
+# Fits (ken, kth, kdi, fnz) against the current pump era. Entry-energy-v1
+# derives choking from the shared energy balance; the historical fifth
+# coordinate remains 1.0 for response/seed compatibility and is not searched.
+# Each point keeps its own oil-basis Vogel anchor.
 
 FNZ_BOUNDS = (0.8, 1.3)
-MACH_CRIT_BOUNDS = (1.0, 2.5)
+# Retired compatibility coordinate; never searched by the fitter.
+MACH_CRIT_BOUNDS = (1.0, 1.0)
 MP_BOUNDS = [KEN_BOUNDS, KTH_BOUNDS, KDI_BOUNDS, FNZ_BOUNDS, MACH_CRIT_BOUNDS]
 MP_PARAM_NAMES = ("ken", "kth", "kdi", "fnz", "mach_crit")
 MP_KNZ = 0.01                 # nozzle loss held fixed, as in the 1-pt path
@@ -531,11 +527,10 @@ MP_HUBER_DELTA = 1.5
 MP_ALT_START = (0.03, 0.30, MP_SEED_KDI, 1.0, 1.0)
 # Progress callback cadence, in cost evaluations (~every 2 s at 24 points).
 MP_PROGRESS_EVERY = 10
-# Names for the up-to-four Nelder-Mead passes, in the order they can run.
+# Names for the up-to-three Nelder-Mead passes, in the order they can run.
 MP_PASS_NAMES = {
     "seed": "pass 1 - fit from the saved coefficients",
     "alt": "pass 2 - retry from the library defaults",
-    "escape": "pass 3 - retry with the cavitation floor lifted",
     "polish": "final pass - polishing the best fit",
 }
 
@@ -642,13 +637,13 @@ def _mp_pair_diffs(pts: list[tuple[float, float, float]]) -> list[tuple[float, f
 def _mp_railed(x) -> list[str]:
     """Parameter names sitting within BOUND_TOL of a search bound.
 
-    mach_crit's LOWER bound (1.0) is the no-op default - the physical sonic
-    cutoff - so resting there is expected, not a rail; only the upper bound
-    counts for it.
+    The retired Mach coordinate is never a fitted bound or rail.
     """
     railed = []
     for name, v, (lo, hi) in zip(MP_PARAM_NAMES, x, MP_BOUNDS):
-        if name != "mach_crit" and abs(v - lo) < BOUND_TOL:
+        if name == "mach_crit":
+            continue
+        if abs(v - lo) < BOUND_TOL:
             railed.append(name)
         elif abs(v - hi) < BOUND_TOL:
             railed.append(name)
@@ -677,7 +672,7 @@ def calibrate_multipoint(
     seed: tuple = None,
     progress: Optional[Callable[[str], None]] = None,
 ) -> MultipointResult:
-    """Fit (ken, kth, kdi, fnz, mach_crit) against many measured points.
+    """Fit (ken, kth, kdi, fnz) against many measured points.
 
     ``progress``, when given, receives a short plain-language status line
     at the start of every Nelder-Mead pass and every MP_PROGRESS_EVERY
@@ -696,12 +691,11 @@ def calibrate_multipoint(
     own IPR anchor (oil-basis through that point's qtot/wc at pwf = bhp,
     pres = config res_pres) and its own ResMix at the point's wc/fgor (PVT
     components built once, mixes cached per unique wc/fgor). fnz scales the
-    nozzle area: dnz_eff = dnz_catalog * sqrt(fnz). mach_crit is handed to
-    every jetpump_solver call (and the implied-beta probes) as the throat-
-    entry sonic cutoff; 1.0 reproduces today's physics exactly.
+    nozzle area: dnz_eff = dnz_catalog * sqrt(fnz). The flow limit follows
+    the shared, unscaled throat-entry energy balance.
 
-    ``seed`` may be a 5-tuple (ken, kth, kdi, fnz, mach_crit) or a legacy
-    4-tuple, which gets mach_crit 1.0 appended.
+    ``seed`` accepts either a 4-tuple or the historical 5-tuple. Its former
+    Mach coordinate is normalized to 1.0; only four coordinates are optimized.
 
     Objective: sum over surviving points of
         weight * [H((psu - bhp)/50) + H((qnz - pf_rate)/(0.05*pf_rate))]
@@ -894,10 +888,10 @@ def calibrate_multipoint(
         prog["evals"] = 0
         _report()
         result = minimize(
-            _cost,
-            list(x0),
+            lambda x: _cost((*x, 1.0)),
+            list(x0[:4]),
             method="Nelder-Mead",
-            bounds=MP_BOUNDS,
+            bounds=MP_BOUNDS[:4],
             options={
                 "xatol": 1e-4,
                 # scaled to point count: ~0.15 psi of BHP mismatch per point
@@ -905,7 +899,7 @@ def calibrate_multipoint(
                 "maxiter": MP_MAXITER,
             },
         )
-        return _mp_clip(result.x), int(getattr(result, "nit", 0) or 0)
+        return _mp_clip((*result.x, 1.0)), int(getattr(result, "nit", 0) or 0)
 
     def _summarize(x):
         """Final eval at x: per-point rows, drops, RMS errors (level + pair)."""
@@ -965,31 +959,10 @@ def calibrate_multipoint(
             best_x = alt_x
             rows, used, solve_drops, rms_bhp, rms_pf, rms_dbhp, n_pairs = _summarize(best_x)
 
-    # Floor-escape restart: a fit resting on the mach_crit=1.0 default with
-    # a poor BHP match is the P3 signature - Nelder-Mead cannot see past the
-    # cavitation-floor kink from a mach_crit=1.0 seed (every simplex step
-    # stays pinned, so the mach direction looks flat). Reseed from the
-    # current optimum with mach_crit lifted to its upper bound and keep the
-    # better of the two; wells that genuinely fit on the floor are untouched.
-    # A POOR paired-difference residual is the same trap wearing a smaller
-    # miss - the flat fit parks at the mean of the measured BHPs and scores
-    # well on levels - so it fires the restart too (mean pair residual
-    # > 1.0 <=> rms_dbhp > MP_DBHP_SCALE), and does so from ANY mach_crit:
-    # a simplex that stalled partway up the mach direction is still stuck
-    # on the kink, just not at the seed.
-    diff_poor = rms_dbhp is not None and rms_dbhp > MP_DBHP_SCALE
-    if used and (
-        diff_poor
-        or (best_x[4] - MP_BOUNDS[4][0] < BOUND_TOL and rms_bhp > GOOD_PSI)
-    ):
-        esc_x, esc_iters = _run((*best_x[:4], MP_BOUNDS[4][1]), "escape")
-        iters += esc_iters
-        if _cost(esc_x) < _cost(best_x):
-            best_x = esc_x
-            rows, used, solve_drops, rms_bhp, rms_pf, rms_dbhp, n_pairs = _summarize(best_x)
+    # The shared energy model has no empirical Mach floor to escape.
 
     # Polish restart: Nelder-Mead's simplex collapses as it converges, and a
-    # 5-parameter fit against the level + all-pairs objective routinely hits
+    # 4-parameter fit against the level + all-pairs objective routinely hits
     # MP_MAXITER mid-refinement. One restart FROM the current optimum
     # rebuilds a fresh simplex around it and finishes the descent; kept only
     # when it actually improves the cost.
@@ -1043,7 +1016,7 @@ def calibrate_multipoint(
         message += f", dBHP {rms_dbhp:.0f} psi over {n_pairs} pairs"
     message += (
         f"; fnz {fnz:.2f} (washout {(fnz - 1.0) * 100.0:+.0f}%), "
-        f"mach_crit {mach_crit:.2f}"
+        "shared entry-energy balance"
     )
 
     return MultipointResult(

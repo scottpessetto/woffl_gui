@@ -757,6 +757,155 @@ both solvers, `TestSolverAgreement`), and the GUI-side
 
 ---
 
+### 37. Conserved component flow in `ResMix` (R01, 2026-09-07)
+
+`woffl/pvt/resmix.py` now uses stock-tank oil density from API gravity and
+includes dissolved gas in live-oil phase mass. The mixture's live-oil density
+reconciles Bo with its own conserved oil/gas components, using the same standard
+gas density for dissolved and free gas. All barrel conversions use 7.48052 gal/ft3.
+The separate 100%-water mode and zero-oil guard remain intact.
+
+This deliberately corrects existing numerical results rather than preserving the
+old mass loss. Example: specified 400 BPD water at 2,000 psig returned 385.318;
+it now returns 400. Existing calibration coefficients need reassessment against
+observations; no stored coefficients were changed. The E-41 16E reference moves
+from 38.37 to 34.795 BOPD. Other affected pins and choke status are documented in
+`tests/batch_test.py`; independently recomputed non-sonic discharge residuals
+remain within the existing 10 psid tolerance (maximum 9.067 psid).
+
+Guarded by: `tests/test_review_2026_09_07.py::test_component_mass_conservation`
+(48 WC/GOR/temperature combinations, eight pressures including bubblepoint),
+`tests/batch_test.py::test_conserved_mixture_batch_discharge_balance`, and the
+existing water-mode regressions.
+
+### 38. Reject zero-clearance annuli (R09, 2026-09-07)
+
+`woffl/geometry/pipe.py::PipeInPipe` rejects inner-pipe OD equal to outer-pipe
+ID, as well as greater OD. Such geometry has zero area/hydraulic diameter.
+The API adds the corresponding cross-field validation.
+
+Guarded by: `tests/test_review_2026_09_07.py::test_zero_annulus_rejected_at_schema_and_library`.
+
+### 39. Oil-producing tie break in priced allocation (O02, 2026-09-07)
+
+`woffl/assembly/optimization_algorithms.py` and `network.py` perform a second
+optimization when water is priced: preserve the optimal economic objective,
+then maximize oil. MILP uses its continuous coefficients (with a numerical
+acceptance check); CP-SAT preserves its existing integer-scaled objective
+exactly. The price policy and capacity basis are unchanged. The CP-SAT second
+pass runs only after the primary optimum is proved. MILP requests zero relative
+MIP gap. Integer quantization remains an existing distinction between engines.
+
+Guarded by: `tests/test_review_2026_09_07.py::test_milp_priced_tie_prefers_oil`
+and `test_mckp_priced_tie_prefers_oil`, plus the existing pricing/capacity suite.
+
+Fork-only follow-up to #13: connector writes now disable retries after execution
+starts, and cleanup errors never replay completed work. Reads retain their retry.
+Guarded by: `test_write_cleanup_does_not_replay_success` and
+`test_write_execution_failure_is_not_replayed` in the same regression module.
+
+### 40. Host scheduling hook and native solver thread limits (2026-09-07)
+
+`compute_runtime.py` exposes optional batch, CPU-slot and timing hooks. The
+web host installs them at startup; `network_optimizer.py` uses the host's
+persistent pool and exact response cache. Standalone callers retain the
+existing execution path and broken-pool serial fallback. The shared library
+never imports the server. Child processes retain no-op host hooks.
+
+`optimization_algorithms.optimize` acquires the host CPU slot for allocation.
+HiGHS and CP-SAT use one native solver thread per allocation; HiGHS receives
+the forwarded `threads` option through SciPy. Solver objectives are unchanged.
+
+Guarded by: `tests/test_medium_runtime.py::test_network_host_hook_avoids_new_executor_and_reuses_nodes`,
+`test_global_tokens_bound_overlapping_batches_and_allocation`,
+`test_real_cached_response_matches_uncached`, and
+`tests/test_physics_acceptance.py::test_small_allocations_match_exhaustive_enumeration`.
+
+### 41. Shared throat-entry energy balance (2026-09-08)
+
+User-authorized model correction: `flow/entry_energy.py` supplies one unscaled
+kinetic/loss term and one integral of specific volume to both entry walks.
+`MaterialPath` uses a positive PCHIP specific-volume curve and its integrated
+polynomial; velocity comes from the conserved stream mass. Its derivative's
+roots identify the FIRST reachable energy minimum, not a later lower minimum
+and not an arbitrarily selected Wood Mach. The pressure boundary is explicit.
+
+`jetflow` entry functions and `jetplot.throat_entry_book` delegate to that path.
+`solopump` classifies sonic only at an interior energy limit and retains its
+discharge bracket/secant/reseed/bisection chain. `BatchPump` and the solver
+reuse immutable paths in a per-caller context; there is no library/server
+dependency or cross-request mutable-fluid cache. Nondefault `mach_crit` inputs
+warn and no longer alter the model. API names remain source-compatible.
+
+This supersedes #32's Mach-threshold interpolation, #35's throat-book seeding
+portion, and #29's old floor interpretation. #35's secant known-point reuse
+and the momentum/discharge safeguards remain. Generic JetBook behavior remains
+for diffuser and external diagnostic callers. Default answers are not promised
+bit-identical: the user explicitly approved the new energy model after the
+critical-Mach investigation. The old 9X Mach pin is updated to the actual
+energy turning point; oil/PF/suction pins remain inside their prior tolerances.
+
+Guarded by: `tests/test_entry_energy.py::test_production_limit_matches_analytic_isothermal_gas`,
+`test_pressure_bound_is_not_a_sonic_limit`,
+`test_two_walks_and_diagnostics_share_full_energy_curve`,
+`test_gas_rich_well_remains_choked_and_solvable`,
+`test_reachable_limit_does_not_jump_to_a_deeper_energy_minimum`,
+`test_pvt_refinement_preserves_limit_and_reports_turning_point`, and
+`test_solver_batch_and_network_agree_for_identical_physical_inputs`.
+
+Fork integration: the fitter searches ken/kth/kdi/nozzle area only. Hydration
+normalizes retired Mach rows to 1; an explicit save clears an old multiplier.
+The app displays a calibration-review notice and reports `entry-energy-v1`
+provenance. No production rows were changed by the coding work. Full details:
+`docs/entry_energy_implementation_2026-09-08.md`.
+
+## 42. Independent lift water and consistent fluid-property response (2026-09-08)
+
+User-authorized physics correction, `entry-energy-v2`; successful predictions
+intentionally change. This extends #41's shared entry balance without restoring
+the retired Mach multiplier. Details and measured deltas:
+`docs/fluid_followup_2026-09-08.md`.
+
+- `network_optimizer.py`: independent PF density in `WellConfig`, resolved from
+  the constraint only when absent on the well. Resolved values travel to workers
+  and participate in exact response-cache keys. Formation water is a separate object.
+- `pvt/water_properties.py`, `formwat.py`: IAPWS IF97 region-1 density and analytic
+  isothermal compressibility, R12-08 industrial viscosity, and region-4 liquid
+  domain guard. Preserve measured standard density (SG times 62.4 lbm/ft3 at
+  0 psig / 60 F), scaling pure-water relative P/T response. This is not a brine
+  salinity model. Immutable property tuples use a bounded exact-key cache.
+- `blackoil.py`: invert the existing Rs correlation to find the bubble point
+  supported by the gas inventory. Start oil compression and above-bubble-point
+  viscosity there; integrate the floored Vasquez-Beggs A/P law exactly so
+  `-d(log Bo)/dP = co` in undersaturated oil. Retain the oil correlation floors
+  as explicit approximations, including the separate acoustic diagnostic floor.
+- `jetflow.py`, `solopump.py`: nozzle velocity uses pressure work integrated
+  along the PF density path, then converts exit volume to standard volume by
+  conserved mass. Blend formation/lift-water SG by their standard water volumes;
+  clone mutable PVT children. Final mixture uses actual nozzle mass, not the
+  flow iteration's approximate guess. Throat secant/bracket excursions respect
+  the incoming-momentum upper pressure bound and water PVT domain.
+- `outflow.py`: convert standard PF volume to column volume exactly once before
+  computing friction. The existing bulk-property column approximation remains.
+
+Guarded by: `tests/test_fluid_followup.py::test_explicit_lift_density_agrees_across_solve_paths`,
+`test_constraint_density_reaches_workers_without_mutating_input`,
+`test_lift_density_changes_nozzle_prediction`, `test_if97_published_liquid_reference`,
+`test_iapws_published_viscosity_reference`,
+`test_water_density_derivative_and_standard_mass`,
+`test_undersaturated_oil_compression_closes_its_density_derivative`,
+`test_nozzle_energy_and_discharge_water_mass_are_conserved`,
+`test_lift_column_velocity_preserves_standard_mass`,
+`tests/test_medium_runtime.py::test_exact_cache_isolated_and_invalidates_inputs`,
+the `TestMarginalConvergence` assembly cases and `test_jetflow_bracketed.py`.
+
+Fork integration: server, batch, pad and CFP callers carry the PF input; plant
+SG supplies a fallback. The API publishes v2 and the sidebar labels the density
+reference temperature. Offline event holdouts freeze training-period IPR and
+exclude future rate anchors. Their errors remain visible; no production fits
+were persisted. PyPI `woffl` is removed from application requirements; the
+vendored library is verified by an offline deployment import check.
+
 ## Dead-code deletions from `woffl/assembly/` (R-10, 2026-07-06)
 
 Not patches — these are GUI-fork-only removals of confirmed-zero-caller code
@@ -837,3 +986,23 @@ they land there, the divergence (and this whole risk) disappears: the next sync
 just brings them back as upstream code. This file + the regression tests give him
 everything he needs to review and accept them. Until then, treat #1 and #2 as
 **load-bearing local patches** and never let a sync clobber them.
+
+
+## 43. Installed-pump calibration and clean replacement identity (2026-09-08)
+
+`pump_candidates.scoped_pumps` creates separate installed and clean replacement
+candidates, including the same catalog size. All four fitted values (ken, kth,
+kdi, nozzle-area factor) stay on installed hardware. Application-created
+WellConfig opts into `pump_calibration_scoped`; legacy library callers retain
+previous behavior. Batch results carry optional `pump_state`, propagated through
+NetworkOptimizer lookup/reporting, CP-SAT output, MILP/MCKP and parsimony.
+Lookup without a state prefers installed hardware for fixed-current operations.
+Exactly identical same-size outcomes keep installed hardware in allocation;
+reports still retain both candidates. No energy-balance equations changed.
+
+Guarded by: `tests/test_pump_calibration_scope.py::test_catalog_replacements_do_not_inherit_any_fitted_pump_coefficient`,
+`test_optimizer_distinguishes_same_size_hardware_and_keeps_identical_pump` (both engines),
+`test_fixed_scenario_same_size_replacement_uses_its_own_performance`,
+and `tests/test_review_2026_09_07.py::test_batch_wear_only_applies_to_installed_size`.
+Application persistence/UI contracts are documented separately in
+`docs/pump_calibration_scope_2026-09-08.md`.
