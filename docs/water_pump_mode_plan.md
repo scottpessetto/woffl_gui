@@ -1,5 +1,7 @@
 # Design Plan — 100% Water Pump Mode
 
+> **Documentation status, 2026-09-08:** Historical review/design record. Retain its dated reasoning and measurements; verify any proposed action against current code. Streamlit was deleted, shared entry energy/fluid v2 is implemented, and pump fits now require installation/model scope. The [documentation index](README.md) and [September 8 handoff](session_learnings_2026-09-08.md) define current behavior and remaining work.
+
 *Status: **IMPLEMENTED 2026-06-22** — all recommended defaults confirmed; full
 suite 551 green with the oil path bit-identical. Solver view only for v1.*
 *Decision locked: water deliverability comes from the **IPR** (`qwf` = water rate

@@ -6,6 +6,14 @@ see lower, base and upper oil (BOPD) and suction BHP (psig) predictions. The ini
 setting is +/-5 points; it is an illustrative setting, not an estimated Milne
 test uncertainty. At 80% WC it represents 75% to 85%.
 
+The current Solver also shows an installed/clean pump scope card in this group.
+WC bounds use the selected hardware's effective coefficients. They neither save
+that selection nor supply uncertainty bounds to optimization. See
+[the save/run workflow](optimization_user_guide.md) and
+[the final session handoff](session_learnings_2026-09-08.md). Verification counts
+below describe the WC milestone; the later combined baseline is 1,861 Python
+and 8 frontend tests, plus production build and browser checks.
+
 ![WC uncertainty card, illustrative Custom well](wc_uncertainty_gui_2026-09-08.png)
 
 ## Calculation and interpretation

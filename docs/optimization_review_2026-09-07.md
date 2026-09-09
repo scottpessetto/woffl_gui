@@ -1,5 +1,7 @@
 # Optimization workflow review - 2026-09-07
 
+> **Documentation status, 2026-09-08:** Historical review. The choke water-basis and price-tie findings were subsequently addressed in the [fix record](code_review_2026-09-07_fixes.md); persistent workers and winner-only payload retention are in [Medium performance](medium_performance_2026-09-07.md). S-Pad progress labels and installed/clean candidates were also corrected. Use the [handoff](session_learnings_2026-09-08.md) for remaining work; do not treat the open-finding headings below as current status.
+
 Follow-up: the choke water-budget and priced-tie findings below are now fixed,
 along with CFP convergence and evidence-reference defects from the broader
 review. See [implementation and validation](code_review_2026-09-07_fixes.md).

@@ -1,5 +1,7 @@
 # Codebase Review — 2026-09-01
 
+> **Documentation status, 2026-09-08:** Historical review/design record. Retain its dated reasoning and measurements; verify any proposed action against current code. Streamlit was deleted, shared entry energy/fluid v2 is implemented, and pump fits now require installation/model scope. The [documentation index](README.md) and [September 8 handoff](session_learnings_2026-09-08.md) define current behavior and remaining work.
+
 > **STATUS (2026-09-02, fix run):** the P0/P1 backlog below is largely CLOSED in the working
 > tree (uncommitted, on `main` beside the pre-existing E-Pad work). Suite: **~1,600 passed**
 > (was 1,491). Library patches are registered as `docs/upstream_sync.md` **#16–#28** (+ the

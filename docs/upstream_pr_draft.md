@@ -1,5 +1,7 @@
 # Draft PR for upstream `kwellis/woffl`
 
+> **Documentation status, 2026-09-08:** Historical draft limited to the early convergence fallbacks. It is not a complete PR description for the current physics/optimizer changes. Review the [patch register through 43](upstream_sync.md) and [handoff](session_learnings_2026-09-08.md) before preparing a concrete upstream contribution. No PR was sent by this documentation update.
+
 Draft to offer the solver-robustness patches upstream (see `docs/upstream_sync.md`
 for the patches themselves). Tone is deliberately soft / peer-to-peer. Tweak
 freely before sending.

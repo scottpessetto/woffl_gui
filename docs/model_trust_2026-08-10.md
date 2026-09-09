@@ -5,11 +5,11 @@ density, consistent water PVT, and gas-inventory-aware oil compression. See the
 [fluid follow-up and field holdouts](fluid_followup_2026-09-08.md). V1 replaced the inconsistent Mach
 multiplier with one throat-entry energy balance and a reachable energy limit.
 Mach is no longer a fitted parameter. Hydration uses the compatibility value
-1.0; explicit saves can clear the retired override. Friction and nozzle area
+1.0; the web well-save endpoint omits pump/Mach values. Friction and nozzle area
 are fitted for an installed pump; older unscoped fits need review.
 The API carries a model identifier. The transition banner was removed at the user's request.
-The historical Mach discussion and five-parameter fitting description below
-are superseded by [the implementation record](entry_energy_implementation_2026-09-08.md).
+The former Mach adjustment and five-parameter search are superseded by
+[the implementation record](entry_energy_implementation_2026-09-08.md).
 Field response evidence and calibration-era rules remain in force.
 
 
@@ -24,19 +24,23 @@ replacement. All replacements use reference loss coefficients and catalog area;
 current-pump operations retain the installed fit. This separation is a modeling
 policy, not proof that fitted losses identify wear or that a clean pump is field-qualified.
 
-**Fleet comparison, 2026-09-08:** the [current-input actuality audit](fleet_actuality_2026-09-08.md)
-reads the live sources once and scores 35 wells across nine pads. Latest-test
+**Fleet comparison, 2026-09-08:** the [frozen actuality audit](fleet_actuality_2026-09-08.md)
+read the live sources once and scored 35 wells across nine pads before scoped-fit
+hydration was introduced. It is not a rerun under the final save policy. Latest-test
 BHP median absolute error is 85.6 psi; these retrospective comparisons and their
 after-save subset are separate from the three-well event-refit holdouts.
 `tools/fleet_actuality.py` replays the local snapshot without warehouse reads.
 
-Everything built in the 2026-08-10 session: what it does, where it lives, which
-knobs tune it, and how to re-run the validation harnesses. Written for the
-engineer who wants to play with it and tune it later.
+This reference retains August observations and evidence-layer design, with
+current physics and persistence amendments. Use [the September 8 handoff](session_learnings_2026-09-08.md)
+for the latest verification baseline, WC GUI and remaining work.
 
 ---
 
 ## 1. Why this exists - the findings
+
+Historical August observations below motivated the evidence layer. They are
+not current fleet statistics or proof that the corrected model reproduces every well.
 
 1. **The cavitation floor was fiction on most of M-Pad.** The solver
    (`solopump.jetpump_solver`) early-returns a sonic point whose suction
@@ -58,9 +62,9 @@ engineer who wants to play with it and tune it later.
    ~0.00-0.02 on genuinely pinned ones. The miner reproduced a hand-read PI
    slope (0.087) at 0.079-0.085 from 1,652 event pairs.
 
-Design consequence: keep the physics engine untouched, discipline what feeds
-it (calibration), correct what is claimed from it where measurement disagrees
-(evidence layer), and show provenance everywhere.
+The initial design kept physics unchanged and added calibration/evidence controls.
+The September 8 energy and fluid corrections supersede that restriction; continue
+to show provenance and distinguish numerical consistency from measured response.
 
 ---
 
@@ -71,9 +75,9 @@ it (calibration), correct what is claimed from it where measurement disagrees
 | Evidence layer | `server/services/evidence.py`, `woffl/gui/pad_optimize.py` | choke plan tables/badges | measured floors + response correct the choke plan |
 | Decision ladder | `pad_optimize.run_choke_optimization` meta `ladder` | `RunPanel.tsx` HeaderDropLadder | "header sags X -> best action -> gain" |
 | Match scorecard | `server/services/match_health.py` | `MatchHealthPanel.tsx` (Optimization page) | per-well model-vs-field trust board |
-| mach_crit + fnz | `woffl/flow/jetflow.py`, `solopump`, `batchpump`, `network_optimizer`, `schemas.SimParams` | sidebar params (applied via calibration) | slip choking closure + nozzle washout factor |
+| Entry energy + fnz | `woffl/flow/entry_energy.py`, `jetflow.py`, `solopump`, `batchpump`, `network_optimizer`, `schemas.SimParams` | pump scope and fit diagnostics | one energy balance; effective nozzle area scoped to installed hardware |
 | Points builder | `server/services/calibration_points.py` | - | era-gated daily (Ppf, BHP, PF rate) fit set |
-| Multipoint fitter | `woffl/gui/fric_calibration.py` `calibrate_multipoint` | - | fits ken/kth/kdi/fnz/mach_crit to the era history |
+| Multipoint fitter | `woffl/gui/fric_calibration.py` `calibrate_multipoint` | - | fits ken/kth/kdi/fnz to era history; compatibility Mach fixed at 1 |
 | Unified calibrate | `server/services/event_calibration.py` | `EventCalibration.tsx` in `CalibrateBar.tsx` | ONE button; event fit with single-point fallback |
 | Single-point guard | `fric_calibration.calibrate_friction_coefs` | CalibrateBar messaging | refuses degenerate fits on sonic-pinned wells |
 | Response diagnostic | `server/services/response_history.py` | `ResponseDiagnostic.tsx` (Solver page, bottom) | field dots vs model curve, the eyeball judge |
@@ -130,39 +134,28 @@ provenance, ken/kth/kdi with railed flags, verdict chip:
 `contradicted` > `railed-cal` > `weak-fit` > `ok`. Panel below RunPanel on
 each pad tab. Use it the way the Prosper email did: fix the worst rows first.
 
-## 6. New physics parameters
+## 6. Current physics and pump parameters
 
-**2026-09-08 qualification update:** the original `mach_crit` interpretation
-below describes the design intent, not validated behavior. Only the choke
-walk scales kinetic energy; the operating walk does not. Offline experiments
-demonstrate rejected floors, sonic misclassification and solve failures.
-The actual energy minimum also depends on the density path and entry loss,
-so it is not necessarily at the selected Wood Mach. Transferability to new
-pump geometry is unproven. See
-[the investigation and options](critical_mach_options_2026-09-08.md).
+`entry-energy-v2` uses one unscaled balance for operating and limiting throat
+entry. The first reachable energy minimum defines the limit; Wood Mach is a
+diagnostic. `mach_crit` is an ignored/deprecated compatibility input normalized
+to 1.0, not a well/fluid property to transfer or fit. The failed former design
+and its replacement are documented in [the investigation](critical_mach_options_2026-09-08.md)
+and [entry-energy implementation](entry_energy_implementation_2026-09-08.md).
 
-- **`mach_crit`** (default 1.0, bounds 1.0-2.5): slip closure on the choking
-  criterion. Implemented by scaling the throat-entry kinetic differential
-  energy by 1/mach_crit^2, so choking lands at homogeneous-computed
-  Mach = mach_crit (effective sonic velocity = mach_crit x Wood speed).
-  Floors DROP monotonically as it rises. A WELL/FLUID property - transfers to
-  hypothetical pumps, which is what makes JPCO evaluation honest.
-- **`nozzle_area_factor` (fnz)** (default 1.0, bounds 0.8-1.3): effective
-  nozzle area ratio, `dnz_eff = dnz * sqrt(fnz)`. Identified by PF-rate
-  residuals; fnz > 1 = washout, continuously (fleet fits ran +3% to +12%).
-  A property of the INSTALLED pump: applies only to the installed
-  (nozzle, throat) in batch sweeps (`WellConfig.installed_nozzle/throat`),
-  JPCO candidates always solve at 1.0, resets on pump change.
+`nozzle_area_factor` (fnz, fitting bounds .8-1.3) is an effective area ratio:
+`dnz_eff = dnz * sqrt(fnz)`. Together with ken/kth/kdi it is scoped to the
+installed hardware, exact Date Set and model version. PF residuals inform the
+fit but do not establish that an area change measures erosion. Test/WC/IPR
+errors and model approximation can also change fitted coefficients.
 
-2026-09-07 implementation clarification: single-well batch and network batch
-retain wear for the installed/selected baseline size, and use 1.0 for different
-sizes. A same-size baseline means keeping the installed hardware; to evaluate
-a same-size clean replacement, use nozzle area factor 1.0. Hydration retains
-per-parameter save timestamps and resets old or undated nozzle wear when an
-installation date is known. Other well parameters retain their saved values.
-
-Defaults reproduce pre-change behavior bit-identically. Library edits carry
-`[LIBRARY change -> upstream PR to kwellis/woffl]` markers.
+All replacement candidates use catalog area and reference losses
+(ken=.03, kth=.30, kdi=.40), including same-size replacement. Installed fits
+activate only with verified scope; legacy numeric rows do not automatically
+hydrate. See [pump calibration scope](pump_calibration_scope_2026-09-08.md).
+Well inputs remain separate. V2 property details and changed predictions are in
+[the fluid follow-up](fluid_followup_2026-09-08.md); do not claim bit-identical
+answers across the intentional physics correction.
 
 ## 7. Event calibration (multi-point)
 
@@ -177,30 +170,33 @@ in-era test (30 d) else the saved fit.
 Refusals: < 10 usable points ("young pump era"), Ppf spread < 200 psi
 ("not identifiable"), > half the points unsolvable.
 
-**Fitter** (`calibrate_multipoint`): Nelder-Mead over (ken, kth, kdi, fnz,
-mach_crit), per-point Vogel anchored on that point's own test. Objective =
+**Fitter** (`calibrate_multipoint`): Nelder-Mead over (ken, kth, kdi, fnz),
+with compatibility Mach fixed at 1.0 and per-point Vogel anchored on that
+point's own test. Objective =
 Huber(level BHP /50) + Huber(level PF /5%) + Huber(pair dBHP /25) over ALL
 point pairs with dPpf >= 100 psi (total pair weight = total level weight).
-Escapes: alt start at library seeds when poor; floor-escape reseed with
-mach_crit at 2.5 when pinned or pair residual poor; polish restart from the
-optimum. Returns RMS BHP / PF% / dBHP, railed list, implied_beta, per-point
+Restarts: alternate library seeds when poor and polish from the optimum.
+The Mach floor-escape restart is retired. Returns RMS BHP / PF% / dBHP,
+railed list, implied_beta, per-point
 rows, message.
 
-**Unified button** (Solver page CalibrateBar): "Calibrate to field data" ->
+**Unified button** (Solver page EventCalibration): "Calibrate to field data" ->
 `POST /api/optimize/event-calibration {well}` (job, poll via the optimize
 run status route, kind "event_cal"). Era has data -> event fit, summary-first
-result ("Matched 20 days of this pump's history ... nozzle ~5% washed out,
-model tracks measured BHP within 18 psi") + response check vs mined beta
+result (matched points, estimated nozzle area and BHP fit RMS) + response check vs mined beta
 (green when within 0.03, amber "treat suction sensitivity as evidence-layer"
 otherwise). Young era -> SERVER falls back to the single-point latest-test
-BHP match and says so; Apply then writes ken/kth/kdi only. The standalone
+BHP match and says so; Apply previews the result. Single-point area remains an
+input assumption, not an identified parameter. The standalone
 Auto-match button is gone.
 
-**Persist / inherit**: Save as well default pushes
-`jpfric_nozzle_area`/`jp_mach_crit` (prop_xref rows added 2026-08-10) with
-the same skip-default conventions as ken; hydration restores them into the
-solver sidebar and `WellConfig.fnz_well/mach_crit_well`, so the pad
-optimizer, choke plan, and scorecard all consume event-calibrated wells.
+**Persist / inherit (current):** save edited well inputs before refitting;
+calibration does not take unsaved sidebar edits. Apply is a preview. Save
+installed-pump calibration submits the completed server job ID and stores its
+verified installation/model/quality record in `woffl_eng_comment`. New optimizer
+runs use it only for that installed pump. Replacement losses/area use reference
+values, including a same-size replacement. Legacy numeric rows need refit/re-save;
+the well-input save does not carry them. See [the scope contract](pump_calibration_scope_2026-09-08.md).
 
 ## 8. Response diagnostic (the eyeball judge)
 
@@ -254,7 +250,7 @@ results carry a low-confidence caution.
 | MP_MIN_DPPF_PSI | 100.0 | pair qualification inside the fit |
 | MP_HUBER_DELTA | 1.5 | outlier robustness; lower = more median-like |
 | MP_MAXITER | 100 (x starts + polish) | fit budget |
-| KEN/KTH/KDI/FNZ/MACH_CRIT bounds | (.005-.40)/(.05-1)/(.05-1)/(.8-1.3)/(1-2.5) | parameter ranges |
+| KEN/KTH/KDI/FNZ bounds | (.005-.40)/(.05-1)/(.05-1)/(.8-1.3) | fitted parameter ranges; compatibility Mach fixed at 1.0 |
 | GOOD_PSI / MULTISTART_THRESHOLD | 25 / 50 | escape/alt-start triggers |
 
 ## 11. Validation harnesses (scripts/, all read-only, run from repo root)
@@ -272,12 +268,16 @@ PYTHONPATH=. venv/Scripts/python.exe scripts/multipoint_validation.py
 PYTHONPATH=. venv/Scripts/python.exe scripts/response_eyeball.py
 
 # older probes: knee ladders, floor sensitivity, ken decomposition
-PYTHONPATH=. WOFFL_MAX_WORKERS=8 venv/Scripts/python.exe scripts/mpad_knee_probe.py
+PYTHONPATH=. WOFFL_MAX_WORKERS=2 venv/Scripts/python.exe scripts/mpad_knee_probe.py
 PYTHONPATH=. venv/Scripts/python.exe scripts/mpm64_floor_probe.py
 PYTHONPATH=. venv/Scripts/python.exe scripts/mpm64_ken_decompose.py
 ```
 
 ## 12. Known limitations / open items
+
+The well counts and named refusals below are August observations, not a fresh
+audit. Recheck them against current inputs before acting. Current priorities and
+the frozen September fleet/holdout evidence are in [the handoff](session_learnings_2026-09-08.md).
 
 - **Era-pure fits vs mixed-era betas**: the mined beta blends pump eras (the
   Nov 2025 MPM-64 event was the PRIOR pump); event fits are era-pure. Ambers
@@ -293,9 +293,9 @@ PYTHONPATH=. venv/Scripts/python.exe scripts/mpm64_ken_decompose.py
   investigate the configs (probably IPR/geometry inconsistency).
 - **Young eras (post-JPCO wave)**: 7 M-Pad wells refuse until ~2 weeks of
   daily history accumulates; the fallback single-point match covers levels.
-- **psu_minimize criterion**: mach_crit is a calibratable closure over a
-  homogeneous Mach-1 criterion that is known-conservative; if fits keep
-  wanting mach_crit at bounds, the criterion itself is next (upstream PR).
+- **Entry criterion resolved 2026-09-08**: one reachable energy limit replaced
+  the inconsistent Mach walks. Independent field pressure-response validation
+  remains necessary; fitting a Mach multiplier is no longer an option.
 - **Grand-plan pillars not yet built**: decision -> outcome loop (pillar 5);
   scorecard does not yet auto-refresh or persist history.
 

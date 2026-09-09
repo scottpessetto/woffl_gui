@@ -1,6 +1,9 @@
 # Pad optimization redesign — one formulation (2026-09-02)
 
-Decisions taken with Scott on 2026-09-02, following the 2026-09-01 review (§8):
+Decisions taken with Scott on 2026-09-02, following the 2026-09-01 review (§8).
+For the September 8 save/fit/run workflow, see [the user guide](optimization_user_guide.md)
+and [handoff](session_learnings_2026-09-08.md). Later fixes preserve the priced
+formulation while distinguishing installed hardware from clean replacements.
 
 | Decision | Choice |
 |---|---|
@@ -12,8 +15,14 @@ Decisions taken with Scott on 2026-09-02, following the 2026-09-01 review (§8):
 ## 1. The problem every engine solves
 
 For a pad with wells `w`, each with converged candidate pumps `k` (a pump is a
-(nozzle, throat) pair with modeled `oil_wk` BOPD and `water_wk` BPD of the water
+(nozzle, throat, pump_state) choice with modeled `oil_wk` BOPD and `water_wk` BPD of the water
 stream the pad's machines handle):
+
+For application runs, a same-size installed pump and clean replacement are
+distinct choices. The installed fit must match the current tracker installation
+and physics version. All replacements use reference losses and catalog area;
+future wells do not inherit donor pump losses. This identity is preserved in
+both allocators and fixed-scenario lookup. See [pump scope](pump_calibration_scope_2026-09-08.md).
 
 ```
 maximize   Σ_w Σ_k x_wk · (oil_wk − λ · water_wk)

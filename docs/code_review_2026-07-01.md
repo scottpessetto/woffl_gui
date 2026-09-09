@@ -1,5 +1,7 @@
 # Codebase Review — 2026-07-01
 
+> **Documentation status, 2026-09-08:** Historical review/design record. Retain its dated reasoning and measurements; verify any proposed action against current code. Streamlit was deleted, shared entry energy/fluid v2 is implemented, and pump fits now require installation/model scope. The [documentation index](README.md) and [September 8 handoff](session_learnings_2026-09-08.md) define current behavior and remaining work.
+
 > **STATUS (2026-07-06, orchestrated fix run):** The P1/P2/R backlog below is
 > now closed in the working tree. Fixed this run: P1-8/9/10 (physics
 > robustness, upstream-tagged), P1-14/15/16/17/19/20 + P1-13's safe half (GUI

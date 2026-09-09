@@ -1,5 +1,7 @@
 # Fleet watercut sensitivity — 2026-09-08
 
+> **Documentation status, 2026-09-08:** Frozen experiment on the earlier fleet inputs, preserved without rerunning. A [fixed-GOR WC panel](wc_uncertainty_gui_2026-09-08.md) was subsequently added to Solver; correlated uncertainty, WC fitting and robust optimization remain proposals. Later pump-scoped hydration does not retroactively change these results. See the [handoff](session_learnings_2026-09-08.md).
+
 This is an offline sensitivity experiment on the same 35 wells in the fleet comparison. It is not a new accuracy score or a calibration. All 35 unperturbed replays reproduced the source success/failure status; successful BHP, oil and PF outputs matched within 1e-8 in their original units. No warehouse reads, saved input changes or application changes were required.
 
 ![WC scenario ranges](fleet_watercut_sensitivity_2026-09-08.png)

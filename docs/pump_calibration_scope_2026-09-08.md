@@ -4,6 +4,10 @@ The Solver now saves well inputs independently from fitted jet-pump properties.
 The user requested this after the MPE-42 / 13C fit: an improved BHP match must
 not silently characterize every replacement pump as having the same fitted losses.
 
+This is the implementation contract. See [the user workflow](optimization_user_guide.md)
+and [session handoff](session_learnings_2026-09-08.md) for the wider physics/WC
+decisions, field evidence and deployment status.
+
 ## Using it
 
 1. **Save well inputs**, under IPR Anchor, saves the IPR anchor, reservoir pressure,
@@ -41,6 +45,10 @@ before calling the comment writer, which otherwise truncates long human notes.
 Coefficient precision is preserved; diagnostic metrics are rounded for storage.
 A failed write does not claim success or evict caches.
 
+The fresh-source callable is `datasources._jp_history_databricks.cache_refresh()`;
+`jp_history` is an undecorated wrapper and has no such method. Save validation
+must not accept the spreadsheet fallback as fresh installation evidence.
+
 Compact record keys: `v` schema version, `n/t` catalog nozzle/throat, `i` installation
 timestamp, `m` physics model, `k` ordered `[ken,kth,kdi,fnz]`, and `q` quality.
 Quality retains BHP/PF/delta-BHP RMS, point count, parameter bounds and modeled/
@@ -57,6 +65,12 @@ numeric rows remain in history but are not automatically activated, because they
 do not establish installation identity. Refit/re-save them through the new action.
 The older low-level numeric save API remains for compatibility; the web well-save
 endpoint no longer forwards pump coefficients.
+
+Context refreshes propagate saved fit metadata into the frontend. A changed
+installation resets old pump coefficients even when the catalog size is the
+same. Unrelated well edits remain; an explicitly applied unsaved fit is not
+silently replaced while its installation remains valid. Pad readiness also
+checks current verified scope instead of treating legacy numeric rows as a fit.
 
 ## Optimization behavior
 

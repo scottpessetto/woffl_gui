@@ -3,14 +3,22 @@
 Operating rules for coding agents in this repo. Read this before touching anything.
 Prose lives in `docs/`; this file is only the rules you will otherwise violate.
 
+Start future sessions with [the 2026-09-08 handoff](docs/session_learnings_2026-09-08.md)
+and [the documentation index](docs/README.md). The workspace root is one level
+above this Git repository. Run commands here, not in `C:\dev\woffl_gui`.
+Respect the user's decision to stay on **Medium** compute and proceed with
+already-authorized work without repeatedly asking permission. Do not infer a
+deployment or production-data change from passing local checks.
+
 The evidence/calibration subsystem (suction-response evidence layer, multi-point
-event calibration, `mach_crit`/`nozzle_area_factor`, match-health scorecard,
+event calibration, installed-pump coefficients, match-health scorecard,
 response diagnostic) is documented in `docs/model_trust_2026-08-10.md` - read it
 before touching `server/services/evidence.py`, `calibration_points.py`,
 `event_calibration.py`, `fric_calibration.py`'s multipoint block, or the
 choke-plan evidence gates in `pad_optimize.py`. Tuning knobs and the live
 validation harnesses (`scripts/*_validation.py`, `scripts/*_probe.py`) are
-inventoried there.
+inventoried there. Also read [pump calibration scope](docs/pump_calibration_scope_2026-09-08.md)
+before changing persistence, hydration, sizing candidates or pump selection.
 
 ---
 
@@ -24,9 +32,8 @@ jet-pump oil wells (Milne Point Unit), plus a React SPA + FastAPI web app on top
 - Deployed as a **Databricks App**: `app.yaml` → `uvicorn server.main:app` (React SPA
   served from `web/dist`). The Streamlit app it replaced was deleted 2026-08-18.
   Service principal `2013fc45-c30e-40ac-bef0-df0a758faa3c`; SQL warehouse `698745db7da46ba3`.
-- `README.md` is the **upstream library README** and is stale for this fork. It documents no
-  GUI, no Databricks, no pads — and it references `from woffl.geometry import Annulus`, which
-  does not exist (`geometry/__init__.py:9-11` exports `JetPump, Pipe, PipeInPipe, WellProfile`).
+- `README.md` covers this fork's app setup and links the current guides, followed
+  by library examples. The annulus class is `PipeInPipe`, not `Annulus`.
 
 Version lives in two places kept in sync by bumpver: `pyproject.toml:13` and
 `woffl/__init__.py`. Never edit one alone. No release/tagging process is documented;
@@ -38,26 +45,38 @@ summary. Black/isort are not enforced. Also verify locally before handing off.
 
 ## 2. Commands
 
-The venv is Python 3.13.7 / pytest 9.0.3 (the package floor is `>=3.10`).
+The verified local venv is Python 3.13.7 / pytest 9.0.3. The library metadata
+floor is `>=3.10`; the pinned **application** dependencies require `>=3.11`.
 
-```bash
+```powershell
 # Full suite — this exact invocation. PYTHONPATH=. is mandatory: tests/ is a package
 # and files do `from tests.asm_helper import make_well`.
-WOFFL_MAX_WORKERS=1 PYTHONPATH=. ./venv/Scripts/python.exe -m pytest tests/ -q
+$env:WOFFL_MAX_WORKERS = '1'
+$env:PYTHONPATH = '.'
+.\venv\Scripts\python.exe -m pytest tests/ -q
 
-# Opt-in tests that hit the real well-properties source
-... -m pytest tests/ -q --run-live
+# Frontend checks (from web/)
+Set-Location web
+node --test tests/*.test.mjs
+npm run build
+Set-Location ..
 
-# Run the app
-uvicorn server.main:app --port 8000        # API + the built SPA
-cd web && npm run dev                       # Vite dev server, proxies /api to :8000
+# API + the built SPA; for Vite iteration see web/README.md
+.\venv\Scripts\python.exe -m uvicorn server.main:app --port 8000
 ```
 
 Formatting is **black + isort** (`pyproject.toml:36`), by convention only — nothing enforces it.
+Black was not installed in the local venv at this handoff; do not claim it ran.
+Use explicit UTF-8 for file edits. PowerShell piping can replace non-ASCII
+literals in Python scripts; prefer `apply_patch` or ASCII scripts with Unicode
+escapes, rather than line-slicing/reconstructing source through the shell.
 
 (`tests/test_joint_match_sweep.py` was deleted; the old `--deselect` of it is a no-op and was dropped from the command on 2026-09-02.)
 
-Green baseline: **1,809 passed** (2026-09-08 fluid follow-up; previously 1,667 on 2026-09-02).
+Latest recorded green baseline: **1,861 Python tests and 8 frontend tests passed**
+(2026-09-08 installed-pump scope), plus the TypeScript/Vite production build.
+Earlier counts in dated reports are milestones, not the current baseline.
+Live tests are opt-in (`--run-live`); ordinary verification stays offline.
 If a solopump test — especially `TestMarginalConvergence` — goes red after
 an upstream merge, a local solver patch was dropped (§4).
 
@@ -65,11 +84,12 @@ an upstream merge, a local solver patch was dropped (§4).
 
 ## 3. DANGER — production Databricks writes
 
-There is **one** write path in the entire codebase and it targets a **live production
-Unity Catalog table**. There is no staging table and no dry-run mode.
+There is **one gated SQL write executor**, targeting live production tables.
+There is no staging table or database dry-run mode.
 
 ```
-gui  ->  prop_hist_client.push_prop()  ->  databricks_client.execute_write()  ->  mpu.wells.prop_hist
+server / ipr_anchor -> prop_hist_client.push_prop(s) -> execute_write -> mpu.wells.prop_hist
+server / ipr_anchor -> prop_hist_client.push_eng_comment -> execute_write -> mpu.wells.woffl_eng_comment
 ```
 
 Guards, in order:
@@ -99,15 +119,16 @@ environment explicitly**; `.env` cannot do it for you. Do not "restore" `load_do
 - Set `ALLOW_DATABRICKS_WRITES` in a shell, test, or conftest to make something pass.
 - Remove the `monkeypatch.delenv` / `os.environ.pop` cleanups in
   `test_databricks_client.py:328,418`, `test_ipr_anchor_pin.py:22-28`,
-  `test_prop_hist_client.py:70-71`, `test_step_review_wells_pin.py:57-58`.
-- Run `push_prop` / `sync_pad` / `save_ipr_values` against a real connection "to verify".
+  `test_prop_hist_client.py` and other write-contract fixtures.
+- Run `push_prop(s)` / `push_eng_comment` / `save_ipr_values` / `pump_calibration.save_fit`
+  against a real connection "to verify".
 - Add `UPDATE`/`DELETE`/`MERGE`/DDL, an `execute_update` sibling, or a second connect path.
   `prop_hist` is **append-only**: corrections are new rows; "unset" is a row with SQL `NULL`.
 - Un-pin with a negative sentinel — `wt_uid` is signed (≈ −3.6M..+3.1M). Write `NULL`.
 
 Write functions to treat as live: `ipr_anchor.pin_ipr_anchor` / `clear_ipr_pin` /
-`save_ipr_values` / `set_prop_lock`, `review_persistence.sync_pad` (runs on **every pad-page
-rerun**), `workflow_steps/step_review_wells._maybe_pin_saved_ipr`.
+`save_ipr_values` / `set_prop_lock`, and `server.services.pump_calibration.save_fit`.
+The old Streamlit review-persistence modules were deleted; do not resurrect them.
 A multi-prop save goes out as ONE statement through `prop_hist_client.push_props`, not a
 loop of `push_prop` (the loop cost 6-9 serialized Delta commits and hung the Save button
 for seconds; measured 2026-08-08). It shares `push_prop`'s validator, so every row is
@@ -115,8 +136,9 @@ still whitelist- and as-built-checked BEFORE anything is sent. Do not reintroduc
 per-prop loop, and keep every bind marker numbered - a repeated parameter name is a
 connector-behaviour bet on the one path that cannot be smoke-tested live.
 The FastAPI server (`server/`) rides the SAME gate through the same functions: a local
-`uvicorn` run with `.env` present writes REAL prop_hist rows via `POST
-/api/wells/{name}/save-ipr`, `DELETE .../ipr-pin`, and `POST .../prop-lock`
+`uvicorn` run with an explicitly enabled shell gate writes REAL rows via `POST
+/api/wells/{name}/save-ipr`, `DELETE .../ipr-pin`, `POST .../prop-lock`, and
+`POST .../pump-calibration`
 (docs/web_port.md "Write safety").
 
 Reads (`execute_query`, `fetch_*`, `load_saved_ipr`) are SELECT-only and need no gate.
@@ -125,7 +147,7 @@ Reads (`execute_query`, `fetch_*`, `load_saved_ipr`) are SELECT-only and need no
 
 Other env vars: `WOFFL_MAX_WORKERS` (unset: 1 when deployed, `min(cores, 8)` locally —
 spawn workers re-import the whole app stack, an uncapped default OOMs; explicit values
-always clamped to cpu count by `scotts_tools/_common.worker_ceiling()`; `app.yaml`
+always clamped to cpu count by `woffl.assembly.parallelism.worker_ceiling()`; `app.yaml`
 pins **2** for the 2-vCPU tier — do not raise it unless the tier changes),
 `WOFFL_ENTRY_USER` (overrides attribution),
 `WOFFL_WARM_INTERVAL_SEC` / `WOFFL_WARM_WORKERS` / `WOFFL_WARM_WELLS`
@@ -143,6 +165,15 @@ the code default's five - and each pass warms the fleet's history with
 Never spawn a pool with a hardcoded `max_workers` — always pass `worker_ceiling()`.
 Never delete the `BrokenProcessPool` → serial fallback in `network_optimizer.py:399`.
 
+Medium performance is a standing cost constraint: one uvicorn process, two
+process workers, one heavy background job (`WOFFL_MAX_JOBS=1`), native threads
+limited to one, and the 12-hour warm cadence. Reuse `server.pool` and its shared
+CPU tokens. Response caching is exact and bounded (64 MiB serialized payload,
+1,024 entries, one-hour TTL); its key includes the complete WellConfig, pump
+grid, pressure, survey contents and physics-source hash. Reallocate for changed
+budgets/prices. Never reuse an allocation merely because its physics was cached.
+Local synthetic timings are not hosted latency measurements.
+
 ---
 
 ## 4. The upstream boundary
@@ -157,13 +188,15 @@ inside `woffl/assembly/` are fork-only Databricks glue, not upstream physics.
 
 Editing a shared-library file requires **all three**:
 1. Tag the site `# [LIBRARY change -> upstream PR to kwellis/woffl]`.
-   `grep -rn "upstream PR" woffl/` finds all ~50 existing tags.
-2. Record it in `docs/upstream_sync.md` (15 patches inventoried there).
+   `rg -n "upstream PR" woffl/` finds the existing tags.
+2. Record it in `docs/upstream_sync.md` (numbered through **43** on 2026-09-08).
 3. Guard it with a **named regression test** — every documented patch has a `Guarded by:` line.
 
-House style for library patches: **additive, explicitly gated, bit-identical** — a well that
-already converged must return the same `psu`/oil after your change. Fallbacks run only *after*
-the existing path fails.
+For robustness/performance patches, preserve already-converging answers;
+fallbacks run only after the existing path fails. Intentional physics corrections
+(such as entry-energy-v2) require documented before/after deltas, independent
+physical checks and a model-version change when saved fits become incompatible.
+Do not freeze a known incorrect answer just to preserve a regression number.
 
 Merging upstream: into a branch, never straight onto a release branch. Conflicts concentrate in
 `solopump.py` and `jetflow.py`. If `TestMarginalConvergence` (or any solopump test) goes red,
@@ -237,14 +270,14 @@ was inverted against the code and cited a deleted module - corrected 2026-09-01.
 
 The Streamlit app was **DELETED 2026-08-18**. `woffl/gui/` no longer holds any
 page, tab, sidebar or session-state code, `streamlit` is not a dependency, and
-nothing in the tree may import it. What survives under `woffl/gui/` is 16
+nothing in the tree may import it. What survives under `woffl/gui/` is a set of
 Streamlit-free modules the FastAPI server depends on: the pad/CFP plants and
 optimizers (`pad_plant_base`, `{s,i,m}_pad_plant`, `e_pad_plant`,
 `cfp_pad_plant`, `pad_optimize`, `cfp_moves`, `cfp_optimize`),
 `e_pad_booster` (the E-Pad booster candidate screen's physics — MPU pump data
 + `woffl/jp_data` loader; `e_pad_plant` is the thin `PadPlant` face on it, so
 the physics has ONE home), `params` (the RATE CONVENTION), `ipr_anchor`,
-`fric_calibration`, `pump_identity`, and `memory_gauge` (parse + apply only).
+`fric_calibration`, `gaugeless_match`, `pump_identity`, and `memory_gauge` (parse + apply only).
 They are fork-only and keep the `gui` package name purely to avoid churn; new
 server-facing helpers belong in `server/` or `woffl/assembly/`.
 
@@ -290,6 +323,42 @@ parts you will otherwise violate:
 - Nothing zoom-tracked may use custom-series `renderItem` (it does not re-render on
   dataZoom with `filterMode: "none"`); use markArea/markLine carriers like HistoryStrip.
 
+### Well inputs, installed pumps and WC bounds
+
+- **Save well inputs** saves supported IPR/fluid inputs, never ken/kth/kdi/fnz
+  or a fitted Mach parameter. PF pressure remains a live/run input. As-built
+  hardware identity comes from the tracker, not a property-save payload.
+- **Calibrate to field data** uses saved well inputs plus in-era history/tests.
+  Save edited well inputs before refitting. **Apply to inputs** is a session
+  preview; **Save installed-pump calibration** is a separate action using a
+  completed server job ID. Never trust client-supplied coefficients or quality.
+- A saved pump fit is active only for the same well, nozzle, throat, exact
+  tracker Date Set and physics-model version, with Databricks provenance.
+  Same-size changeouts invalidate it. Missing/stale/legacy scope falls back
+  visibly to reference coefficients; never silently migrate numeric friction rows.
+- The compact `pump_calibration_v1` record in `woffl_eng_comment` must fit the
+  500-character limit **before** calling the human-comment writer (which truncates).
+  Preserve coefficient precision and commit identity/quality/coefs atomically.
+  Refresh `datasources._jp_history_databricks.cache_refresh()` on save; the
+  `jp_history` wrapper itself has no `cache_refresh`. Failures do not evict caches.
+- Application WellConfig opts into `pump_calibration_scoped`. Carry `pump_state`
+  through sizing, lookup, allocations, fixed scenarios, reports and UI keys.
+  Keep-installed and clean-same-size are distinct candidates. Every replacement
+  uses ken=.03, kth=.30, kdi=.40, fnz=1.0. Only installed hardware retains a fit.
+  Future wells borrow donor well inputs without donor fitted pump properties.
+- A closer level match is not proof of wear or a reliable pressure response.
+  Preserve BHP/PF/delta-BHP RMS, bound hits, measured/model beta and provisional
+  labels. The MPE-42 fit had 76 psi BHP RMS, 61.5% PF RMS and a railed ken despite
+  its improved single-test comparison. A 1% fitted area change does not identify wear.
+- WC uncertainty is a collapsed sensitivity panel, default +/-5 **percentage
+  points**. Hold the total-liquid IPR anchor fixed; keep GOR fixed in the GUI.
+  Fresh PVT per sample; include interior samples in extrema. Hide stale results,
+  expose failed samples, and withhold the base result when its solve fails.
+  It neither saves/fits inputs nor supplies statistical confidence bounds or
+  uncertainty-aware optimization. See [the GUI contract](docs/wc_uncertainty_gui_2026-09-08.md).
+- Keep the removed yellow fluid-property/critical-Mach transition banner out of
+  Topbar. The user explicitly requested its removal; scoped fit warnings remain.
+
 ---
 
 ## 7. Testing
@@ -318,6 +387,17 @@ monkeypatched — no Databricks, no network. Cache-bearing services must be
 cleared between tests (`server.cache.clear_all_caches()`), and anything that
 touches the process pool patches `woffl.assembly.parallelism.worker_ceiling`
 plus `server.pool._EXECUTOR_CLS` (see `tests/test_pf_range_parallel.py`).
+Well context, optimizer hydration and pad readiness now read scoped pump records;
+mock `pump_calibration.snapshot`/`resolve_current` and fresh tracker reads as
+appropriate in each fixture. A mock of old saved-IPR hydration alone is no
+longer enough to keep a test offline.
+
+Optional browser QA is in `tools/check_wc_uncertainty_ui.py` and
+`tools/check_pump_scope_ui.py`, using isolated Playwright under `build/browser-qa`.
+It intercepts production reads/writes and uses fixtures; screenshots do not
+validate field physics. Do not build `web/dist` while a Vite QA session is running
+(reload resets state). Under Vite HMR, import the actual loaded module URL when
+inspecting Zustand; importing a bare URL can create a second store instance.
 
 The old hand-rolled Streamlit patterns (MagicMock `st`, `sys.modules.setdefault`,
 plain-dict `session_state`) are gone with the app — do not reintroduce them.
@@ -326,39 +406,32 @@ plain-dict `session_state`) are gone with the app — do not reintroduce them.
 
 ## 8. Known open debt — do not "rediscover"
 
-Read the two status banners at `docs/code_review_2026-07-01.md:3-27` for current state; the
-table in `review_status_2026-07-06.md` is the **pre-fix** snapshot and will mislead you.
+The [dated handoff](docs/session_learnings_2026-09-08.md) is the current queue.
+Older review reports and workspace plans are historical evidence, not a live
+backlog. Verify a finding against current code before reviving it; several
+formerly listed page splits and review-store paths disappeared with Streamlit.
 
-Those two files are dated point-in-time review artifacts and still cite a `CLAUDE.md` that never
-existed — left as written on purpose. Every *live* reference in `woffl/`, `tests/`, `tools/`, and
-`docs/upstream_sync.md` now points at this file.
+Resolved: FLOW-4's contradictory Mach energy walks, independent PF density
+(P1-13), water PVT and low-GOR compression, pinned vendored app dependencies
+(P2-1), Medium scheduling/cache fixes, WC sensitivity UI and installed-pump scope.
+Do not reintroduce the retired Mach fit or constant-water model.
 
-Resolved 2026-09-08: **P1-13** now carries independent PF density, including plant
-SG defaults; **P2-1** removes PyPI `woffl` and unused `databricks-sdk`, pins runtime
-dependencies, and verifies a clean import. See `docs/fluid_followup_2026-09-08.md`.
-
-Still open:
-- **R-1** — the three pad pages are ~75–80% triplicated across ~2,900 lines.
-- **R-2..R-5** — file splits: `header_impact.py` (3,257 lines), `jetpump_solver.py` (2,783),
-  `well_sort.py`, `utils.py`, `batch_run.py`, `pdf_export.py`. Use the Python cutter pattern,
-  **not** PowerShell line-slicing (mojibake lesson).
-- Dead out-of-range check in `wellprofile._depth_interp` (`is False` on a numpy bool);
-  orphaned `databricks_client.get_tags_for_wells`; zero-caller `WellTestProcessor`,
-  `assembly/calibration.py` (+ `NetworkOptimizer.set_calibration`), `pf_calibration.robust_bracket`,
-  `cfp_optimize.run_joint_optimization`. (The "unguarded tag-list f-string" note is obsolete -
-  that path no longer exists.) Full inventory: `docs/code_review_2026-09-01.md` §5.
-- External asks (`docs/prop_hist_asks.md`): `manual_well_tests` table, NULL un-pin confirmation,
-  MODIFY on `woffl_active`.
-- `pwf` auto-match seed is clamped to (100, 2500) psi; PF surface pressure floats freely.
-- **Stale comment, actively misleading:** `pad_page.py:1594-1596` says the review store is
-  autosaved to `mpu.wells.woffl_review_store`. No such table exists anywhere in the code —
-  `sync_pad` writes `mpu.wells.prop_hist`. `woffl_active` / `woffl_review_store` appear only in
-  that comment and in `docs/prop_hist_asks.md` ask (f), which is undelivered.
-- Independent copies of the `ALLOW_DATABRICKS_WRITES` truthy check exist —
-  `databricks_client.py` (`_write_gate_enabled`), `ipr_anchor.py`, `server/config.py`
-  (`writes_enabled`), and the same shape for the delete gate in `prop_hist_client`. The
-  `ipr_anchor` copy is deliberate (the UI must hide controls before attempting a push); keep
-  them in sync if you touch the semantics.
+Remaining as of this handoff:
+- Deploy/measure the September 8 changes on Databricks Medium; local builds and
+  synthetic timings do not establish hosted deployment or performance.
+- Refit/re-save legacy calibrations against verified current installations.
+  This session changed no production property records.
+- Reconcile fleet outliers (PF allocation, gauge datum, circulation, IPR and
+  contemporaneous WC/GOR). Then validate pressure response on independent events.
+  The frozen 35-well audit predates scoped-fit hydration and is retrospective.
+- Measurement-informed WC ranges, correlated WC/GOR/IPR uncertainty, and robust
+  low/base/high optimization remain proposals. The GUI currently provides only
+  fixed-GOR sensitivity, not calibration or optimization bounds.
+- Fluid approximations remain: SG-scaled pure water rather than brine chemistry,
+  bulk PF column, isothermal PVT, empirical oil/acoustic correlations. Numerical
+  consistency tests are necessary but do not settle field-model accuracy.
+- Historical external schema asks in `docs/prop_hist_asks.md` require checking
+  their present status before acting; scoped pump saves need no new schema/grant.
 
 Settled decisions — do not relitigate:
 - Water-pump mode is keyed on the explicit `ResMix(model_as_water=True)` flag, **never** on
@@ -408,5 +481,5 @@ Settled decisions — do not relitigate:
 | prop_hist / prop_xref | `mpu.wells` tables: append-only per-well property history + the valid-`prop_id` whitelist |
 | ipr_wt_uid | prop_hist key pinning a well's chosen IPR anchor well-test; SQL NULL = un-pinned |
 | enthid | Well entity id, FK into `vw_well_header` |
-| review store | Per-pad persisted well-review state (`well_review_store.py`) feeding the pad optimizer |
-| bit-identical | The acceptance bar for a library patch: the already-working path returns exactly the same numbers |
+| pump scope | Installed hardware identity = well + nozzle + throat + exact Date Set + physics model; a same-size clean replacement is a separate candidate |
+| bit-identical | Required for unchanged physics paths in robustness/performance work; intentional model corrections have documented prediction deltas |

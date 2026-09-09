@@ -1,5 +1,7 @@
 # Fleet model actuality — 2026-09-08
 
+> **Documentation status, 2026-09-08:** Frozen retrospective audit captured before [installed-pump scope](pump_calibration_scope_2026-09-08.md) changed hydration. "Current" and "today" below refer to the recorded snapshot. The 12-query count and all statistics belong to that capture; they are not a fresh scoped-fit audit. See the [handoff](session_learnings_2026-09-08.md) for current behavior and follow-up priorities.
+
 Databricks access worked. The audit captured current inputs and observations in **12 bulk SELECT queries**, then ran offline with **two workers**. No calibration was refitted or saved, and no production data or deployment was changed.
 
 The model currently reproduces BHP unevenly across the fleet: **85.6 psi median absolute error** on 34 solved latest tests, with **1 failed solve**. PF and oil median absolute percentage errors are **4.6%** and **20.0%**, respectively.

@@ -1,5 +1,7 @@
 # S-Pad Joint Oil + Power-Fluid Auto-Match
 
+> **Documentation status, 2026-09-08:** Historical review/design record. Retain its dated reasoning and measurements; verify any proposed action against current code. Streamlit was deleted, shared entry energy/fluid v2 is implemented, and pump fits now require installation/model scope. The [documentation index](README.md) and [September 8 handoff](session_learnings_2026-09-08.md) define current behavior and remaining work.
+
 **Built overnight 2026-06-15 → 16. All verified OFFLINE (synthetic + 543-test
 suite). Real-well validation is the first thing to do at 7am — see "Verify at
 7am" below. Nothing committed yet.**

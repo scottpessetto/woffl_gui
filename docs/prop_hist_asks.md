@@ -1,5 +1,7 @@
 # WOFFL GUI prop_hist Persistence — Asks for Kaelin
 
+> **Documentation status, 2026-09-08:** Historical schema/access correspondence, not a fresh grant audit or instructions to send a message. The existing `woffl_eng_comment` ledger now also stores scoped pump fits; [the current implementation](pump_calibration_scope_2026-09-08.md) needs no new table or property IDs. Request-local identity is already threaded through FastAPI. See the [handoff](session_learnings_2026-09-08.md) before reviving an old ask or live-write checklist.
+
 **From:** Scott Pessetto, WOFFL GUI  
 **To:** Kaelin Ellis (mpu.wells owner, DART author)  
 **Date:** 2026-07-07  

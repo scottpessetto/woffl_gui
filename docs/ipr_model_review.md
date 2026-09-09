@@ -1,5 +1,7 @@
 # Is Vogel the right IPR for these wells, and what else is there
 
+> **Documentation status, 2026-09-08:** Historical review/design record. Retain its dated reasoning and measurements; verify any proposed action against current code. Streamlit was deleted, shared entry energy/fluid v2 is implemented, and pump fits now require installation/model scope. The [documentation index](README.md) and [September 8 handoff](session_learnings_2026-09-08.md) define current behavior and remaining work.
+
 2026-08-08. Question from Scott: if Vogel really is not fitting, are there better
 options in the literature, especially for modeling jet pumps.
 

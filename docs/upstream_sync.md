@@ -5,6 +5,12 @@ This repo (`github.com/scottpessetto/woffl_gui`) is a **fork** of the upstream
 alone, but the four **library** packages — `woffl/pvt/`, `woffl/geometry/`,
 `woffl/flow/`, `woffl/assembly/` — are shared with upstream and published to PyPI.
 
+Current through **patch 43, 2026-09-08**. Later entries supersede earlier designs
+where noted: shared entry energy replaces the Mach adjustment, v2 updates fluid
+properties, and scoped pump candidates keep fitted losses off replacements.
+Read [the current handoff](session_learnings_2026-09-08.md) before applying an
+older entry in isolation. Latest recorded suite: 1,861 Python / 8 frontend tests.
+
 We carry a few **local patches inside the library** that are **not yet
 upstreamed**. When the upstream owner ships changes and we sync them in, those
 patches must survive the merge. This file is the authoritative record so they
@@ -12,7 +18,7 @@ can't be silently overwritten — and the regression tests below are the tripwir
 if one ever is.
 
 > Every patch site is tagged `# [LIBRARY change -> upstream PR to kwellis/woffl]`
-> in the code. `grep -rn "upstream PR" woffl/` finds them all.
+> in the code. `rg -n "upstream PR" woffl/` finds them all.
 
 ---
 
@@ -950,11 +956,10 @@ than assume the merge "restored" something we need):
 ---
 
 ## NOT upstream — safe to change freely
-The joint oil + power-fluid auto-match (`woffl/gui/joint_match.py`), its per-well
-**🎯 Auto-match oil + PF** button, the batch core, and everything else under
-`woffl/gui/` are **GUI** — ours, never upstreamed. The bulk of the auto-match work
-lives there; only the solver + PVT files above (`solopump.py`, `jetflow.py`,
-`resmix.py`) touch the shared library.
+`server/`, `web/` and the retained helpers under `woffl/gui/` are fork-only.
+The old Streamlit pages and `joint_match.py` were deleted; current fitting uses
+`fric_calibration.py`, `gaugeless_match.py` and the server calibration services.
+Fork-only Databricks glue under assembly is identified in [AGENTS.md](../AGENTS.md).
 
 ---
 
@@ -970,7 +975,8 @@ lives there; only the solver + PVT files above (`solopump.py`, `jetflow.py`,
    If `TestMarginalConvergence` (or any solopump test) **goes red**, an upstream
    merge dropped or altered a local solver fix — re-apply it from this file / git
    history before shipping. **The tests are the safety net: a silently-lost patch
-   turns red.** (Baseline: the suite is fully green — 563 tests as of 2026-06-29.)
+   turns red.** Use the current baseline/commands in [AGENTS.md](../AGENTS.md),
+   including the frontend checks when application contracts change.
 4. **See the full divergence set** any time:
    ```bash
    git diff <upstream-remote>/main -- woffl/pvt woffl/geometry woffl/flow woffl/assembly
@@ -981,11 +987,11 @@ lives there; only the solver + PVT files above (`solopump.py`, `jetflow.py`,
 ---
 
 ## The real fix
-Get these two patches **merged upstream** — your buddy owns `kwellis/woffl`. Once
-they land there, the divergence (and this whole risk) disappears: the next sync
-just brings them back as upstream code. This file + the regression tests give him
-everything he needs to review and accept them. Until then, treat #1 and #2 as
-**load-bearing local patches** and never let a sync clobber them.
+Review the current divergence for an upstream contribution, keeping solver
+robustness, intentional physics corrections and opt-in application behavior
+explicit. The early [PR draft](upstream_pr_draft.md) covers only the original
+fallbacks, not the full register. Do not assume any patch landed upstream without
+checking the upstream revision; retain the named regressions through every merge.
 
 
 ## 43. Installed-pump calibration and clean replacement identity (2026-09-08)

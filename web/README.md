@@ -1,7 +1,9 @@
 # WOFFL web frontend
 
 React 19 + TypeScript SPA (Vite, Tailwind v4, TanStack Query, Zustand, ECharts).
-The backend is `server/` (FastAPI) which imports the woffl physics unchanged.
+The backend is `server/` (FastAPI), importing this repository's vendored physics.
+Current behavior and verification are in the [session handoff](../docs/session_learnings_2026-09-08.md)
+and [documentation index](../docs/README.md).
 
 ## Develop
 
@@ -13,7 +15,7 @@ Two terminals from the repo root:
 
 # 2. SPA on :5173, /api proxied to :8000
 cd web
-npm install
+npm ci
 npm run dev
 ```
 
@@ -22,9 +24,37 @@ npm run dev
 ```bash
 cd web
 npm run build        # typechecks (tsc -b) then emits web/dist
+node --test tests/*.test.mjs  # polling + pump-scope store contracts
 ```
 
-`web/dist` is served by FastAPI in production (same origin, no CORS).
+`web/dist` is served by FastAPI in production (same origin, no CORS), and is
+committed for Databricks deployment. The latest recorded baseline is 8 frontend
+tests and a successful production build on September 8; that does not deploy it.
+
+## Solver state and calibration
+
+- **Save well inputs** and **Save installed-pump calibration** are separate.
+  Well saves exclude pump losses/area. Pump saves submit a completed server job
+  ID; installation/model identity and quality are verified on the server.
+- `params.ts` owns installed/replacement state. Size edits and explicit clean
+  selection reset all four pump coefficients to reference values. Same-size
+  replacement is distinct from keeping installed hardware. Context refreshes
+  invalidate old installation scope while preserving unrelated well edits.
+- Event calibration uses saved well inputs; the UI tells the user to save
+  edits before refitting. Apply previews a fit; optimization uses the saved fit.
+- WC uncertainty uses the current effective params, debounces 400 ms and caches
+  full requests for 30 minutes. Immediately hide stale output on input changes;
+  never use previous results as the new bounds. Report failed samples. It is a
+  sensitivity panel, not a save/fit/optimizer action or confidence interval.
+- Preserve provisional/railed/response diagnostics. Keep the removed global
+  yellow physics-transition banner out of Topbar.
+
+Optional browser harnesses are `tools/check_wc_uncertainty_ui.py` and
+`tools/check_pump_scope_ui.py`, using isolated Playwright in `build/browser-qa`.
+They use fixtures and intercept saves; no production writes are needed. Do not
+run `npm run build` during Vite browser QA because reload can reset the scenario.
+When inspecting Zustand under HMR, import the actual loaded module URL (including
+its timestamp) to avoid creating a second store. See the harness source for setup.
 
 ## Conventions
 
@@ -35,9 +65,9 @@ npm run build        # typechecks (tsc -b) then emits web/dist
 - Simulation inputs live in one Zustand store (`src/state/params.ts`). Well
   selection triggers a server-side seeding replay (`GET /wells/{name}/context`)
   and `applyContext` lays the seeds over defaults exactly once per selection.
-- Vogel math in `src/lib/vogel.ts` is a line-for-line mirror of
-  `woffl/gui/vogel.py` so IPR curves redraw client-side with zero latency.
-  Keep them in lockstep.
+- Vogel math in `src/lib/vogel.ts` follows `woffl/flow/inflow.py`, so IPR curves
+  redraw client-side without a solve request. Keep the math and total-liquid/oil
+  conversion consistent; there is no current `woffl/gui/vogel.py`.
 - Server-state caching (the snappiness contract - don't regress it):
   `main.tsx` sets a 60 s default `staleTime`; expensive stable reads pin
   their own windows (`MIN_30`, or `Infinity` + `gcTime` for snapshot-keyed

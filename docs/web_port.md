@@ -1,9 +1,10 @@
 # WOFFL web port (React + FastAPI)
 
-Status: v1 shipped 2026-08; CUT OVER to production 2026-08-06 - the root
-`app.yaml` now runs this app. The Streamlit config is preserved in
-`app-streamlit.yaml` for rollback; the Streamlit GUI still runs locally for
-the flows not yet ported.
+Current architecture, updated 2026-09-08: React/FastAPI replaced the hosted
+Streamlit app on August 6. Streamlit and `app-streamlit.yaml` were deleted on
+August 18; rollback uses a known-good Git revision. The root `app.yaml` runs
+this app on **Medium**. September 8 changes were verified locally but were not
+deployed in that session. See [the handoff](session_learnings_2026-09-08.md).
 
 ## Why this architecture
 
@@ -21,7 +22,9 @@ Python and does not move. So:
 - **Backend = thin FastAPI** (`server/`) importing the existing assembly
   clients and solver wrappers. Databricks Apps' own reference pattern
   (React + FastAPI) and its default env includes fastapi/uvicorn.
-- One process, one runtime on the 2 vCPU tier. uvicorn binds via
+- One uvicorn process plus a shared two-worker compute pool on Medium. Native
+  math threads are capped at one; one heavy background job runs at a time.
+  uvicorn binds via
   UVICORN_HOST/UVICORN_PORT which the Apps runtime sets automatically.
 
 ## What died with Streamlit
@@ -33,7 +36,7 @@ Python and does not move. So:
 - Whole-script reruns: auto-solve is a debounced (400 ms) POST /api/solve
   keyed by a stable params hash, cached client-side (instant back/forward).
 
-## API surface (v1)
+## Main API surface
 
 All under `/api` (OpenAPI at `/api/docs`). Contract: `server/schemas.py`
 mirrored by `web/src/api/types.ts`.
@@ -48,15 +51,18 @@ mirrored by `web/src/api/types.ts`.
 | GET /wells/{name}/depth | MD <-> TVD along the survey by minimum curvature (SPE 84246); exactly one of `md`/`tvd`, returns every MD crossing a TVD plus hole angle and DLS |
 | GET /wells/{name}/jp-history | installs + extended tests + daily BHP |
 | GET /wells/{name}/ipr-pin | saved anchor pin status |
-| POST /wells/{name}/save-ipr | WRITE: pin the anchor test + save the sidebar's IPR/fluid values (+ calibrated friction) to prop_hist |
+| POST /wells/{name}/save-ipr | WRITE: pin the anchor test + save supported IPR/fluid values to prop_hist; excludes pump coefficients |
+| POST /wells/{name}/pump-calibration | WRITE: save a completed server event-calibration job against the freshly verified installation/model, including quality |
 | DELETE /wells/{name}/ipr-pin | WRITE: un-pin (appends the cleared-marker row) |
 | POST /wells/{name}/prop-lock | WRITE: toggle a WC/GOR/ResP field lock (locking pins the sent value in the same click) |
 | POST /solve | single solve -> psu, qoil_std, fwat, qnz, mach, sonic |
+| POST /solve/wc-uncertainty | sampled fixed-GOR WC sensitivity of oil and BHP; read-only, with failures disclosed |
 | POST /ipr/fit | Vogel fit (recent / median / specific anchor) + seeds |
 | POST /batch | nozzle x throat sweep + recommender + exp fit curve |
 | POST /pf-range | oil vs PF-pressure sweep |
 | POST /pressure-profile | surface -> suction traverse, both strings |
-| POST /calibrate | BHP friction calibration: fit ken/kth/kdi to the test's measured BHP (Nelder-Mead multi-start in woffl.gui.fric_calibration; as-built geometry never varied; result applied to the sidebar, saved only via Save-as-default) |
+| POST /calibrate | single-point BHP friction fit for session preview; well-input saves do not persist it |
+| POST /optimize/event-calibration | installed-pump history fit using saved well inputs; returns a server job ID for polling, preview and separate pump save |
 | GET /optimize/pad-status | Optimization pad board: per-well saved-fit readiness (+ donor wells for planned future wells) |
 | POST /optimize/run | start an S/I/M pad or CFP optimization run as a background job over saved fits (engines: woffl.gui.pad_optimize / cfp_moves - the Streamlit pages' own compute cores) |
 | GET /optimize/run/{job_id} | poll a run job: status, live progress, result |
@@ -69,6 +75,7 @@ mirrored by `web/src/api/types.ts`.
 | GET /well-sort/bench.xlsx | 3-sheet MPU_Well_Bench workbook |
 | POST /well-sort/refresh | clears the Well Sort fetch caches (read-only op) |
 | GET /meta/warmup | fleet cache warmup progress (passes, per-well counts, failures) |
+| GET /meta/performance | bounded local timing/SQL/queue/cache diagnostics; no warehouse query |
 | POST /gauge/parse | memory-gauge XLSX parse + multi-file combine (stateless; client holds gauge state per session, math in woffl.gui.memory_gauge) |
 | GET /tools/sep-oil-loss | Separator Oil Loss: oil leaving with the first-stage water leg, as a bounded band (see below) |
 | POST /tools/sep-oil-loss/samples | operator OIW grab-sample XLSX parse -> daily sampled loss overlay (stateless; page holds it, see below) |
@@ -215,36 +222,52 @@ here:
 
 ## Write safety
 
-The server has exactly THREE write endpoints - the Solver's "Save as well
-default", its un-pin, and the sidebar's WC/GOR/ResP lock toggles (ported
-2026-08-06). All replicate the Streamlit gate chain in full:
+Well-input saves, un-pins, WC/GOR/ResP locks and installed-pump saves all use
+the existing gated executor. The targets are append-only `mpu.wells.prop_hist`
+and `mpu.wells.woffl_eng_comment`; structured pump fits use context
+`pump_calibration_v1` in the latter. See [scope and atomicity](pump_calibration_scope_2026-09-08.md).
 
-1. Router pre-check: `writes_enabled()` off -> 403, and the UI hides the
-   save controls entirely on `/api/meta.writes_enabled` (the read-only
-   badge shows instead).
-2. All mechanics go through `woffl.gui.ipr_anchor.pin_ipr_anchor` /
-   `save_ipr_values` / `clear_ipr_pin` - the SAME functions the Streamlit
-   button calls - so the rules can never diverge: `push_prop` re-checks the
-   gate, enforces the prop_xref whitelist, and REJECTS as-built physical
-   properties outright (`AS_BUILT_PROP_IDS`); WC caps at 0.99; friction
-   coefficients ride along only when calibrated (never materialized
-   defaults); one batch stamp per save with the engineer comment joined on
-   it; prop_hist stays append-only.
-3. Attribution: `server/identity.py` binds X-Forwarded-Email per request
-   into a ContextVar consumed by `resolve_entry_user`'s provider hook - the
-   FastAPI equivalent of the Streamlit `set_entry_user_provider`
-   registration. Without the header (local dev) it falls back to the SQL
-   session's `current_user()`.
+1. Router and SQL-executor gate checks reject writes when disabled. The UI
+   reflects `/api/meta.writes_enabled`; the pump-save button is disabled with
+   a read-only explanation. `.env` may supply credentials but cannot enable
+   `ALLOW_DATABRICKS_WRITES` or `ALLOW_PROP_HIST_DELETE`.
+2. `push_props` batches well properties into one parameterized INSERT with a
+   shared timestamp. The whitelist and as-built exclusions remain. Well saves
+   omit pump coefficients. Engineer notes use the same timestamp; a pump fit is
+   a separate self-contained record whose identity/quality/coefs commit together.
+3. `server/identity.py` binds X-Forwarded-Email per request into a ContextVar
+   consumed by `resolve_entry_user`. Without the header, SQL `current_user()`
+   supplies the fallback identity. Do not turn a request identity into a shared
+   process-global user override.
 
-The root `app.yaml` sets ALLOW_DATABRICKS_WRITES=true; the app's service
-principal has held MODIFY on mpu.wells.prop_hist since 2026-07-30 (same app
-as the Streamlit era - no new grants). The .env local-write landmine
-(AGENTS.md section 3) now applies to this app too: local runs with the .env
-gate on write REAL rows. Contract tests: tests/test_web_save_ipr.py.
-`sync_pad` (pad review) remains unported; `execute_write` is reachable only
-through `push_prop`.
+`app.yaml` already enables the hosted write gate. Local shell gates must stay
+off for ordinary verification; use mocks/intercepted browser requests instead
+of sample production saves. No new schema or gate was added for pump scope.
+The write contract is tested in `test_web_save_ipr.py` and
+`test_pump_calibration_scope.py`; there is no current Streamlit `sync_pad` path.
 
-## v1 scope
+## September 8 behavior
+
+[Save well inputs and installed-pump fits separately](optimization_user_guide.md).
+Calibration uses saved well inputs plus in-era history; Apply is a preview.
+Hydration activates only exact installation/model matches. Clean replacement
+candidates, including the same catalog size, use reference losses and area.
+The same identity survives pad/CFP allocations and fixed-scenario scoring.
+
+The collapsed [WC sensitivity card](wc_uncertainty_gui_2026-09-08.md) keeps GOR
+and the liquid IPR anchor fixed, shows failed-sample coverage and hides stale
+results immediately. It does not save or recalibrate, and does not add robust
+optimization. The global yellow model-transition banner was removed by request.
+
+Persistent workers, bounded exact response caching and shared CPU tokens are
+described in [Medium performance](medium_performance_2026-09-07.md). The deployment
+warm interval remains 12 hours; the six-hour value discussed above is the code
+default. Source-keyed physics caches include the scoped-pump configuration.
+
+## Port history and v1 scope
+
+This section records earlier port milestones. The API, write and September 8
+sections above supersede old button names and saved-friction assumptions below.
 
 Complete: app shell (collapsible auto-hide sidebar, '[' shortcut, overlay on
 narrow screens, localStorage persistence, wide layout), well selection +
@@ -501,8 +524,10 @@ COMMITTED because Databricks Apps never runs npm.
 2. Push, then pull the repo in the workspace Git folder.
 3. App page -> Deploy (source path unchanged).
 
-Rollback: copy `app-streamlit.yaml` over `app.yaml` (or `git revert` the
-cutover commit), pull, Deploy.
+Rollback: select a known-good Git revision including its matching `web/dist`,
+update the workspace source and redeploy. `app-streamlit.yaml` no longer exists.
+Preserve Medium and the pinned dependencies. The Windows deployment-import
+smoke is not a hosted Linux release check; measure the deployed app separately.
 
 For a throwaway test instance beside prod, `scripts/stage_web_app.py` stages
 a minimal tree for `databricks sync` + `databricks apps deploy` under a

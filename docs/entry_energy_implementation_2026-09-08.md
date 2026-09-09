@@ -1,5 +1,7 @@
 # Shared throat-entry energy balance — 2026-09-08
 
+> **Documentation status, 2026-09-08:** Frozen v1 implementation milestone. Later [fluid v2](fluid_followup_2026-09-08.md) changed properties; [pump scope](pump_calibration_scope_2026-09-08.md) replaced legacy friction hydration and combined saves. The global transition banner described below was later removed by request. Original validation numbers remain v1 results; see the [handoff](session_learnings_2026-09-08.md).
+
 Historical v1 record. The subsequent [fluid follow-up](fluid_followup_2026-09-08.md)
 documents v2 property changes, new prediction deltas and separate field holdouts.
 

@@ -1,5 +1,7 @@
 # Review Status Update — 2026-07-06
 
+> **Documentation status, 2026-09-08:** Historical review/design record. Retain its dated reasoning and measurements; verify any proposed action against current code. Streamlit was deleted, shared entry energy/fluid v2 is implemented, and pump fits now require installation/model scope. The [documentation index](README.md) and [September 8 handoff](session_learnings_2026-09-08.md) define current behavior and remaining work.
+
 Re-verification of P1 findings from `docs/code_review_2026-07-01.md` (work item W0
 of the orchestrated fix run). Line numbers below are current as of this sweep;
 the original report's line numbers are ~5 days stale. Several files were being

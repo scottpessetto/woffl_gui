@@ -1,5 +1,7 @@
 # Fluid and validation follow-up — 2026-09-08
 
+> **Documentation status, 2026-09-08:** V2 implementation/holdout milestone. Test counts and timings below are from that stage. Later work added the WC GUI and [installed-pump scope](pump_calibration_scope_2026-09-08.md); the [handoff](session_learnings_2026-09-08.md) records the final 1,861 Python / 8 frontend baseline and remaining deployment work.
+
 Implemented locally as **entry-energy-v2**. This completes the code changes
 identified after the shared-energy work: independent PF density, low-GOR oil
 compression, pressure/temperature-dependent water, separate field holdouts,
@@ -49,7 +51,9 @@ fallback chain and Vogel inflow convention remain in use.
 than labelling swept flow as psi, including skipped trials with no available
 header. Calibration reports BHP *fit RMS error* and *estimated nozzle area*;
 it no longer presents RMS as an error bound or fitted area as proven wear.
-The API and transition notice identify v2; older fits need review.
+The API identifies v2. The transition notice was subsequently removed at the
+user's request; installation-specific fit-quality warnings remain. Legacy fits
+now require [verified pump scope](pump_calibration_scope_2026-09-08.md).
 
 **Deployment uses the vendored physics.** Removed the PyPI `woffl` copy and
 unused `databricks-sdk`. Direct runtime dependencies and their resolved

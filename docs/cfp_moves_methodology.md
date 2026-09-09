@@ -56,6 +56,14 @@ point shutting things in is pure oil loss (the kink from `cfp_tradeoff`).
 
 ## 2. The decision variables
 
+**2026-09-08 update:** response surfaces distinguish keeping installed hardware
+from a clean replacement, even of the same size. An installed option such as
+`13C` keeps only a verified installation/model-scoped fit; `13C (clean)` uses
+reference losses and catalog area. Fixed-current baselines select installed
+performance, and future wells borrow donor well inputs without fitted pump
+properties. This does not change the measured-anchor delta formulation. See
+[pump scope](pump_calibration_scope_2026-09-08.md) and [the current handoff](session_learnings_2026-09-08.md).
+
 Each CFP-fed well `w` (pads B/G/J responsive to discharge; C-Pad wells carry
 water but hold their own boosted PF) picks one option:
 

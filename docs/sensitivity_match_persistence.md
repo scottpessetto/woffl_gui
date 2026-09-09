@@ -1,5 +1,7 @@
 # Applying and saving a sensitivity permutation
 
+> **Documentation status, 2026-09-08:** Historical August analysis and shipped changes. The current [save/run workflow](optimization_user_guide.md) separates well saves from [installed-pump calibration](pump_calibration_scope_2026-09-08.md): ken/kth/kdi/fnz no longer ride with well inputs. Changed bubble point/formation temperature remain supported; PF pressure remains live/unpersisted. Do not implement the declined PF-pressure schema proposal or deleted Streamlit review paths from this record.
+
 Written 2026-08-08 for Scott. Everything below was measured against the live
 warehouse (reads only) or driven in the running app; every claim carries a
 file:line or an observed number.

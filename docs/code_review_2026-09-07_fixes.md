@@ -1,5 +1,7 @@
 # Review fixes — 2026-09-07
 
+> **Documentation status, 2026-09-08:** Historical first-fix record. The later [entry-energy correction](entry_energy_implementation_2026-09-08.md) retires fitted Mach, and [pump scope](pump_calibration_scope_2026-09-08.md) replaces timestamp-only wear hydration with exact installation/model binding. Clean replacements reset all four pump coefficients, including the same size. Original results/counts below are preserved; see the [handoff](session_learnings_2026-09-08.md).
+
 Implemented R01–R11 and O01–O02 from [the review](code_review_2026-09-07.md).
 The earlier optimization fixes are also retained. Changes are local; nothing
 has been deployed and no production properties have been written.

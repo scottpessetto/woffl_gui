@@ -1,5 +1,7 @@
 # Critical-Mach investigation and resolution options — 2026-09-08
 
+> **Documentation status, 2026-09-08:** The shared-energy option was selected and implemented, followed by fluid v2. This investigation is retained as evidence of the former inconsistency, not an unresolved choice. Current state and calibration migration are in the [handoff](session_learnings_2026-09-08.md).
+
 **Follow-up:** the shared unscaled balance has now been implemented. This
 file records the pre-change investigation; see
 [the implementation and validation record](entry_energy_implementation_2026-09-08.md)

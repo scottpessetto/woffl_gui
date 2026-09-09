@@ -1,5 +1,7 @@
 # Code and physics review — 2026-09-07
 
+> **Documentation status, 2026-09-08:** Historical review. The subsequent [fix record](code_review_2026-09-07_fixes.md), shared-energy/fluid corrections and installed-pump scope supersede pre-fix findings. Use the [September 8 handoff](session_learnings_2026-09-08.md) for the current queue and verified baseline; this report is not a new code audit.
+
 **Follow-up:** R01–R11 and O01–O02 have now been fixed in the working tree.
 See [implementation and validation](code_review_2026-09-07_fixes.md).
 The review observations below describe the pre-fix state; the separate older

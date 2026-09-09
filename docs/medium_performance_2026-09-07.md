@@ -1,5 +1,7 @@
 # Medium performance changes — 2026-09-07
 
+> **Documentation status, 2026-09-08:** Implementation and benchmark milestone. FLOW-4 and constant-water limitations listed below were subsequently addressed by [shared entry energy](entry_energy_implementation_2026-09-08.md) and [fluid v2](fluid_followup_2026-09-08.md). The original counts/timings are preserved. Medium remains the cost constraint; the [handoff](session_learnings_2026-09-08.md) records the final baseline and outstanding hosted measurements.
+
 Medium compute is retained. Deployment still uses two process workers and one
 uvicorn process. These changes are implemented locally; deployment has not run.
 
