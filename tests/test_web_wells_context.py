@@ -70,6 +70,19 @@ def test_legacy_friction_is_reported_but_not_inherited(context):
     assert ctx["seeds"]["mach_crit"] == 1.
 
 
+def test_saved_hydraulics_hydrates_sidebar_and_optimizer_from_same_context(context, monkeypatch):
+    from server.services import pump_calibration, optimizer_runs
+    _, run = context
+    monkeypatch.setattr(pump_calibration, "resolve", lambda *a, **kw: {
+        "status": "active", "hydraulics_model": "drift_flux", "quality": {},
+        "coefficients": {"ken": .06, "kth": .35, "kdi": .3, "nozzle_area_factor": 1.02},
+    })
+    ctx = run()
+    assert ctx["seeds"]["hydraulics_model"] == "drift_flux"
+    cfg = optimizer_runs._config_from_seeds("MPB-28", "B", ctx["seeds"])
+    assert cfg.hydraulics_model == "drift_flux" and cfg.ken_well == .06
+
+
 def test_invalid_legacy_coefficients_cannot_poison_hydration(context):
     saved, run = context
     saved["MPB-28"] = _saved({"nozzle_area_factor": 2.5, "mach_crit": 9.0})
@@ -83,3 +96,12 @@ def test_unfitted_well_uses_explicit_reference_coefficients(context):
     assert ctx["pump_calibration"]["status"] == "none"
     for key, value in CLEAN_PUMP.items():
         assert ctx["seeds"][key] == value
+
+
+@pytest.mark.parametrize("stamp", ["2026-08-10T00:00:00", "2026-08-10T15:30:00"])
+def test_context_keeps_exact_installation_timestamp(context, monkeypatch, stamp):
+    _, run = context
+    frame = pd.DataFrame([{"Well Name": "MPB-28", "Date Set": pd.Timestamp(stamp),
+                           "Nozzle Number": 12, "Throat Ratio": "B", "Tubing Diameter": 4.5}])
+    monkeypatch.setattr(wells_svc.datasources, "jp_history_safe", lambda: (frame, "databricks"))
+    assert run()["pump"]["date_set"] == stamp + "+00:00"

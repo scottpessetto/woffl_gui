@@ -12,7 +12,7 @@
 
 import { create } from "zustand";
 
-import type { PropLock, SimParams, WellContext } from "../api/types";
+import type { HydraulicsModel, PropLock, SimParams, WellContext } from "../api/types";
 import { DEFAULT_PARAMS, PARAM_BOUNDS } from "../api/types";
 
 export interface AsBuiltLocks {
@@ -73,12 +73,18 @@ export function mergeClamped(base: SimParams, partial: Partial<SimParams>): SimP
 
 export const CLEAN_PUMP = { ken: 0.03, kth: 0.3, kdi: 0.4, nozzle_area_factor: 1.0 };
 
+function savedPumpCoefficients(ctx: WellContext | null, model: HydraulicsModel) {
+  const fit = ctx?.pump_calibration;
+  return fit?.status === "active" && (fit.hydraulics_model ?? "beggs") === model ? fit.coefficients : {};
+}
+
 /** Hardware changes cannot carry the previous pump's fitted losses. */
 function hardwareEdit(base: SimParams, partial: Partial<SimParams>): SimParams {
   const next = mergeClamped(base, partial);
   if (next.nozzle_no !== base.nozzle_no || next.area_ratio !== base.area_ratio || next.pump_state === "replacement") {
     return { ...next, ...CLEAN_PUMP, pump_state: "replacement" };
   }
+  if (next.hydraulics_model !== base.hydraulics_model) return { ...next, ...CLEAN_PUMP };
   return next;
 }
 
@@ -120,7 +126,7 @@ interface ParamsState {
   setMany: (partial: Partial<SimParams>) => void;
   refreshPumpContext: (ctx: WellContext) => void;
   useInstalledPump: () => void;
-  applyPumpFit: (result: { well: string; pump: string | null; era_start: string | null; installation_date_set?: string | null }, coefficients: Partial<SimParams>) => void;
+  applyPumpFit: (result: { well: string; pump: string | null; era_start: string | null; installation_date_set?: string | null; hydraulics_model?: HydraulicsModel }, coefficients: Partial<SimParams>) => void;
   setWindow: (months: number, cap: number) => void;
   selectWell: (name: string) => void;
   applyContext: (ctx: WellContext) => void;
@@ -168,23 +174,25 @@ export const useParamsStore = create<ParamsState>((set) => ({
     })),
 
   refreshPumpContext: (ctx) => set((s) => {
-    if (ctx.well !== s.well || !s.context) return s;
+    if (ctx.well !== s.well || !s.context || s.context === ctx) return s;
     const before = s.context.pump;
     const after = ctx.pump;
     const wasSaved = (Object.keys(CLEAN_PUMP) as Array<keyof typeof CLEAN_PUMP>).every(
-      (k) => s.params[k] === (s.context?.pump_calibration?.coefficients[k] ?? CLEAN_PUMP[k]));
+      (k) => s.params[k] === (savedPumpCoefficients(s.context, s.params.hydraulics_model)[k] ?? CLEAN_PUMP[k]));
     const followSaved = s.params.pump_state !== "replacement" && wasSaved;
     const changed = before?.date_set !== after?.date_set || before?.nozzle_no !== after?.nozzle_no || before?.throat_ratio !== after?.throat_ratio;
     return {
-      context: { ...s.context, pump: after, pump_calibration: ctx.pump_calibration },
-      ...((changed || followSaved) ? { params: { ...s.params, ...CLEAN_PUMP, ...ctx.pump_calibration?.coefficients,
+      // Refresh saved baselines/provenance after a save without reseeding or
+      // erasing edits made while the request was running.
+      context: ctx,
+      ...((changed || followSaved) ? { params: { ...s.params, ...CLEAN_PUMP, ...savedPumpCoefficients(ctx, s.params.hydraulics_model),
         nozzle_no: after?.nozzle_no ?? s.params.nozzle_no, area_ratio: after?.throat_ratio ?? s.params.area_ratio,
         pump_state: "installed" as const } } : {}),
     };
   }),
 
   useInstalledPump: () => set((s) => ({ params: {
-    ...s.params, ...CLEAN_PUMP, ...s.context?.pump_calibration?.coefficients,
+    ...s.params, ...CLEAN_PUMP, ...savedPumpCoefficients(s.context, s.params.hydraulics_model),
     nozzle_no: s.context?.pump?.nozzle_no ?? s.params.nozzle_no,
     area_ratio: s.context?.pump?.throat_ratio ?? s.params.area_ratio,
     pump_state: "installed",
@@ -192,6 +200,7 @@ export const useParamsStore = create<ParamsState>((set) => ({
 
   applyPumpFit: (result, coefficients) => set((s) => {
     const pump = s.context?.pump;
+    if ((result.hydraulics_model ?? "beggs") !== s.params.hydraulics_model) return s;
     if (s.well !== result.well || !pump?.date_set || pump.source !== "databricks" ||
         `${pump.nozzle_no}${pump.throat_ratio}` !== result.pump ||
         new Date(pump.date_set).getTime() !== new Date(result.installation_date_set ?? result.era_start ?? "").getTime()) return s;

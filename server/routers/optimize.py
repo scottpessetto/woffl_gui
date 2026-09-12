@@ -67,7 +67,7 @@ def start_event_calibration(req: schemas.EventCalibrationRequest) -> Any:
     saved fit, gather every measured operating point in the current pump
     era and fit (ken, kth, kdi, fnz) against all of them at
     once. Read-only compute; poll GET /optimize/run/{job_id}."""
-    return {"job_id": event_calibration.start_event_calibration(req.well)}
+    return {"job_id": event_calibration.start_event_calibration(req.well, req.hydraulics_model)}
 
 
 @router.get("/run/{job_id}", response_model=schemas.OptimizeJobStatus)

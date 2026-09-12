@@ -51,6 +51,7 @@ def _check_row(well: str, **overrides):
 def _ev(**overrides):
     ev = {
         "floor": 380.0,
+        "floor_source": "era",
         "psu_ref": 450.0,
         "beta": 0.01,
         "beta_source": "well",
@@ -66,7 +67,7 @@ def _assemble_one(check_row, cfg, ev, prov=None, last_test=None):
     evidence = {check_row["well"]: ev} if ev is not None else None
     rows = mh.assemble_rows(
         [check_row],
-        prov or {},
+        prov if prov is not None else {check_row["well"]: {"ipr_source": "saved", "ipr_r2": 0.93}},
         evidence,
         [cfg],
         last_test or {},
@@ -106,7 +107,8 @@ def test_row_carries_every_column():
     assert row["ken"] == 0.05 and row["kth"] == 0.30 and row["kdi"] == 0.30
     assert not (row["ken_railed"] or row["kth_railed"] or row["kdi_railed"])
     assert row["last_test_date"] == "2026-08-01"
-    assert row["verdict"] == "ok"  # violation 20 <= 25 confirms the model
+    assert row["verdict"] == "ok"  # no flags, not a validation certificate
+    assert row["missing_evidence"] == []
 
 
 def test_floor_violation_needs_both_sides():
@@ -173,7 +175,7 @@ def test_responsive_beta_needs_well_source_and_sonic_model():
         _cfg("W1"),
         _ev(floor=380.0, beta=0.077, beta_source="pad"),
     )
-    assert row["verdict"] == "ok"
+    assert row["verdict"] == "unknown"
     # Model not sonic-pinned -> nothing to falsify.
     row = _assemble_one(
         _check_row("W1", sonic=False),
@@ -204,10 +206,11 @@ def test_weak_fit_verdict():
     assert row["verdict"] == "weak-fit"
 
 
-def test_missing_r2_is_not_weak():
+def test_missing_r2_is_unknown():
     prov = {"W1": {"ipr_source": "defaults", "ipr_r2": None, "has_friction": False}}
     row = _assemble_one(_check_row("W1"), _cfg("W1"), _ev(), prov=prov)
-    assert row["verdict"] == "ok"
+    assert row["verdict"] == "unknown"
+    assert "inflow-fit quality" in row["missing_evidence"]
 
 
 def test_verdict_precedence_contradicted_beats_railed_beats_weak():
@@ -284,7 +287,31 @@ def test_rows_survive_missing_evidence():
     assert row["beta"] is None
     assert row["beta_source"] is None
     assert row["n_pairs"] is None
-    assert row["verdict"] == "ok"
+    assert row["verdict"] == "unknown"
+
+
+def test_empty_row_is_unknown():
+    assert mh._verdict({}) == "unknown"
+
+
+@pytest.mark.parametrize("value", [None, float("nan"), float("inf"), -float("inf")])
+def test_invalid_model_result_is_unknown(value):
+    row = _assemble_one(_check_row("W1", model_psu=value), _cfg("W1"), _ev())
+    assert row["verdict"] == "unknown"
+    assert row["model_psu"] is None
+
+
+@pytest.mark.parametrize("quantity,ratio", [("oil", 0.5), ("pf", 2.0), ("oil", 0.0)])
+def test_known_rate_mismatch_survives_missing_pressure_evidence(quantity, ratio):
+    row = _assemble_one(_check_row("W1", **{f"{quantity}_ratio": ratio}), _cfg("W1"), None)
+    assert row["verdict"] == "poor-match"
+    assert row["missing_evidence"]
+
+
+def test_old_installation_floor_does_not_complete_current_screen():
+    row = _assemble_one(_check_row("W1"), _cfg("W1"), _ev(floor_source="prior_era"))
+    assert row["verdict"] == "unknown"
+    assert "current-installation BHP floor" in row["missing_evidence"]
 
 
 # ---------------------------------------------------------------------------

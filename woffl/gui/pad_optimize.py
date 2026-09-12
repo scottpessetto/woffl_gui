@@ -15,10 +15,9 @@ monkeypatch the source modules.
 Coupling dispatch (``plant.coupling``):
 
 * ``fixed_curve`` (S-Pad) — the delivered header is a CURVE of total flow.
-  ``run_optimization`` damp-iterates the optimizer against it to a fixed
-  point: warm start on the curve at 60% of capacity, relax 0.6, tol 10 psi,
-  max 8 iterations, every trial header clamped into ``plant.clamp_window``.
-  Progress callback: ``(iter, max_iter, trial_psi, total_pf, curve_psi)``.
+  ``run_optimization`` sweeps flow budgets to generate pump selections,
+  settles each distinct selection against its actual draw, then ranks the
+  qualified plans. Progress: ``(step, budget, header, total_pf, total_oil)``.
 * ``free_pressure`` (I/M-Pad) — the header is a DECISION VARIABLE bounded by
   a capability frontier. ``run_optimization`` sweeps ``n_steps`` candidate
   pressures across ``plant.pressure_window``, hands the optimizer
@@ -63,6 +62,7 @@ from_pump, to_pump, oil_given_up, pf_saved}`` dicts).
 from __future__ import annotations
 
 from copy import copy
+from math import isfinite
 from typing import Any, Callable, Iterable, Optional
 
 from woffl.gui.pad_plant_base import PadPlant
@@ -244,6 +244,124 @@ def _settle_scenario_coupling(
 # ---------------------------------------------------------------------------
 
 
+def _settle_curve_selection(well_configs, plant, n_pumps, results, header, *, tol_psi):
+    """Qualify one fixed selection against its actual station draw.
+
+    Only the selected sizes are re-simulated, grouped by size through the
+    existing bounded batch runner. No knapsack, substitutions, test-rate
+    fallback or per-well throttling occurs here. A discontinuity or failed
+    selected pump cannot be certified by shrinking a pressure bracket.
+    """
+    from woffl.assembly.network_optimizer import NetworkOptimizer, OptimizationResult, PowerFluidConstraint
+    from woffl.assembly.parallelism import worker_ceiling
+
+    history = []
+    water_key = getattr(plant, "water_key", "lift_wat") or "lift_wat"
+    water_attr = "predicted_lift_water" if water_key == "lift_wat" else "predicted_total_water"
+    cap = plant.flow_window(n_pumps)[1]
+    lo_p, hi_p = plant.clamp_window(n_pumps)
+    selected = {r.well_name: r for r in results}
+    groups = {}
+    for wc in well_configs:
+        r = selected.get(wc.well_name)
+        if r is not None:
+            groups.setdefault((r.recommended_nozzle, r.recommended_throat), []).append(wc)
+
+    def record(p, rows):
+        water = sum(getattr(r, water_attr) for r in rows)
+        delivered = plant.header_at_flow(water, n_pumps)
+        residual = delivered - p if delivered is not None else None
+        history.append({"iter": len(history) + 1, "trial_psi": p,
+                        "total_pf_bpd": sum(r.predicted_lift_water for r in rows),
+                        "curve_psi": delivered})
+        return {"P": p, "results": rows, "curve_header_psi": delivered,
+                "coupling_residual_psi": residual, "history": history,
+                "converged": False, "coupling_error": None}
+
+    def evaluate(p):
+        rows = []
+        for (nozzle, throat), wells in groups.items():
+            configs = [copy(wc) for wc in wells]
+            for wc in configs:
+                wc.ppf_surf_well = p
+            opt = NetworkOptimizer(configs,
+                PowerFluidConstraint(total_rate=cap, pressure=p, rho_pf=power_fluid_density(plant)),
+                [nozzle], [throat], marginal_watercut=_SCENARIO_MARGINAL_WC)
+            opt.run_all_batch_simulations(max_workers=worker_ceiling())
+            for wc in configs:
+                original = selected[wc.well_name]
+                state = getattr(original, "pump_state", None)
+                choice = (nozzle, throat) + ((state,) if state is not None else ())
+                perf = _pump_perf(opt, wc.well_name, choice)
+                if perf is None:
+                    return None, f"{wc.well_name} selected pump does not solve at {p:.1f} psi"
+                if any(not isfinite(float(perf[k])) for k in
+                       ("oil_rate", "lift_water", "formation_water", "suction_pressure")):
+                    return None, f"{wc.well_name} selected pump returned non-finite performance"
+                if perf["lift_water"] <= 0 or perf["oil_rate"] < 0 or perf["formation_water"] < 0:
+                    return None, f"{wc.well_name} selected pump returned invalid rates"
+                r = OptimizationResult(
+                    well_name=wc.well_name, recommended_nozzle=nozzle, recommended_throat=throat,
+                    predicted_oil_rate=perf["oil_rate"], allocated_power_fluid=perf["lift_water"],
+                    predicted_lift_water=perf["lift_water"], predicted_formation_water=perf["formation_water"],
+                    suction_pressure=perf["suction_pressure"], sonic_status=perf["sonic_status"],
+                    mach_te=perf["mach_te"], pump_state=state,
+                    marginal_oil_rate=perf.get(
+                        "marginal_oil_lift_water" if water_key == "lift_wat" else "marginal_oil_total_water", 0.0))
+                rows.append(r)
+        return record(p, rows), None
+
+    current = record(header, results)
+
+    def acceptable(rec):
+        residual = rec["coupling_residual_psi"]
+        water = sum(getattr(r, water_attr) for r in rec["results"])
+        return residual is not None and isfinite(residual) and abs(residual) <= tol_psi and water <= cap + 1e-6
+
+    if acceptable(current):
+        current["converged"] = True
+        return current
+    g = current["coupling_residual_psi"]
+    if g is None or not isfinite(g):
+        current["coupling_error"] = "station cannot deliver selected flow"
+        return current
+    # The search point is a solved lower or upper bracket. This avoids
+    # requiring the selected pumps to lift at an unrelated low-pressure bound.
+    station_edge = plant.header_at_flow(0.0 if g > 0 else cap, n_pumps)
+    edge = (min(hi_p, station_edge) if g > 0 else max(lo_p, station_edge)) if station_edge is not None else (hi_p if g > 0 else lo_p)
+    other, error = evaluate(edge)
+    if error:
+        current["coupling_error"] = error
+        return current
+    if acceptable(other):
+        other["converged"] = True
+        return other
+    go = other["coupling_residual_psi"]
+    if go is None or not isfinite(go) or g * go >= 0:
+        current["coupling_error"] = "no station/selected-pump pressure crossing inside the pressure limits"
+        return current
+    a, b = sorted((header, edge))
+    ga = g if a == header else go
+    for _ in range(_SCENARIO_BISECT_STEPS):
+        mid, error = evaluate(0.5 * (a + b))
+        if error:
+            current["coupling_error"] = error
+            return current
+        current = mid
+        if acceptable(current):
+            current["converged"] = True
+            return current
+        gm = current["coupling_residual_psi"]
+        if gm is None or not isfinite(gm):
+            break
+        if ga * gm > 0:
+            a, ga = current["P"], gm
+        else:
+            b = current["P"]
+    current["coupling_error"] = "selected pumps do not close the station pressure balance within tolerance/capacity"
+    return current
+
+
 def run_optimization(
     well_configs: list,
     plant: PadPlant,
@@ -295,13 +413,15 @@ def run_optimization(
 
     ``parsimony_bopd`` is accepted and IGNORED (λ subsumes it: a swap that
     gives up Δoil for Δwater is taken exactly when Δoil/Δwater < λ, and the
-    freed water is re-spent by the same solve). ``max_iter``/``tol_psi``/
-    ``relax`` are accepted for signature compatibility and unused.
+    freed water is re-spent by the same solve). ``max_iter`` and ``relax``
+    are accepted for signature compatibility and unused. For a
+    fixed-curve plant, ``tol_psi`` bounds the actual pressure-balance error
+    when each distinct pump selection is settled and ranked again.
 
     Returns ``(results, optimizer, meta)`` — ``optimizer`` is the winning
     trial's; ``meta`` keeps every key the pages read (``header_psi``,
-    ``total_pf_bpd``, ``total_oil_bopd``, ``converged`` (always True - a
-    sweep has no fixed point to miss), ``history`` ([]), ``sweep``,
+    ``total_pf_bpd``, ``total_oil_bopd``, ``converged``, ``history`` (the
+    winning fixed-curve selection's pressure checks), ``sweep``,
     ``nozzles``, ``throats``, the plant flags, the fixed-curve station extras
     or the free-pressure frontier extras, ``reconciliation``) plus the
     economics: ``lambda_used``, ``lambda_source`` ("manual" | "legacy wc" |
@@ -335,6 +455,9 @@ def run_optimization(
         lam_fixed, lam_source = None, "auto (plant-derived)"
 
     fixed_curve = plant.coupling == "fixed_curve"
+    # Per-run compact results only, bounded by the number of sweep points.
+    # Repeated hardware selections share a settle; no full batch grids retained.
+    coupled_selections = {}
     if fixed_curve:
         lo, hi = plant.flow_window(n_pumps)
     else:
@@ -389,6 +512,18 @@ def run_optimization(
         # (what the label shows); nothing gates on it any more
         opt.marginal_watercut = 1.0 / (1.0 + lam) if lam > 0 else 1.0
         results = optimize(opt, method=method, water_key=water_key)
+        search_header = header
+        search_objective = sum(r.predicted_oil_rate for r in results) - lam * sum(
+            getattr(r, result_water, r.predicted_lift_water) for r in results)
+        coupled = {}
+        if fixed_curve:
+            key = tuple(sorted((r.well_name, r.recommended_nozzle, r.recommended_throat,
+                                getattr(r, "pump_state", None) or "") for r in results))
+            if key not in coupled_selections:
+                coupled_selections[key] = _settle_curve_selection(
+                    well_configs, plant, n_pumps, results, header, tol_psi=tol_psi)
+            coupled = coupled_selections[key]
+            results, header = coupled["results"], coupled["P"]
         total_pf = sum(r.predicted_lift_water for r in results)
         total_water = sum(getattr(r, result_water, r.predicted_lift_water) for r in results)
         total_oil = sum(r.predicted_oil_rate for r in results)
@@ -404,9 +539,18 @@ def run_optimization(
             "pf_slack": slack,
             "results": results,
             "opt": opt,
+            "search_header_psi": search_header,
+            "search_objective": search_objective,
+            "converged": coupled.get("converged", True),
+            "curve_header_psi": coupled.get("curve_header_psi"),
+            "coupling_residual_psi": coupled.get("coupling_residual_psi"),
+            "coupling_error": coupled.get("coupling_error"),
+            "history": coupled.get("history", []),
         }
 
     def _score(rec: dict) -> float:
+        if not rec["converged"]:
+            return float("-inf")
         return rec["objective"] if lam_fixed is not None else rec["total_oil"]
 
     trials: list[dict] = []
@@ -465,6 +609,9 @@ def run_optimization(
 
     trials.sort(key=lambda r: r["x"])
     best = max(trials, key=_score)
+    if not best["converged"]:
+        raise RuntimeError("No selected pump plan closes the booster-station pressure balance. "
+                           + (best["coupling_error"] or "Review the station curve and well models."))
     total_pf, total_oil = best["total_pf"], best["total_oil"]
     lam = best["lam"]
 
@@ -474,8 +621,8 @@ def run_optimization(
         "total_pf_bpd": total_pf,
         "total_machine_water_bpd": best["total_water"],
         "total_oil_bopd": total_oil,
-        "converged": True,
-        "history": [],
+        "converged": best["converged"],
+        "history": best["history"],
         "sweep": [
             {
                 "header_psi": r["P"],
@@ -484,7 +631,9 @@ def run_optimization(
                 "total_oil_bopd": r["total_oil"],
                 "objective_bopd_equiv": r["objective"],
                 "lambda": r["lam"],
-                **({"total_flow_bpd": r["x"]} if fixed_curve else {}),
+                **({"total_flow_bpd": r["x"], "search_header_psi": r["search_header_psi"],
+                    "converged": r["converged"], "coupling_residual_psi": r["coupling_residual_psi"],
+                    "coupling_error": r["coupling_error"]} if fixed_curve else {}),
             }
             for r in trials
         ],
@@ -505,6 +654,12 @@ def run_optimization(
         "parsimony_note": "priced by lambda; the parsimony pass is retired",
     }
     if fixed_curve:
+        meta["curve_header_psi"] = best["curve_header_psi"]
+        meta["coupling_residual_psi"] = best["coupling_residual_psi"]
+        meta["search_header_psi"] = best["search_header_psi"]
+        meta["qualified_selections"] = sum(r["converged"] for r in coupled_selections.values())
+        meta["rejected_selections"] = sum(not r["converged"] for r in coupled_selections.values())
+        meta["search_scope"] = "Best settled selection found by the bounded flow sweep; not a global optimum certificate."
         meta["per_pump_bpd"] = (total_pf / n_pumps) if n_pumps else None
         meta["station_cap_bpd"] = hi
     else:
@@ -529,15 +684,28 @@ def run_optimization(
                 getattr(r, result_water, r.predicted_lift_water) for r in alt
             )
             meta["solver_agreement"] = {
-                "mckp_objective": best["objective"],
+                "header_psi": best["search_header_psi"],
+                "scope": "discrete allocation at the search header",
+                "mckp_objective": best["search_objective"],
                 "milp_objective": alt_obj,
-                "agree": abs(alt_obj - best["objective"]) <= 0.01 * max(1.0, len(alt)) + 1e-6,
+                "agree": abs(alt_obj - best["search_objective"]) <= 0.01 * max(1.0, len(alt)) + 1e-6,
             }
             # leave the optimizer holding the MCKP result the page reports
             best["opt"].optimization_results = best["results"]
         except Exception as exc:  # noqa: BLE001 - the cross-check never fails a run
             meta["solver_agreement"] = {"error": str(exc)}
 
+    if fixed_curve:
+        # Refresh the winning grid once so reconciliation, scenario callers
+        # and all exposed performance refer to the reported solved pressure.
+        opt = best["opt"]
+        if abs(best["P"] - best["search_header_psi"]) > 1e-8:
+            for wc in opt.wells:
+                wc.ppf_surf_well = best["P"]
+            opt.power_fluid.pressure = best["P"]
+            opt.run_all_batch_simulations(max_workers=worker_ceiling())
+        opt.power_fluid.total_rate = hi
+        opt.optimization_results = best["results"]
     meta["reconciliation"] = reconcile_wells(best["opt"], best["results"])
     return best["results"], best["opt"], meta
 
@@ -1349,6 +1517,8 @@ def _trim_to_budget(wells: list[dict], budget: float) -> tuple[float, float, Opt
                 continue  # already shut in
             _, oil_0, pf_0, _ = st["opts"][i]
             _, oil_1, pf_1, _ = st["opts"][i + 1]
+            if pf_0 <= pf_1:
+                continue  # a test-only hold/shut pair may free no water
             slope = (oil_0 - oil_1) / (pf_0 - pf_1)  # staircase: pf_0 > pf_1
             if best is None or slope < best[0]:
                 best = (slope, st)

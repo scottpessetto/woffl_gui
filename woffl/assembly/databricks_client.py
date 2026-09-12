@@ -131,7 +131,7 @@ def _new_connection():
     # in the shell / app environment explicitly; they are never read from
     # .env. Existing environment values still win (same as load_dotenv).
     for key, val in (dotenv_values() or {}).items():
-        if key in _ENV_GATE_KEYS or val is None or key in os.environ:
+        if key.upper() in _ENV_GATE_KEYS or val is None or key in os.environ:
             continue
         os.environ[key] = val
 
@@ -268,8 +268,17 @@ class UnsafeWriteStatementError(DatabricksWriteError):
     """Raised when the SQL text is not a single, unchained INSERT statement."""
 
 
-_INSERT_RE = re.compile(r"(?is)^\s*insert\b")
-_TRAILING_SEMICOLONS_RE = re.compile(r"[\s;]+$")
+# The write executor accepts only the append-only VALUES templates used by
+# prop_hist_client. No SELECT source, overwrite, replacement, or SQL expressions.
+_WRITE_IDENT = r"[A-Za-z_][A-Za-z_0-9]*"
+_WRITE_VALUE = rf"(?::{_WRITE_IDENT}|NULL|[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
+_WRITE_ROW = rf"\(\s*{_WRITE_VALUE}(?:\s*,\s*{_WRITE_VALUE})*\s*\)"
+_INSERT_RE = re.compile(
+    rf"INSERT\s+INTO\s+{_WRITE_IDENT}(?:\.{_WRITE_IDENT})*\s*"
+    rf"(?:\(\s*{_WRITE_IDENT}(?:\s*,\s*{_WRITE_IDENT})*\s*\)\s*)?"
+    rf"VALUES\s*{_WRITE_ROW}(?:\s*,\s*{_WRITE_ROW})*",
+    re.IGNORECASE,
+)
 
 
 def _write_gate_enabled() -> bool:
@@ -291,15 +300,16 @@ def _validate_single_insert(sql: str) -> None:
         )
     # One optional trailing semicolon (plus trailing whitespace) is fine --
     # anything else containing ';' is statement chaining.
-    body = _TRAILING_SEMICOLONS_RE.sub("", sql)
+    body = sql.strip().removesuffix(";").rstrip()
     if ";" in body:
         raise UnsafeWriteStatementError(
             "execute_write rejects statement chaining "
             "(found ';' before the end of the SQL text)."
         )
-    if not _INSERT_RE.match(body):
+    if not _INSERT_RE.fullmatch(body):
         raise UnsafeWriteStatementError(
-            "execute_write only accepts a single INSERT statement."
+            "execute_write only accepts append-only INSERT INTO ... VALUES "
+            "with bound parameters, numbers, or NULL."
         )
 
 
@@ -320,9 +330,9 @@ def execute_write(sql: str, parameters: Optional[dict] = None) -> int:
     - `ALLOW_DATABRICKS_WRITES` is truthy in the environment (checked first,
       before any connection attempt or SQL parsing) -- else raises
       `WritesDisabledError`.
-    - `sql` is a single, unchained INSERT statement (case-insensitive; a
-      lone trailing ';' is fine, anything containing ';' before the end, or
-      not starting with INSERT, is rejected) -- else raises
+    - `sql` is a single append-only INSERT INTO ... VALUES statement with
+      bound parameters, numbers, or NULL (case-insensitive; one trailing ';'
+      is allowed). Overwrites, replacements and expressions are rejected -- raises
       `UnsafeWriteStatementError`.
 
     Values belong in `parameters` (passed straight through to the

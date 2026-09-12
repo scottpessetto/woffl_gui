@@ -148,6 +148,7 @@ def calibrate_one(row_dict: dict) -> dict:
         "LiftWat": row_dict["LiftWat"],
         "BHP": row_dict["BHP"],
         "WHP": row_dict["WHP"],
+        "PfAtTest": row_dict.get("PfAtTest"),
     }
     try:
         wc = _common.build_well_config(

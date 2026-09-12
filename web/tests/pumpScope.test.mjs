@@ -16,11 +16,43 @@ const source = readFileSync(new URL("../src/state/params.ts", import.meta.url), 
 const { useParamsStore: store, CLEAN_PUMP, effectiveParams } = await import(dataModule(source));
 const fit = { ken: .005, kth: .386, kdi: .072, nozzle_area_factor: 1.01 };
 const context = {
-  well: "MPE-42", seeds: { ...fit, nozzle_no: "13", area_ratio: "C", form_wc: .74, qwf: 1521 },
+  well: "MPE-42", seeds: { ...fit, nozzle_no: "13", area_ratio: "C", form_wc: .74, qwf: 1521,
+    pump_state: "installed", hydraulics_model: "beggs" },
   pump: { nozzle_no: "13", throat_ratio: "C", date_set: "2026-08-10", source: "databricks" },
   pump_calibration: { status: "active", coefficients: fit }, as_built_locks: {}, prop_locks: {},
 };
 const reset = () => { store.getState().selectWell(context.well); store.getState().applyContext(context); };
+
+test("changing hydraulics resets coefficients and cannot restore a foreign-model fit", () => {
+  reset();
+  store.getState().set("hydraulics_model", "drift_flux");
+  let p = store.getState().params;
+  assert.equal(p.pump_state, "installed");
+  assert.equal(p.form_wc, .74);
+  assert.equal(p.qwf, 1521);
+  for (const key of Object.keys(CLEAN_PUMP)) assert.equal(p[key], CLEAN_PUMP[key]);
+  store.getState().useInstalledPump();
+  store.getState().refreshPumpContext(context);
+  store.getState().applyPumpFit({ well: context.well, pump: "13C", era_start: "2026-08-10" }, fit);
+  p = store.getState().params;
+  assert.equal(p.hydraulics_model, "drift_flux");
+  for (const key of Object.keys(CLEAN_PUMP)) assert.equal(p[key], CLEAN_PUMP[key]);
+});
+
+test("a matching alternative fit applies and restores after a clean-replacement preview", () => {
+  reset();
+  store.getState().set("hydraulics_model", "hagedorn_brown");
+  store.getState().applyPumpFit({ well: context.well, pump: "13C", era_start: "2026-08-10", hydraulics_model: "hagedorn_brown" }, fit);
+  assert.equal(store.getState().params.ken, fit.ken);
+  store.getState().refreshPumpContext({ ...context, pump_calibration: {
+    status: "active", coefficients: fit, hydraulics_model: "hagedorn_brown",
+  } });
+  store.getState().set("pump_state", "replacement");
+  store.getState().useInstalledPump();
+  assert.equal(store.getState().params.kth, fit.kth);
+  store.getState().setMany({ hydraulics_model: "beggs", ...fit });
+  assert.equal(store.getState().params.kth, CLEAN_PUMP.kth);
+});
 
 test("same-size clean replacement preserves well inputs and restores installed fit", () => {
   reset();
@@ -53,6 +85,28 @@ test("an old or foreign fit cannot apply to the installed pump", () => {
   }
 });
 
+test("exact API installation stamps apply in Anchorage and UTC and reject same-day replacements", () => {
+  const previous = process.env.TZ;
+  try {
+    for (const tz of ["America/Anchorage", "UTC"]) {
+      process.env.TZ = tz;
+      for (const time of ["00:00:00", "15:30:00"]) {
+        reset();
+        const stamp = `2026-08-10T${time}+00:00`;
+        store.getState().refreshPumpContext({ ...context, pump: { ...context.pump, date_set: stamp } });
+        const result = { well: context.well, pump: "13C", era_start: "2026-08-10", installation_date_set: stamp };
+        store.getState().applyPumpFit(result, { ken: .08 });
+        assert.equal(store.getState().params.ken, .08);
+        store.getState().applyPumpFit({ ...result, installation_date_set: "2026-08-10T10:30:00+00:00" }, { ken: .2 });
+        assert.equal(store.getState().params.ken, .08);
+      }
+    }
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+});
+
 test("a same-size installation change clears the old fit without erasing WC edits", () => {
   reset();
   store.getState().set("form_wc", .70);
@@ -73,6 +127,20 @@ test("saving updates the fit available to restore without overwriting session ed
   store.getState().useInstalledPump();
   assert.equal(store.getState().params.kth, .35);
   assert.equal(store.getState().params.form_wc, .70);
+});
+
+test("saved input refresh updates the baseline while preserving edits made during save", () => {
+  reset();
+  store.getState().set("qwf", 1600.25);
+  const saved = { ...context, seeds: { ...context.seeds, qwf: 1600.25 }, ipr_source: "manual" };
+  store.getState().set("qwf", 1700.5); // Another edit after the save was submitted.
+  store.getState().refreshPumpContext(saved);
+  assert.equal(store.getState().context.seeds.qwf, 1600.25);
+  assert.equal(store.getState().context.ipr_source, "manual");
+  assert.equal(store.getState().params.qwf, 1700.5);
+  assert.ok(store.getState().manualFields.has("qwf"));
+  store.getState().refreshPumpContext({ ...saved, well: "MPB-28" });
+  assert.equal(store.getState().context.well, "MPE-42");
 });
 
 

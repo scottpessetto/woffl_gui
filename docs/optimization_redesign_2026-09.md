@@ -5,6 +5,16 @@ For the September 8 save/fit/run workflow, see [the user guide](optimization_use
 and [handoff](session_learnings_2026-09-08.md). Later fixes preserve the priced
 formulation while distinguishing installed hardware from clean replacements.
 
+September 11 follow-up: the fixed-curve sweep now qualifies each distinct
+pump selection at its actual coupled station pressure before comparing oil
+or the priced objective. Failed selections are excluded; the winner's grid
+is refreshed at its reported pressure. `history`, `coupling_residual_psi`,
+search-header provenance and qualification counts are exposed. The older
+"converged always True/history empty" description below applies to the
+original sweep, not the current fixed-curve implementation. Free-pressure
+sweeps and the agreed economics are unchanged. See the
+[resume record](jp_model_resume_2026-09-11.md).
+
 | Decision | Choice |
 |---|---|
 | Objective | **oil − λ·water**, one λ (BOPD per BPD of machine water) shared by every engine. Replaces the hand marginal-WC gate, the auto-derived gate and the parsimony pass. |

@@ -20,6 +20,7 @@ persisting an accepted fit is the save path's job.
 from __future__ import annotations
 
 from woffl.flow.entry_energy import MODEL_VERSION
+from woffl.flow.hydraulics import physics_model, validate_model
 
 import logging
 import os
@@ -41,11 +42,11 @@ def get_job(job_id: str) -> Optional[dict[str, Any]]:
     return jobs.get(job_id, (_KIND,))
 
 
-def start_event_calibration(well: str) -> str:
+def start_event_calibration(well: str, hydraulics_model: str | None = None) -> str:
     """Spawn the event-calibration thread for one well; returns the job id."""
     return jobs.start(
         _KIND,
-        lambda job: _run_event_calibration_job(job, well),
+        lambda job: _run_event_calibration_job(job, well, hydraulics_model),
         progress="hydrating saved fit...",
     )
 
@@ -178,6 +179,7 @@ def _single_point_fallback(
         nozzle_area_factor=_num(getattr(config, "fnz_well", None)) or 1.0,
         mach_crit=_num(getattr(config, "mach_crit_well", None)) or 1.0,
         jpump_direction=getattr(config, "jpump_direction", "reverse"),
+        hydraulics_model=getattr(config, "hydraulics_model", "beggs"),
     )
     return single_payload(result)
 
@@ -283,7 +285,7 @@ def _fit_multipoint(
     return fric_calibration.calibrate_multipoint(config, nozzle, throat, built, progress=progress)
 
 
-def _run_event_calibration_job(job: dict[str, Any], well: str) -> dict[str, Any]:
+def _run_event_calibration_job(job: dict[str, Any], well: str, hydraulics_model: str | None = None) -> dict[str, Any]:
     from woffl.gui import fric_calibration
     from server.services.wells import _pad_from_mp_name as pad_from_mp_name
 
@@ -294,6 +296,11 @@ def _run_event_calibration_job(job: dict[str, Any], well: str) -> dict[str, Any]
     config = next((c for c in configs if c.well_name == well), None)
     if config is None:
         raise ValueError(f"no usable saved fit for {well}")
+    selected = validate_model(hydraulics_model or getattr(config, "hydraulics_model", "beggs"))
+    if selected != getattr(config, "hydraulics_model", "beggs"):
+        # A different return model needs its own fitted pump coefficients.
+        config.ken_well, config.kth_well, config.kdi_well, config.fnz_well = .03, .3, .4, 1.
+    config.hydraulics_model = selected
 
     current, _rates = optimizer_runs._current_and_tests([well])
     nozzle, throat = current.get(well, (None, None))
@@ -382,13 +389,16 @@ def _run_event_calibration_job(job: dict[str, Any], well: str) -> dict[str, Any]
     except Exception as exc:  # noqa: BLE001
         log.warning("mined-beta evidence unavailable for %s: %s", well, exc)
 
+    from server.services.pump_calibration import installation
+
     return optimizer_runs._plain(
         {
-            "physics_model": MODEL_VERSION,
+            "physics_model": physics_model(selected),
+            "hydraulics_model": selected,
             "well": well,
             "pump": _pump_label(nozzle, throat),
             "era_start": (built or {}).get("era_start"),
-            "installation_date_set": ((built or {}).get("pump") or {}).get("date_set"),
+            "installation_date_set": installation(((built or {}).get("pump") or {}).get("date_set")),
             "n_daily": int((built or {}).get("n_daily") or 0),
             "n_test": int((built or {}).get("n_test") or 0),
             "ppf_spread": float((built or {}).get("ppf_spread") or 0.0),

@@ -327,7 +327,7 @@ def pin(well: str) -> dict[str, Any]:
 # the write gate; push_prop enforces it again on the actual INSERT.
 
 
-def _invalidate_after_write(well: str) -> None:
+def _invalidate_after_write(well: str, *, characterization: bool = False) -> None:
     """Drop every cache layer a successful prop_hist write just outdated, so
     the NEXT poll reads the new rows instead of waiting out a 5-minute TTL
     (two-client review sessions poll the pad board while the other client
@@ -352,6 +352,12 @@ def _invalidate_after_write(well: str) -> None:
     from server.services import database as database_service
 
     database_service.evict_prop_history(well)
+    if characterization:
+        # The canonical reservoir pressure/temperature/bubble point also feed
+        # Well Database and optimizer PVT. Refresh the shared fleet snapshot
+        # after a successful value write, not on failed writes or pin changes.
+        from server.services import datasources
+        datasources.well_chars.cache_clear()
 
 
 def save(well: str, req: schemas.SaveIprRequest) -> dict[str, Any]:
@@ -395,7 +401,7 @@ def save(well: str, req: schemas.SaveIprRequest) -> dict[str, Any]:
     # success (pin landed, values failed - or the reverse) still outdates
     # every cached read of this well.
     if pinned or unpinned or n_values:
-        _invalidate_after_write(well)
+        _invalidate_after_write(well, characterization=bool(n_values))
     return {
         "pinned": pinned,
         "pin_skipped": pin_skipped,
@@ -423,7 +429,7 @@ def set_lock(well: str, req: schemas.PropLockRequest) -> dict[str, Any]:
     """
     ok, message = ipr_anchor.set_prop_lock(well, req.field, req.locked, value=req.value)
     if ok:
-        _invalidate_after_write(well)
+        _invalidate_after_write(well, characterization=req.field == "res_pres" and req.locked)
     # Echo the value the way it was actually stored (set_prop_lock caps WC).
     value = req.value
     if value is not None and req.field == "form_wc":

@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useWellContext } from "../../api/hooks";
 import { Button, Card } from "../../components/ui";
 import { CLEAN_PUMP, useParamsStore } from "../../state/params";
+import { HYDRAULICS_LABELS } from "../../api/types";
 
 export function PumpScope() {
   const { well, params, context, months, cap, set, useInstalledPump } = useParamsStore();
@@ -13,7 +14,8 @@ export function PumpScope() {
   if (well === "Custom" || !pump) return null;
   const replacement = params.pump_state === "replacement";
   const q = scope?.quality;
-  const differs = (Object.keys(CLEAN_PUMP) as Array<keyof typeof CLEAN_PUMP>).some((k) => params[k] !== (scope?.coefficients[k] ?? CLEAN_PUMP[k]));
+  const sameModel = (scope?.hydraulics_model ?? "beggs") === params.hydraulics_model;
+  const differs = (Object.keys(CLEAN_PUMP) as Array<keyof typeof CLEAN_PUMP>).some((k) => params[k] !== (sameModel ? scope?.coefficients[k] ?? CLEAN_PUMP[k] : CLEAN_PUMP[k]));
   const provisional = q && (q.provisional || (q.bounds?.length ?? 0) > 0 ||
     (q.pf ?? 0) > 10 || (q.bhp ?? 0) > 50 ||
     (q.beta != null && q.measured_beta != null && Math.abs(q.beta - q.measured_beta) > .03));
@@ -32,7 +34,8 @@ export function PumpScope() {
         </div>
         {!replacement && differs &&
           <p className="text-amber-700">Session coefficients differ from the saved pump fit. Optimization runs use the saved fit.</p>}
-        {scope?.message && <p>{scope.message}</p>}
+        {!sameModel && <p className="text-amber-700">Saved optimization model: {HYDRAULICS_LABELS[scope?.hydraulics_model ?? "beggs"]}. Calibrate and save the selected hydraulics to change it.</p>}
+        {sameModel && scope?.message && <p>{scope.message}</p>}
         {scope?.status === "active" && q && <p className={provisional ? "text-amber-700" : "text-slate-500"}>
           Saved fit: {q.n ?? "?"} points{q.bhp != null ? ` · BHP RMS ${q.bhp} psi` : ""}{q.pf != null ? ` · PF RMS ${q.pf}%` : ""}
           {provisional ? " · provisional; review response and WC uncertainty before acting." : " · review against independent tests."}

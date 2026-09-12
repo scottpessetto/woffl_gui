@@ -1,4 +1,4 @@
-import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useIsMutating, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import { api, get, post, stableStringify, upload, isMissingJob, retryJobPoll, jobPollDelay } from "./client";
 import type {
@@ -20,6 +20,8 @@ import type {
   IprFitResponse,
   IprPinResponse,
   JpHistoryResponse,
+  PumpMatchRequest,
+  PumpMatchJob,
   KnobBounds,
   MarginalWcResponse,
   MatchHealthRequest,
@@ -69,6 +71,28 @@ import type {
 const MIN_5 = 5 * 60 * 1000;
 const MIN_30 = 30 * 60 * 1000;
 const HOUR_1 = 60 * 60 * 1000;
+
+export const useStartPumpMatch = () => useMutation({
+  mutationFn: ({ well, request }: { well: string; request: PumpMatchRequest }) =>
+    post<OptimizeRunStarted>(`/wells/${encodeURIComponent(well)}/pump-match`, request),
+});
+
+export const useCancelPumpMatch = () => useMutation({
+  mutationFn: (jobId: string) => api<{ cancel_requested: boolean }>(`/pump-match/${jobId}`, { method: "DELETE" }),
+});
+
+export const usePumpMatchJob = (jobId: string | null) => useQuery({
+  queryKey: ["pump-match-job", jobId],
+  queryFn: ({ signal }) => get<PumpMatchJob>(`/pump-match/${jobId}`, signal),
+  enabled: jobId !== null,
+  refetchInterval: (query) => isMissingJob(query.state.error) ? false :
+    (!query.state.data || query.state.data.status === "running" ? 1500 : false),
+  refetchIntervalInBackground: true,
+  staleTime: Infinity,
+  gcTime: HOUR_1,
+  retry: retryJobPoll,
+  retryDelay: jobPollDelay,
+});
 
 export const useMeta = () =>
   useQuery({
@@ -166,15 +190,23 @@ const invalidateSavedIpr = (qc: QueryClient, well: string) => {
   void qc.invalidateQueries({ queryKey: ["ipr-pin", well] });
   void qc.invalidateQueries({ queryKey: ["well-context", well] });
   void qc.invalidateQueries({ queryKey: ["prop-history", well] });
+  void qc.invalidateQueries({ queryKey: ["well-database"] });
   void qc.invalidateQueries({ queryKey: ["pad-fit"] });
 };
+
+/** Keep value saves and pin changes mutually exclusive across the two controls. */
+export const useWellInputWritePending = (well: string) =>
+  useIsMutating({ mutationKey: ["well-input-write", well] }) > 0;
 
 export const useSaveIpr = (well: string) => {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: ["well-input-write", well],
     mutationFn: (req: SaveIprRequest) =>
       post<SaveIprResponse>(`/wells/${encodeURIComponent(well)}/save-ipr`, req),
-    onSuccess: () => invalidateSavedIpr(qc, well),
+    onSuccess: (r) => {
+      if (r.n_values > 0 || r.pinned || r.pin_message) invalidateSavedIpr(qc, well);
+    },
   });
 };
 
@@ -190,6 +222,7 @@ export const useSavePumpCalibration = (well: string) => {
 export const useClearIprPin = (well: string) => {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: ["well-input-write", well],
     mutationFn: () =>
       api<ClearIprPinResponse>(`/wells/${encodeURIComponent(well)}/ipr-pin`, { method: "DELETE" }),
     onSuccess: () => invalidateSavedIpr(qc, well),

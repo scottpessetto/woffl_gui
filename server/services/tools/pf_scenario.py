@@ -534,6 +534,7 @@ def _solve_at_pf(
         prop_su=res_mix,
         prop_pf=prop_pf,
         jpump_direction=wc.jpump_direction,
+        hydraulics_model=wc.hydraulics_model,
         wellname=wc.well_name,
     )
     result_df = batch.batch_run([jp])

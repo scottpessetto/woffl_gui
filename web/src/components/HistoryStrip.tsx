@@ -13,9 +13,10 @@
 
 import { useMemo } from "react";
 
-import type { JpHistoryResponse } from "../api/types";
+import type { JpHistoryResponse, PumpMatchResult } from "../api/types";
+import { historyTimestamp, matchAt, matchLines } from "./historyMatchSeries";
 import type { EChartsOption } from "../charts/echarts";
-import { axis, baseTooltip, houseOption, nearestByX, SLATE, ttHeader, ttRow } from "../charts/theme";
+import { axis, baseTooltip, houseOption, nearestByX, SLATE, ttHeader, ttNote, ttRow } from "../charts/theme";
 import { ChartPanel } from "../charts/ChartPanel";
 import { fmtDate, fmtNum, pumpCode } from "../lib/format";
 
@@ -43,7 +44,7 @@ function num(v: unknown): number | null {
 
 function ms(v: unknown): number | null {
   if (typeof v !== "string" || v.length === 0) return null;
-  const t = new Date(v).getTime();
+  const t = historyTimestamp(v);
   return Number.isNaN(t) ? null : t;
 }
 
@@ -104,15 +105,31 @@ export function HistoryStrip({
   bhpFromZero = true,
   showPf = false,
   height = 520,
+  match = null,
+  selectedEra = null,
+  oilDetail = false,
+  pfDetail = false,
+  onSelectTest,
 }: {
   data: JpHistoryResponse;
   bhpFromZero?: boolean;
   showPf?: boolean;
   height?: number;
+  match?: PumpMatchResult | null;
+  selectedEra?: string | null;
+  oilDetail?: boolean;
+  pfDetail?: boolean;
+  onSelectTest?: (id: string) => void;
 }) {
+  const panels = match ? [...(oilDetail ? ["oil" as const] : []), ...(pfDetail ? ["pf" as const] : [])] : [];
+  const chartHeight = height + panels.length * 175;
   const option = useMemo<EChartsOption | null>(() => {
     const { eras, changes } = buildTimeline(data);
     if (eras.length === 0) return null;
+    const detailPanels = match ? [...(oilDetail ? ["oil" as const] : []), ...(pfDetail ? ["pf" as const] : [])] : [];
+    const bandX = 1 + detailPanels.length;
+    const bandY = 2 + detailPanels.length;
+    const matchRows = match?.rows.filter((r) => !selectedEra || r.installation_id === selectedEra) ?? [];
 
     // Oil and Form Water come from the SAME test rows in the same order -
     // index alignment is what makes the ECharts stack correct, so the rows
@@ -167,6 +184,21 @@ export function HistoryStrip({
         const pf = nearestByX(pfPts, ms0);
         if (pf) rows.push(ttRow(PF_COLOR, "PF pressure", `${fmtNum(pf[1])} psi`));
       }
+      const modeled = matchAt(matchRows, ms0);
+      if (modeled && ["replay", "fit", "prediction"].includes(modeled.status)) {
+        const phase = modeled.phase === "replay" ? "model" : modeled.phase === "fit" ? "fit" : "prediction";
+        rows.push(ttRow(BHP_COLOR, `BHP ${phase}`, `${fmtNum(modeled.predicted_bhp)} psi`));
+        rows.push(ttRow(OIL_LINE, `Oil ${phase}`, `${fmtNum(modeled.predicted_oil)} BOPD`));
+        if (pfDetail) rows.push(ttRow(PF_COLOR, `PF rate ${phase}`, `${fmtNum(modeled.predicted_pf)} BPD`));
+      } else if (modeled) {
+        rows.push(ttRow(SLATE, "Model", modeled.status === "failed" ? "Solve failed" : "No prediction"));
+        rows.push(ttNote(modeled.message ?? "This test has no model prediction."));
+      } else if (match) {
+        rows.push(ttNote("No modeled test on this date. Predictions are calculated at recorded well tests."));
+      }
+      if (modeled?.input_wc != null && modeled.input_gor != null) {
+        rows.push(ttRow(SLATE, "Model WC / GOR", `${fmtNum(100 * modeled.input_wc, 1)}% / ${fmtNum(modeled.input_gor)} scf/STB`));
+      }
       const era = eras.find((e) => ms0 >= e.start && ms0 <= e.end);
       rows.push(
         ttRow(
@@ -179,8 +211,8 @@ export function HistoryStrip({
     };
 
     // Shared x-range: earliest install - 15d .. today + 15d (original).
-    const minMs = eras[0].start - 15 * DAY_MS;
-    const maxMs = Date.now() + 15 * DAY_MS;
+    const minMs = (match && match.rows.length ? Math.min(...match.rows.map((r) => Date.parse(r.date))) : eras[0].start) - 15 * DAY_MS;
+    const maxMs = (match ? Date.parse(match.as_of) : Date.now()) + 15 * DAY_MS;
     const span = maxMs - minMs;
 
     // --- bottom strip: one markArea rect per era. markArea (unlike a
@@ -282,8 +314,8 @@ export function HistoryStrip({
       },
       {
         type: "line",
-        xAxisIndex: 1,
-        yAxisIndex: 2,
+        xAxisIndex: bandX,
+        yAxisIndex: bandY,
         data: [],
         silent: true,
         markArea: {
@@ -313,7 +345,38 @@ export function HistoryStrip({
       });
     }
 
+    if (match) {
+      series.push(...matchLines(match, "bhp", BHP_COLOR, 0, 1, selectedEra),
+        ...matchLines(match, "oil", OIL_LINE, 0, 0, selectedEra));
+      // Actual replay test markers remain selectable when a prediction fails.
+      for (const [key, color, yAxisIndex] of [["oil", OIL_LINE, 0], ["bhp", BHP_COLOR, 1]] as const) {
+        series.push({ type: "line", xAxisIndex: 0, yAxisIndex, lineStyle: { opacity: 0 },
+          symbol: "emptyCircle", symbolSize: 6, itemStyle: { color }, z: 10,
+          data: matchRows.map((r) => ({ value: [Date.parse(r.date), r[key]], name: r.wt_uid })) });
+      }
+      const selected = match.eras.find((e) => e.installation_id === selectedEra);
+      if (selected?.training_start && selected.training_end) {
+        series.push({ type: "line", data: [], silent: true, xAxisIndex: 0, yAxisIndex: 0,
+          markArea: { silent: true, itemStyle: { color: "rgba(100,116,139,0.10)" },
+            label: { position: "insideTopLeft", fontSize: 10, color: SLATE },
+            data: [[{ name: "Inflow fitting window", xAxis: Date.parse(selected.training_start) },
+              { xAxis: Date.parse(selected.training_end) }]] } });
+      }
+      detailPanels.forEach((quantity, i) => {
+        const xAxisIndex = i + 1, yAxisIndex = i + 2;
+        const color = quantity === "oil" ? OIL_LINE : PF_COLOR;
+        const actual = quantity === "oil" ? oilPts : tests.map(({ x, t }) => [x, num(t.lift_wat)]);
+        series.push({ name: quantity === "oil" ? "Oil (BOPD)" : "Actual PF rate", type: "line",
+          xAxisIndex, yAxisIndex, data: actual, showSymbol: true, symbolSize: 4,
+          lineStyle: { color, width: 1.4 }, itemStyle: { color }, connectNulls: false });
+        series.push(...matchLines(match, quantity, color, xAxisIndex, yAxisIndex, selectedEra));
+        series.push({ type: "line", data: [], silent: true, xAxisIndex, yAxisIndex,
+          markLine: { silent: true, symbol: "none", data: changeLines(false) } });
+      });
+    }
+
     return houseOption({
+      ...(match ? { animation: false } : {}),
       tooltip: {
         ...baseTooltip,
         trigger: "axis",
@@ -331,11 +394,15 @@ export function HistoryStrip({
           "BHP (psi)",
           "Form Water (BWPD)",
           "Oil (BOPD)",
+          ...(match ? ["BHP model", "BHP fit", "BHP prediction", "Oil model", "Oil fit", "Oil prediction"].filter((name) => series.some((s) => s.name === name)) : []),
+          ...(match && pfDetail ? ["Actual PF rate", "PF rate model", "PF rate fit", "PF rate prediction"].filter((name) => series.some((s) => s.name === name)) : []),
         ],
+        type: "scroll",
       },
       grid: [
-        { left: 64, right: 64, top: 28, bottom: "24%" },
-        { left: 64, right: 64, top: "84%", bottom: 18 },
+        { left: 64, right: 64, top: 28, height: height - 130 },
+        ...detailPanels.map((_q, i) => ({ left: 64, right: 64, top: height - 55 + i * 175, height: 115 })),
+        { left: 64, right: 64, top: chartHeight - 75, bottom: 18 },
       ],
       xAxis: [
         {
@@ -346,9 +413,11 @@ export function HistoryStrip({
           axisLine: { lineStyle: { color: "#94a3b8" } },
           axisLabel: { color: SLATE, fontSize: 11 },
         },
+        ...detailPanels.map((_q, i) => ({ type: "time" as const, gridIndex: i + 1,
+          min: minMs, max: maxMs, axisLabel: { color: SLATE, fontSize: 11 } })),
         {
           type: "time",
-          gridIndex: 1,
+          gridIndex: bandX,
           min: minMs,
           max: maxMs,
           axisLabel: { show: false },
@@ -367,11 +436,13 @@ export function HistoryStrip({
           min: bhpFromZero ? 0 : "dataMin",
           splitLine: { show: false },
         },
-        { type: "value", gridIndex: 1, min: 0, max: 1, show: false },
+        ...detailPanels.map((q, i) => ({ type: "value" as const, gridIndex: i + 1,
+          ...axis(q === "oil" ? "Oil (BOPD)" : "PF rate (BPD)"), nameGap: 44 })),
+        { type: "value", gridIndex: bandX, min: 0, max: 1, show: false },
       ],
       series,
     });
-  }, [data, bhpFromZero, showPf]);
+  }, [data, bhpFromZero, showPf, match, selectedEra, oilDetail, pfDetail, height, chartHeight]);
 
   if (option === null) return null;
   // Brush zooms the main grid (x0 + both rate/BHP axes). Listing BOTH x
@@ -381,8 +452,10 @@ export function HistoryStrip({
   return (
     <ChartPanel
       option={option}
-      height={height}
-      zoom={{ xAxisIndex: [0, 1], yAxisIndex: [0, 1] }}
+      height={chartHeight}
+      zoom={{ xAxisIndex: Array.from({ length: 2 + panels.length }, (_, i) => i),
+        yAxisIndex: Array.from({ length: 2 + panels.length }, (_, i) => i) }}
+      onSelect={onSelectTest}
     />
   );
 }

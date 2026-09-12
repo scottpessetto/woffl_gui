@@ -102,6 +102,7 @@ def discharge_residual(
     jpump_direction: str = "reverse",
     *,
     te_seed: JetBook | None = None,
+    hydraulics_model: str = "beggs",
 ) -> tuple[float, float, float, float, float]:
     """Discharge Residual
 
@@ -121,6 +122,7 @@ def discharge_residual(
         prop_su (ResMix): Reservoir Mixture Conditions
         prop_pf (FormWater): Independent Power Fluid Properties
         jpump_direction (str): Jet Pump Direction, "forward" or "reverse" Circulating
+        hydraulics_model (str): Return-flow model ID; defaults to beggs.
         te_seed (JetBook | None): Optional unscaled throat-entry book already
             swept from this psu (``psu_minimize``'s); reused instead of
             re-sweeping when its first pressure is exactly ``psu``. Keyword-only.
@@ -241,7 +243,8 @@ def discharge_residual(
 
     # out flow section
     md_seg, prs_ray, slh_ray = of.production_top_down_press(
-        pwh, tsu, qtm_std, prop_tm, wellbore, wellprof, production_flowpath
+        pwh, tsu, qtm_std, prop_tm, wellbore, wellprof, production_flowpath,
+        model=hydraulics_model,
     )
 
     pdi_of = prs_ray[-1]  # discharge pressure outflow
@@ -264,6 +267,7 @@ def _residual_walk_inward(
     jpump_direction: str,
     *,
     te_seed: JetBook | None = None,
+    hydraulics_model: str = "beggs",
 ) -> tuple[float, float, tuple[float, float, float, float]]:
     """Discharge residual at ``psu_start``, walking inward if it's infeasible.
 
@@ -347,6 +351,7 @@ def _residual_walk_inward(
                 prop_pf,
                 jpump_direction,
                 te_seed=te_seed if fr == 0.0 else None,
+                hydraulics_model=hydraulics_model,
             )
         except ThroatEntryChoked:
             # FLOW-5: below the throat-entry choke floor by more than the
@@ -384,6 +389,7 @@ def _residual_walk_inward(
                 prop_su,
                 prop_pf,
                 jpump_direction,
+                hydraulics_model=hydraulics_model,
             )
         return psu, res, (qoil, fwat, qnz, mach)
     raise ConvergenceError("no feasible suction pressure for the inner throat solve")
@@ -409,6 +415,8 @@ def _refine_feasibility_edge(
     prop_su: ResMix,
     prop_pf: FormWater,
     jpump_direction: str,
+    *,
+    hydraulics_model: str = "beggs",
 ) -> tuple[float, float, tuple[float, float, float, float]]:
     """Bisect the suction between an infeasible and a feasible probe fraction.
 
@@ -443,6 +451,7 @@ def _refine_feasibility_edge(
                 prop_su,
                 prop_pf,
                 jpump_direction,
+                hydraulics_model=hydraulics_model,
             )
         except ThroatEntryChoked:
             lo = mid
@@ -475,6 +484,7 @@ def jetpump_solver(
     jpump_direction: str = "reverse",
     *,
     mach_crit: float = 1.0,
+    hydraulics_model: str = "beggs",
 ) -> tuple[float, bool, float, float, float, float]:
     """JetPump Solver
 
@@ -493,6 +503,7 @@ def jetpump_solver(
         prop_su (ResMix): Reservoir Mixture Conditions
         prop_pf (FormWater): Independent Power Fluid Properties
         jpump_direction (str): Jet Pump Direction, "forward" or "reverse" Circulating
+        hydraulics_model (str): Return-flow model ID; defaults to beggs.
         mach_crit (float): Deprecated compatibility argument, unitless.
             Entry-energy-v1 ignores the former multiplier and warns for
             nondefault values. Refit calibrations made with that multiplier.
@@ -505,6 +516,8 @@ def jetpump_solver(
         qnz_bwpd (float): Power Fluid Rate, BWPD
         mach_te (float): Throat Entry Mach, unitless
     """
+    # [LIBRARY change -> upstream PR to kwellis/woffl]
+    of.validate_model(hydraulics_model)
     psu_min, qoil_std, te_book = jf.psu_minimize(
         tsu=tsu,
         ken=jpump.ken,
@@ -545,6 +558,7 @@ def jetpump_solver(
         prop_pf,
         jpump_direction,
         te_seed=te_book,
+        hydraulics_model=hydraulics_model,
     )
 
     # if the jetpump (available) discharge is above the outflow (required) discharge at lowest suction
@@ -577,14 +591,25 @@ def jetpump_solver(
         prop_su,
         prop_pf,
         jpump_direction,
+        hydraulics_model=hydraulics_model,
     )
 
-    # if the jetpump (available) discharge is below the outflow (required) discharge at highest suction
-    # the well will not flow, need to pick different parameters
+    # A negative residual at the upper bound does not exclude interior lift.
     if res_max < 0:
-        # this isn't actually a value error, the code is working as intended
-        # this provides a quick fix in the try statement in batch run
-        raise ValueError("well cannot lift at max suction pressure")
+        # [LIBRARY change -> upstream PR to kwellis/woffl]
+        # The coupled pump/return residual need not be monotone. Gas-rich
+        # wells can have a positive interior lobe between two negative ends.
+        # Search only after the original bracket fails; retain the usual
+        # negative-to-positive (lower-suction/higher-flow) crossing convention.
+        solution = _interior_lift_solution(
+            psu_min, psu_max,
+            lambda psu: discharge_residual(
+                psu, pwh, tsu, ppf_surf, jpump, wellbore, wellprof, ipr_su,
+                prop_su, prop_pf, jpump_direction, hydraulics_model=hydraulics_model),
+        )
+        if solution is not None:
+            return solution
+        raise ValueError("no pressure-balanced lift solution found in the evaluated suction range")
 
     psu_diff = 5  # converged when successive psu guesses are this close, psi
     res_tol = 10  # and the discharge residual is driven this close to zero, psid
@@ -613,6 +638,7 @@ def jetpump_solver(
             jpump_direction,
             psu_diff,
             res_tol,
+            hydraulics_model=hydraulics_model,
         )
     except ConvergenceError:
         pass
@@ -644,6 +670,7 @@ def jetpump_solver(
                 jpump_direction,
                 psu_diff,
                 res_tol,
+                hydraulics_model=hydraulics_model,
             )
         except ConvergenceError:
             pass
@@ -668,8 +695,68 @@ def jetpump_solver(
             prop_pf,
             jpump_direction,
             res_tol,
+            hydraulics_model=hydraulics_model,
         )
     raise ConvergenceError("Suction Pressure for Overall System did not converge")
+
+
+# [LIBRARY change -> upstream PR to kwellis/woffl]
+def _interior_lift_solution(psu_lo, psu_hi, evaluate, res_tol=10.0):
+    """Find a missed interior discharge balance after endpoint bracketing fails.
+
+    Scan 64 intervals from low to high suction. Only adjacent feasible probes
+    with a negative-to-positive residual can bracket a candidate. A hole or a
+    discontinuous sign jump is not a solution: Brent's result must itself have
+    a finite residual within tolerance and nonnegative phase rates. Selection
+    uses no measured BHP/rate or proximity to a test. This is a steady branch
+    convention, not certification of the well's transient stability.
+
+    Args:
+        psu_lo (float): Feasible lower suction bound, psig.
+        psu_hi (float): Feasible upper suction bound, psig.
+        evaluate (callable): Suction to (residual psid, oil/water/PF BPD, Mach).
+        res_tol (float): Maximum accepted discharge imbalance, psid.
+
+    Returns:
+        tuple or None: Solver tuple at a closed root, or no accepted root.
+    """
+    from scipy.optimize import brentq
+
+    if not (math.isfinite(psu_lo) and math.isfinite(psu_hi) and psu_lo < psu_hi):
+        return None
+    cached = {}
+    evaluations = 0
+
+    def checked(psu):
+        nonlocal evaluations
+        psu = float(psu)
+        if psu not in cached:
+            if evaluations >= 192:
+                raise ConvergenceError("interior lift search reached its evaluation budget")
+            evaluations += 1
+            values = tuple(float(v) for v in evaluate(psu))
+            if not all(math.isfinite(v) for v in values) or any(v < 0 for v in values[1:]):
+                raise ConvergenceError("nonfinite residual or invalid rates in interior lift search")
+            cached[psu] = values
+        return cached[psu]
+
+    previous = None
+    for psu in np.linspace(psu_lo, psu_hi, 65):
+        try:
+            residual = checked(psu)[0]
+        except (JetPumpError, ValueError):
+            previous = None
+            continue
+        if previous is not None and previous[1] <= 0 <= residual:
+            try:
+                root = brentq(lambda p: checked(p)[0], previous[0], float(psu), xtol=1e-7, maxiter=60)
+                values = checked(root)
+                if abs(values[0]) <= res_tol:
+                    return float(root), False, *values[1:]
+            except (JetPumpError, ValueError, RuntimeError):
+                pass
+        previous = float(psu), residual
+    return None
 
 
 def _secant_solve(
@@ -690,6 +777,8 @@ def _secant_solve(
     jpump_direction: str,
     psu_diff: float,
     res_tol: float,
+    *,
+    hydraulics_model: str = "beggs",
 ) -> tuple[float, bool, float, float, float, float]:
     """Secant Hunt for the Discharge Residual Root
 
@@ -757,6 +846,7 @@ def _secant_solve(
                 prop_su,
                 prop_pf,
                 jpump_direction,
+                hydraulics_model=hydraulics_model,
             )
             res_list.append(res_seed)
             rates_at = psu
@@ -797,6 +887,7 @@ def _secant_solve(
                 prop_su,
                 prop_pf,
                 jpump_direction,
+                hydraulics_model=hydraulics_model,
             )
             rates_at = psu_nxt
             known[psu_nxt] = (res_nxt, (qoil_std, fwat_bwpd, qnz_bwpd, mach_te))
@@ -830,6 +921,7 @@ def _secant_solve(
             prop_su,
             prop_pf,
             jpump_direction,
+            hydraulics_model=hydraulics_model,
         )
     return psu_final, False, qoil_std, fwat_bwpd, qnz_bwpd, mach_te
 
@@ -850,6 +942,8 @@ def _bisection_solve(
     prop_pf: FormWater,
     jpump_direction: str,
     res_tol: float,
+    *,
+    hydraulics_model: str = "beggs",
 ) -> tuple[float, bool, float, float, float, float]:
     """Bisection Fallback for the Discharge Residual Root
 
@@ -907,6 +1001,7 @@ def _bisection_solve(
             prop_su,
             prop_pf,
             jpump_direction,
+            hydraulics_model=hydraulics_model,
         )
         rates_at = psu_mid
     except JetPumpError:
@@ -936,6 +1031,7 @@ def _bisection_solve(
                 prop_su,
                 prop_pf,
                 jpump_direction,
+                hydraulics_model=hydraulics_model,
             )
             rates_at = psu_mid
         except JetPumpError:
@@ -984,6 +1080,7 @@ def _bisection_solve(
                 prop_su,
                 prop_pf,
                 jpump_direction,
+                hydraulics_model=hydraulics_model,
             )
         except JetPumpError:
             psu_mid = psu_hi
@@ -999,5 +1096,6 @@ def _bisection_solve(
                 prop_su,
                 prop_pf,
                 jpump_direction,
+                hydraulics_model=hydraulics_model,
             )
     return psu_mid, False, qoil_std, fwat_bwpd, qnz_bwpd, mach_te

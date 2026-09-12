@@ -183,6 +183,7 @@ def match_test(
     jpump_direction: str = "reverse",
     nozzle_area_factor: float = 1.0,
     mach_crit: float = 1.0,
+    hydraulics_model: str = "beggs",
 ) -> GaugelessMatchResult:
     """Fit ``(pwf, kth, kdi)`` so the installed pump reproduces the test's
     oil and PF rates.
@@ -238,6 +239,7 @@ def match_test(
                 prop_su=prop_su,
                 prop_pf=prop_pf,
                 jpump_direction=jpump_direction,
+                hydraulics_model=hydraulics_model,
                 mach_crit=float(mach_crit or 1.0),
             )
             vals = (psu, qoil, fwat, qnz)

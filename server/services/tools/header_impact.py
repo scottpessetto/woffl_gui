@@ -136,6 +136,7 @@ def _solve_at_whp(
         prop_su=res_mix,
         prop_pf=prop_pf,
         jpump_direction=wc.jpump_direction,
+        hydraulics_model=wc.hydraulics_model,
         wellname=wc.well_name,
     )
     result_df = batch.batch_run([jp])
@@ -950,6 +951,7 @@ def solve_jp_row(
 
     d_oil = res_scen["oil"] - res_now["oil"]
     d_bhp = res_scen["psu"] - res_now["psu"]
+    error = solver_error_note(res_now.get("error"), res_scen.get("error"))
 
     emp: dict = {}
     try:
@@ -985,6 +987,7 @@ def solve_jp_row(
             # verdict never fired (review 2026-09-01, EVID-F15).
             emp.get("Emp class"),
             compare_emp=bool(emp),
+            error=error,
         ),
-        "Error": "",
+        "Error": error or "",
     }

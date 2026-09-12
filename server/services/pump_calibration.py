@@ -17,12 +17,14 @@ from woffl.assembly import prop_hist_client as history
 from woffl.assembly.pump_candidates import CLEAN_PUMP
 from woffl.assembly.well_test_client import _normalize_well_name
 from woffl.flow.entry_energy import MODEL_VERSION
+from woffl.flow.hydraulics import physics_model, validate_model
 
 CONTEXT = "pump_calibration_v1"
 log = logging.getLogger(__name__)
 
 
 def installation(value):
+    """Exact UTC identity; naive tracker stamps use the ledger's UTC convention."""
     stamp = pd.to_datetime(value, utc=True, errors="coerce")
     return None if pd.isna(stamp) else stamp.isoformat()
 
@@ -42,6 +44,7 @@ def snapshot():
 
 def decode(text):
     rec = json.loads(text)
+    validate_model(rec.get("h", "beggs"))
     if rec.get("v") != 1 or len(rec["k"]) != 4 or not installation(rec["i"]):
         raise ValueError("Invalid calibration record")
     for value, (lo, hi) in zip(rec["k"], [(0.001, .4), (.05, 1), (.05, 1), (.8, 1.3)]):
@@ -50,8 +53,11 @@ def decode(text):
     return rec
 
 
-def resolve(well, pump, legacy=None):
-    status = {"status": "legacy" if legacy else "none", "coefficients": {}, "quality": None}
+def resolve(well, pump, legacy=None, hydraulics_model=None):
+    if hydraulics_model is not None:
+        validate_model(hydraulics_model)
+    status = {"status": "legacy" if legacy else "none", "coefficients": {}, "quality": None,
+              "hydraulics_model": hydraulics_model or "beggs"}
     if legacy:
         status["message"] = "Older unscoped calibration retained in history; refit for this installation."
     try:
@@ -59,13 +65,16 @@ def resolve(well, pump, legacy=None):
         if row is None:
             return status
         rec = decode(row["comment_text"])
+        selected = hydraulics_model or rec.get("h", "beggs")
+        status["hydraulics_model"] = selected
         status.update(status="stale", pump=f'{rec["n"]}{rec["t"]}', date_set=rec["i"],
                       physics_model=rec["m"], saved_at=str(row["entry_datetime"]),
                       saved_by=str(row["entry_user"]), quality=rec.get("q"),
                       message="Saved fit belongs to a different installation or physics model; refit before use.")
         if (pump and pump.get("source") == "databricks" and
             (pump.get("nozzle_no"), pump.get("throat_ratio"), installation(pump.get("date_set"))) ==
-            (rec["n"], rec["t"], installation(rec["i"])) and rec["m"] == MODEL_VERSION):
+            (rec["n"], rec["t"], installation(rec["i"])) and
+            rec.get("h", "beggs") == selected and rec["m"] == physics_model(selected)):
             status.update(status="active", coefficients=dict(zip(CLEAN_PUMP, rec["k"])),
                           message="Saved calibration applies only to this installed pump.")
         return status
@@ -107,7 +116,7 @@ def save_fit(well, job_id):
     # A save must verify against a fresh tracker read, not an hour-old/SWR
     # installation. Failure is explicit; never save against the Excel fallback.
     try:
-        df = datasources._jp_history_databricks.cache_refresh()
+        df = datasources.jp_history_fresh()
         source = "databricks"
     except Exception as exc:
         raise ValueError("Could not verify the current tracker installation; nothing was saved.") from exc
@@ -116,8 +125,9 @@ def save_fit(well, job_id):
         raise ValueError("A current tracker installation is required to save a pump calibration.")
     nozzle, throat = str(pump.get("nozzle_no")), str(pump.get("throat_ratio"))
     stamp = installation(pump.get("date_set"))
+    selected = validate_model(result.get("hydraulics_model", "beggs"))
     if (not stamp or stamp != installation(result.get("installation_date_set") or result.get("era_start")) or
-        f"{nozzle}{throat}" != result.get("pump") or result.get("physics_model") != MODEL_VERSION):
+        f"{nozzle}{throat}" != result.get("pump") or result.get("physics_model") != physics_model(selected)):
         raise ValueError("Pump installation or physics model changed since this fit. Run calibration again.")
     fit = result.get("fit")
     single = result.get("single")
@@ -138,7 +148,8 @@ def save_fit(well, job_id):
         quality = {"n": 1, "provisional": True}
     else:
         raise ValueError("This calibration has no valid fitted coefficients to save.")
-    rec = {"v": 1, "n": nozzle, "t": throat, "i": stamp, "m": MODEL_VERSION, "k": coefs, "q": quality}
+    rec = {"v": 1, "n": nozzle, "t": throat, "i": stamp,
+           "m": physics_model(selected), "h": selected, "k": coefs, "q": quality}
     text = json.dumps(rec, separators=(",", ":"), allow_nan=False)
     decode(text)
     if len(text) > 500:

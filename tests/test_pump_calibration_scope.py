@@ -59,6 +59,29 @@ def test_fit_reloads_only_for_its_installation_and_model(monkeypatch):
     assert pc.resolve(WELL, PUMP)["status"] == "stale"
 
 
+@pytest.mark.parametrize("model", ["hagedorn_brown", "drift_flux"])
+def test_alternative_fit_reloads_only_with_matching_hydraulics(monkeypatch, model):
+    from woffl.flow.hydraulics import physics_model
+    rec = {**record(), "h": model, "m": physics_model(model)}
+    install_record(monkeypatch, rec)
+    active = pc.resolve(WELL, PUMP)
+    assert active["hydraulics_model"] == model and active["coefficients"] == COEFS
+    assert pc.resolve(WELL, PUMP, hydraulics_model=model)["status"] == "active"
+    assert not pc.resolve(WELL, PUMP, hydraulics_model="beggs")["coefficients"]
+    later = pc.resolve(WELL, {**PUMP, "date_set": "2026-09-10"})
+    assert later["status"] == "stale" and not later["coefficients"]
+    assert later["hydraulics_model"] == model  # keep well model, discard installation losses
+    install_record(monkeypatch, record())
+    assert not pc.resolve(WELL, PUMP, hydraulics_model=model)["coefficients"]
+
+
+def test_model_version_and_hydraulics_pair_must_agree(monkeypatch):
+    install_record(monkeypatch, {**record(), "h": "drift_flux"})
+    assert pc.resolve(WELL, PUMP)["status"] == "stale"
+    install_record(monkeypatch, {**record(), "h": "tulsa"})
+    assert pc.resolve(WELL, PUMP)["status"] == "unavailable"
+
+
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -.1, 999.])
 def test_corrupt_coefficients_never_become_active(monkeypatch, bad):
     rec = record(); rec["k"][0] = bad
@@ -78,14 +101,16 @@ def test_fleet_calibration_read_is_one_select(monkeypatch):
 @pytest.fixture()
 def save_case(monkeypatch):
     from server.services import datasources, ipr
-    import woffl.assembly.jp_history as tracker
+    from woffl.assembly import databricks_client
     fit = {**COEFS, "fnz": COEFS["nozzle_area_factor"], "rms_bhp_psi": 76.,
            "rms_pf_pct": 61.5, "n_used": 19, "railed": ["ken"], "implied_beta": .268}
     result = {"well": WELL, "pump": "13C", "era_start": PUMP["date_set"],
               "physics_model": MODEL_VERSION, "fit": fit, "mined_beta": .062}
     monkeypatch.setattr(pc.jobs, "get", lambda *a, **kw: {"status": "done", "result": result})
-    monkeypatch.setattr(datasources._jp_history_databricks, "cache_refresh", lambda: pd.DataFrame([PUMP]))
-    monkeypatch.setattr(tracker, "get_current_pump", lambda *a: PUMP)
+    monkeypatch.setattr(databricks_client, "fetch_jp_history", lambda: pd.DataFrame([{
+        "Well Name": WELL, "Nozzle Number": 13, "Throat Ratio": "C",
+        "Date Set": pd.Timestamp(PUMP["date_set"]), "Tubing Diameter": 4.5,
+    }]))
     monkeypatch.setattr(pc.history, "resolve_entry_user", lambda: "engineer@example.com")
     rows, evicted = [], []
     monkeypatch.setattr(pc.history, "push_eng_comment", lambda *a, **kw: rows.append((a, kw)) or 1)
@@ -105,6 +130,59 @@ def test_save_is_one_atomic_installation_record_with_quality(save_case):
     assert rec["k"] == list(COEFS.values())  # full precision
     assert rec["q"]["pf"] == 61.5 and rec["q"]["bounds"] == ["ken"]
     assert "installation only" in response["message"]
+
+
+@pytest.mark.parametrize("model", ["hagedorn_brown", "drift_flux"])
+def test_alternative_model_saves_atomically_with_precise_coefficients(save_case, model):
+    from woffl.flow.hydraulics import physics_model
+    result, rows, evicted = save_case
+    result.update(hydraulics_model=model, physics_model=physics_model(model))
+    result["fit"].update(ken=.005123456789012345, kth=.38612345678901234,
+                         kdi=.07212345678901234, fnz=1.0123456789012345,
+                         rms_dbhp_psi=72.12345, railed=["ken", "kth", "kdi", "fnz"])
+    pc.save_fit(WELL, "job")
+    assert len(rows) == 1 and evicted == [WELL]
+    text = rows[0][0][3]
+    rec = pc.decode(text)
+    assert len(text) <= 500
+    assert (rec["h"], rec["m"]) == (model, physics_model(model))
+    assert rec["k"] == [result["fit"][k] for k in ("ken", "kth", "kdi", "fnz")]
+
+
+def test_save_rejects_mismatched_hydraulics_version_before_writing(save_case):
+    result, rows, evicted = save_case
+    result["hydraulics_model"] = "drift_flux"
+    with pytest.raises(ValueError, match="physics model"):
+        pc.save_fit(WELL, "job")
+    assert rows == [] and evicted == []
+
+
+def test_save_reads_fresh_tracker_while_cached_refresh_is_in_flight(save_case):
+    from server.services import datasources
+
+    _, rows, _ = save_case
+    cached = datasources._jp_history_databricks
+    cached.cache_prime(pd.DataFrame())  # deliberately unusable old cache data
+    key = ((), ())
+    assert cached._cache.try_begin_refresh(key)
+    try:
+        pc.save_fit(WELL, "job")
+        assert len(rows) == 1
+    finally:
+        cached._cache.end_refresh(key)
+
+
+def test_save_fresh_tracker_failure_never_uses_old_cache(save_case, monkeypatch):
+    from server.services import datasources
+    from woffl.assembly import databricks_client
+
+    _, rows, evicted = save_case
+    datasources._jp_history_databricks()  # populate a valid but now old snapshot
+    def fail(): raise RuntimeError("tracker unavailable")
+    monkeypatch.setattr(databricks_client, "fetch_jp_history", fail)
+    with pytest.raises(ValueError, match="Could not verify"):
+        pc.save_fit(WELL, "job")
+    assert not rows and not evicted
 
 
 @pytest.mark.parametrize("key,value", [("well", "MPB-28"), ("era_start", "2026-09-01"),
@@ -204,9 +282,10 @@ def test_installation_time_is_not_lost_when_matching_same_day_changeouts(save_ca
     assert len(rows) == 1
 
 
-def test_real_batch_installed_and_clean_predictions_match_single_solves():
+@pytest.mark.parametrize("model", ["beggs", "hagedorn_brown", "drift_flux"])
+def test_real_batch_installed_and_clean_predictions_match_single_solves(model):
     from server.services.solve import run_batch, solve_single, _pf_point
-    sp = schemas.SimParams(nozzle_no="13", area_ratio="C", **COEFS,
+    sp = schemas.SimParams(nozzle_no="13", area_ratio="C", hydraulics_model=model, **COEFS,
                           nozzle_batch_options=["13"], throat_batch_options=["C"])
     rows = run_batch("Custom", sp)["rows"]
     pf_rows = _pf_point("Custom", sp.model_dump_json(), sp.ppf_surf)

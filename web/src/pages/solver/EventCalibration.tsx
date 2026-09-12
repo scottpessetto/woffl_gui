@@ -23,31 +23,32 @@ import { Activity } from "lucide-react";
 import { useEffect } from "react";
 
 import { useMeta, useSavePumpCalibration, useOptimizeJob, useStartEventCalibration } from "../../api/hooks";
-import type { EventCalibrationResult, WellContext } from "../../api/types";
+import { HYDRAULICS_LABELS, type HydraulicsModel, type EventCalibrationResult, type WellContext } from "../../api/types";
 import { Button } from "../../components/ui";
 import { fmtNum } from "../../lib/format";
 import { useOptimizeStore } from "../../state/optimize";
 import { useParamsStore } from "../../state/params";
 
-function matchesInstallation(result: EventCalibrationResult, pump: WellContext["pump"] | undefined) {
-  return !!pump?.date_set && pump.source === "databricks" &&
+function matchesInstallation(result: EventCalibrationResult, pump: WellContext["pump"] | undefined, model: HydraulicsModel) {
+  return (result.hydraulics_model ?? "beggs") === model && !!pump?.date_set && pump.source === "databricks" &&
     `${pump.nozzle_no}${pump.throat_ratio}` === result.pump &&
     new Date(pump.date_set).getTime() === new Date(result.installation_date_set ?? result.era_start ?? "").getTime();
 }
 
 function SaveFit({ result, jobId }: { result: EventCalibrationResult; jobId: string }) {
   const context = useParamsStore((s) => s.context);
+  const model = useParamsStore((s) => s.params.hydraulics_model);
   const meta = useMeta();
   const save = useSavePumpCalibration(result.well);
-  const valid = matchesInstallation(result, context?.pump);
+  const valid = matchesInstallation(result, context?.pump, model);
   const hasFit = !result.refusal && (result.fit || (result.single && !["pinned", "failed"].includes(result.single.match_quality)));
   if (!hasFit) return null;
   return <div className="basis-full space-y-1 text-xs text-slate-500">
     <Button size="sm" variant="secondary" disabled={!valid || !meta.data?.writes_enabled || save.isPending}
       busy={save.isPending} onClick={() => save.mutate(jobId)}>Save installed-pump calibration</Button>
     <p>Calibration uses saved well inputs and in-era tests. Save changed well inputs before refitting.</p>
-    <p>Saves this fit for {result.pump}, installed {result.era_start?.slice(0, 10)}. Well inputs are saved separately under IPR.</p>
-    {!valid && <p className="text-amber-700">The installation could not be verified against this fit. Refresh the well and calibrate again.</p>}
+    <p>{HYDRAULICS_LABELS[result.hydraulics_model ?? "beggs"]}. Saves this fit for {result.pump}, installed {result.era_start?.slice(0, 10)}. Save well inputs using the bar at the top of this page.</p>
+    {!valid && <p className="text-amber-700">The installation or hydraulics differs from this fit. Refresh the well and calibrate again.</p>}
     {!meta.data?.writes_enabled && <p>Saving is unavailable while this app is in read-only mode. Apply remains available for this session.</p>}
     {save.data && <p className="text-emerald-700">{save.data.message}</p>}
     {save.isError && <p className="text-amber-700">{save.error.message}</p>}
@@ -71,7 +72,8 @@ const BETA_TOL = 0.03;
 function SinglePointBlock({ result }: { result: EventCalibrationResult }) {
   const applyFit = useParamsStore((s) => s.applyPumpFit);
   const context = useParamsStore((s) => s.context);
-  const validScope = matchesInstallation(result, context?.pump);
+  const model = useParamsStore((s) => s.params.hydraulics_model);
+  const validScope = matchesInstallation(result, context?.pump, model);
   const single = result.single;
 
   if (!single) {
@@ -128,7 +130,8 @@ function SinglePointBlock({ result }: { result: EventCalibrationResult }) {
 function ResultBlock({ result }: { result: EventCalibrationResult }) {
   const applyFit = useParamsStore((s) => s.applyPumpFit);
   const context = useParamsStore((s) => s.context);
-  const validScope = matchesInstallation(result, context?.pump);
+  const model = useParamsStore((s) => s.params.hydraulics_model);
+  const validScope = matchesInstallation(result, context?.pump, model);
   const fit = result.fit;
 
   if (result.method === "single_point") return <SinglePointBlock result={result} />;
@@ -231,7 +234,8 @@ export function EventCalibration({ well }: { well: string }) {
   // ids): event calibration is a 1-3 minute job, and a Solver -> Batch ->
   // Solver detour used to drop the id and orphan the fit (review
   // 2026-09-01, WEB-8). Per-well keys keep one well's fit off another.
-  const jobKey = `event_cal:${well}`;
+  const model = useParamsStore((s) => s.params.hydraulics_model);
+  const jobKey = model === "beggs" ? `event_cal:${well}` : `event_cal:${well}:${model}`;
   const jobId = useOptimizeStore((s) => s.lastJob[jobKey] ?? null);
   const setLastJob = useOptimizeStore((s) => s.setLastJob);
   const setJobId = (id: string | null) => setLastJob(jobKey, id);
@@ -266,7 +270,7 @@ export function EventCalibration({ well }: { well: string }) {
           "the line beside the button shows the pass and evaluation count."
         }
         onClick={() => {
-          start.mutate({ well }, { onSuccess: (r) => setJobId(r.job_id) });
+          start.mutate({ well, hydraulics_model: model }, { onSuccess: (r) => setJobId(r.job_id) });
         }}
       >
         <span className="flex items-center gap-1.5">

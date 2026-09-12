@@ -186,8 +186,9 @@ retain their own test counts and timing data; they are not current-suite counts.
 Latest local logs are under `build/pump-scope-*.log` (ignored, not portable artifacts).
 
 - Mock scoped calibration reads as well as saved-IPR reads in server fixtures.
-  Mock the fresh tracker call when testing saves. The cached callable is
-  `datasources._jp_history_databricks.cache_refresh()`, not the wrapper `jp_history`.
+  September 11 correction: saves read `datasources.jp_history_fresh()` directly.
+  Mock its underlying tracker SELECT in tests, keeping the real enrichment and
+  installation selector; `cache_refresh()` returns a boolean, not tracker data.
 - Optional Playwright lives under `build/browser-qa`, outside app dependencies.
   `tools/check_pump_scope_ui.py` and `tools/check_wc_uncertainty_ui.py` use local
   fixtures/interception; their MPE-42 screenshots are not new field evidence.

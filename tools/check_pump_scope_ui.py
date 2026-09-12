@@ -1,6 +1,7 @@
 """Optional Playwright QA against Vite; all API reads and saves intercepted.
 
 Run with PYTHONPATH=build/browser-qa;. and Vite on 127.0.0.1:5173.
+An optional first argument overrides the base URL.
 The save responses below are browser fixtures; no database writes occur.
 """
 import asyncio
@@ -74,7 +75,8 @@ async def check():
             await route.fulfill(json=data)
 
         await page.route(re.compile(r"https?://[^/]+/api/"), api)
-        await page.goto("http://127.0.0.1:5173/solver")
+        base_url = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:5173"
+        await page.goto(f"{base_url.rstrip('/')}/solver")
         await page.evaluate("""async (ctx) => {
             const resources = performance.getEntriesByType('resource').map(r => r.name);
             const paramUrl = resources.findLast(u => u.includes('/src/state/params.ts')) ?? '/src/state/params.ts';
@@ -96,7 +98,7 @@ async def check():
         await page.get_by_role("button", name="Save installed-pump calibration", exact=True).click()
         await expect(page.get_by_text("Saved fit: 19 points", exact=False)).to_be_visible()
         await page.get_by_role("button", name="Save well inputs", exact=True).click()
-        await expect(page.get_by_text("Saved well inputs.", exact=True)).to_be_visible()
+        await expect(page.get_by_text("New optimization runs will load these saved well inputs.", exact=False)).to_be_visible()
         assert len(requests) == 2
         await page.screenshot(path=str(ROOT / "build/pump-scope-desktop.png"), full_page=True)
 

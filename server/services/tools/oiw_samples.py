@@ -160,7 +160,7 @@ def _clean(raw: pd.DataFrame, today: pd.Timestamp) -> tuple[pd.DataFrame, int]:
 
     out = pd.DataFrame(
         {
-            "day": pd.to_datetime(raw[date_col], errors="coerce"),
+            "day": pd.to_datetime(raw[date_col], format="mixed", dayfirst=False, errors="coerce"),
             "location": raw[loc_col].astype(str).str.strip(),
             "ppm": pd.to_numeric(raw[ppm_col], errors="coerce"),
         }

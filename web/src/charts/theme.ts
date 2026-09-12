@@ -123,6 +123,13 @@ export function ttRow(color: string, label: string, value: string): string {
   );
 }
 
+/** Wrapped explanation; source data and solver messages must remain plain text. */
+export function ttNote(text: string): string {
+  const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  return `<div style="max-width:320px;white-space:normal;overflow-wrap:anywhere;line-height:1.5;margin-top:4px;color:${SLATE}">${escaped}</div>`;
+}
+
 /** Minimal shape of an axis-trigger tooltip param this app relies on. */
 interface AxisTooltipParam {
   seriesName?: string;

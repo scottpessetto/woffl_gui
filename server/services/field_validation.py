@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from statistics import median
 import math
 
-from woffl.flow.entry_energy import MODEL_VERSION
+from woffl.flow.hydraulics import physics_model
 
 
 def split_events(points, *, step_psi=100., gap_days=7, embargo_days=3):
@@ -84,7 +84,8 @@ def evaluate_events(config, train, held, *, fit_function=None, predict_function=
     fit_points = ranked if len(ranked) <= 20 else [ranked[round(i*(len(ranked)-1)/19)] for i in range(20)]
     fit = (fit_function or calibrate_multipoint)(cfg, nozzle, throat, fit_points,
                                                seed=(.03, .3, .4, 1., 1.), progress=progress)
-    report = dict(physics_model=MODEL_VERSION, well=cfg.well_name, train_points=len(train),
+    report = dict(physics_model=physics_model(cfg.hydraulics_model), hydraulics_model=cfg.hydraulics_model,
+                  well=cfg.well_name, train_points=len(train),
                   fit_points=len(fit_points), held_points=len(held), train_end=max(p["date"] for p in train),
                   held_start=min(p["date"] for p in held), refusal=fit.refusal,
                   training_rms_bhp_psi=fit.rms_bhp_psi if math.isfinite(fit.rms_bhp_psi) else None,
@@ -104,7 +105,8 @@ def evaluate_events(config, train, held, *, fit_function=None, predict_function=
     pump.dnz *= math.sqrt(fit.best_fnz)
     def predict(point):
         return jetpump_solver(point["pwh"], cfg.form_temp, point["ppf"], pump,
-                              wellbore, profile, inflow, mixture, pf, cfg.jpump_direction)
+                              wellbore, profile, inflow, mixture, pf, cfg.jpump_direction,
+                              hydraulics_model=cfg.hydraulics_model)
     rows = []
     for point in held:
         row = dict(date=point["date"], kind=point["kind"], ppf=point["ppf"], observed_bhp=point["bhp"], observed_pf=point["pf_rate"])

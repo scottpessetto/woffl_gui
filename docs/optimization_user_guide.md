@@ -1,6 +1,6 @@
 # Saving a well fit for optimization
 
-Current behavior: September 8, 2026. See [the session handoff](session_learnings_2026-09-08.md)
+Current behavior: September 12, 2026. See [the edit/preview/save delivery](well_input_save_workflow_2026-09-12.md)
 for verification and deployment status. The app is React/FastAPI; older Streamlit
 tab/CSV instructions do not describe the current workflow.
 
@@ -11,10 +11,41 @@ geometry, circulation, IPR anchor, reservoir pressure, WC, GOR and pressures.
 The IPR rate is **formation liquid**, excluding returned power fluid. Use the
 comparison test and gauge evidence to assess whether the current inputs make sense.
 
-Use **Save well inputs** under IPR Anchor to retain supported IPR/fluid inputs.
-This includes changed bubble point/formation temperature where supported. PF
-pressure remains a live/run input, and tracker hardware is not rewritten by this
-save. Pump loss coefficients and nozzle area have a separate save.
+## Edit, compare and save
+
+1. Edit the well's IPR and fluid inputs in the sidebar in Solver or JP History.
+   The **Well inputs** bar at the top shows how many supported values differ
+   from the loaded database. It stays visible while the main page scrolls.
+2. On the production plot, turn on **Show model match**, choose **Every test
+   (well fit)**, then set **Well inputs** to **Current edits (preview)**.
+   Choose the history window and click **Run comparison**. Inspect modeled
+   BHP and oil against actual tests across the installations.
+3. Review the values and optional save note in the top bar, then click
+   **Save well inputs**. Wait for the confirmation that new optimization runs
+   will load them. An unsuccessful save keeps the edits and shows its error.
+4. Start a new optimization run. Existing results retain their original inputs.
+
+The preview holds one explicitly selected oil IPR across all pumps and dates.
+It uses each test's measured WC, GOR, PF pressure and WHP. Actual oil/BHP do not
+re-anchor the IPR at each test. Changed inputs hide the old preview until the
+comparison is rerun. **Saved in database** compares the loaded well fit instead;
+the plot explains when sidebar edits are excluded. These comparisons use clean
+pump losses and are retrospective, not independent qualification of sizing gains.
+
+Save retains the displayed total-liquid IPR anchor/BHP, reservoir pressure,
+WC, GOR and WHP, plus supported changed bubble point/formation temperature.
+Saved values refresh the well context, Well Database and new optimization
+configurations without replacing edits made while the save was in progress.
+PF pressure remains a live/run input, and tracker hardware is not rewritten by
+this save. Pump loss coefficients, nozzle area and the selected hydraulic model
+have a separate installed-pump calibration save. Other sidebar settings remain
+session inputs.
+
+The Save button remains visible when unavailable, with an explanation: read-only
+access, a well still loading, or an invalid oil IPR. A read-only app still permits
+editing and previewing; it cannot persist changes. The Solver retains its anchor
+pin/clear controls beside the IPR selector. Saving from JP History preserves the
+existing anchor pin.
 
 ## Fit the installed pump
 

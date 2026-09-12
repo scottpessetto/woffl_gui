@@ -15,6 +15,7 @@ import { Play } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { useOptimizeJob, usePumpCurve, useStartOptimizeRun, useWells } from "../../api/hooks";
+import { HYDRAULICS_LABELS } from "../../api/types";
 import type {
   CfpMoveRow,
   CfpRunResult,
@@ -29,6 +30,7 @@ import type {
   RunPad,
 } from "../../api/types";
 import { Card, Spinner, WarnNote } from "../../components/ui";
+import { WellHistoryLink } from "../../components/WellHistoryLink";
 import { fmtNum } from "../../lib/format";
 import { DEFAULT_POPS_PADS } from "../../state/wellSort";
 import { useOptimizeStore } from "../../state/optimize";
@@ -131,8 +133,9 @@ const TD_CLS = "px-2 py-1 text-right tabular-nums";
 /** Which inflow curve the well's pump was picked against. A reviewed save is
  *  the point of the whole save-fits workflow; a weak auto-fit or generic
  *  defaults mean the recommended pump is only as good as a sketch. */
-function FitSource({ row }: { row: Pick<PadRunRow, "ipr_source" | "ipr_r2" | "has_friction" | "pump_calibration"> }) {
+function FitSource({ row }: { row: Pick<PadRunRow, "ipr_source" | "ipr_r2" | "has_friction" | "pump_calibration" | "hydraulics_model"> }) {
   const r2 = row.ipr_r2;
+  const hydraulics = row.hydraulics_model ?? row.pump_calibration?.hydraulics_model ?? "beggs";
   // R2 <= 0 means the Vogel curve tracks the tests WORSE than a flat line -
   // the pump picked against it is noise, so it reads as loud as defaults.
   const broken = r2 !== null && r2 <= 0;
@@ -168,6 +171,7 @@ function FitSource({ row }: { row: Pick<PadRunRow, "ipr_source" | "ipr_r2" | "ha
           reference
         </span>
       )}
+      <span className="block text-[10px] font-normal text-slate-500">{HYDRAULICS_LABELS[hydraulics]}</span>
     </span>
   );
 }
@@ -225,6 +229,14 @@ function PadResults({ result }: { result: PadRunResult }) {
         <WarnNote>Plant coupling did not converge - treat the header and totals as approximate.</WarnNote>
       )}
       {meta.over_capacity === true && <WarnNote>Plan exceeds plant capacity.</WarnNote>}
+      {typeof meta.search_scope === "string" && (
+        <p className="text-xs text-slate-500">
+          Pump choices were checked at their coupled station pressure. Pressure-balance error:
+          {" "}{fmtNum(metaNum(meta, "coupling_residual_psi"), 1)} psi.
+          {" "}{fmtNum(metaNum(meta, "rejected_selections"))} selections could not be qualified.
+          {" "}This is the best settled plan found in the search.
+        </p>
+      )}
 
       <Card padded={false} className="overflow-x-auto">
         <table className="w-full border-collapse text-[13px]">
@@ -252,7 +264,7 @@ function PadResults({ result }: { result: PadRunResult }) {
               const change = r.pump_state === "replacement" || (r.pump !== null && r.current_pump !== null && r.pump !== r.current_pump);
               return (
                 <tr key={r.well} className="border-b border-slate-100 last:border-b-0">
-                  <td className="px-2 py-1 text-left font-medium text-slate-700">{r.well}</td>
+                  <td className="px-2 py-1 text-left font-medium text-slate-700"><WellHistoryLink well={r.well} /></td>
                   <td className="px-2 py-1 text-left">
                     <FitSource row={r} />
                   </td>
@@ -292,7 +304,7 @@ function PadResults({ result }: { result: PadRunResult }) {
       )}
       {agreement && !agreement.error && agreement.agree === true && (
         <p className="text-xs text-slate-500">
-          MILP cross-check agrees with the CP-SAT plan at the winning header.
+          MILP and CP-SAT agree on the allocation objective at the search header.
         </p>
       )}
       {result.notes.length > 0 && (
@@ -453,7 +465,7 @@ function ChokePlanResults({ result }: { result: ChokePlanResult }) {
               const a = ACTION_META[r.action];
               return (
                 <tr key={r.well} className="border-b border-slate-100 last:border-b-0">
-                  <td className="px-2 py-1 text-left font-medium text-slate-700">{r.well}</td>
+                  <td className="px-2 py-1 text-left font-medium text-slate-700"><WellHistoryLink well={r.well} /></td>
                   <td className="px-2 py-1 text-left">
                     <FitSource row={r} />
                   </td>
@@ -689,7 +701,7 @@ function CfpResults({ result }: { result: CfpRunResult }) {
               {onOffMoves.map((m) => (
                 <tr key={`${m.type}-${m.well}`} className="border-b border-slate-100 last:border-b-0">
                   <td className="px-2 py-1 text-left font-medium text-slate-700">{MOVE_LABELS[m.type]}</td>
-                  <td className="px-2 py-1 text-left text-slate-700">{m.well}</td>
+                  <td className="px-2 py-1 text-left text-slate-700"><WellHistoryLink well={m.well} /></td>
                   <td className="px-2 py-1 text-left text-slate-500">
                     {m.type === "shut_in" ? (m.from ?? "-") : (m.to ?? "-")}
                   </td>
@@ -739,7 +751,7 @@ function CfpResults({ result }: { result: CfpRunResult }) {
                     {MOVE_LABELS[m.type]}
                     {m.type === "resize" && ` ${m.from ?? ""} to ${m.to ?? ""}`}
                   </td>
-                  <td className="px-2 py-1 text-left font-medium text-slate-700">{m.well}</td>
+                  <td className="px-2 py-1 text-left font-medium text-slate-700"><WellHistoryLink well={m.well} /></td>
                   <td className={clsx(TD_CLS, m.fleet_oil_delta > 0 ? "text-emerald-700" : "text-slate-600")}>
                     {m.fleet_oil_delta > 0 ? "+" : ""}
                     {fmtNum(m.fleet_oil_delta)}

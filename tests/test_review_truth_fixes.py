@@ -176,7 +176,7 @@ class TestEvidenceEventsAndEraFloor:
             "floor_source": "prior_era",
             "beta_source": "default",
         }
-        assert _verdict(row) == "ok"
+        assert _verdict(row) == "unknown"
         row["floor_source"] = "era"
         assert _verdict(row) == "contradicted"
 

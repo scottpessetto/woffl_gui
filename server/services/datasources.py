@@ -108,6 +108,15 @@ def pf_latest_safe() -> pd.DataFrame:
 
 @ttl_cache(config.TTL_JP_HISTORY, maxsize=2)
 def _jp_history_databricks() -> pd.DataFrame:
+    return jp_history_fresh()
+
+
+def jp_history_fresh() -> pd.DataFrame:
+    """Fetch tracker data for this request, bypassing caches and refreshes.
+
+    Save validation cannot use a cache entry while a warm/SWR refresh is in
+    flight. Failure propagates; no spreadsheet fallback is permitted here.
+    """
     from woffl.assembly.databricks_client import fetch_jp_history
     from woffl.gui.pump_identity import enrich_jp_history
 

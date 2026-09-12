@@ -31,6 +31,7 @@ export function Layout() {
   const months = useParamsStore((s) => s.months);
   const cap = useParamsStore((s) => s.cap);
   const applyContext = useParamsStore((s) => s.applyContext);
+  const refreshContext = useParamsStore((s) => s.refreshPumpContext);
   const seededFor = useParamsStore((s) => s.seededFor);
 
   const ctx = useWellContext(well, months, cap);
@@ -41,8 +42,10 @@ export function Layout() {
   useEffect(() => {
     if (ctx.data && ctx.data.well === well && seededFor !== well) {
       applyContext(ctx.data);
+    } else if (ctx.data && ctx.data.well === well) {
+      refreshContext(ctx.data);
     }
-  }, [ctx.data, well, seededFor, applyContext]);
+  }, [ctx.data, well, seededFor, applyContext, refreshContext]);
 
   // A fresh failure re-surfaces the warning even if a prior one was dismissed.
   useEffect(() => {

@@ -134,7 +134,7 @@ _MAX_SAMPLES_BYTES = 25 * 1024 * 1024
 
 
 @router.post("/sep-oil-loss/samples", response_model=schemas.OiwSamplesResponse)
-async def sep_oil_loss_samples(
+def sep_oil_loss_samples(
     file: UploadFile = File(...),
     location: str = Query(oiw_svc.DEFAULT_LOCATION, description="Sample point"),
     water_rate_bpd: float = Query(oiw_svc.DEFAULT_WATER_RATE_BPD, ge=1000, le=300000),
@@ -151,13 +151,16 @@ async def sep_oil_loss_samples(
     name = file.filename or "samples.xlsx"
     if not name.lower().endswith(".xlsx"):
         raise _invalid(ValueError(f"{name}: expected an .xlsx workbook"))
-    blob = await file.read()
+    blob = file.file.read(_MAX_SAMPLES_BYTES + 1)
     if len(blob) > _MAX_SAMPLES_BYTES:
         raise _invalid(
             ValueError(f"{name}: file exceeds {_MAX_SAMPLES_BYTES // (1024 * 1024)} MB")
         )
     try:
-        return oiw_svc.oiw_samples(blob, name, location, water_rate_bpd, sheet)
+        from server import pool
+
+        with pool.cpu_slot():
+            return oiw_svc.oiw_samples(blob, name, location, water_rate_bpd, sheet)
     except ValueError as exc:
         raise _invalid(exc) from None
 

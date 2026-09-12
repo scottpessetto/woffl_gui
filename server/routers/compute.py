@@ -219,7 +219,7 @@ def get_ipr_pin(name: str) -> schemas.IprPinResponse:
 
 
 def _writes_gate() -> None:
-    """403 when the ALLOW_DATABRICKS_WRITES gate is off - the UI hides the
+    """403 when the ALLOW_DATABRICKS_WRITES gate is off - the UI disables the
     save controls on /meta.writes_enabled, so hitting this means a stale
     client or a deliberate probe."""
     from woffl.gui.ipr_anchor import writes_enabled

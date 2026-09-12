@@ -30,6 +30,7 @@ and never shared between jobs.
 from __future__ import annotations
 
 from woffl.flow.entry_energy import MODEL_VERSION
+from woffl.flow.hydraulics import physics_model
 
 import logging
 
@@ -148,6 +149,7 @@ def _config_from_seeds(name: str, pad: str, seeds: dict[str, Any]):
         form_wc=wc_seed,
         form_gor=f("form_gor", 250.0),
         field_model=str(seeds.get("field_model") or "Schrader"),
+        hydraulics_model=str(seeds.get("hydraulics_model") or "beggs"),
         surf_pres=f("surf_pres", 210.0),
         qwf=f("qwf", 750.0),
         pwf=f("pwf", 500.0),
@@ -213,6 +215,8 @@ def _build_configs(
                 # Where this well's inflow curve came from. The pump the
                 # optimizer picks is only as trustworthy as this.
                 prov[name] = {
+                    "hydraulics_model": seeds.get("hydraulics_model", "beggs"),
+                    "physics_model": physics_model(seeds.get("hydraulics_model", "beggs")),
                     "pump_calibration": ctx.get("pump_calibration"),
                     "ipr_source": ctx.get("ipr_source"),
                     "ipr_r2": ctx.get("ipr_r2"),
@@ -487,6 +491,8 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         "solver_agreement",
         "reconciliation", "per_pump_bpd", "station_cap_bpd", "frontier_cap_bpd",
         "amp_limited", "setpoint_psi",
+        "curve_header_psi", "coupling_residual_psi", "search_header_psi",
+        "qualified_selections", "rejected_selections", "search_scope",
     )
     return _plain(
         {

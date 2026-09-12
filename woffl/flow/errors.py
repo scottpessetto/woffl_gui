@@ -20,6 +20,11 @@ class ConvergenceError(JetPumpError):
     """An iterative solve (secant / Newton loop) failed to converge."""
 
 
+# [LIBRARY change -> upstream PR to kwellis/woffl]
+class HydraulicsDomainError(JetPumpError):
+    """The chosen return-flow model cannot evaluate the specified state."""
+
+
 class ThroatEntryNoSolution(JetPumpError, IndexError):
     """The throat-entry sweep produced no valid zero crossing of the total
     differential energy. Typical causes: GOR or suction pressure too low."""

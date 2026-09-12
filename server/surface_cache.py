@@ -1,6 +1,7 @@
 """Exact per-well response nodes, shared by pad/CFP and scenario runs.
 
-Only pure physics is cached. Budgets, prices and allocations are recomputed.
+Pure physics and immutable historical replay results share this budget.
+Replay keys include observations and training settings; budgets, prices and allocations are recomputed.
 Pickled values provide independent mutable objects to every consumer; keys
 include every WellConfig field, pressure, pump grid, model source hash and
 survey contents. No measured data queries or persisted external cache.
@@ -84,6 +85,23 @@ def _get(key):
             del _CACHE[key]
         _MISSES += 1
     return None
+
+
+def snapshot(well, namespace, inputs):
+    """Key/read an immutable replay within the existing byte/entry/TTL budget.
+
+    Callers include all observations, installation identities and replay settings.
+    The ordinary physics key also contributes complete well inputs and survey.
+    """
+    physics_key = _key(well, 0, (), ())
+    key = (sha256(pickle.dumps((namespace, physics_key, inputs), protocol=5)).digest()
+           if physics_key is not None else None)
+    return key, _get(key)
+
+
+def store_snapshot(key, result):
+    """Store a completed replay; values are copied and share the physics budget."""
+    _put(key, result)
 
 
 def _put(key, value):

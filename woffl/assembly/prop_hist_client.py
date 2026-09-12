@@ -67,7 +67,7 @@ PROP_HIST_INSERT_SQL = (
 # be one statement PER property: 6-9 serialized Delta commits at ~0.2-1 s each,
 # which is what made "Save IPR as well default" hang for seconds. Delta takes a
 # multi-row VALUES list happily, and `_validate_single_insert` already permits
-# it (it only forbids ';' chaining), so a save is now ONE statement.
+# this append-only VALUES form, so a save is now ONE statement.
 #
 # Every marker is numbered — including enthid/stamp/user, which are identical
 # on every row — so no parameter name is ever repeated in the statement. That

@@ -10,7 +10,7 @@ import type { KeyboardEvent } from "react";
 import { Lock, LockOpen } from "lucide-react";
 
 import { useMeta, usePropLock } from "../api/hooks";
-import { NOZZLE_OPTIONS, THROAT_OPTIONS } from "../api/types";
+import { HYDRAULICS_LABELS, NOZZLE_OPTIONS, THROAT_OPTIONS, type HydraulicsModel } from "../api/types";
 import { Button } from "../components/ui";
 import { useParamsStore, type PropLocks } from "../state/params";
 import { CheckboxField, NumberField, RadioRow, SelectField } from "./ParamFields";
@@ -30,6 +30,25 @@ function SectionHeader({ text }: { text: string }) {
 
 function SubHeader({ text }: { text: string }) {
   return <p className="text-[11px] font-semibold text-slate-500">{text}</p>;
+}
+
+function HydraulicsChoice() {
+  const model = useParamsStore((s) => s.params.hydraulics_model);
+  const set = useParamsStore((s) => s.set);
+  return <section className="space-y-2 pb-3">
+    <SectionHeader text="Return hydraulics" />
+    <label className="block text-xs text-slate-500">
+      Pressure model
+      <select aria-label="Return hydraulics model" className={`${WINDOW_INPUT_CLS} mt-1`} value={model}
+        onChange={(e) => set("hydraulics_model", e.target.value as HydraulicsModel)}>
+        {Object.entries(HYDRAULICS_LABELS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+        <option disabled value="tulsa_unified">Tulsa unified (not yet available)</option>
+      </select>
+    </label>
+    {model === "hagedorn_brown" && <p className="text-xs text-slate-500">Vertical holdup correlation; inclination changes the gravity term only.</p>}
+    {model === "drift_flux" && <p className="text-xs text-slate-500">Inclined gas/liquid slip, with oil and water treated as one liquid.</p>}
+    <p className="text-xs text-slate-500">Changing models resets pump coefficients. Calibrate and save the installed-pump fit to use this choice in optimization.</p>
+  </section>;
 }
 
 /** Small amber chip for values pinned by a saved IPR (prop locks). */
@@ -231,7 +250,7 @@ function PumpProvenance() {
     return <p className="mt-1 text-[11px] text-slate-400">No install on record for this well</p>;
   }
   const code = `${pump.nozzle_no ?? "?"}${pump.throat_ratio ?? "?"}`;
-  const when = pump.date_set ? ` set ${pump.date_set}` : "";
+  const when = pump.date_set ? ` set ${pump.date_set.slice(0, 10)}` : "";
   if (pump.source === "excel_fallback") {
     return (
       <p className="mt-1 text-[11px] text-amber-700">
@@ -301,6 +320,8 @@ export function Sidebar() {
             />
           </div>
         </section>
+
+        <HydraulicsChoice />
 
         <section className="pb-3">
           <SectionHeader text="Pump" />

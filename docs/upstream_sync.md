@@ -1012,3 +1012,68 @@ Guarded by: `tests/test_pump_calibration_scope.py::test_catalog_replacements_do_
 and `tests/test_review_2026_09_07.py::test_batch_wear_only_applies_to_installed_size`.
 Application persistence/UI contracts are documented separately in
 `docs/pump_calibration_scope_2026-09-08.md`.
+
+## 44. Selectable return hydraulics (2026-09-11)
+
+`flow/hydraulics.py` adds modified Hagedorn–Brown/Griffith and a steady
+Shi/Pan drift-flux closure. The existing Beggs–Brill + Payne traverse remains
+the default and unchanged. Unknown/unimplemented models raise
+`HydraulicsDomainError`; alternatives report unsupported downhill geometry
+and acceleration limits rather than falling back to BB. Actual area remains
+independent of hydraulic diameter. Drift-flux acceleration differentiates
+conserved phase momentum and restores the mutable PVT state.
+
+`hydraulics_model` propagates through all solopump residual/bracket/secant/
+reseed/bisection paths, BatchPump (including continuous sizing), WellConfig,
+and the simulation helper. New fields have BB defaults. Pump entry remains
+`entry-energy-v2`; alternative fits carry an additional version suffix.
+Neither alternative reuses BB's holdup/friction/acceleration corrections.
+
+Guarded by: `tests/test_hydraulics_models.py::test_single_phase_matches_hydrostatics_and_hagen_poiseuille`,
+`test_gas_acceleration_matches_ideal_gas_momentum_and_restores_pvt`,
+`test_griffith_bubble_branch_conserves_flux_with_prescribed_slip`,
+`test_pan_kutateladze_against_published_figure_and_large_diameter_limit`,
+`test_invalid_or_downhill_segments_fail_without_model_fallback`,
+`test_default_beggs_is_unchanged_and_alternatives_change_real_traverse`,
+`test_selected_model_reaches_solver_and_closes_its_discharge_balance`,
+`test_model_version_and_surface_cache_separate_equal_hardware`, and
+`tests/test_pump_calibration_scope.py::test_real_batch_installed_and_clean_predictions_match_single_solves`.
+
+Sources, exact closure variants, limits, application fit persistence and the
+six-well comparison are in [the implementation record](hydraulics_models_2026-09-11.md).
+Tulsa is not implemented. The unchanged BB baseline is reproduced by the
+[new benchmark](hydraulics_benchmark_2026-09-11.json); alternatives improve
+some errors and worsen others. This patch is not field qualification.
+
+## 45. Recover interior lift solutions after endpoint failure (2026-09-12)
+
+`assembly/solopump.py` no longer concludes that a well cannot lift solely
+because the discharge residual is negative at both feasible suction endpoints.
+The existing equations produce an interior positive lobe on B-30. Only after
+that endpoint failure, a 64-interval scan brackets adjacent feasible probes
+and Brent refinement checks the actual residual at the returned root. The
+search accepts the first negative-to-positive crossing, without comparing
+against measured BHP or oil. It requires finite outputs, nonnegative rates
+and discharge closure within the existing 10 psi tolerance. Known infeasible
+probes break brackets; unclosed sign jumps are rejected. At most 192 residual
+evaluations are allowed. A narrow unprobed feasible island can still be missed.
+This steady branch convention does not establish transient stability.
+
+Existing converging/entry-limited/secant/bisection paths and all physical
+equations remain unchanged. No IPR, fluid, loss, Mach or model-version change
+is part of this numerical fallback. Physics-source cache keys invalidate prior
+responses. The frozen B-30 September 2 example now closes at 1149.62 psig and
+338.39 BOPD, with discharge residual about 2.3e-12 psi, using its original IPR.
+
+Guarded by: `tests/test_interior_lift.py::test_interior_lift_selects_first_forward_crossing_and_consistent_rates`,
+`test_interior_lift_rejects_unclosed_or_infeasible_roots_with_bounded_work`
+(holes, discontinuities, nonfinite outputs, negative rates and no lift),
+`test_b30_interior_lift_recovers_a_closed_balance_with_original_ipr`, and
+`test_existing_successful_solver_path_never_runs_interior_search`.
+
+The seven-well saved-composition check preserves all **329** previously
+successful predictions exactly and recovers B-30's **23** previously missed
+tests. The chronological adapter preserves all **121** comparable September 11
+predictions exactly. F-73 remains unresolved. See the
+[fixed-IPR investigation](well_match_diagnostic_2026-09-12.md) for comparison
+cohorts, measured-composition effects and the remaining physics/validation work.

@@ -144,6 +144,32 @@ def _wait_done(client: TestClient, job_id: str, timeout: float = 10.0) -> dict:
     raise AssertionError("job did not settle in time")
 
 
+@pytest.mark.parametrize("model", ["hagedorn_brown", "drift_flux"])
+def test_calibration_choice_reaches_fitter_and_clears_foreign_model_losses(client, monkeypatch, model):
+    from woffl.flow.hydraulics import physics_model
+    from woffl.gui import fric_calibration as fc
+    seen = []
+    def fit(cfg, *args, **kwargs):
+        seen.append((cfg.hydraulics_model, cfg.ken_well, cfg.kth_well, cfg.kdi_well, cfg.fnz_well))
+        return _fit_result()
+    monkeypatch.setattr(fc, "calibrate_multipoint", fit)
+    response = client.post("/api/optimize/event-calibration", json={"well": WELL, "hydraulics_model": model})
+    assert response.status_code == 200
+    result = _wait_done(client, response.json()["job_id"])["result"]
+    assert seen == [(model, .03, .3, .4, 1.)]
+    assert result["physics_model"] == physics_model(model) and result["hydraulics_model"] == model
+
+
+@pytest.mark.parametrize("stamp", ["2026-08-10T00:00:00", "2026-08-10T15:30:00"])
+def test_calibration_emits_exact_utc_installation(client, monkeypatch, stamp):
+    built = _built()
+    built["pump"]["date_set"] = stamp
+    monkeypatch.setattr(cal_points, "pad_points", lambda *a, **kw: {WELL: built})
+    body = _wait_done(client, _start(client))
+    assert body["status"] == "done"
+    assert body["result"]["installation_date_set"] == stamp + "+00:00"
+
+
 # ---------------------------------------------------------------------------
 # Happy path - the contract payload, verbatim
 # ---------------------------------------------------------------------------

@@ -166,11 +166,14 @@ def run_jetpump_solver(
     res_mix,
     field_model=None,
     jpump_direction="reverse",
+    hydraulics_model="beggs",
 ) -> Optional[tuple[Any, ...]]:
     """Run the jetpump solver and return the results.
 
     Finds a solution for the jetpump system that factors in the wellhead
     pressure and reservoir conditions.
+
+    hydraulics_model (str) selects the return-flow correlation, default beggs.
 
     Returns:
         tuple or None: (psu, sonic_status, qoil_std, fwat_bwpd, qnz_bwpd,
@@ -199,6 +202,8 @@ def run_jetpump_solver(
             prop_su=res_mix,
             prop_pf=prop_pf,
             jpump_direction=jpump_direction,
+            # [LIBRARY change -> upstream PR to kwellis/woffl]
+            hydraulics_model=hydraulics_model,
         )
     except ThroatEntryNoSolution:
         raise

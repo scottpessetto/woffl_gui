@@ -594,15 +594,7 @@ def test_fleet_targets_cover_the_frames_every_cold_request_blocks_on():
         "well_characteristics",
         "pf_latest",
         "jp_history",
-        "well_tests_6mo",
-        # evidence._min_test_bhp asks for 12 months; warming only 6 left every
-        # /response-history request paying a fleet query.
-        "well_tests_12mo",
-        # calibration_points.points_for_well asks for 24. This one WAS missing:
-        # the list was hand-written here and drifted from the call sites, so
-        # the first request touching calibration points paid a cold fleet
-        # query. See test_every_live_lookback_window_is_warmed below.
-        "well_tests_24mo",
+        "well_tests",
         # /api/wells is cached now, so it needs the retention floor too.
         "well_list",
         "surveyed_wells",
@@ -626,17 +618,16 @@ def test_every_live_lookback_window_is_warmed():
 
     fetch_all_well_tests caches PER WINDOW and each miss is a full-fleet
     query. The list used to be hand-maintained in fleet_targets and silently
-    fell behind the call sites (24 months went unwarmed). It is now generated
-    from config.WARM_TEST_MONTHS, so this test guards the remaining risk: a
+    fell behind the call sites (24 months went unwarmed). The shared snapshot
+    now primes config.WARM_TEST_MONTHS, so this test guards the remaining risk: a
     new call site picking a window nobody added to that tuple.
     """
     import re
 
     from server import config
 
-    labels = {label for label, _ in warmup.fleet_targets()}
-    for months in config.WARM_TEST_MONTHS:
-        assert f"well_tests_{months}mo" in labels, months
+    targets = dict(warmup.fleet_targets())
+    assert targets["well_tests"] is tests_svc.warm_test_windows
 
     # Every months literal handed to the test fetchers anywhere under server/.
     sources = (pathlib.Path(__file__).resolve().parent.parent / "server").rglob("*.py")

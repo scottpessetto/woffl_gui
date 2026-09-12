@@ -7,6 +7,12 @@
 
 export type FieldModel = "Schrader" | "Kuparuk";
 export type JpumpDirection = "forward" | "reverse";
+export type HydraulicsModel = "beggs" | "hagedorn_brown" | "drift_flux";
+export const HYDRAULICS_LABELS: Record<HydraulicsModel, string> = {
+  beggs: "Beggs–Brill + Payne",
+  hagedorn_brown: "Hagedorn–Brown + Griffith",
+  drift_flux: "Drift-flux (Shi / Pan)",
+};
 export type WaterType = "total" | "formation";
 
 export const NOZZLE_OPTIONS = ["8", "9", "10", "11", "12", "13", "14", "15"] as const;
@@ -26,6 +32,7 @@ export interface SimParams {
   mach_crit: number;
   nozzle_area_factor: number;
   jpump_direction: JpumpDirection;
+  hydraulics_model: HydraulicsModel;
   // Pipe (inches)
   tubing_od: number;
   tubing_thickness: number;
@@ -102,6 +109,7 @@ export const DEFAULT_PARAMS: SimParams = {
   mach_crit: 1.0,
   nozzle_area_factor: 1.0,
   jpump_direction: "reverse",
+  hydraulics_model: "beggs",
   tubing_od: 4.5,
   tubing_thickness: 0.5,
   casing_od: 6.875,
@@ -188,6 +196,8 @@ export interface PropLock {
 }
 
 export interface PumpCalibrationScope {
+  hydraulics_model?: HydraulicsModel;
+  physics_model?: string;
   status: "active" | "none" | "legacy" | "stale" | "unavailable";
   coefficients: Partial<SimParams>;
   message?: string;
@@ -255,6 +265,8 @@ export interface SolveRequest {
 }
 
 export interface SolveResult {
+  hydraulics_model?: HydraulicsModel;
+  physics_model?: string;
   psu: number; // psig
   sonic_status: boolean;
   qoil_std: number; // BOPD
@@ -382,6 +394,8 @@ export interface OptimizeRunRequest {
 }
 
 export interface PadRunRow {
+  hydraulics_model?: HydraulicsModel;
+  physics_model?: string;
   well: string;
   pump_state?: "installed" | "replacement" | null;
   current_pump: string | null;
@@ -598,7 +612,7 @@ export interface MatchHealthRequest {
   pad: RunPad;
 }
 
-export type MatchHealthVerdict = "contradicted" | "railed-cal" | "weak-fit" | "ok";
+export type MatchHealthVerdict = "contradicted" | "railed-cal" | "weak-fit" | "poor-match" | "unknown" | "ok";
 
 /** One well on the match-health scorecard. Every column is null-safe:
  * evidence columns are null when the warehouse was unreachable, model
@@ -631,6 +645,7 @@ export interface MatchHealthRow {
   kdi_railed: boolean;
   last_test_date: string | null;
   verdict: MatchHealthVerdict;
+  missing_evidence: string[];
 }
 
 export interface MatchHealthResult {
@@ -710,6 +725,7 @@ export interface MatchTestResponse {
  * calibration job for one well; poll via /optimize/run/{job_id}. */
 export interface EventCalibrationRequest {
   well: string;
+  hydraulics_model?: HydraulicsModel;
 }
 
 /** The fitted knobs and fit quality. Null when the job refused to fit
@@ -751,6 +767,8 @@ export interface SinglePointMatch {
 }
 
 export interface EventCalibrationResult {
+  hydraulics_model?: HydraulicsModel;
+  physics_model?: string;
   installation_date_set?: string | null;
   well: string;
   pump: string | null;
@@ -1350,6 +1368,8 @@ export interface PfRangeResponse {
 // ---------------------------------------------------------------------------
 
 export interface PressureProfileResponse {
+  physics_model?: string;
+  hydraulics_model?: HydraulicsModel;
   prod: { md: number[]; press: number[] };
   pf: { md: number[]; press: number[] };
   diff: { md: number[]; dp: number[] };
@@ -1450,6 +1470,63 @@ export interface JpHistoryResponse {
   pump_state?: "installed" | "replacement" | null;
   current_pump: string | null;
   source: "databricks" | "excel_fallback";
+}
+
+export type PumpMatchWellInputs = Pick<SaveIprRequest,
+  "qwf_liq" | "pwf" | "res_pres" | "form_wc" | "form_gor" | "surf_pres" | "bubble_point" | "form_temp">;
+
+export interface PumpMatchRequest {
+  hydraulics_model: HydraulicsModel;
+  months: 6 | 12 | 24 | 60;
+  mode: "all_tests" | "same_pump" | "previous_pump";
+  training_tests: number;
+  edited_inputs: PumpMatchWellInputs | null;
+}
+
+export interface PumpMatchScores {
+  attempted: number; solved: number; failed: number;
+  bhp_count: number; bhp_bias: number | null; bhp_rms: number | null;
+  oil_count: number; oil_mae: number | null; oil_median_abs_pct: number | null;
+  pf_count: number; pf_median_abs_pct: number | null;
+}
+
+export interface PumpMatchRow {
+  date: string; wt_uid: string; installation_id: string | null;
+  status: "replay" | "fit" | "prediction" | "missing" | "failed" | "excluded";
+  phase: "replay" | "fit" | "prediction" | null;
+  bhp: number | null; oil: number | null; pf: number | null; liquid: number | null;
+  ppf: number | null; pwh: number | null; wc: number | null; gor: number | null;
+  input_wc: number | null; input_gor: number | null;
+  predicted_bhp: number | null; predicted_oil: number | null;
+  predicted_pf: number | null; predicted_liquid: number | null;
+  sonic: boolean | null; message: string | null;
+}
+
+export interface PumpMatchEra {
+  installation_id: string; date_set: string; end: string | null;
+  pump: string; nozzle: string | null; throat: string | null;
+  direction: string | null; manufacturer: string | null; flags: string[];
+  training_start: string | null; training_end: string | null;
+  training_installation_id: string | null; training_count: number;
+  training_test_ids: string[]; prediction_config: Record<string, unknown> | null;
+  training_ppf_span: number | null; input_wc: number | null; input_gor: number | null;
+  unavailable: string | null;
+  fit_scores: PumpMatchScores; prediction_scores: PumpMatchScores; replay_scores: PumpMatchScores;
+}
+
+export interface PumpMatchResult {
+  well: string; request: PumpMatchRequest; physics_model: string;
+  snapshot_id: string; as_of: string; source: "databricks" | "excel_fallback";
+  notes: string[]; eras: PumpMatchEra[]; rows: PumpMatchRow[];
+  well_inputs: Record<string, unknown>;
+  validated_for_sizing: false;
+}
+
+export interface PumpMatchJob {
+  job_id: string; kind: "pump-match";
+  status: "running" | "done" | "error" | "cancelled";
+  progress: string; result: PumpMatchResult | null; error: string | null;
+  started_at: string; seconds: number;
 }
 
 // ---------------------------------------------------------------------------

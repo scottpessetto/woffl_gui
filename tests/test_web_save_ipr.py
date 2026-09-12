@@ -199,6 +199,60 @@ def test_well_input_save_never_writes_pump_coefficients(client, recorder, gate_o
     assert comments == []  # no note supplied
 
 
+def test_saved_preview_values_reload_into_optimizer_and_refresh_characterization(recorder, monkeypatch):
+    """Real save/read/config adapters with an in-memory prop ledger, no SQL."""
+    from server import schemas
+    from server.services import datasources, optimizer_runs
+    pushes, _ = recorder
+    reads = []
+
+    def latest():
+        return {p["prop_id"]: dict(prop_value=p["value"], entry_datetime=p["entry_datetime"],
+                                   entry_user=p["entry_user"]) for p in pushes}
+
+    def read_chars():
+        reads.append(True)
+        rows = latest()
+        def value(pid, default): return rows.get(pid, {}).get("prop_value", default)
+        return pd.DataFrame([dict(Well=WELL, res_pres=value("resvr_press", 1500.),
+            form_temp=value("resvr_temp", 80.), bubble_point=value("resvr_bubb", 1750.))]), []
+
+    monkeypatch.setattr(databricks_client, "fetch_well_props_enriched", read_chars)
+    monkeypatch.setattr(ipr_anchor, "load_saved_ipr", lambda *_: ipr_anchor._assemble_saved_ipr(latest()))
+    monkeypatch.setattr(wells_svc, "list_wells", lambda: {"wells": [{"name": WELL, "pad": "L"}]})
+    monkeypatch.setattr(datasources, "jp_history_safe", lambda: (None, "none"))
+    monkeypatch.setattr(wells_svc.tests_svc, "tests_for_well", lambda *_: None)
+    monkeypatch.setattr(wells_svc, "_live_pf_seed", lambda *_: None)
+    monkeypatch.setattr(ipr_anchor, "resolve_entry_user", lambda: "fixture@example.com")
+    datasources.well_chars.cache_clear()
+    try:
+        assert wells_svc.well_context(WELL)["seeds"]["form_temp"] == 80.
+        assert len(reads) == 1  # Prime the actual characteristics cache.
+        values = dict(qwf_liq=987.25, pwf=612.5, res_pres=1589.75, form_wc=.713,
+                      form_gor=734.25, surf_pres=212.5, form_temp=110.25, bubble_point=1910.5)
+        request = schemas.SaveIprRequest(**values)
+        assert ipr_svc.save(WELL, request)["n_values"] == 8
+        cfg, = optimizer_runs._build_configs(["L"], set(), [], [])
+        assert len(reads) == 2
+        assert (cfg.qwf, cfg.pwf, cfg.res_pres, cfg.form_wc, cfg.form_gor, cfg.surf_pres) == (
+            987.25, 612.5, 1589.75, .713, 734.25, 212.5)
+        assert (cfg.form_temp, cfg.bubble_point) == (110.25, 1910.5)
+        assert db_svc.database_rows()["rows"][0]["bubble_point"] == 1910.5
+        assert len(reads) == 2  # One refreshed fleet read serves all consumers.
+    finally:
+        datasources.well_chars.cache_clear()
+
+
+def test_failed_value_save_does_not_evict_characterization(recorder, monkeypatch):
+    from server import schemas
+    from server.services import datasources
+    evicted = []
+    monkeypatch.setattr(datasources.well_chars, "cache_clear", lambda: evicted.append(True))
+    monkeypatch.setattr(ipr_anchor, "save_ipr_values", lambda *a, **kw: (0, "Save failed"))
+    assert ipr_svc.save(WELL, schemas.SaveIprRequest(**dict(PAYLOAD, pin_wt_uid=None)))["n_values"] == 0
+    assert evicted == []
+
+
 def test_wc_capped_at_099(client, recorder, gate_on):
     r = client.post(
         f"/api/wells/{WELL}/save-ipr", json=dict(PAYLOAD, form_wc=1.0), headers=HEADERS

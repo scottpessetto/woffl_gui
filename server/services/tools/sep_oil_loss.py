@@ -378,7 +378,9 @@ def _daily_rows(
     for stamp, block in frame.groupby(day, sort=True):
         hours = float(block["dt_h"].sum())
         span_lo = max(stamp, window_start)
-        span_hi = min(stamp + pd.Timedelta(days=1), window_end)
+        next_midnight = stamp + pd.DateOffset(days=1)
+        day_hours = (next_midnight - stamp).total_seconds() / 3600.0
+        span_hi = min(next_midnight, window_end)
         covered = max((span_hi - span_lo).total_seconds() / 3600.0, 0.0)
         upper = _barrels(block["oil_upper"], block["dt_h"])
         lower = _barrels(block["oil_lower"], block["dt_h"])
@@ -400,7 +402,7 @@ def _daily_rows(
                 "events": per_day_events.get(key, 0),
                 # A day the window only clips, or one the separator spent down,
                 # cannot be compared bar-for-bar against a full running day.
-                "partial": bool(hours < covered - 0.5 or covered < 23.5),
+                "partial": bool(hours < covered - 0.5 or covered < day_hours - 0.5),
             }
         )
     return rows

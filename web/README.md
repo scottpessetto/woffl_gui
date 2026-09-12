@@ -5,6 +5,11 @@ The backend is `server/` (FastAPI), importing this repository's vendored physics
 Current behavior and verification are in the [session handoff](../docs/session_learnings_2026-09-08.md)
 and [documentation index](../docs/README.md).
 
+The sidebar's return-hydraulics selector offers BB + Payne, Hagedorn–Brown +
+Griffith and Shi/Pan drift-flux. Tulsa remains unavailable. Model changes reset
+pump coefficients; completed installed-pump calibration saves carry the model
+into optimization. See [the implementation and comparison](../docs/hydraulics_models_2026-09-11.md).
+
 ## Develop
 
 Two terminals from the repo root:
@@ -28,18 +33,30 @@ node --test tests/*.test.mjs  # polling + pump-scope store contracts
 ```
 
 `web/dist` is served by FastAPI in production (same origin, no CORS), and is
-committed for Databricks deployment. The latest recorded baseline is 8 frontend
-tests and a successful production build on September 8; that does not deploy it.
+committed for Databricks deployment. The latest recorded baseline is 18 frontend
+tests and a successful production build on September 12; that does not deploy it.
 
 ## Solver state and calibration
 
+- **Show model match** in Solver's pump history and JP History defaults to
+  **Every test (well fit)**: one fixed oil IPR, each test's measured WC/GOR,
+  historical pump and recorded pressures at every usable test. **Well inputs**
+  selects saved database values or a preview of supported sidebar edits. Optional chronological modes
+  fit earlier tests within a pump or across changes. It overlays BHP/oil,
+  adds PF detail, and separates historical-model scores from held-out scores.
+  Missing inputs and solver failures retain explanations. Pump losses stay at
+  clean reference; see [the workflow and limits](../docs/pump_match_ui_2026-09-12.md).
 - **Save well inputs** and **Save installed-pump calibration** are separate.
+  Well Save stays visible at the top of Solver and JP History, with a disabled
+  state and explanation for read-only access or invalid inputs. Preview never
+  writes. New optimization runs use saved inputs; previous results are snapshots.
   Well saves exclude pump losses/area. Pump saves submit a completed server job
   ID; installation/model identity and quality are verified on the server.
 - `params.ts` owns installed/replacement state. Size edits and explicit clean
   selection reset all four pump coefficients to reference values. Same-size
   replacement is distinct from keeping installed hardware. Context refreshes
-  invalidate old installation scope while preserving unrelated well edits.
+  update saved baselines and invalidate old installation scope while preserving
+  unrelated well edits, including edits made during an in-flight save.
 - Event calibration uses saved well inputs; the UI tells the user to save
   edits before refitting. Apply previews a fit; optimization uses the saved fit.
 - WC uncertainty uses the current effective params, debounces 400 ms and caches
@@ -49,8 +66,9 @@ tests and a successful production build on September 8; that does not deploy it.
 - Preserve provisional/railed/response diagnostics. Keep the removed global
   yellow physics-transition banner out of Topbar.
 
-Optional browser harnesses are `tools/check_wc_uncertainty_ui.py` and
-`tools/check_pump_scope_ui.py`, using isolated Playwright in `build/browser-qa`.
+Optional browser harnesses include `tools/check_wc_uncertainty_ui.py`,
+`tools/check_pump_scope_ui.py`, `tools/check_pump_match_ui.py` and
+`tools/check_well_input_save_ui.py`, using isolated Playwright in `build/browser-qa`.
 They use fixtures and intercept saves; no production writes are needed. Do not
 run `npm run build` during Vite browser QA because reload can reset the scenario.
 When inspecting Zustand under HMR, import the actual loaded module URL (including

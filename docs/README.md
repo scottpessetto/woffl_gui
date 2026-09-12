@@ -1,7 +1,23 @@
 # Documentation index
 
-Updated September 8, 2026. Start with the [session handoff](session_learnings_2026-09-08.md)
-for current decisions, evidence, test baseline and remaining work. Agents must
+Updated September 12, 2026. The [edit/preview/save workflow](well_input_save_workflow_2026-09-12.md)
+adds visible well-save controls, historical previews of sidebar edits, saved
+baseline refresh and verified hydration into new optimization configurations.
+The [Pump Match Over Time implementation](pump_match_ui_2026-09-12.md)
+adds BHP/oil predictions at every usable test, optional chronological validation
+and optimizer history links.
+The [fixed-IPR investigation](well_match_diagnostic_2026-09-12.md) records the
+user's one-IPR constraint, per-test WC/GOR replay, interior-lift solver recovery,
+seven-well comparison and next fitting steps.
+The [optimization and multi-pump fitting status](optimization_fitting_status_2026-09-12.md)
+checks the remaining work against source and specifies the requested production-plot
+toggle for modeled BHP and oil. Start with the [end-of-night handoff](session_close_2026-09-11.md)
+for the consolidated work, stopping state and ordered next steps. The
+[resumed modeling work](jp_model_resume_2026-09-11.md),
+[airport pause handoff](session_learnings_2026-09-11.md)
+and [model improvement plan](jp_model_improvement_plan_2026-09-11.md) for current
+priorities and resumable work. The [September 8 handoff](session_learnings_2026-09-08.md)
+retains the underlying decisions and evidence. Agents must
 also read [AGENTS.md](../AGENTS.md). Dated measurements describe their recorded
 inputs and revision; later implementation notes do not retroactively rerun them.
 
@@ -15,11 +31,22 @@ inputs and revision; later implementation notes do not retroactively rerun them.
 | [Pump calibration scope](pump_calibration_scope_2026-09-08.md) | Installation/model identity, persistence, clean replacements and tests |
 | [WC uncertainty GUI](wc_uncertainty_gui_2026-09-08.md) | Sensitivity assumptions, failures, stale-result behavior and browser QA |
 | [Model trust and calibration](model_trust_2026-08-10.md) | Evidence layer and fitting; current amendments supersede August Mach assumptions |
+| [Model improvement plan](jp_model_improvement_plan_2026-09-11.md) | BHP diagnosis beyond friction, possible physics errors, multiple pump installations/wells, hydraulic alternatives and Pump Match Over Time |
+| [Selectable hydraulics](hydraulics_models_2026-09-11.md) | BB, Hagedorn–Brown/Griffith and Shi/Pan; scoped model selection, primary sources, limitations and same-input historical comparison; Tulsa pending |
 | [Pad optimization formulation](optimization_redesign_2026-09.md) | Water pricing, plant constraints, both allocators and hardware identity |
 | [CFP moves methodology](cfp_moves_methodology.md) | Measured-anchor deltas and response surfaces |
-| [Upstream patch register](upstream_sync.md) | Shared-library changes through patch 43 and merge regressions |
+| [Upstream patch register](upstream_sync.md) | Shared-library changes through patch 45 and merge regressions |
 
 ## September 7-8 implementation and validation records
+
+September 11 follow-up: [recovered Fable review and fixes](recovered_review_2026-09-11.md)
+records the ten confirmed defects, their local fixes and regression coverage.
+The [BHP diagnostic](bhp_model_diagnostic_2026-09-11.png) and
+[corrected historical preflight](pump_lifetime_preflight_v2_2026-09-11.json) support the
+new plan; they are offline investigations, not independent field validation.
+The [cross-pump time plot](pump_history_benchmark_2026-09-11.png) and
+[benchmark](pump_history_benchmark_2026-09-11.json) forecast later installations
+from earlier tests under documented historical-input assumptions.
 
 | Record | Scope and interpretation |
 |---|---|
@@ -52,7 +79,7 @@ backlog or authority to restore deleted modules, issue DDL or send a message.
   Scoped pump calibration uses the existing comment ledger; no new schema was
   required. Historical grant requests are not a current access audit.
 - [Upstream PR draft](upstream_pr_draft.md) covers the early solver fallbacks,
-  not all 43 patches. It has not been refreshed into a complete publication draft.
+  not all 44 patches. It has not been refreshed into a complete publication draft.
 - [Retired crash/resume note](../RESUME_ENG_COMMENT.md) points here; its old
   uncommitted-file and live-save checklist is no longer actionable.
 - Workspace-level `../../docs/`, `../../plans/` and `../../.claude/plans/`

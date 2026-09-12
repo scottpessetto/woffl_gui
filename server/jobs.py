@@ -51,6 +51,27 @@ _JOB_SLOTS = threading.BoundedSemaphore(_MAX_JOBS)
 Runner = Callable[[dict[str, Any]], dict[str, Any]]
 
 
+class JobCancelled(Exception):
+    """Cooperative cancellation; an in-flight worker must finish before release."""
+
+
+def check_cancelled(job: dict[str, Any]) -> None:
+    if job.get("cancel_event") is not None and job["cancel_event"].is_set():
+        raise JobCancelled()
+
+
+def cancel(job_id: str, kinds: tuple[str, ...]) -> bool:
+    """Request cancellation only in the caller's job namespace."""
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job is None or job["kind"] not in kinds:
+            return False
+        if job["status"] == "running":
+            job["cancel_event"].set()
+            job["progress"] = "cancelling - finishing the current calculation"
+        return True
+
+
 def _prune_jobs() -> None:
     now = time.monotonic()
     with _JOBS_LOCK:
@@ -120,6 +141,7 @@ def start(kind: str, run: Runner, progress: str = "starting...") -> str:
         "started_at": datetime.now().isoformat(timespec="seconds"),
         "started_mono": time.monotonic(),
         "settled_mono": 0.0,
+        "cancel_event": threading.Event(),
     }
     with _JOBS_LOCK:
         _JOBS[job_id] = job
@@ -131,23 +153,35 @@ def start(kind: str, run: Runner, progress: str = "starting...") -> str:
         # 2-vCPU tier - two engineers clicking Run meant 4+ solver processes
         # and nothing queued (review 2026-09-01, SRV-12). Excess jobs wait
         # here and say so.
-        if not _JOB_SLOTS.acquire(blocking=False):
-            job["progress"] = f"queued - waiting for a job slot (max {_MAX_JOBS} at once)"
-            _JOB_SLOTS.acquire()
+        acquired = False
         try:
+            check_cancelled(job)
+            acquired = _JOB_SLOTS.acquire(blocking=False)
+            if not acquired:
+                job["progress"] = f"queued - waiting for a job slot (max {_MAX_JOBS} at once)"
+                while not acquired:
+                    check_cancelled(job)
+                    acquired = _JOB_SLOTS.acquire(timeout=0.25)
+            check_cancelled(job)
             from server import performance
             performance.record("job.queue", time.monotonic() - job["started_mono"])
             with performance.measure("job.run"):
-                job["result"] = run(job)
+                result = run(job)
+                check_cancelled(job)
+                job["result"] = result
             job["status"] = "done"
             job["progress"] = "done"
+        except JobCancelled:
+            job["status"] = "cancelled"
+            job["progress"] = "cancelled"
         except Exception as exc:  # noqa: BLE001 - job surface, never crash the server
             log.exception("%s job %s failed", kind, job_id)
             job["status"] = "error"
             job["error"] = str(exc)
         finally:
             job["settled_mono"] = time.monotonic()
-            _JOB_SLOTS.release()
+            if acquired:
+                _JOB_SLOTS.release()
 
     threading.Thread(target=target, daemon=True, name=f"job-{kind}-{job_id}").start()
     return job_id

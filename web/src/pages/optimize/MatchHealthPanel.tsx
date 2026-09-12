@@ -43,14 +43,23 @@ const VERDICT_META: Record<
     tone: "neutral",
     hint: "Saved inflow fit has r2 below 0.5 - the model is only as good as a sketch.",
   },
-  ok: { tone: "good", hint: "No contradiction, rail or weak fit detected." },
+  "poor-match": {
+    tone: "fair",
+    hint: "Modeled oil or PF falls outside the test-match band (0.80 to 1.25 times measured).",
+  },
+  unknown: {
+    tone: "neutral",
+    hint: "There is not enough evidence to complete the match screen.",
+  },
+  ok: { tone: "neutral", hint: "No flags in this screen. Prediction across later events or different pumps has not been validated here." },
 };
 
-function VerdictChip({ verdict }: { verdict: MatchHealthVerdict }) {
-  const meta = VERDICT_META[verdict] ?? VERDICT_META.ok;
+function VerdictChip({ row }: { row: MatchHealthRow }) {
+  const meta = VERDICT_META[row.verdict] ?? VERDICT_META.unknown;
+  const missing = row.missing_evidence?.length ? ` Missing: ${row.missing_evidence.join(", ")}.` : "";
   return (
-    <Badge tone={meta.tone} title={meta.hint}>
-      {verdict}
+    <Badge tone={meta.tone} title={meta.hint + missing}>
+      {row.verdict === "ok" ? "no flags" : row.verdict}
     </Badge>
   );
 }
@@ -240,7 +249,7 @@ export function MatchHealthPanel({ pad }: { pad: RunPad }) {
                       </td>
                       <td className={TD_CLS}>{row.last_test_date ?? "-"}</td>
                       <td className={TD_CLS}>
-                        <VerdictChip verdict={row.verdict} />
+                        <VerdictChip row={row} />
                       </td>
                     </tr>
                   ))}
@@ -257,7 +266,8 @@ export function MatchHealthPanel({ pad }: { pad: RunPad }) {
             <p className="text-xs text-slate-400">
               Modeled at the plant-derived header {fmtNum(result.header_psi)} psi. * = model
               reports the well sonic-pinned. Floors and betas come from a year of daily gauge
-              history; "-" means no data, never a passing grade.
+              history; "unknown" means evidence is incomplete. "No flags" is a screening
+              result; it does not establish accuracy on later events or different pumps.
             </p>
           </>
         )}

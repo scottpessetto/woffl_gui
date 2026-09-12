@@ -6,11 +6,13 @@
  * views can never drift.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { useJpHistory } from "../api/hooks";
 import type { JpInstallRow } from "../api/types";
-import { HistoryStrip } from "../components/HistoryStrip";
+import { ProductionHistory } from "../components/ProductionHistory";
+import { SaveWellInputs } from "../components/SaveWellInputs";
 import { Badge, Card, type Column, DataTable, ErrorNote, InfoNote, Section, Spinner } from "../components/ui";
 import { fmtDate, fmtNum, pumpCode } from "../lib/format";
 import { useParamsStore } from "../state/params";
@@ -41,6 +43,13 @@ const INSTALL_COLUMNS: Column<JpInstallRow>[] = [
 
 export default function JpHistoryPage() {
   const well = useParamsStore((s) => s.well);
+  const [search] = useSearchParams();
+  const requestedWell = search.get("well");
+  useEffect(() => {
+    if (requestedWell && /^MP[A-Z]-\d{1,3}$/.test(requestedWell) && useParamsStore.getState().well !== requestedWell) {
+      useParamsStore.getState().selectWell(requestedWell);
+    }
+  }, [requestedWell]);
   const [bhpFromZero, setBhpFromZero] = useState(true);
   const [showPf, setShowPf] = useState(false);
 
@@ -54,18 +63,16 @@ export default function JpHistoryPage() {
       </InfoNote>
     );
   }
-  if (query.isError) {
-    return <ErrorNote error={query.error} />;
-  }
-  if (!data) {
-    return <Spinner label={`Loading JP history for ${well}`} />;
-  }
-  if (data.installs.length === 0) {
-    return <InfoNote>No jet pump history recorded for {well}</InfoNote>;
+  if (query.isError || !data || data.installs.length === 0) {
+    return <div className="space-y-4"><SaveWellInputs key={well} well={well} />
+      {query.isError ? <ErrorNote error={query.error} /> : !data ? <Spinner label={`Loading JP history for ${well}`} />
+        : <InfoNote>No jet pump history recorded for {well}</InfoNote>}
+    </div>;
   }
 
   return (
     <div className="space-y-4">
+      <SaveWellInputs key={well} well={well} />
       <Section
         title={`JP History - ${well}`}
         actions={
@@ -103,7 +110,7 @@ export default function JpHistoryPage() {
         </p>
       )}
       <Card>
-        <HistoryStrip data={data} bhpFromZero={bhpFromZero} showPf={showPf} height={560} />
+        <ProductionHistory key={well} data={data} bhpFromZero={bhpFromZero} showPf={showPf} height={560} initialShow={search.get("match") === "1"} />
       </Card>
 
       <Section title="Install history">

@@ -51,6 +51,7 @@ class BatchPump:
         jpump_direction: str = "reverse",
         wellname: str = "na",
         mach_crit: float = 1.0,
+        hydraulics_model: str = "beggs",
     ) -> None:
         """Batch Pump Solver
 
@@ -67,6 +68,7 @@ class BatchPump:
             prop_pf (FormWater): Powerfluid Properties
             jpump_direction (str): Jet Pump Direction, "reverse" or "forward"
             wellname (str): A unique identifier of the wellname
+            hydraulics_model (str): Return-flow model ID; defaults to beggs.
             mach_crit (float): Deprecated compatibility value, unitless.
                 Entry-energy-v1 ignores it; nondefault values warn.
                 [LIBRARY change -> upstream PR to kwellis/woffl]
@@ -82,6 +84,9 @@ class BatchPump:
         self.direction = jpump_direction
         self.wellname = wellname
         self.mach_crit = mach_crit
+        # [LIBRARY change -> upstream PR to kwellis/woffl]
+        from woffl.flow.hydraulics import validate_model
+        self.hydraulics_model = validate_model(hydraulics_model)
 
     def update_press(self, kind: str, psig: float) -> None:
         """Update Pressure
@@ -186,6 +191,7 @@ class BatchPump:
                         self.prop_pf,
                         self.direction,
                         mach_crit=self.mach_crit,
+                        hydraulics_model=self.hydraulics_model,
                     )
                 )
                 result = {
@@ -301,6 +307,7 @@ class BatchPump:
                     self.prop_pf,
                     self.direction,
                     mach_crit=self.mach_crit,
+                    hydraulics_model=self.hydraulics_model,
                 )
                 return -(qoil - lift_cost * lwat)
             except Exception:

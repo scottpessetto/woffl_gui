@@ -143,9 +143,13 @@ class WellConfig:
     pad: str = ""
     # [LIBRARY change -> upstream PR to kwellis/woffl] Independent lift water.
     rho_pf: Optional[float] = None  # lbm/ft3 at 0 psig / 60 degF
+    # [LIBRARY change -> upstream PR to kwellis/woffl] Included in worker/cache identity.
+    hydraulics_model: str = "beggs"
 
     def __post_init__(self):
         """Validate configuration on initialization"""
+        from woffl.flow.hydraulics import validate_model
+        validate_model(self.hydraulics_model)
         if self.rho_pf is not None and not 50.0 <= self.rho_pf <= 70.0:
             raise ValueError("rho_pf must be finite and between 50 and 70 lbm/ft3")
         if self.jpump_md is None:
@@ -719,6 +723,7 @@ def _simulate_single_well(
         jpump_direction=well.jpump_direction,
         wellname=well.well_name,
         mach_crit=well.mach_crit_well if well.mach_crit_well is not None else 1.0,
+        hydraulics_model=well.hydraulics_model,
     )
 
     # Run batch simulation (don't raise errors, capture them)

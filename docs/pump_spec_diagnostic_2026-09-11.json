@@ -1,0 +1,873 @@
+{
+  "scope": "Nominal-spec conflict audit and hypothetical geometry probe; no refit or app changes; not independent validation",
+  "user_clarifications": {
+    "tracker_dimensions": "Nominal specifications based on pump size; never physically measured",
+    "gauge_position": "Typically within 40 ft of the jet pump"
+  },
+  "snapshot_time": "2026-09-08T22:06:01.207507+00:00",
+  "snapshot_sha256": "15c0ca2d273a36b2b72189b85892e05c7ac875d99146421f93e2d41208c8988c",
+  "live_queries": 0,
+  "simulated": true,
+  "summary": {
+    "wells": 35,
+    "spec_conflicts": 3,
+    "conflicts_by_manufacturer": {
+      "National": 3
+    }
+  },
+  "wells": [
+    {
+      "well": "MPB-28",
+      "manufacturer": "National",
+      "installed_at": "2026-08-07T00:00:00+00:00",
+      "pump": "13C",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.237,
+      "modeled_nominal_throat": 0.4981,
+      "tracker_nominal_nozzle": 0.237,
+      "tracker_nominal_throat": 0.4981,
+      "nozzle_catalog_matches": [
+        "national 13"
+      ],
+      "throat_catalog_matches": [
+        "national 15"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPB-30",
+      "manufacturer": "National",
+      "installed_at": "2026-07-10T00:00:00+00:00",
+      "pump": "12D",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2099,
+      "modeled_nominal_throat": 0.4981,
+      "tracker_nominal_nozzle": 0.2099,
+      "tracker_nominal_throat": 0.4981,
+      "nozzle_catalog_matches": [
+        "national 12"
+      ],
+      "throat_catalog_matches": [
+        "national 15"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPB-35",
+      "manufacturer": "National",
+      "installed_at": "2026-08-15T00:00:00+00:00",
+      "pump": "12B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2099,
+      "modeled_nominal_throat": 0.3841,
+      "tracker_nominal_nozzle": 0.2099,
+      "tracker_nominal_throat": 0.3841,
+      "nozzle_catalog_matches": [
+        "national 12"
+      ],
+      "throat_catalog_matches": [
+        "national 13"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPB-37",
+      "manufacturer": "National",
+      "installed_at": "2026-04-06T00:00:00+00:00",
+      "pump": "10B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.1643,
+      "modeled_nominal_throat": 0.3017,
+      "tracker_nominal_nozzle": 0.1643,
+      "tracker_nominal_throat": 0.3017,
+      "nozzle_catalog_matches": [
+        "national 10"
+      ],
+      "throat_catalog_matches": [
+        "national 11"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPB-39",
+      "manufacturer": "National",
+      "installed_at": "2026-07-23T00:00:00+00:00",
+      "pump": "11B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.1858,
+      "modeled_nominal_throat": 0.3404,
+      "tracker_nominal_nozzle": 0.1858,
+      "tracker_nominal_throat": 0.3404,
+      "nozzle_catalog_matches": [
+        "national 11"
+      ],
+      "throat_catalog_matches": [
+        "national 12"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPE-24",
+      "manufacturer": "National",
+      "installed_at": "2026-08-09T00:00:00+00:00",
+      "pump": "12C",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2099,
+      "modeled_nominal_throat": 0.4335,
+      "tracker_nominal_nozzle": 0.2099,
+      "tracker_nominal_throat": 0.4335,
+      "nozzle_catalog_matches": [
+        "national 12"
+      ],
+      "throat_catalog_matches": [
+        "national 14"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPE-42",
+      "manufacturer": "National",
+      "installed_at": "2026-08-10T00:00:00+00:00",
+      "pump": "13C",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.237,
+      "modeled_nominal_throat": 0.4981,
+      "tracker_nominal_nozzle": 0.237,
+      "tracker_nominal_throat": 0.4981,
+      "nozzle_catalog_matches": [
+        "national 13"
+      ],
+      "throat_catalog_matches": [
+        "national 15"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPE-48",
+      "manufacturer": "National",
+      "installed_at": "2025-09-07T00:00:00+00:00",
+      "pump": "14C",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2675,
+      "modeled_nominal_throat": 0.5519,
+      "tracker_nominal_nozzle": 0.2916,
+      "tracker_nominal_throat": 0.631,
+      "nozzle_catalog_matches": [
+        "kobe 14"
+      ],
+      "throat_catalog_matches": [
+        "guiberson 16"
+      ],
+      "spec_conflict": true,
+      "nozzle_area_difference_pct": 18.830374705214425,
+      "throat_area_difference_pct": 30.718763272808026,
+      "results": {
+        "model_catalog_baseline": {
+          "predicted_bhp": 883.2177172306657,
+          "sonic": false,
+          "predicted_oil": 514.440484885302,
+          "predicted_formation_water": 384.93099218690423,
+          "predicted_pf": 4697.102422950566,
+          "mach": 0.010182612025647825,
+          "bhp_error": 308.9477172306657,
+          "oil_error_bopd": -507.26951511469804,
+          "oil_error_pct": -49.64907019748246,
+          "pf_error_pct": -6.237918480257676
+        },
+        "tracker_specs_baseline": {
+          "predicted_bhp": 899.4402653769414,
+          "sonic": false,
+          "predicted_oil": 446.3468718645642,
+          "predicted_formation_water": 333.9798271993592,
+          "predicted_pf": 5564.472842520674,
+          "mach": 0.006570935798250246,
+          "bhp_error": 325.1702653769414,
+          "oil_error_bopd": -575.3631281354358,
+          "oil_error_pct": -56.31374148588502,
+          "pf_error_pct": 11.076257082569207
+        },
+        "model_catalog_test_state": {
+          "predicted_bhp": 817.614460825799,
+          "sonic": false,
+          "predicted_oil": 496.0942980123213,
+          "predicted_formation_water": 205.86332892679894,
+          "predicted_pf": 4730.208422630154,
+          "mach": 0.008052259930823223,
+          "bhp_error": 243.34446082579905,
+          "oil_error_bopd": -525.6157019876787,
+          "oil_error_pct": -51.444705639337855,
+          "pf_error_pct": -5.5770669251407945
+        },
+        "tracker_specs_test_state": {
+          "predicted_bhp": 852.9719836873223,
+          "sonic": false,
+          "predicted_oil": 406.75964329206334,
+          "predicted_formation_water": 168.79229327304566,
+          "predicted_pf": 5593.302155441285,
+          "mach": 0.004910379656707201,
+          "bhp_error": 278.70198368732235,
+          "oil_error_bopd": -614.9503567079366,
+          "oil_error_pct": -60.18834666470296,
+          "pf_error_pct": 11.651738761446984
+        }
+      }
+    },
+    {
+      "well": "MPF-107",
+      "manufacturer": "National",
+      "installed_at": "2026-05-24T00:00:00+00:00",
+      "pump": "13A",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.237,
+      "modeled_nominal_throat": 0.3841,
+      "tracker_nominal_nozzle": 0.237,
+      "tracker_nominal_throat": 0.3841,
+      "nozzle_catalog_matches": [
+        "national 13"
+      ],
+      "throat_catalog_matches": [
+        "national 13"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPF-73",
+      "manufacturer": "National",
+      "installed_at": "2026-05-22T00:00:00+00:00",
+      "pump": "10X",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.1643,
+      "modeled_nominal_throat": 0.237,
+      "tracker_nominal_nozzle": 0.1748,
+      "tracker_nominal_throat": 0.2431,
+      "nozzle_catalog_matches": [
+        "kobe 10"
+      ],
+      "throat_catalog_matches": [
+        "kobe 9"
+      ],
+      "spec_conflict": true,
+      "nozzle_area_difference_pct": 13.189913941696997,
+      "throat_area_difference_pct": 5.213925830974397,
+      "results": {
+        "model_catalog_baseline": {
+          "error": "ValueError: well cannot lift at max suction pressure"
+        },
+        "tracker_specs_baseline": {
+          "error": "ValueError: well cannot lift at max suction pressure"
+        },
+        "model_catalog_test_state": {
+          "error": "ValueError: well cannot lift at max suction pressure"
+        },
+        "tracker_specs_test_state": {
+          "error": "ValueError: well cannot lift at max suction pressure"
+        }
+      }
+    },
+    {
+      "well": "MPH-08",
+      "manufacturer": "National",
+      "installed_at": "2026-03-07T00:00:00+00:00",
+      "pump": "14C",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2675,
+      "modeled_nominal_throat": 0.5519,
+      "tracker_nominal_nozzle": 0.2675,
+      "tracker_nominal_throat": 0.5519,
+      "nozzle_catalog_matches": [
+        "national 14"
+      ],
+      "throat_catalog_matches": [
+        "national 16"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPH-19",
+      "manufacturer": "National",
+      "installed_at": "2025-10-29T00:00:00+00:00",
+      "pump": "11B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.1858,
+      "modeled_nominal_throat": 0.3404,
+      "tracker_nominal_nozzle": 0.1858,
+      "tracker_nominal_throat": 0.3404,
+      "nozzle_catalog_matches": [
+        "national 11"
+      ],
+      "throat_catalog_matches": [
+        "national 12"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPH-22",
+      "manufacturer": "National",
+      "installed_at": "2026-05-29T00:00:00+00:00",
+      "pump": "12B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2099,
+      "modeled_nominal_throat": 0.3841,
+      "tracker_nominal_nozzle": 0.2099,
+      "tracker_nominal_throat": 0.3841,
+      "nozzle_catalog_matches": [
+        "national 12"
+      ],
+      "throat_catalog_matches": [
+        "national 13"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPH-32",
+      "manufacturer": "National",
+      "installed_at": "2026-04-02T00:00:00+00:00",
+      "pump": "14C",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2675,
+      "modeled_nominal_throat": 0.5519,
+      "tracker_nominal_nozzle": 0.2675,
+      "tracker_nominal_throat": 0.5519,
+      "nozzle_catalog_matches": [
+        "national 14"
+      ],
+      "throat_catalog_matches": [
+        "national 16"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPI-22",
+      "manufacturer": "National",
+      "installed_at": "2026-05-19T00:00:00+00:00",
+      "pump": "14C",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2675,
+      "modeled_nominal_throat": 0.5519,
+      "tracker_nominal_nozzle": 0.2675,
+      "tracker_nominal_throat": 0.5519,
+      "nozzle_catalog_matches": [
+        "national 14"
+      ],
+      "throat_catalog_matches": [
+        "national 16"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPI-26",
+      "manufacturer": "National",
+      "installed_at": "2026-08-06T00:00:00+00:00",
+      "pump": "13C",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.237,
+      "modeled_nominal_throat": 0.4981,
+      "tracker_nominal_nozzle": 0.237,
+      "tracker_nominal_throat": 0.4981,
+      "nozzle_catalog_matches": [
+        "national 13"
+      ],
+      "throat_catalog_matches": [
+        "national 15"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPI-27",
+      "manufacturer": "National",
+      "installed_at": "2026-07-27T00:00:00+00:00",
+      "pump": "12C",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2099,
+      "modeled_nominal_throat": 0.4335,
+      "tracker_nominal_nozzle": 0.2099,
+      "tracker_nominal_throat": 0.4335,
+      "nozzle_catalog_matches": [
+        "national 12"
+      ],
+      "throat_catalog_matches": [
+        "national 14"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPI-29",
+      "manufacturer": "National",
+      "installed_at": "2026-07-26T00:00:00+00:00",
+      "pump": "14B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2675,
+      "modeled_nominal_throat": 0.4981,
+      "tracker_nominal_nozzle": 0.2675,
+      "tracker_nominal_throat": 0.4981,
+      "nozzle_catalog_matches": [
+        "national 14"
+      ],
+      "throat_catalog_matches": [
+        "national 15"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPI-31",
+      "manufacturer": "National",
+      "installed_at": "2026-06-05T00:00:00+00:00",
+      "pump": "14B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2675,
+      "modeled_nominal_throat": 0.4981,
+      "tracker_nominal_nozzle": 0.2675,
+      "tracker_nominal_throat": 0.4981,
+      "nozzle_catalog_matches": [
+        "national 14"
+      ],
+      "throat_catalog_matches": [
+        "national 15"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPI-33",
+      "manufacturer": "National",
+      "installed_at": "2026-05-03T00:00:00+00:00",
+      "pump": "13D",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.237,
+      "modeled_nominal_throat": 0.5519,
+      "tracker_nominal_nozzle": 0.237,
+      "tracker_nominal_throat": 0.5519,
+      "nozzle_catalog_matches": [
+        "national 13"
+      ],
+      "throat_catalog_matches": [
+        "national 16"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPI-36",
+      "manufacturer": "National",
+      "installed_at": "2026-08-05T00:00:00+00:00",
+      "pump": "14B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2675,
+      "modeled_nominal_throat": 0.4981,
+      "tracker_nominal_nozzle": 0.2675,
+      "tracker_nominal_throat": 0.4981,
+      "nozzle_catalog_matches": [
+        "national 14"
+      ],
+      "throat_catalog_matches": [
+        "national 15"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPJ-27",
+      "manufacturer": "National",
+      "installed_at": "2026-06-26T00:00:00+00:00",
+      "pump": "11B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.1858,
+      "modeled_nominal_throat": 0.3404,
+      "tracker_nominal_nozzle": 0.1858,
+      "tracker_nominal_throat": 0.3404,
+      "nozzle_catalog_matches": [
+        "national 11"
+      ],
+      "throat_catalog_matches": [
+        "national 12"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPJ-29",
+      "manufacturer": "National",
+      "installed_at": "2026-08-13T00:00:00+00:00",
+      "pump": "11B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.1858,
+      "modeled_nominal_throat": 0.3404,
+      "tracker_nominal_nozzle": 0.1858,
+      "tracker_nominal_throat": 0.3404,
+      "nozzle_catalog_matches": [
+        "national 11"
+      ],
+      "throat_catalog_matches": [
+        "national 12"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPL-06",
+      "manufacturer": "National",
+      "installed_at": "2023-06-24T00:00:00+00:00",
+      "pump": "11B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.1858,
+      "modeled_nominal_throat": 0.3404,
+      "tracker_nominal_nozzle": 0.1858,
+      "tracker_nominal_throat": 0.3404,
+      "nozzle_catalog_matches": [
+        "national 11"
+      ],
+      "throat_catalog_matches": [
+        "national 12"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPM-16",
+      "manufacturer": "National",
+      "installed_at": "2026-05-15T00:00:00+00:00",
+      "pump": "12B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2099,
+      "modeled_nominal_throat": 0.3841,
+      "tracker_nominal_nozzle": 0.2099,
+      "tracker_nominal_throat": 0.3841,
+      "nozzle_catalog_matches": [
+        "national 12"
+      ],
+      "throat_catalog_matches": [
+        "national 13"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPM-28",
+      "manufacturer": "National",
+      "installed_at": "2026-07-02T00:00:00+00:00",
+      "pump": "14B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2675,
+      "modeled_nominal_throat": 0.4981,
+      "tracker_nominal_nozzle": 0.2675,
+      "tracker_nominal_throat": 0.4981,
+      "nozzle_catalog_matches": [
+        "national 14"
+      ],
+      "throat_catalog_matches": [
+        "national 15"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPM-30",
+      "manufacturer": "National",
+      "installed_at": "2026-08-08T00:00:00+00:00",
+      "pump": "13B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.237,
+      "modeled_nominal_throat": 0.4335,
+      "tracker_nominal_nozzle": 0.237,
+      "tracker_nominal_throat": 0.4335,
+      "nozzle_catalog_matches": [
+        "national 13"
+      ],
+      "throat_catalog_matches": [
+        "national 14"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPM-32",
+      "manufacturer": "National",
+      "installed_at": "2026-07-28T00:00:00+00:00",
+      "pump": "14B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2675,
+      "modeled_nominal_throat": 0.4981,
+      "tracker_nominal_nozzle": 0.2675,
+      "tracker_nominal_throat": 0.4981,
+      "nozzle_catalog_matches": [
+        "national 14"
+      ],
+      "throat_catalog_matches": [
+        "national 15"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPM-43",
+      "manufacturer": "National",
+      "installed_at": "2026-08-13T00:00:00+00:00",
+      "pump": "12C",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2099,
+      "modeled_nominal_throat": 0.4335,
+      "tracker_nominal_nozzle": 0.2099,
+      "tracker_nominal_throat": 0.4335,
+      "nozzle_catalog_matches": [
+        "national 12"
+      ],
+      "throat_catalog_matches": [
+        "national 14"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPM-45",
+      "manufacturer": "National",
+      "installed_at": "2026-06-08T00:00:00+00:00",
+      "pump": "12B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2099,
+      "modeled_nominal_throat": 0.3841,
+      "tracker_nominal_nozzle": 0.2099,
+      "tracker_nominal_throat": 0.3841,
+      "nozzle_catalog_matches": [
+        "national 12"
+      ],
+      "throat_catalog_matches": [
+        "national 13"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPM-60",
+      "manufacturer": "National",
+      "installed_at": "2026-07-11T00:00:00+00:00",
+      "pump": "14B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2675,
+      "modeled_nominal_throat": 0.4981,
+      "tracker_nominal_nozzle": 0.2675,
+      "tracker_nominal_throat": 0.4981,
+      "nozzle_catalog_matches": [
+        "national 14"
+      ],
+      "throat_catalog_matches": [
+        "national 15"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPM-62",
+      "manufacturer": "National",
+      "installed_at": "2026-07-01T00:00:00+00:00",
+      "pump": "14B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2675,
+      "modeled_nominal_throat": 0.4981,
+      "tracker_nominal_nozzle": 0.2916,
+      "tracker_nominal_throat": 0.576,
+      "nozzle_catalog_matches": [
+        "kobe 14"
+      ],
+      "throat_catalog_matches": [
+        "guiberson 15"
+      ],
+      "spec_conflict": true,
+      "nozzle_area_difference_pct": 18.830374705214425,
+      "throat_area_difference_pct": 33.72477732186161,
+      "results": {
+        "model_catalog_baseline": {
+          "predicted_bhp": 660.5720262177082,
+          "sonic": false,
+          "predicted_oil": 725.9717210277048,
+          "predicted_formation_water": 643.7862431755117,
+          "predicted_pf": 4750.211736587229,
+          "mach": 0.2901541839090252,
+          "bhp_error": 170.1720262177082,
+          "oil_error_bopd": -660.6782789722953,
+          "oil_error_pct": -47.645640859070085,
+          "pf_error_pct": 8.407078885506891
+        },
+        "tracker_specs_baseline": {
+          "predicted_bhp": 698.5275067209728,
+          "sonic": false,
+          "predicted_oil": 662.0419280584489,
+          "predicted_formation_water": 587.0937852593792,
+          "predicted_pf": 5569.999079441517,
+          "mach": 0.16001735983285148,
+          "bhp_error": 208.12750672097286,
+          "oil_error_bopd": -724.6080719415512,
+          "oil_error_pct": -52.25601788061523,
+          "pf_error_pct": 27.11587674006184
+        },
+        "model_catalog_test_state": {
+          "predicted_bhp": 771.925776042751,
+          "sonic": false,
+          "predicted_oil": 753.1118716886117,
+          "predicted_formation_water": 805.34171293527,
+          "predicted_pf": 4696.814190969399,
+          "mach": 0.2200418404893175,
+          "bhp_error": 281.525776042751,
+          "oil_error_bopd": -633.5381283113884,
+          "oil_error_pct": -45.68839493104881,
+          "pf_error_pct": 7.188465429711033
+        },
+        "tracker_specs_test_state": {
+          "predicted_bhp": 786.2745206200219,
+          "sonic": false,
+          "predicted_oil": 714.525366716189,
+          "predicted_formation_water": 764.0791553009044,
+          "predicted_pf": 5520.342259880461,
+          "mach": 0.13225535550581152,
+          "bhp_error": 295.87452062002194,
+          "oil_error_bopd": -672.1246332838111,
+          "oil_error_pct": -48.47110902418138,
+          "pf_error_pct": 25.98263235983842
+        }
+      }
+    },
+    {
+      "well": "MPM-64",
+      "manufacturer": "National",
+      "installed_at": "2026-05-23T00:00:00+00:00",
+      "pump": "14B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2675,
+      "modeled_nominal_throat": 0.4981,
+      "tracker_nominal_nozzle": 0.2675,
+      "tracker_nominal_throat": 0.4981,
+      "nozzle_catalog_matches": [
+        "national 14"
+      ],
+      "throat_catalog_matches": [
+        "national 15"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPS-204",
+      "manufacturer": "National",
+      "installed_at": "2026-07-29T00:00:00+00:00",
+      "pump": "12B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2099,
+      "modeled_nominal_throat": 0.3841,
+      "tracker_nominal_nozzle": 0.2099,
+      "tracker_nominal_throat": 0.3841,
+      "nozzle_catalog_matches": [
+        "national 12"
+      ],
+      "throat_catalog_matches": [
+        "national 13"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    },
+    {
+      "well": "MPS-67",
+      "manufacturer": "National",
+      "installed_at": "2026-06-19T00:00:00+00:00",
+      "pump": "14B",
+      "converted": false,
+      "modeled_nominal_nozzle": 0.2675,
+      "modeled_nominal_throat": 0.4981,
+      "tracker_nominal_nozzle": 0.2675,
+      "tracker_nominal_throat": 0.4981,
+      "nozzle_catalog_matches": [
+        "national 14"
+      ],
+      "throat_catalog_matches": [
+        "national 15"
+      ],
+      "spec_conflict": false,
+      "nozzle_area_difference_pct": 0.0,
+      "throat_area_difference_pct": 0.0,
+      "results": {}
+    }
+  ],
+  "code_sha256": {
+    "tools/pump_spec_diagnostic.py": "bb72fd0bad1745beab210a73dc11259406f16951a9f7a690043046f1a6b9fd4e",
+    "tools/bhp_model_diagnostic.py": "14f3b76a7eb1c68e58c27bea0bcbab9c047f3208f9c5149838f465651512039b",
+    "data/jetpump_dimensions.json": "d34849b97ad6eba79315e9c9c5078c7be9a797a8237249864a903af660df7e15",
+    "woffl/geometry/jetpump.py": "94158d14067e8c5d8d552545342dd1a2689cfdb86fd64d9f8af3e6d3e127d2de",
+    "woffl/assembly/solopump.py": "62953aa864e5ae80a6996f2a324adb76a05e49de354e9291e0febef71456c659"
+  }
+}

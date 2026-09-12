@@ -8,6 +8,7 @@ import numpy as np
 
 from woffl.flow import singlephase as sp
 from woffl.flow import twophase as tp
+from woffl.flow.hydraulics import alternative_diff_press, validate_model
 from woffl.geometry import forms as fm
 from woffl.geometry.pipe import PipeInPipe
 from woffl.geometry.wellprofile import WellProfile
@@ -123,13 +124,16 @@ def production_top_down_press(
         wellbore (PipeInPipe): Piping geometry inside the wellbore, PipeInPipe
         wellprof (WellProfile): survey dimensions and location of jet pump, WellProfile
         flowpath (str): Where the flow is occuring, either tubing or annulus
-        model (str): Accepted for API compatibility; only "beggs" is implemented
+        model (str): beggs (default), hagedorn_brown, or drift_flux.
 
     Returns:
         md_seg (list): Measured depth of calculated pressure
         prs_ray (list): Calculated pressure along wellbore, psig
         slh_ray (list): Liquid Holdup along wellbore, unitless
     """
+    # [LIBRARY change -> upstream PR to kwellis/woffl] Never silently run BB
+    # for a requested alternative. The default preserves its original traverse.
+    validate_model(model)
     flow_path_list = ["tubing", "annulus"]
     if flowpath not in flow_path_list:
         raise ValueError(f"{flowpath} not recognized, select from {flow_path_list}")
@@ -149,9 +153,9 @@ def production_top_down_press(
     vd_diff = np.diff(vd_seg, n=1) * -1  # going down piping
     n = 0
     for length, height in zip(md_diff, vd_diff):
-        dp_stat, dp_fric, slh = beggs_diff_press(
-            prs_list[-1], ttop, hyd_dia, area, abs_ruff, length, height, qoil_std, prop
-        )
+        args = (prs_list[-1], ttop, hyd_dia, area, abs_ruff, length, height, qoil_std, prop)
+        dp_stat, dp_fric, slh = (beggs_diff_press(*args) if model == "beggs"
+                               else alternative_diff_press(*args, model))
         pdwn = prs_list[-1] - dp_stat - dp_fric  # dp is subtracted
         prs_list.append(pdwn)
         slh_list.append(slh)

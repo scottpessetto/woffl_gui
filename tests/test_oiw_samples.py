@@ -98,6 +98,16 @@ def test_water_rate_is_the_caller_basis_and_is_echoed_back(client):
     assert any("71,000 BPD" in note for note in body["notes"])
 
 
+def test_upload_retains_mixed_us_text_dates_and_excel_datetimes(client):
+    dates = ["05/03/2026", "2026-05-04", "May 5 2026", "5/6/26", pd.Timestamp("2026-05-07")]
+    blob = _workbook([[day, "08:00", "P-5417C", 1000., "test"] for day in dates])
+    response = _post(client, blob)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sample_count"] == 5
+    assert [row["date"] for row in body["daily"]] == [f"2026-05-{day:02}" for day in range(3, 8)]
+
+
 def test_junk_rows_are_dropped_and_counted_not_raised(client):
     blob = _workbook(
         [

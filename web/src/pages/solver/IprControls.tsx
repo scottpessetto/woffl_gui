@@ -3,18 +3,13 @@
  * synced/decoupled comparison picker. "Apply IPR to inputs" lays the fit
  * seeds over the sidebar params.
  *
- * Save block: "Save well inputs"
- * pins the resolved anchor test AND pushes the sidebar's current curve +
- * rate values to mpu.wells.prop_hist in one click; "Clear saved IPR"
- * un-pins. HIDDEN entirely (not disabled) when /meta reports
- * writes_enabled=false - the Streamlit gate pre-check contract. The rules
- * live server-side in woffl.gui.ipr_anchor: as-built physical properties
- * can never be written, friction rides along only when calibrated.
+ * Saving lives in the always-visible SaveWellInputs bar above the workbench.
+ * Anchor clearing stays beside the selector and explains read-only access.
  */
 
 import { useState } from "react";
 
-import { useClearIprPin, useMeta, useSaveIpr } from "../../api/hooks";
+import { useClearIprPin, useMeta, useWellInputWritePending } from "../../api/hooks";
 import type { AnchorMode, IprFitResponse, IprPinResponse, JpInstallRow, SimParams, WellTestRow } from "../../api/types";
 import { Badge, Button, Card, InfoNote, Section } from "../../components/ui";
 import { fmtDate, fmtNum } from "../../lib/format";
@@ -25,26 +20,6 @@ import { pumpLabelAt, resolveAnchorTest, testKey, testLabel } from "./selection"
 const SELECT_CLS =
   "mt-1 h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-sm " +
   "text-slate-800 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200";
-
-/**
- * A characterization value to save, or null to leave it alone.
- *
- * `resvr_bubb` and `resvr_temp` are CANONICAL props - the pivots serve them
- * back as the well's characteristics - so they are only worth a row when the
- * engineer actually moved one off the value the server seeded. No seed means
- * no baseline to judge against (a Custom bench), so nothing is written: the
- * same discipline that keeps uncalibrated friction defaults out of prop_hist.
- */
-function changedFromSeed(
-  key: "bubble_point" | "form_temp",
-  value: number | null,
-  seeds: Partial<SimParams> | undefined,
-): number | null {
-  if (value === null) return null;
-  const seeded = seeds?.[key];
-  if (typeof seeded !== "number") return null;
-  return Math.abs(seeded - value) < 1e-9 ? null : value;
-}
 
 export function IprControls({
   well,
@@ -75,19 +50,14 @@ export function IprControls({
 }) {
   const meta = useMeta();
   const writesOn = meta.data?.writes_enabled === true;
-  // null = untouched, so a match note can prefill it and still be editable.
-  const [comment, setComment] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
   const manualFields = useParamsStore((s) => s.manualFields);
   const matchNote = useParamsStore((s) => s.matchNote);
-  const seeds = useParamsStore((s) => s.context?.seeds);
-  const commentText = comment ?? matchNote ?? "";
   // Only ownership that actually blocks something is worth reporting: a
   // hand-picked nozzle is "manual" too, but the fit never seeds it.
   const heldFromFit = fit
     ? (Object.keys(fit.seeds) as Array<keyof SimParams>).filter((k) => manualFields.has(k))
     : [];
-  const saveMut = useSaveIpr(well);
   const clearMut = useClearIprPin(well);
 
   // Prefer the fit's own anchor resolution (server truth for median/recent);
@@ -99,49 +69,7 @@ export function IprControls({
     anchorDate,
     anchorMode === "manual" ? null : (fit?.coeffs.anchor_date ?? null),
   );
-  const busy = saveMut.isPending || clearMut.isPending;
-
-  const onSave = () => {
-    const p = useParamsStore.getState().params;
-    setNotice(null);
-    saveMut.mutate(
-      {
-        // Sidebar qwf is TOTAL LIQUID and prop_hist.ipr_qwf_liq stores
-        // liquid, so it goes across verbatim (the B-28 rule).
-        qwf_liq: p.qwf,
-        pwf: p.pwf,
-        res_pres: p.pres,
-        form_wc: p.form_wc,
-        form_gor: p.form_gor,
-        surf_pres: p.surf_pres,
-        // Characterization values ride along ONLY when the engineer moved
-        // them off the seed the server assembled. resvr_bubb / resvr_temp are
-        // canonical props: re-pushing the seed on every click would fill
-        // prop_hist with rows that say nothing.
-        bubble_point: changedFromSeed("bubble_point", p.bubble_point, seeds),
-        form_temp: changedFromSeed("form_temp", p.form_temp, seeds),
-        comment: commentText.trim() || null,
-        pin_wt_uid: anchorTest?.wt_uid ?? null,
-        pin_date: anchorTest?.date ?? null,
-        // A manual point must not leave a stale pin behind it: the pin is
-        // what makes the next open read the curve as test-anchored, and it
-        // would flip the selector back to that test.
-        unpin: anchorMode === "manual" && pin?.status !== "none",
-      },
-      {
-        onSuccess: (r) => {
-          setComment("");
-          const parts = [r.values_message];
-          if (r.pin_message && !r.pinned && !r.pin_skipped) parts.unshift(r.pin_message);
-          setNotice({
-            tone: r.n_values > 0 ? "ok" : "warn",
-            text: parts.join(" "),
-          });
-        },
-        onError: (e) => setNotice({ tone: "warn", text: e.message }),
-      },
-    );
-  };
+  const busy = useWellInputWritePending(well);
 
   const onClear = () => {
     setNotice(null);
@@ -281,56 +209,11 @@ export function IprControls({
           </p>
         )}
 
-        {writesOn && (
-          <div className="space-y-2 border-t border-slate-100 pt-3">
-            <input
-              type="text"
-              value={commentText}
-              maxLength={500}
-              onChange={(e) => setComment(e.target.value)}
-              placeholder="Why these values? (optional)"
-              title={
-                "Saved with the values in mpu.wells.woffl_eng_comment and shown in the " +
-                "well's save history, so the next person sees WHY these numbers were chosen."
-              }
-              className={SELECT_CLS}
-            />
-            <div className="flex items-center gap-2">
-              <Button
-                variant="primary"
-                disabled={busy}
-                busy={saveMut.isPending}
-                title={
-                  anchorTest?.wt_uid != null
-                    ? `Saves test ${anchorTest.date} as this well's default IPR anchor AND ` +
-                      "the sidebar's current curve + rate values (mpu.wells.prop_hist) so the " +
-                      "well inputs are restored in future sessions. Pump calibration is saved separately."
-                    : "No pinnable anchor test (manual/provisional) - saves the sidebar's " +
-                      "current curve + rate values only."
-                }
-                onClick={onSave}
-              >
-                Save well inputs
-              </Button>
-              {(pin?.status === "applied" || pin?.status === "stale") && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  className="text-xs text-slate-500 underline-offset-2 hover:text-slate-700 hover:underline disabled:opacity-50"
-                  title="Removes the saved default so this well falls back to the most-recent test"
-                  onClick={onClear}
-                >
-                  Clear saved IPR
-                </button>
-              )}
-            </div>
-            {notice && (
-              <p className={notice.tone === "ok" ? "text-xs text-emerald-700" : "text-xs text-amber-700"}>
-                {notice.text}
-              </p>
-            )}
-          </div>
-        )}
+        {(pin?.status === "applied" || pin?.status === "stale") && <div className="space-y-1 border-t border-slate-100 pt-3">
+          <Button size="sm" disabled={!writesOn || busy} onClick={onClear}>Clear saved IPR</Button>
+          {!writesOn && <p className="text-xs text-slate-500">Clearing the saved anchor is unavailable in read-only mode.</p>}
+        </div>}
+        {notice && <p className={notice.tone === "ok" ? "text-xs text-emerald-700" : "text-xs text-amber-700"}>{notice.text}</p>}
       </Card>
     </Section>
   );

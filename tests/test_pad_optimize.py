@@ -135,6 +135,7 @@ class FakeOptimizer:
 
     def __init__(self, well_configs, pf, nozzles, throats, marginal_watercut=0.6):
         self.well_configs = well_configs
+        self.wells = well_configs
         self.power_fluid = pf
         self.nozzles = nozzles
         self.throats = throats
@@ -147,8 +148,15 @@ class FakeOptimizer:
     def run_all_batch_simulations(self, max_workers=None):
         self.ran = True
 
-    def get_pump_performance(self, well, nozzle, throat):
-        v = self.perf_table.get((well, nozzle, throat))
+    def get_pump_performance(self, well, nozzle, throat, pump_state=None):
+        v = self.perf_table.get((well, nozzle, throat, pump_state),
+                                self.perf_table.get((well, nozzle, throat)))
+        if v is None and pump_state is None and well in self.batch_results:
+            df = self.batch_results[well].df
+            rows = df[(df.nozzle == nozzle) & (df.throat == throat)]
+            if not rows.empty and "lift_wat" in rows:
+                row = rows.iloc[0]
+                v = _perf(row.lift_wat, row.qoil_std)
         if callable(v):
             v = v(self.power_fluid.pressure)
         return v
@@ -186,6 +194,11 @@ def _result(well, lift_water, oil):
         predicted_lift_water=lift_water,
         predicted_oil_rate=oil,
     )
+
+
+def _perf(lift_water, oil):
+    return dict(lift_water=lift_water, oil_rate=oil, formation_water=100.0,
+                suction_pressure=500.0, sonic_status=False, mach_te=0.2)
 
 
 @pytest.fixture
@@ -232,14 +245,14 @@ class TestFixedCurveSweep:
     The damped fixed point is retired: no history, no oscillation."""
 
     def test_sweeps_flow_and_reports_the_curve_header(self, fake_core):
-        # the wells draw the budget up to 18k BPD (on the coarse grid) and
-        # make 1 BOPD per 2 BPD of lift water -- richer than the 0.7 gate's
-        # price (0.43), so more flow is better until the draw saturates
+        # Both selected pumps always draw 9k each. Budget is an allocation
+        # constraint, not a per-well throttle that can alter a fixed pump.
         def _draw(opt):
-            q = min(opt.power_fluid.total_rate, 18000.0)
-            return [_result("W1", q / 2, q / 4), _result("W2", q / 2, q / 4)]
+            return ([_result("W1", 9000, 4500), _result("W2", 9000, 4500)]
+                    if opt.power_fluid.total_rate >= 18000 else [])
 
         fake_core.optimize_fn = _draw
+        fake_core.Optimizer.perf_table = {(w, "12", "B"): _perf(9000, 4500) for w in ("W1", "W2")}
         progress = []
         results, optimizer, meta = po.run_optimization(
             _wells("W1", "W2"),
@@ -253,7 +266,7 @@ class TestFixedCurveSweep:
             refine_rounds=0,
         )
         assert meta["converged"] is True
-        assert meta["history"] == []
+        assert meta["history"]
         # the sweep covers the station's flow window and every trial carries
         # the flow it was solved at
         assert len(meta["sweep"]) == 11 and len(progress) == 11
@@ -264,7 +277,7 @@ class TestFixedCurveSweep:
         # winner's budget equals its draw and the header is the curve there
         assert meta["total_pf_bpd"] == pytest.approx(18000.0)
         assert meta["total_oil_bopd"] == pytest.approx(9000.0)
-        assert optimizer.power_fluid.total_rate == pytest.approx(18000.0)
+        assert optimizer.power_fluid.total_rate == pytest.approx(50000.0)
         assert meta["header_psi"] == pytest.approx(3000.0 - 0.01 * 18000.0)
         # station extras + flags
         assert meta["per_pump_bpd"] == pytest.approx(18000.0 / 3)
@@ -280,20 +293,67 @@ class TestFixedCurveSweep:
             optimizer.power_fluid.pressure
         )
 
-    def test_threshold_demand_does_not_oscillate(self, fake_core):
-        # the old fixed point flip-flopped on this demand and hit its
-        # iteration cap; a sweep just evaluates each flow once
+    def test_discontinuous_selection_is_not_certified_by_a_narrow_bracket(self, fake_core):
+        # The demand jumps over the crossing. Shrinking a bracket does not
+        # satisfy the pressure residual, and no substitute pump may be used.
         def flip(opt):
-            q = 60000.0 if opt.power_fluid.pressure >= 2700.0 else 0.0
+            q = 40000.0 if opt.power_fluid.pressure >= 2700.0 else 10000.0
             return [_result("W1", q, 50.0)]
 
         fake_core.optimize_fn = flip
-        results, optimizer, meta = po.run_optimization(
-            _wells("W1"), CurvePlant(), 3, ["12"], ["B"], "milp", 1.0, refine_rounds=0
-        )
-        assert meta["converged"] is True
-        assert meta["history"] == []
-        assert len(meta["sweep"]) == 11
+        fake_core.Optimizer.perf_table = {("W1", "12", "B"):
+            lambda p: _perf(40000 if p >= 2700 else 10000, 50)}
+        with pytest.raises(RuntimeError, match="pressure balance"):
+            po.run_optimization(_wells("W1"), CurvePlant(), 3, ["12"], ["B"],
+                                "milp", 1.0, refine_rounds=0)
+
+    def test_slack_flow_is_resolved_at_actual_station_pressure(self, fake_core):
+        def draw(p):
+            return 10000 + 2 * (p - 2500)
+        fake_core.optimize_fn = lambda opt: [_result("W1", draw(opt.power_fluid.pressure), 100)]
+        fake_core.Optimizer.perf_table = {("W1", "12", "B"): lambda p: _perf(draw(p), 100)}
+        results, opt, meta = po.run_optimization(_wells("W1"), CurvePlant(), 3,
+            ["12"], ["B"], "milp", None, water_price=0.001, refine_rounds=0, tol_psi=0.1)
+        # P = 3000 - .01 * (10000 + 2 * (P - 2500)).
+        expected = 2950 / 1.02
+        assert meta["header_psi"] == pytest.approx(expected, abs=0.1)
+        assert abs(meta["coupling_residual_psi"]) <= 0.1
+        assert results[0].predicted_lift_water == pytest.approx(draw(meta["header_psi"]))
+        assert opt.power_fluid.pressure == meta["header_psi"]
+        assert opt.wells[0].ppf_surf_well == meta["header_psi"]
+        assert meta["qualified_selections"] == 1  # duplicate selections settled once
+
+    def test_ranks_by_oil_after_settling_without_changing_pump_state(self, fake_core):
+        # Installed pump wins the search at low P, replacement wins at the
+        # coupled point. Both are the SAME nominal size, distinct hardware.
+        def candidate(opt):
+            p = opt.power_fluid.pressure
+            installed = p < 2750
+            result = _result("W1", 10000 + 2 * (p - 2500),
+                             200 - .4 * (p - 2500) if installed else 120)
+            result.pump_state = "installed" if installed else "replacement"
+            return [result]
+        fake_core.optimize_fn = candidate
+        fake_core.Optimizer.perf_table = {
+            ("W1", "12", "B", "installed"): lambda p: _perf(10000 + 2 * (p - 2500), 200 - .4 * (p - 2500)),
+            ("W1", "12", "B", "replacement"): lambda p: _perf(10000 + 2 * (p - 2500), 120),
+        }
+        results, _, meta = po.run_optimization(_wells("W1"), CurvePlant(), 3,
+            ["12"], ["B"], "milp", 1.0, refine_rounds=0)
+        assert results[0].pump_state == "replacement"
+        assert meta["total_oil_bopd"] == 120
+
+    def test_failed_selected_pump_is_rejected_without_substitution(self, fake_core):
+        result = _result("W1", 10000, 100)
+        result.pump_state = "replacement"
+        fake_core.optimize_fn = lambda opt: [result]
+        fake_core.Optimizer.perf_table = {("W1", "12", "B", "installed"): _perf(10000, 100)}
+        # Start below the operating point so a fresh pump solve is required.
+        plant = CurvePlant()
+        plant.flow_window = lambda n=None: (20000, 50000)
+        with pytest.raises(RuntimeError, match="selected pump does not solve"):
+            po.run_optimization(_wells("W1"), plant, 3, ["12"], ["B"],
+                                "milp", 1.0, refine_rounds=0)
 
 
 # ── run_optimization: free_pressure sweep ───────────────────────────────────
@@ -408,6 +468,7 @@ class TestPressureSweepRun:
 
     def test_no_setpoint_reports_none_and_a_fixed_curve_pad_ignores_one(self, fake_core):
         fake_core.optimize_fn = lambda opt: [_result("W1", 1000.0, opt.power_fluid.pressure)]
+        fake_core.Optimizer.perf_table = {("W1", "12", "B"): lambda p: _perf(1000, p)}
         _r, _o, meta = po.run_optimization(
             _wells("W1"), FreePlant(), None, ["12"], ["B"], "milp", 1.0, n_steps=5
         )
@@ -862,7 +923,7 @@ class TestMarginalWcAutoDeriveAndParsimony:
                 [("12", "B", 100.0, 1000.0), ("13", "C", 130.0, 3000.0)]
             )
         }
-        fake_core.optimize_fn = lambda opt: [_result("W1", 500.0, 50.0)]
+        fake_core.optimize_fn = lambda opt: [_result("W1", 1000.0, 100.0)]
         results, optimizer, meta = po.run_optimization(
             _wells("W1"), plant, 3, ["12", "13"], ["B", "C"], "milp", None
         )

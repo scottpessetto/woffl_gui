@@ -37,8 +37,6 @@ def fetch_all_well_tests(months: int) -> pd.DataFrame:
     """
     from dateutil.relativedelta import relativedelta
 
-    from woffl.assembly.well_test_client import fetch_milne_well_tests
-
     # A shorter window is a SLICE of a longer one already in cache - never a
     # second fleet query. The warm loop used to run "the biggest query in
     # the app" three times for the nested 6/12/24-month windows (review
@@ -50,10 +48,35 @@ def fetch_all_well_tests(months: int) -> pd.DataFrame:
         if big is not None and "WtDate" in big.columns:
             return big[pd.to_datetime(big["WtDate"]) >= pd.Timestamp(cutoff)].copy()
 
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - relativedelta(months=months)).strftime("%Y-%m-%d")
+    return _fetch_window(months, datetime.now())
+
+
+def _fetch_window(months: int, now: datetime) -> pd.DataFrame:
+    from dateutil.relativedelta import relativedelta
+    from woffl.assembly.well_test_client import fetch_milne_well_tests
+
+    end_date = now.strftime("%Y-%m-%d")
+    start_date = (now - relativedelta(months=months)).strftime("%Y-%m-%d")
     df, _dropped = fetch_milne_well_tests(start_date, end_date)
     return df
+
+
+def warm_test_windows() -> None:
+    """Prime every live lookback from one new fleet snapshot, never old cache data."""
+    from dateutil.relativedelta import relativedelta
+
+    windows = sorted(set(config.WARM_TEST_MONTHS), reverse=True)
+    if not windows:
+        return
+    version = fetch_all_well_tests.cache_version()
+    now = datetime.now()
+    big = _fetch_window(windows[0], now)
+    for months in windows:
+        frame = big
+        if months != windows[0] and "WtDate" in big.columns:
+            cutoff = pd.Timestamp(now - relativedelta(months=months))
+            frame = big[pd.to_datetime(big["WtDate"]) >= cutoff].copy()
+        fetch_all_well_tests.cache_prime(frame, months, version=version)
 
 
 def _longest_cached_window(months: int) -> Optional[int]:

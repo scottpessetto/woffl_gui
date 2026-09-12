@@ -1,5 +1,13 @@
 # Well inputs and installed-pump calibration
 
+September 11 extension: [selectable hydraulics](hydraulics_models_2026-09-11.md)
+adds `h` to the compact fit record and combines its model version with the
+entry model in `m`. Old records without `h` remain Beggs–Brill only. Changing
+models clears preview pump coefficients; saving a completed fit persists the
+selected model for subsequent optimization. New installations clear the pump
+fit while retaining the well's model choice. The atomic write, 500-character
+limit, exact installation check and clean-replacement rules below still apply.
+
 The Solver now saves well inputs independently from fitted jet-pump properties.
 The user requested this after the MPE-42 / 13C fit: an improved BHP match must
 not silently characterize every replacement pump as having the same fitted losses.
@@ -10,7 +18,11 @@ decisions, field evidence and deployment status.
 
 ## Using it
 
-1. **Save well inputs**, under IPR Anchor, saves the IPR anchor, reservoir pressure,
+September 12 update: [edit/preview/save workflow](well_input_save_workflow_2026-09-12.md)
+adds the persistent Save bar and historical preview of supported sidebar edits.
+The persistence and installation contracts below remain unchanged.
+
+1. **Save well inputs**, in the top bar of Solver and JP History, saves the IPR anchor, reservoir pressure,
    WC, GOR, wellhead pressure and supported changed PVT inputs. It does not save
    ken/kth/kdi/nozzle-area factor.
 2. **Calibrate to field data** fits the installed pump using saved well inputs
@@ -25,7 +37,8 @@ decisions, field evidence and deployment status.
    result card. Selecting a different catalog size also resets pump coefficients.
 
 The Solver displays installed/replacement scope, save status and session changes.
-Read-only apps display a disabled pump-save button with an explanation. Expired
+Read-only apps display disabled save buttons with explanations. The pump-save
+action appears with a completed, saveable calibration result. Expired
 server jobs must be refitted before saving (the existing job retention applies).
 
 ## Identity and persistence
@@ -45,9 +58,13 @@ before calling the comment writer, which otherwise truncates long human notes.
 Coefficient precision is preserved; diagnostic metrics are rounded for storage.
 A failed write does not claim success or evict caches.
 
-The fresh-source callable is `datasources._jp_history_databricks.cache_refresh()`;
-`jp_history` is an undecorated wrapper and has no such method. Save validation
-must not accept the spreadsheet fallback as fresh installation evidence.
+September 11 correction: the fresh-source callable is `datasources.jp_history_fresh()`.
+It reads and enriches the tracker synchronously for the save request, bypassing
+caches even when a warm/SWR refresh is already in flight. `cache_refresh()`
+returns a boolean, not the fetched frame. Save validation must not accept the
+spreadsheet fallback as fresh installation evidence. Context and calibration
+responses now both preserve the exact installation timestamp with an explicit
+UTC offset, using the existing ledger convention for naive tracker timestamps.
 
 Compact record keys: `v` schema version, `n/t` catalog nozzle/throat, `i` installation
 timestamp, `m` physics model, `k` ordered `[ken,kth,kdi,fnz]`, and `q` quality.

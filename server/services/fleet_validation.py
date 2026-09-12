@@ -16,6 +16,7 @@ import pandas as pd
 from woffl.assembly.well_test_client import _normalize_well_name
 from woffl.assembly.pf_pressure import resolve_pf_pressure
 from woffl.flow.entry_energy import MODEL_VERSION
+from woffl.flow.hydraulics import physics_model
 
 
 def number(value):
@@ -182,6 +183,7 @@ def predict_well(record, predict_function=None):
             }:
                 row.pop(key)
     cfg = WellConfig(**record["config"])
+    result.update(physics_model=physics_model(cfg.hydraulics_model), hydraulics_model=cfg.hydraulics_model)
     if predict_function is None:
         try:
             wellbore, profile, inflow, mixture, power = NetworkOptimizer._create_well_objects(cfg)
@@ -196,7 +198,8 @@ def predict_well(record, predict_function=None):
             return result
         def predict_function(inputs):
             return jetpump_solver(inputs["pwh"], cfg.form_temp, inputs["ppf"], pump,
-                                  wellbore, profile, inflow, mixture, power, cfg.jpump_direction)
+                                  wellbore, profile, inflow, mixture, power, cfg.jpump_direction,
+                                  hydraulics_model=cfg.hydraulics_model)
     memo = {}
     for row in result["observations"]:
         try:

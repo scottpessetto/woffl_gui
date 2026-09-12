@@ -48,7 +48,9 @@ def run(req: schemas.WcUncertaintyRequest) -> schemas.WcUncertaintyResponse:
         values = [getattr(p, metric) for p in good]
         return schemas.WcMetricRange(low=min(values), base=getattr(base, metric), high=max(values)) if values else None
 
+    from woffl.flow.hydraulics import physics_model
     return schemas.WcUncertaintyResponse(
+        physics_model=physics_model(sp.hydraulics_model),
         well=req.well, uncertainty_points=req.uncertainty_points,
         wc_base=sp.form_wc, wc_low=low, wc_high=high,
         clipped=raw_low < 0 or raw_high > .99,

@@ -352,7 +352,7 @@ def _well_context_body(
     casing_od, casing_thick = _casing_dims(row)
     seeds["casing_od"] = _clamp("casing_od", round(casing_od, 3))
     seeds["casing_thickness"] = _clamp("casing_thickness", round(casing_thick, 3))
-    _seed(seeds, "form_temp", row.get("form_temp"), 70, cast=int)
+    _seed(seeds, "form_temp", row.get("form_temp"), 70)
     _seed(seeds, "jpump_tvd", row.get("JP_TVD"), 4065, cast=int)
     _seed(seeds, "pres", row.get("res_pres"), 1700, cast=int)
     # Measured pump MD for the optimizer's WellConfig (review 2026-09-01,
@@ -379,6 +379,8 @@ def _well_context_body(
     seeds["rho_pf"] = default_power_fluid_density(well)
 
     # -- (b) pump identity from JP history -----------------------------------
+    from server.services import pump_calibration
+
     pump: Optional[dict[str, Any]] = None
     jp_hist_df, _jp_src = datasources.jp_history_safe()
     if jp_hist_df is not None:
@@ -398,7 +400,7 @@ def _well_context_body(
                 "nozzle_no": nozzle_str,
                 "throat_ratio": throat_str,
                 "tubing_od": frames.opt_float(current.get("tubing_od")),
-                "date_set": frames.json_value(current.get("date_set")),
+                "date_set": pump_calibration.installation(current.get("date_set")),
                 # Where the identity came from. "excel_fallback" is the
                 # bundled 2026-03 spreadsheet: a MONTHS-old pump presented
                 # as installed unless the client says so (DATA-5).
@@ -550,20 +552,20 @@ def _well_context_body(
                 seeds["form_wc"] = _clamp("form_wc", wc_val)
                 gor = frames.opt_float(values.get("form_gor"))
                 if gor is not None:
-                    seeds["form_gor"] = _clamp("form_gor", int(gor))
+                    seeds["form_gor"] = _clamp("form_gor", gor)
                 # Stored rate and qwf are BOTH total liquid - no conversion.
                 qliq = frames.opt_float(values.get("qwf_liq"))
                 if qliq is not None:
-                    seeds["qwf"] = _clamp("qwf", int(qliq))
+                    seeds["qwf"] = _clamp("qwf", qliq)
                 pwf_val = frames.opt_float(values.get("pwf"))
                 if pwf_val is not None:
-                    seeds["pwf"] = _clamp("pwf", int(pwf_val))
+                    seeds["pwf"] = _clamp("pwf", pwf_val)
                 resp_val = frames.opt_float(values.get("res_pres"))
                 if resp_val is not None:
-                    seeds["pres"] = _clamp("pres", int(resp_val))
+                    seeds["pres"] = _clamp("pres", resp_val)
                 sp = frames.opt_float(values.get("surf_press"))
                 if sp is not None:
-                    seeds["surf_pres"] = _clamp("surf_pres", int(sp))
+                    seeds["surf_pres"] = _clamp("surf_pres", sp)
 
                 ts = info.get("saved_at")
                 when = format_alaska(ts, "%Y-%m-%d") if ts is not None else str(ts)
@@ -595,9 +597,9 @@ def _well_context_body(
             exc_info=True,
         )
 
-    from server.services import pump_calibration
     from woffl.assembly.pump_candidates import CLEAN_PUMP
     calibration = pump_calibration.resolve(well, pump, legacy_friction)
+    seeds["hydraulics_model"] = calibration.get("hydraulics_model", "beggs")
     seeds.update(CLEAN_PUMP)
     seeds.update(calibration["coefficients"])
     seeds["mach_crit"] = 1.0

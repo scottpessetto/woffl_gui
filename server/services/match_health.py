@@ -12,7 +12,8 @@ all into one row per well an engineer can read across:
   friction rails -> did calibration degenerate to the bound box corner?
 
 The verdict chip compresses that into one word per well, first match wins:
-"contradicted" beats "railed-cal" beats "weak-fit" beats "ok".
+Known problems take precedence; missing evidence is "unknown", never "ok".
+"ok" means this screen found no flags, not independent model validation.
 
 READ-ONLY compute, same fail-soft posture as optimizer runs: a dead
 warehouse degrades the evidence columns to None, never fails the job.
@@ -21,6 +22,7 @@ warehouse degrades the evidence columns to None, never fails the job.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Optional
 
 import pandas as pd
@@ -67,7 +69,7 @@ def _num(v: Any) -> Optional[float]:
         f = float(v)
     except (TypeError, ValueError):
         return None
-    return f if f == f else None  # NaN-safe
+    return f if math.isfinite(f) else None
 
 
 def friction_rails(
@@ -85,9 +87,33 @@ def friction_rails(
     return ken_railed, kth_railed, kdi_railed
 
 
+def missing_evidence(row: dict[str, Any]) -> list[str]:
+    """Evidence needed to complete this screen, not a validation certificate."""
+    missing = []
+    if _num(row.get("model_psu")) is None or row.get("sonic") not in (True, False):
+        missing.append("solved current-pump model")
+    for quantity in ("oil", "pf"):
+        ratio = _num(row.get(f"model_test_{quantity}_ratio"))
+        if ratio is None or ratio <= 0:
+            missing.append(f"measured {quantity.upper()} comparison")
+    if row.get("ipr_source") not in ("saved", "vogel", "auto") or _num(row.get("ipr_r2")) is None:
+        missing.append("inflow-fit quality")
+    if any(_num(row.get(k)) is None for k in ("ken", "kth", "kdi")):
+        missing.append("pump-loss inputs")
+    if _num(row.get("evidence_floor")) is None or row.get("floor_source") != "era":
+        missing.append("current-installation BHP floor")
+    if (
+        row.get("beta_source") != "well"
+        or _num(row.get("beta")) is None
+        or (_num(row.get("n_pairs")) or 0) <= 0
+    ):
+        missing.append("well-specific pressure response")
+    return missing
+
+
 def _verdict(row: dict[str, Any]) -> str:
-    """First match wins: contradicted > railed-cal > weak-fit > ok."""
-    fv = row.get("floor_violation")
+    """Report known problems first, then incomplete evidence, then no flags."""
+    fv = _num(row.get("floor_violation"))
     if (
         fv is not None
         and fv > FLOOR_VIOLATION_MIN_PSI
@@ -102,8 +128,8 @@ def _verdict(row: dict[str, Any]) -> str:
         return "contradicted"
     if (
         row.get("beta_source") == "well"
-        and row.get("beta") is not None
-        and row["beta"] >= BETA_RESPONSIVE
+        and _num(row.get("beta")) is not None
+        and _num(row["beta"]) >= BETA_RESPONSIVE
         and row.get("sonic") is True
     ):
         # The model claims the well is pinned at the cavitation floor
@@ -112,9 +138,16 @@ def _verdict(row: dict[str, Any]) -> str:
         return "contradicted"
     if row.get("ken_railed") or row.get("kth_railed") or row.get("kdi_railed"):
         return "railed-cal"
-    r2 = row.get("ipr_r2")
+    r2 = _num(row.get("ipr_r2"))
     if r2 is not None and r2 < WEAK_R2:
         return "weak-fit"
+    for quantity in ("oil", "pf"):
+        ratio = _num(row.get(f"model_test_{quantity}_ratio"))
+        # Same match band as pad_optimize.match_flag.
+        if ratio is not None and not 0.80 <= ratio <= 1.25:
+            return "poor-match"
+    if missing_evidence(row):
+        return "unknown"
     return "ok"
 
 
@@ -180,6 +213,7 @@ def assemble_rows(
             "kdi_railed": kdi_railed,
             "last_test_date": last_test.get(w),
         }
+        row["missing_evidence"] = missing_evidence(row)
         row["verdict"] = _verdict(row)
         rows.append(row)
     return rows

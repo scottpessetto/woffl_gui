@@ -15,7 +15,7 @@ from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from server import schemas
+from server import pool, schemas
 
 router = APIRouter(prefix="/gauge", tags=["gauge"])
 
@@ -25,12 +25,19 @@ _MAX_FILE_BYTES = 50 * 1024 * 1024
 
 
 @router.post("/parse", response_model=schemas.GaugeParseResponse)
-async def parse_gauge(files: list[UploadFile] = File(...)) -> Any:
+def parse_gauge(files: list[UploadFile] = File(...)) -> Any:
     """Parse + combine one well's memory-gauge XLSX files.
 
     422 with the offending filename on any parse failure - the client keeps
     its previous gauge state untouched in that case.
     """
+    # FastAPI runs synchronous handlers in its bounded thread pool. Share
+    # the same CPU budget as solver work while parsing and combining files.
+    with pool.cpu_slot():
+        return _parse_gauges(files)
+
+
+def _parse_gauges(files: list[UploadFile]) -> Any:
     from woffl.gui.memory_gauge import MemoryGaugeData, parse_xlsx
 
     if not files:
@@ -41,7 +48,7 @@ async def parse_gauge(files: list[UploadFile] = File(...)) -> Any:
 
     parsed = []
     for f in files:
-        blob = await f.read()
+        blob = f.file.read(_MAX_FILE_BYTES + 1)
         if len(blob) > _MAX_FILE_BYTES:
             raise HTTPException(
                 status_code=422,

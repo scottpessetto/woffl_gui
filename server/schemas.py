@@ -14,6 +14,7 @@ and the exact column sets are owned by the services that build them.
 from __future__ import annotations
 
 from woffl.flow.entry_energy import MODEL_VERSION
+from woffl.flow.hydraulics import HydraulicsModel
 
 from typing import Any, Literal, Optional
 
@@ -48,6 +49,7 @@ class SimParams(BaseModel):
     mach_crit: float = Field(1.0, ge=1.0, le=2.5, description="Deprecated: entry-energy-v1 ignores this multiplier; refit older calibrations.")
     nozzle_area_factor: float = Field(1.0, ge=0.8, le=1.3)
     jpump_direction: Literal["forward", "reverse"] = "reverse"
+    hydraulics_model: HydraulicsModel = "beggs"
 
     # Pipe (inches)
     tubing_od: float = Field(4.5, ge=2.0, le=9.0)
@@ -119,6 +121,7 @@ class SimParams(BaseModel):
             kth=self.kth,
             kdi=self.kdi,
             jpump_direction=self.jpump_direction,
+            hydraulics_model=self.hydraulics_model,
             tubing_od=self.tubing_od,
             tubing_thickness=self.tubing_thickness,
             casing_od=self.casing_od,
@@ -320,6 +323,7 @@ class SolveRequest(BaseModel):
 
 class SolveResult(BaseModel):
     physics_model: str = MODEL_VERSION
+    hydraulics_model: HydraulicsModel = "beggs"
     psu: float  # suction pressure, psig
     sonic_status: bool
     qoil_std: float  # BOPD
@@ -492,6 +496,7 @@ class EventCalibrationRequest(BaseModel):
     """Start a multi-point event-calibration job for one well."""
 
     well: str = Field(..., min_length=1, max_length=16)
+    hydraulics_model: Optional[HydraulicsModel] = None  # absent = saved choice
 
 
 class OptimizeJobStatus(BaseModel):
@@ -1309,6 +1314,8 @@ class PressureProfileRequest(BaseModel):
 
 
 class PressureProfileResponse(BaseModel):
+    physics_model: str = MODEL_VERSION
+    hydraulics_model: HydraulicsModel = "beggs"
     prod: dict[str, list[float]]  # {md: [...], press: [...]} production string
     pf: dict[str, list[float]]  # power-fluid string
     diff: dict[str, list[float]]  # {md: [...], dp: [...]} PF - prod differential
@@ -1389,6 +1396,131 @@ class JpHistoryResponse(BaseModel):
     bhp_daily: list[dict[str, Any]]  # {date, bhp}
     current_pump: Optional[str] = None
     source: Literal["databricks", "excel_fallback"]
+
+
+class PumpMatchWellInputs(BaseModel):
+    """Read-only preview of exactly the values supported by Save well inputs.
+
+    Historical hardware/pressures/composition remain server-owned. Additional
+    sidebar fields cannot silently turn into a model that the save cannot retain.
+    """
+    model_config = {"extra": "forbid", "allow_inf_nan": False}
+    qwf_liq: float = Field(..., gt=0., le=50_000.)
+    pwf: float = Field(..., ge=50., le=5_000.)
+    res_pres: float = Field(..., ge=100., le=10_000.)
+    form_wc: float = Field(..., ge=0., le=.99)
+    form_gor: float = Field(..., ge=0., le=20_000.)
+    surf_pres: Optional[float] = Field(None, ge=0., le=5_000.)
+    bubble_point: Optional[float] = Field(None, ge=1_001., le=2_999.)
+    form_temp: Optional[float] = Field(None, ge=32., le=350.)
+
+    @model_validator(mode="after")
+    def valid_inflow(self):
+        if self.pwf >= self.res_pres:
+            raise ValueError("IPR anchor BHP must be below reservoir pressure.")
+        return self
+
+
+class PumpMatchRequest(BaseModel):
+    hydraulics_model: HydraulicsModel = "beggs"
+    months: Literal[6, 12, 24, 60] = 24
+    mode: Literal["all_tests", "same_pump", "previous_pump"] = "all_tests"
+    training_tests: int = Field(default=10, ge=3, le=20)
+    edited_inputs: Optional[PumpMatchWellInputs] = None
+
+    @model_validator(mode="after")
+    def preview_mode(self):
+        if self.edited_inputs is not None and self.mode != "all_tests":
+            raise ValueError("Edited-input preview requires the every-test comparison.")
+        return self
+
+
+class PumpMatchScores(BaseModel):
+    attempted: int = 0
+    solved: int = 0
+    failed: int = 0
+    bhp_count: int = 0
+    bhp_bias: Optional[float] = None
+    bhp_rms: Optional[float] = None
+    oil_count: int = 0
+    oil_mae: Optional[float] = None
+    oil_median_abs_pct: Optional[float] = None
+    pf_count: int = 0
+    pf_median_abs_pct: Optional[float] = None
+
+
+class PumpMatchRow(BaseModel):
+    date: str
+    wt_uid: str
+    installation_id: Optional[str] = None
+    status: Literal["replay", "fit", "prediction", "missing", "failed", "excluded"]
+    phase: Optional[Literal["replay", "fit", "prediction"]] = None
+    bhp: Optional[float] = None
+    oil: Optional[float] = None
+    pf: Optional[float] = None
+    liquid: Optional[float] = None
+    ppf: Optional[float] = None
+    pwh: Optional[float] = None
+    wc: Optional[float] = None
+    gor: Optional[float] = None
+    input_wc: Optional[float] = None
+    input_gor: Optional[float] = None
+    predicted_bhp: Optional[float] = None
+    predicted_oil: Optional[float] = None
+    predicted_pf: Optional[float] = None
+    predicted_liquid: Optional[float] = None
+    sonic: Optional[bool] = None
+    message: Optional[str] = None
+
+
+class PumpMatchEra(BaseModel):
+    installation_id: str
+    date_set: str
+    end: Optional[str] = None
+    pump: str
+    nozzle: Optional[str] = None
+    throat: Optional[str] = None
+    direction: Optional[str] = None
+    manufacturer: Optional[str] = None
+    flags: list[str] = Field(default_factory=list)
+    training_start: Optional[str] = None
+    training_end: Optional[str] = None
+    training_installation_id: Optional[str] = None
+    training_count: int = 0
+    training_test_ids: list[str] = Field(default_factory=list)
+    prediction_config: Optional[dict[str, Any]] = None
+    training_ppf_span: Optional[float] = None
+    input_wc: Optional[float] = None
+    input_gor: Optional[float] = None
+    unavailable: Optional[str] = None
+    fit_scores: PumpMatchScores = Field(default_factory=PumpMatchScores)
+    prediction_scores: PumpMatchScores = Field(default_factory=PumpMatchScores)
+    replay_scores: PumpMatchScores = Field(default_factory=PumpMatchScores)
+
+
+class PumpMatchResult(BaseModel):
+    well: str
+    request: PumpMatchRequest
+    physics_model: str
+    snapshot_id: str
+    as_of: str
+    source: Literal["databricks", "excel_fallback"]
+    notes: list[str]
+    well_inputs: dict[str, Any] = Field(default_factory=dict)
+    eras: list[PumpMatchEra]
+    rows: list[PumpMatchRow]
+    validated_for_sizing: Literal[False] = False
+
+
+class PumpMatchJob(BaseModel):
+    job_id: str
+    kind: Literal["pump-match"]
+    status: Literal["running", "done", "error", "cancelled"]
+    progress: str
+    result: Optional[PumpMatchResult] = None
+    error: Optional[str] = None
+    started_at: str
+    seconds: float
 
 
 # ---------------------------------------------------------------------------

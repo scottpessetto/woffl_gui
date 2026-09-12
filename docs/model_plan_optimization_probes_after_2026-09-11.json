@@ -1,0 +1,19 @@
+{
+  "scope": "Synthetic bounded response and toy plant; no field forecast or live reads",
+  "response": "Oil 100 BOPD; PF draw = 10000 + 2*(header - 2500); each trial respects its budget",
+  "fixed_curve": {
+    "reported_header": 2895.0,
+    "selected_flow": 10790.0,
+    "curve_header_at_selected_flow": 2892.1,
+    "pressure_gap": -2.900000000000091,
+    "reported_converged": true,
+    "selected_oil": 100,
+    "water_price": 0.001
+  },
+  "empty_match_health_verdict": "unknown",
+  "code_sha256": {
+    "woffl/gui/pad_optimize.py": "992a5b4d94020ef1fe2818a3916860e8eb84da7c8619285d9c1573db3578e1d6",
+    "server/services/match_health.py": "3682a3a80deab2c079c6b630ddcdd66be5d2f78083dcce8205a16d2cce92a8e5",
+    "tools/model_plan_optimization_probes.py": "8e6c8bea1d02ffcc728a43873c56530700977279cfc4d2b1313828c4f1809127"
+  }
+}

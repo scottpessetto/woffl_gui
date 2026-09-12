@@ -106,6 +106,7 @@ def _solve_at_coefs(
     jpump_direction: str,
     nozzle_area_factor: float = 1.0,
     mach_crit: float = 1.0,
+    hydraulics_model: str = "beggs",
 ):
     """Solve once at a given (kth, kdi).
 
@@ -134,6 +135,7 @@ def _solve_at_coefs(
             prop_su=prop_su,
             prop_pf=prop_pf,
             jpump_direction=jpump_direction,
+            hydraulics_model=hydraulics_model,
             mach_crit=float(mach_crit or 1.0),
         )
         if psu is None or np.isnan(psu):
@@ -229,6 +231,7 @@ def calibrate_friction_coefs(
     seed_kdi: float = NEUTRAL_KDI,
     nozzle_area_factor: float = 1.0,
     mach_crit: float = 1.0,
+    hydraulics_model: str = "beggs",
 ) -> FricCalibrationResult:
     """Find (ken, kth, kdi) that drives modeled BHP toward ``target_bhp``.
 
@@ -277,6 +280,7 @@ def calibrate_friction_coefs(
         prop_su=prop_su,
         prop_pf=prop_pf,
         jpump_direction=jpump_direction,
+        hydraulics_model=hydraulics_model,
         nozzle_area_factor=nozzle_area_factor,
         mach_crit=mach_crit,
     )
@@ -829,6 +833,7 @@ def calibrate_multipoint(
                     prop_su=ctx["res_mix"],
                     prop_pf=prop_pf,
                     jpump_direction=direction,
+                    hydraulics_model=getattr(well_config, "hydraulics_model", "beggs"),
                     mach_crit=mach_crit,
                 )
                 if (

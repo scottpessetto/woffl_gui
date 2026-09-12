@@ -14,7 +14,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../api/client";
 import { useIprFit, useIprPin, useJpHistory, useSolve, useWellTests } from "../api/hooks";
 import type { AnchorMode, WellTestRow } from "../api/types";
-import { HistoryStrip } from "../components/HistoryStrip";
+import { ProductionHistory } from "../components/ProductionHistory";
+import { SaveWellInputs } from "../components/SaveWellInputs";
 import { Button, Card, ErrorNote, Spinner, WarnNote } from "../components/ui";
 import { Welcome } from "../layout/Welcome";
 import { useDebounced } from "../lib/useDebounced";
@@ -245,6 +246,8 @@ function Workbench({ well }: { well: string }) {
 
   return (
     <div className="space-y-4">
+      <SaveWellInputs well={well} anchor={{ mode: anchorMode, pin: pinQ.data ?? null,
+        test: resolveAnchorTest(sortedTests, anchorMode, anchorDate, fit?.coeffs.anchor_date ?? null) }} />
       <VerdictBar
         well={well}
         nozzle={params.nozzle_no}
@@ -356,7 +359,7 @@ function Workbench({ well }: { well: string }) {
               Hide
             </button>
           </div>
-          <HistoryStrip data={stripData ?? installsQ.data} height={430} />
+          <ProductionHistory data={stripData ?? installsQ.data} height={430} gaugePreview={!!gauge} />
         </Card>
       )}
       {!showStrip && (

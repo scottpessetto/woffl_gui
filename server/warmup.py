@@ -241,7 +241,6 @@ def fleet_targets() -> list[tuple[str, Callable[[], Any]]]:
     service modules drag in pandas plus the Databricks client.
     """
     from server.cache import refresher
-    from server.config import WARM_TEST_MONTHS
     from server.services import calibration_points, datasources, evidence
     from server.services import tests as tests_svc
     from server.services import well_sort as well_sort_svc
@@ -259,13 +258,9 @@ def fleet_targets() -> list[tuple[str, Callable[[], Any]]]:
         ("pf_latest", refresher(datasources.pf_latest)),
         # Also the input the per-well pass needs to find each well's installs.
         ("jp_history", _warm_jp_history),
-        # Every lookback window live in-tree, from the ONE list in config.
-        # Enumerating them here by hand is what let 24 months go unwarmed
-        # while calibration_points was asking for it.
-        *(
-            (f"well_tests_{m}mo", refresher(tests_svc.fetch_all_well_tests, m))
-            for m in WARM_TEST_MONTHS
-        ),
+        # All live windows share one newly fetched snapshot. Concurrent
+        # per-window refreshes can copy the previous longest-window entry.
+        ("well_tests", tests_svc.warm_test_windows),
         # 365 days of fleet pressure - the single biggest query in the app, and
         # every /response-history call blocks on it.
         ("fleet_pressure_daily", refresher(evidence._fleet_pressure_daily)),

@@ -3,12 +3,38 @@
 Operating rules for coding agents in this repo. Read this before touching anything.
 Prose lives in `docs/`; this file is only the rules you will otherwise violate.
 
+Latest implementation: [September 12 edit/preview/save workflow](docs/well_input_save_workflow_2026-09-12.md).
+Solver and JP History have persistent well-save controls, explicit read-only
+states and historical previews of supported edits. Save refreshes the database
+baseline without losing session edits; new optimization runs load saved values.
+The [Pump Match Over Time delivery](docs/pump_match_ui_2026-09-12.md) records the replay.
+The shared production plot defaults to saved-well BHP/oil predictions at every
+usable test, with chronological validation modes also available. Shared
+multi-installation pump-loss fitting remains unfinished; all replay modes use
+clean-reference pump losses. No deployment was performed.
+Historical replay now uses each test's WC/GOR while preserving one saved oil
+IPR across all pumps. Do not introduce automatic IPR shifts; the user wants
+one IPR describing the well. See the [fixed-IPR investigation](docs/well_match_diagnostic_2026-09-12.md)
+for the measured-composition contract and the interior-lift solver fix.
+The [September 11 end-of-night handoff](docs/session_close_2026-09-11.md)
+preserves the preceding fixes, experiments, limits and modeling next steps.
+
 Start future sessions with [the 2026-09-08 handoff](docs/session_learnings_2026-09-08.md)
 and [the documentation index](docs/README.md). The workspace root is one level
 above this Git repository. Run commands here, not in `C:\dev\woffl_gui`.
 Respect the user's decision to stay on **Medium** compute and proceed with
 already-authorized work without repeatedly asking permission. Do not infer a
 deployment or production-data change from passing local checks.
+
+For the September 11 modeling work, also read the
+[airport pause handoff](docs/session_learnings_2026-09-11.md). It preserves the
+user’s multi-pump/multi-well validation goal, hydraulics options and requested
+Pump Match Over Time screen, plus the completed fixes and diagnostic evidence.
+After the user resumed, [the resume record](docs/jp_model_resume_2026-09-11.md)
+added coupled S-Pad selection checks and a chronological cross-pump benchmark.
+The user confirmed tracker diameters are nominal specs, never measured wear,
+and gauges are typically within 40 ft of the JP. The primary fit objective is
+reliable pump-size decisions at the pad/field marginal WC, not BHP level alone.
 
 The evidence/calibration subsystem (suction-response evidence layer, multi-point
 event calibration, installed-pump coefficients, match-health scorecard,
@@ -73,8 +99,10 @@ escapes, rather than line-slicing/reconstructing source through the shell.
 
 (`tests/test_joint_match_sweep.py` was deleted; the old `--deselect` of it is a no-op and was dropped from the command on 2026-09-02.)
 
-Latest recorded green baseline: **1,861 Python tests and 8 frontend tests passed**
-(2026-09-08 installed-pump scope), plus the TypeScript/Vite production build.
+Latest recorded green baseline: **2,006 Python tests and 18 frontend tests passed**
+(2026-09-12 edit/preview/save), plus the TypeScript/Vite production build.
+See [the delivery record](docs/well_input_save_workflow_2026-09-12.md). The
+[recovered review](docs/recovered_review_2026-09-11.md) records the prior fixes.
 Earlier counts in dated reports are milestones, not the current baseline.
 Live tests are opt-in (`--run-live`); ordinary verification stays offline.
 If a solopump test — especially `TestMarginalConvergence` — goes red after
@@ -189,7 +217,7 @@ inside `woffl/assembly/` are fork-only Databricks glue, not upstream physics.
 Editing a shared-library file requires **all three**:
 1. Tag the site `# [LIBRARY change -> upstream PR to kwellis/woffl]`.
    `rg -n "upstream PR" woffl/` finds the existing tags.
-2. Record it in `docs/upstream_sync.md` (numbered through **43** on 2026-09-08).
+2. Record it in `docs/upstream_sync.md` (numbered through **45** on 2026-09-12).
 3. Guard it with a **named regression test** — every documented patch has a `Guarded by:` line.
 
 For robustness/performance patches, preserve already-converging answers;
@@ -328,19 +356,29 @@ parts you will otherwise violate:
 - **Save well inputs** saves supported IPR/fluid inputs, never ken/kth/kdi/fnz
   or a fitted Mach parameter. PF pressure remains a live/run input. As-built
   hardware identity comes from the tracker, not a property-save payload.
+  Keep the top Save bar visible in Solver and JP History; disabled states explain
+  read-only access/loading/invalid inputs. Preview edits do not write. Preserve
+  saved numeric precision and invalidate canonical well characteristics after
+  successful value saves. Context refresh must preserve newer session edits.
 - **Calibrate to field data** uses saved well inputs plus in-era history/tests.
   Save edited well inputs before refitting. **Apply to inputs** is a session
   preview; **Save installed-pump calibration** is a separate action using a
   completed server job ID. Never trust client-supplied coefficients or quality.
 - A saved pump fit is active only for the same well, nozzle, throat, exact
   tracker Date Set and physics-model version, with Databricks provenance.
+  Return hydraulics also belongs to that identity. BB remains default; H-B/
+  Griffith and Shi/Pan are selectable. Changing models clears preview pump
+  losses; saving the installed-pump fit persists the model for optimization.
+  Read [the hydraulics contract](docs/hydraulics_models_2026-09-11.md) before
+  modifying this path. Tulsa remains unavailable; do not imply otherwise.
   Same-size changeouts invalidate it. Missing/stale/legacy scope falls back
   visibly to reference coefficients; never silently migrate numeric friction rows.
 - The compact `pump_calibration_v1` record in `woffl_eng_comment` must fit the
   500-character limit **before** calling the human-comment writer (which truncates).
   Preserve coefficient precision and commit identity/quality/coefs atomically.
-  Refresh `datasources._jp_history_databricks.cache_refresh()` on save; the
-  `jp_history` wrapper itself has no `cache_refresh`. Failures do not evict caches.
+  Read `datasources.jp_history_fresh()` on save. It fetches and enriches tracker
+  data for the request, bypassing stale caches and in-flight warm/SWR refreshes.
+  `cache_refresh()` returns a boolean, never the tracker frame. Failures do not evict caches.
 - Application WellConfig opts into `pump_calibration_scoped`. Carry `pump_state`
   through sizing, lookup, allocations, fixed scenarios, reports and UI keys.
   Keep-installed and clean-same-size are distinct candidates. Every replacement
@@ -350,6 +388,14 @@ parts you will otherwise violate:
   Preserve BHP/PF/delta-BHP RMS, bound hits, measured/model beta and provisional
   labels. The MPE-42 fit had 76 psi BHP RMS, 61.5% PF RMS and a railed ken despite
   its improved single-test comparison. A 1% fitted area change does not identify wear.
+- Historical every-test replay preserves the saved **oil** IPR: when applying
+  test WC, convert the total-liquid representation with
+  `qwf_test = qwf_saved * (1 - wc_saved) / (1 - wc_test)`. Keep pwf and reservoir
+  pressure fixed; use the measured test GOR. Never anchor on each test's oil/BHP
+  or change saved inputs. Missing composition remains an explained gap. The
+  optional chronological comparisons explicitly refit earlier tests and do
+  not save those fits. A future multi-pump fitter must default to one well IPR;
+  IPR shifts require explicit user intent.
 - WC uncertainty is a collapsed sensitivity panel, default +/-5 **percentage
   points**. Hold the total-liquid IPR anchor fixed; keep GOR fixed in the GUI.
   Fresh PVT per sample; include interior samples in extrema. Hide stale results,

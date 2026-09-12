@@ -83,6 +83,7 @@ class SimulationParams:
     kth: float = 0.3
     kdi: float = 0.4
     jpump_direction: str = "reverse"
+    hydraulics_model: str = "beggs"
 
     # Pipe parameters
     tubing_od: float = 4.5

@@ -23,6 +23,7 @@ from server import schemas
 from server.services import factories, frames
 
 from woffl.gui.params import SimulationParams
+from woffl.flow.hydraulics import physics_model
 
 log = logging.getLogger("woffl.web.solve")
 
@@ -92,6 +93,7 @@ def _run_solver(
             prop_su=res_mix,
             prop_pf=prop_pf,
             jpump_direction=p.jpump_direction,
+            hydraulics_model=p.hydraulics_model,
             mach_crit=mach_crit,
         )
     except (ThroatEntryNoSolution, IndexError) as exc:
@@ -128,6 +130,8 @@ def solve_single(well: str, sp: schemas.SimParams) -> dict[str, Any]:
         p, jetpump, wellbore, inflow, res_mix, wp, mach_crit=sp.mach_crit
     )
     return {
+        "physics_model": physics_model(p.hydraulics_model),
+        "hydraulics_model": p.hydraulics_model,
         "psu": float(psu),
         "sonic_status": bool(sonic_status),
         "qoil_std": float(qoil_std),
@@ -349,6 +353,7 @@ def run_batch(well: str, sp: schemas.SimParams) -> dict[str, Any]:
         prop_su=res_mix,
         prop_pf=prop_pf,
         jpump_direction=p.jpump_direction,
+        hydraulics_model=p.hydraulics_model,
         wellname=f"{p.field_model} Well",
         mach_crit=sp.mach_crit,
     )
@@ -448,6 +453,7 @@ def _pf_point(well: str, sp_json: str, pressure: float) -> Optional[pd.DataFrame
             prop_su=res_mix,
             prop_pf=prop_pf,
             jpump_direction=p.jpump_direction,
+            hydraulics_model=p.hydraulics_model,
             wellname=f"{p.field_model} Well",
             mach_crit=sp.mach_crit,
         )
@@ -600,7 +606,6 @@ def pressure_profile(well: str, sp: schemas.SimParams) -> dict[str, Any]:
     """
     from woffl.flow import jetflow as jf
     from woffl.flow import outflow as of
-    from woffl.pvt.resmix import ResMix
 
     _check_all_water(sp)
     p = sp.to_simulation_params(well)
@@ -619,21 +624,13 @@ def pressure_profile(well: str, sp: schemas.SimParams) -> dict[str, Any]:
     # Mixed production fluid (formation + power fluid) - same as
     # discharge_residual.
     prop_pf = factories.power_fluid(p.field_model, p.rho_pf)
-    wc_tm, _ = jf.throat_wc(qoil_std, res_mix.wc, qnz_bwpd)
-    # Third throat-mixture construction site: the water-pump flag must
-    # propagate here too (settled decision, AGENTS.md §8; review SRV-7).
-    prop_tm = ResMix(
-        wc_tm,
-        res_mix.fgor,
-        res_mix.oil,
-        res_mix.wat,
-        res_mix.gas,
-        model_as_water=res_mix.model_as_water,
-    )
+    # Use the solver's independent PF/formation-water mass balance in the plot.
+    wc_tm, _, prop_tm = jf.throat_mixture(qoil_std, qnz_bwpd, res_mix, prop_pf)
+    qtm_std = jf._throat_mixture_anchor(qoil_std, qnz_bwpd, wc_tm, res_mix.model_as_water)
 
     # Production pressure profile (top-down from wellhead)
     md_seg, prod_prs, _slh = of.production_top_down_press(
-        p.surf_pres, p.form_temp, qoil_std, prop_tm, wellbore, wp, prod_path
+        p.surf_pres, p.form_temp, qtm_std, prop_tm, wellbore, wp, prod_path, model=p.hydraulics_model
     )
 
     # Power-fluid pressure profile (top-down from PF surface pressure) over
@@ -651,6 +648,8 @@ def pressure_profile(well: str, sp: schemas.SimParams) -> dict[str, Any]:
         "pf": {"md": md, "press": [float(v) for v in pf_prs]},
         "diff": {"md": md, "dp": [float(v) for v in differential]},
         "jpump_md": float(wp.jetpump_md),
+        "physics_model": physics_model(p.hydraulics_model),
+        "hydraulics_model": p.hydraulics_model,
         "metrics": {
             "psu": float(psu),
             "prod_at_jp": float(prod_prs[-1]),
@@ -709,6 +708,7 @@ def calibrate(req: schemas.CalibrateRequest) -> dict[str, Any]:
         prop_su=res_mix,
         prop_pf=prop_pf,
         jpump_direction=p.jpump_direction,
+        hydraulics_model=p.hydraulics_model,
     )
 
     return {
@@ -775,6 +775,7 @@ def match_test(req: schemas.MatchTestRequest) -> dict[str, Any]:
         prop_su=res_mix,
         prop_pf=prop_pf,
         jpump_direction=p.jpump_direction,
+        hydraulics_model=p.hydraulics_model,
         nozzle_area_factor=float(getattr(p, "nozzle_area_factor", None) or 1.0),
         mach_crit=float(getattr(p, "mach_crit", None) or 1.0),
     )
