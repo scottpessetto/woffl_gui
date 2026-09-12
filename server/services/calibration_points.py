@@ -26,15 +26,20 @@ Refused wells still return the dict with their points included - the P3
 harness reports them; refusal only tells the fitter not to trust a fit.
 
 wc is a FRACTION (0-1, form_wc convention); fgor is scf/bbl. Daily points
-carry the nearest in-era test's WtTotalFluid/WtOilVol/wc/fgor when one sits
-within TEST_ATTACH_DAYS - the fitter anchors per-point Vogel on these -
-else the caller-supplied saved-fit fallbacks (fallback_qtot/fallback_wc/
-fallback_fgor kwargs; None passes through, the fitter owns final defaults).
+carry only the nearest in-era test's measured wc/fgor within TEST_ATTACH_DAYS,
+with source date/id and signed lag (negative means a later test). They never
+carry an invented oil observation. Missing composition is an explained
+exclusion; the legacy fallback kwargs are accepted but unused. Installation
+days are ambiguous and excluded. A usable test replaces that day's daily row.
+This is a retrospective calibration dataset, not a causal forecast or holdout;
+split raw observations before composition attachment and centered filtering
+for independent validation. Old snapshot oil fields remain historical evidence.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Optional
 
 import pandas as pd
@@ -57,7 +62,7 @@ PF_RATE_MIN_BPD = 500.0      # pwr_fld_net at/below this is a shut-in day
 # well's era BHP series is a transient, not an operating point. The rolling
 # median needs >= 3 days in its window, else the row is kept (short eras).
 STEADY_STATE_TOL_PSI = 60.0
-TEST_ATTACH_DAYS = 30        # nearest-test window for wc/fgor/IPR anchor
+TEST_ATTACH_DAYS = 30        # nearest measured composition, never an IPR anchor
 TEST_WEIGHT = 3.0            # in-era tests are high-weight anchor points
 DAILY_WEIGHT = 1.0
 MAX_FIT_POINTS = 20          # cost cap; tests always kept, dailies sampled
@@ -116,48 +121,22 @@ def _f(value) -> Optional[float]:
         val = float(value)
     except (TypeError, ValueError):
         return None
-    return None if pd.isna(val) else val
-
-
-def _vogel_scale(
-    bhp_test: Optional[float], bhp_day: Optional[float], res_pres: Optional[float]
-) -> Optional[float]:
-    """Ratio of Vogel deliverability at ``bhp_day`` to that at ``bhp_test``
-    on the same curve (same reservoir pressure), i.e. the factor that moves
-    the test's rate along ITS OWN inflow curve to the day's drawdown. None
-    when any input is missing or the day is at/above reservoir pressure
-    (the caller keeps the raw test rate; that point is filtered anyway).
-    Floored at 0 (EVID-F6)."""
-    if bhp_test is None or bhp_day is None or res_pres is None:
-        return None
-    try:
-        pr = float(res_pres)
-        if pr <= 0 or float(bhp_test) >= pr or float(bhp_day) >= pr:
-            return None
-        rt = float(bhp_test) / pr
-        rd = float(bhp_day) / pr
-        denom = 1.0 - 0.2 * rt - 0.8 * rt * rt
-        if denom <= 0:
-            return None
-        return max(0.0, (1.0 - 0.2 * rd - 0.8 * rd * rd) / denom)
-    except (TypeError, ValueError):
-        return None
+    return val if math.isfinite(val) else None
 
 
 def _test_wc(row: Any, fallback_wc: Optional[float]) -> Optional[float]:
-    """form_wc, else computed WtWaterVol/(WtOilVol+WtWaterVol), else fallback.
+    """Measured fraction or measured volume ratio; invalid data stays invalid.
 
-    Same chain as ``tools/jp_fric_trend``; clamped to [0, 0.99] (the
-    prop-store MAX_MODELABLE_WC precedent). None when nothing is available.
+    The fallback argument is retained for old callers, but saved composition
+    cannot substitute for a missing historical observation.
     """
     wc = _f(row.get("form_wc"))
     if wc is None:
-        oil = _f(row.get("WtOilVol")) or 0.0
-        wat = _f(row.get("WtWaterVol")) or 0.0
-        wc = wat / (oil + wat) if (oil + wat) > 0 else fallback_wc
-    if wc is None:
-        return None
-    return min(max(float(wc), 0.0), 0.99)
+        oil = _f(row.get("WtOilVol"))
+        wat = _f(row.get("WtWaterVol"))
+        if oil is not None and wat is not None and oil >= 0 and wat >= 0 and oil+wat > 0:
+            wc = wat / (oil + wat)
+    return wc if wc is not None and 0 <= wc < 1 else None
 
 
 def _era_tests(tests_df: Optional[pd.DataFrame], era_start: pd.Timestamp) -> pd.DataFrame:
@@ -165,9 +144,9 @@ def _era_tests(tests_df: Optional[pd.DataFrame], era_start: pd.Timestamp) -> pd.
     if tests_df is None or tests_df.empty or "WtDate" not in tests_df.columns:
         return pd.DataFrame()
     wt = tests_df.copy()
-    wt["WtDate"] = pd.to_datetime(wt["WtDate"], errors="coerce")
+    wt["WtDate"] = pd.to_datetime(wt["WtDate"], errors="coerce", utc=True).dt.tz_localize(None)
     wt = wt.dropna(subset=["WtDate"])
-    return wt[wt["WtDate"] >= era_start].sort_values("WtDate")
+    return wt[wt["WtDate"].dt.normalize() > era_start].sort_values("WtDate")
 
 
 def _stratified_daily_cap(daily_points: list[dict[str, Any]], slots: int) -> list[dict[str, Any]]:
@@ -199,6 +178,7 @@ def points_for_well(
     pf_df: Optional[pd.DataFrame],
     res_pres: Optional[float] = None,
     surf_pres: Optional[float] = None,
+    direction: Optional[str] = None,
     fallback_qtot: Optional[float] = None,
     fallback_wc: Optional[float] = None,
     fallback_fgor: Optional[float] = None,
@@ -222,10 +202,9 @@ def points_for_well(
             skips the filter.
         surf_pres: config wellhead pressure - pwh for daily points and the
             whp fallback for test points. None -> DEFAULT_SURF_PRES.
-        fallback_qtot/fallback_wc/fallback_fgor: saved-fit liquid rate /
-            water cut (fraction) / GOR used when no in-era test sits within
-            TEST_ATTACH_DAYS of a daily point. None passes through to the
-            point dict (the fitter owns final defaults).
+        direction: configuration circulation; tracker direction takes precedence.
+        fallback_qtot/fallback_wc/fallback_fgor: legacy compatibility inputs,
+            accepted but unused. Historical composition must be measured.
     """
     from woffl.assembly.jp_history import get_current_pump
     from woffl.assembly.pf_pressure import resolve_pf_pressure
@@ -239,24 +218,33 @@ def points_for_well(
         "n_daily": 0,
         "n_test": 0,
         "refusal": None,
+        "excluded": [],
+        "data_contract": "fixed-oil-ipr-v1",
+        "composition_policy": "Retrospective nearest in-era measured test within 30 days; no saved-composition fallback. Daily oil is not measured or scored.",
     }
 
     pump = get_current_pump(jp_hist, well) if jp_hist is not None else None
     if pump is None or pump.get("date_set") is None or pd.isna(pump["date_set"]):
         result["refusal"] = "no current pump record in jp_history"
         return result
-    era_start = pd.to_datetime(pump["date_set"]).normalize()
+    era_start = pd.to_datetime(pump["date_set"], utc=True).tz_localize(None).normalize()
     result["pump"] = {
         "nozzle": pump.get("nozzle_no"),
         "throat": pump.get("throat_ratio"),
         "date_set": pd.Timestamp(pump["date_set"]).isoformat(),
     }
     result["era_start"] = era_start.date().isoformat()
+    direction = pump.get("circ_direction") or direction
 
     pwh_default = float(surf_pres) if surf_pres is not None else DEFAULT_SURF_PRES
     ppf_lo, ppf_hi = PPF_RANGE_PSI
 
-    # -- test points (in-era, high-weight anchors) --------------------------
+    if tests_df is not None and not tests_df.empty and "WtDate" in tests_df:
+        dates = pd.to_datetime(tests_df["WtDate"], utc=True, errors="coerce").dt.tz_localize(None).dt.normalize()
+        for _ in range(int((dates == era_start).sum())):
+            result["excluded"].append({"date": era_start.date().isoformat(), "kind": "test", "reason": "Installation day is ambiguous in daily operating data."})
+
+    # -- test points (in-era measured comparisons) --------------------------
     era_tests = _era_tests(tests_df, era_start)
     test_points: list[dict[str, Any]] = []
     for _, row in era_tests.iterrows():
@@ -269,6 +257,20 @@ def points_for_well(
             continue
         if ppf is None or not (ppf_lo <= ppf <= ppf_hi):
             continue
+        source = row.get("pf_source")
+        observed_direction = {"annulus": "reverse", "tubing": "forward"}.get(source)
+        if direction and observed_direction and observed_direction != direction:
+            result["excluded"].append({"date": row["WtDate"].date().isoformat(), "kind": "test", "reason": "Test PF pressure source conflicts with the installation circulation."})
+            continue
+        wc, fgor = _test_wc(row, None), _f(row.get("fgor"))
+        if wc is None or fgor is None or fgor < 0:
+            result["excluded"].append({"date": row["WtDate"].date().isoformat(), "kind": "test", "reason": "Missing or invalid measured WC/GOR."})
+            continue
+        if lift > 20000:
+            result["excluded"].append({"date": row["WtDate"].date().isoformat(), "kind": "test", "reason": "PF rate exceeds the supported 20,000 BPD fitting range.", "pf_rate": lift})
+            continue
+        if res_pres is not None and bhp >= float(res_pres)-25:
+            continue
         whp = _f(row.get("whp"))
         test_points.append(
             {
@@ -280,25 +282,29 @@ def points_for_well(
                 "pwh": whp if whp is not None and whp > 0 else pwh_default,
                 "qtot": _f(row.get("WtTotalFluid")),
                 "oil": _f(row.get("WtOilVol")),
-                "wc": _test_wc(row, fallback_wc),
-                "fgor": _f(row.get("fgor")) if _f(row.get("fgor")) is not None else fallback_fgor,
+                "wc": wc,
+                "fgor": fgor,
                 "weight": TEST_WEIGHT,
+                "composition_source": "test",
+                "anchor_date": row["WtDate"].date().isoformat(),
+                "anchor_test_id": _f(row.get("wt_uid")),
+                "composition_lag_days": 0,
             }
         )
 
-    # -- wc/fgor/IPR-anchor attach source: any in-era test with a real rate.
+    # -- composition source: valid in-era measured WC/GOR, independent of rates.
     # Broader than the test-POINT filter on purpose - a test that failed the
     # ppf gate still measured the well's wc/rate that week.
     anchors: list[tuple[pd.Timestamp, pd.Series]] = [
         (row["WtDate"], row)
         for _, row in era_tests.iterrows()
-        if _f(row.get("WtTotalFluid")) is not None
+        if _test_wc(row, None) is not None and _f(row.get("fgor")) is not None and _f(row.get("fgor")) >= 0
     ]
 
     def _nearest_anchor(when: pd.Timestamp) -> Optional[pd.Series]:
         best, best_days = None, None
         for stamp, row in anchors:
-            days = abs((stamp - when).days)
+            days = abs((stamp.normalize() - when).days)
             if days <= TEST_ATTACH_DAYS and (best_days is None or days < best_days):
                 best, best_days = row, days
         return best
@@ -316,14 +322,17 @@ def points_for_well(
         prs = daily_df[daily_df["well"] == well].copy()
         vol = pf_df[pf_df["well"] == well].copy()
         if not prs.empty and not vol.empty:
-            prs["date"] = pd.to_datetime(prs["sample_date"], errors="coerce").dt.normalize()
-            vol["date"] = pd.to_datetime(vol["pfdate"], errors="coerce").dt.normalize()
+            prs["date"] = pd.to_datetime(prs["sample_date"], errors="coerce", utc=True).dt.tz_localize(None).dt.normalize()
+            vol["date"] = pd.to_datetime(vol["pfdate"], errors="coerce", utc=True).dt.tz_localize(None).dt.normalize()
             vol["pwr_fld_net"] = pd.to_numeric(vol["pwr_fld_net"], errors="coerce")
             merged = prs.dropna(subset=["date"]).merge(
                 vol.dropna(subset=["date"])[["date", "pwr_fld_net"]], on="date", how="inner"
             )
-            merged = merged[merged["date"] >= era_start].sort_values("date")
-            # (see _vogel_scale for the per-point rate re-anchoring)
+            if bool((merged["date"] == era_start).any()):
+                result["excluded"].append({"date": era_start.date().isoformat(), "kind": "daily", "reason": "Installation day is ambiguous in daily operating data."})
+            merged = merged[merged["date"] > era_start].sort_values("date")
+            # Repeated source rows on a day cannot create independent fit points.
+            merged = merged.drop_duplicates(subset=["date"], keep="first")
             # Steady-state filter (STEADY_STATE_TOL_PSI): drop transient /
             # recovery days before selection. NaN medians (window < 3 days)
             # and NaN BHPs compare False -> kept for the later row filters.
@@ -331,7 +340,10 @@ def points_for_well(
                 bhp_series = pd.to_numeric(merged["btmhole_prs"], errors="coerce")
                 roll_med = bhp_series.rolling(5, center=True, min_periods=3).median()
                 merged = merged[~((bhp_series - roll_med).abs() > STEADY_STATE_TOL_PSI)]
+            test_dates = {p["date"] for p in test_points}
             for _, row in merged.iterrows():
+                if row["date"].date().isoformat() in test_dates:
+                    continue  # a measured test replaces the same day's daily fit row
                 bhp = _f(row.get("btmhole_prs"))
                 if bhp is None or bhp <= BHP_GLITCH_PSI:
                     continue
@@ -340,6 +352,10 @@ def points_for_well(
                 ppf, pf_src = resolve_pf_pressure(row.get("tubing_prs"), row.get("inn_ann_prs"))
                 ppf = _f(ppf)
                 if ppf is None or not (ppf_lo <= ppf <= ppf_hi):
+                    continue
+                observed_direction = {"annulus": "reverse", "tubing": "forward"}.get(pf_src)
+                if direction and observed_direction and observed_direction != direction:
+                    result["excluded"].append({"date": row["date"].date().isoformat(), "kind": "daily", "reason": "Daily PF pressure source conflicts with the installation circulation."})
                     continue
                 # The day's MEASURED wellhead pressure: on a reverse-circ day
                 # the tubing gauge IS the production WHP (PF is in the
@@ -354,49 +370,45 @@ def points_for_well(
                 rate = _f(row.get("pwr_fld_net"))
                 if rate is None or rate <= PF_RATE_MIN_BPD:
                     continue
+                if rate > 20000:
+                    result["excluded"].append({"date": row["date"].date().isoformat(), "kind": "daily", "reason": "PF rate exceeds the supported 20,000 BPD fitting range.", "pf_rate": rate})
+                    continue
                 anchor = _nearest_anchor(row["date"])
                 if anchor is not None:
-                    qtot = _f(anchor.get("WtTotalFluid"))
-                    oil = _f(anchor.get("WtOilVol"))
-                    wc = _test_wc(anchor, fallback_wc)
+                    wc = _test_wc(anchor, None)
                     fgor = _f(anchor.get("fgor"))
-                    fgor = fgor if fgor is not None else fallback_fgor
-                    # Move the test's rate along ITS OWN Vogel curve to the
-                    # day's BHP. The fitter builds an InFlow per point at
-                    # (oil, bhp); handing every daily point the raw test oil
-                    # at a different BHP asserted a different inflow curve
-                    # per day, gave the residual a systematic sign against
-                    # PF, and biased the fit toward a pinned (unresponsive)
-                    # pump (review 2026-09-01, EVID-F6). Scaled this way,
-                    # every point's anchor lies on ONE curve: the test's.
-                    scale = _vogel_scale(_f(anchor.get("BHP")), bhp, res_pres)
-                    if scale is not None:
-                        oil = oil * scale if oil is not None else None
-                        qtot = qtot * scale if qtot is not None else None
                 else:
-                    qtot = fallback_qtot
-                    wc = fallback_wc
-                    fgor = fallback_fgor
-                    oil = qtot * (1.0 - wc) if qtot is not None and wc is not None else None
+                    result["excluded"].append({"date": row["date"].date().isoformat(), "kind": "daily", "reason": "No measured in-era WC/GOR within 30 days."})
+                    continue
                 daily_points.append(
                     {
                         "date": row["date"].date().isoformat(),
                         "kind": "daily",
                         "anchor_date": anchor["WtDate"].date().isoformat() if anchor is not None else None,
+                        "anchor_test_id": _f(anchor.get("wt_uid")),
+                        "composition_source": "nearest_test",
+                        "composition_lag_days": int((row["date"]-anchor["WtDate"].normalize()).days),
                         "ppf": ppf,
                         "bhp": bhp,
                         "pf_rate": rate,
                         "pwh": pwh_day,
-                        "qtot": qtot,
-                        "oil": oil,
+                        "qtot": None,
+                        "oil": None,
                         "wc": wc,
                         "fgor": fgor,
                         "weight": DAILY_WEIGHT,
                     }
                 )
 
-    # -- refusals over the FULL usable set (pre-cap) -------------------------
-    n_usable = len(test_points) + len(daily_points)
+    # Same-day test repetitions share one day's total weight and support count.
+    counts = {}
+    for point in test_points:
+        counts[point["date"]] = counts.get(point["date"], 0)+1
+    for point in test_points:
+        point["weight"] = TEST_WEIGHT / counts[point["date"]]
+
+    # -- refusals over independent dates in the FULL usable set (pre-cap) ---
+    n_usable = len({p["date"] for p in test_points + daily_points})
     all_ppf = [p["ppf"] for p in test_points + daily_points]
     spread = (max(all_ppf) - min(all_ppf)) if len(all_ppf) >= 2 else 0.0
     if n_usable < MIN_USABLE_POINTS:
@@ -430,6 +442,7 @@ def pad_points(
     *,
     res_pres: Optional[dict[str, float]] = None,
     surf_pres: Optional[dict[str, float]] = None,
+    directions: Optional[dict[str, str]] = None,
     fallbacks: Optional[dict[str, dict[str, float]]] = None,
     include_full: bool = False,
 ) -> dict[str, dict[str, Any]]:
@@ -445,8 +458,9 @@ def pad_points(
         res_pres: well -> saved-fit reservoir pressure (buildup filter).
         surf_pres: well -> config wellhead pressure (DEFAULT_SURF_PRES when
             missing).
-        fallbacks: well -> {"qtot", "wc", "fgor"} saved-fit values used when
-            no in-era test sits within TEST_ATTACH_DAYS of a daily point.
+        fallbacks: deprecated compatibility input; saved composition/rates
+            no longer fill missing historical measurements.
+        directions: saved/current circulation by well; tracker wins when known.
     """
     from server.services import datasources
     from server.services import tests as tests_svc
@@ -468,6 +482,7 @@ def pad_points(
                 pf_df=pf_vol,
                 res_pres=(res_pres or {}).get(well),
                 surf_pres=(surf_pres or {}).get(well),
+                direction=(directions or {}).get(well),
                 fallback_qtot=fb.get("qtot"),
                 fallback_wc=fb.get("wc"),
                 fallback_fgor=fb.get("fgor"),

@@ -36,6 +36,7 @@ from typing import Any, Callable, NamedTuple, Optional
 
 from server import jobs, pool, schemas
 from server.services import factories, solve
+from server.services.scenarios import WcBasis, scenario_params, scenario_patch
 
 log = logging.getLogger("woffl.web.sensitivity")
 
@@ -483,13 +484,32 @@ def _field_value(knob: _Knob, value: float) -> Any:
     return value
 
 
-def _params_for(knob: _Knob, sp: schemas.SimParams, value: float) -> schemas.SimParams:
+def _params_for(knob: _Knob, sp: schemas.SimParams, value: float,
+                wc_basis: WcBasis = "fixed_oil_ipr") -> schemas.SimParams:
     """Copy of the sidebar params with this knob moved to ``value``.
 
-    ``model_copy`` skips validation on purpose - every value handed here has
-    already been clamped into the field's own bounds by ``_knob_sweep``.
+    Enforces the same composition and installed/clean hardware contract as Apply.
     """
-    return sp.model_copy(update={knob.field: _field_value(knob, value)})
+    return scenario_params(sp, {knob.field: _field_value(knob, value)}, wc_basis)
+
+
+def _solve_knob(well: str, sp: schemas.SimParams, knob: _Knob, value: float,
+                label: str, wc_basis: WcBasis) -> dict[str, Any]:
+    """Validate inside the per-point boundary so invalid cases stay visible."""
+    try:
+        return _solve_point(well, _params_for(knob, sp, value, wc_basis), value, label)
+    except ValueError as exc:
+        return {"value": value, "label": label, "error": _short(str(exc))}
+
+
+def _scenario_notes(wc_basis: WcBasis) -> list[str]:
+    return [
+        ("WC/GOR composition sweeps preserve one oil IPR. qwf, anchor BHP and reservoir pressure knobs explicitly explore changes to that curve."
+         if wc_basis == "fixed_oil_ipr" else
+         "Anchor measurement mode: WC varies at fixed liquid anchor, so the inferred oil IPR changes. GOR is independent unless selected."),
+        "Catalog changes use clean reference pump losses; replacement loss knobs cannot change reference hardware.",
+        "Targets are comparison measurements; operating conditions are the displayed sidebar case. Ranges are engineering scenarios, not confidence intervals.",
+    ]
 
 
 def _metrics(res: dict[str, Any]) -> dict[str, Any]:
@@ -590,6 +610,7 @@ def run_sensitivity(
     sp: schemas.SimParams,
     targets: dict[str, Optional[float]],
     bounds: Optional[dict[str, schemas.KnobBounds]] = None,
+    wc_basis: WcBasis = "fixed_oil_ipr",
 ) -> dict[str, Any]:
     """Sweep every calibration knob around the current operating point.
 
@@ -622,7 +643,7 @@ def run_sensitivity(
     baseline: dict[str, Any] = {"value": 0.0, "label": "baseline", **_metrics(base_res)}
 
     bounds = bounds or {}
-    notes: list[str] = []
+    notes: list[str] = _scenario_notes(wc_basis)
     for unknown in sorted(set(bounds) - set(_BY_ID)):
         notes.append(f"Range override for unknown knob '{unknown}' was ignored.")
 
@@ -644,13 +665,8 @@ def run_sensitivity(
         if sweep.note is not None:
             notes.append(sweep.note)
         sweeps.append((knob, sweep, override))
-        # _params_for uses model_copy(update=...), which SKIPS validation on
-        # purpose - the values were already clamped by _knob_sweep. So the
-        # params travel as the model itself, never as JSON: round-tripping
-        # through model_validate_json would re-impose the very validation
-        # _params_for deliberately bypassed.
         jobs.extend(
-            (well, _params_for(knob, sp, value), value, label)
+            (well, sp, knob, value, label, wc_basis)
             for value, label in sweep.pairs
         )
 
@@ -658,9 +674,9 @@ def run_sensitivity(
     # out over the shared pool; the request thread waits on futures and
     # releases the GIL. Failures are already per-point (_solve_point returns
     # an "error" entry), so nothing here can lose a knob.
-    solved = pool.submit_all(_solve_point, jobs)
+    solved = pool.submit_all(_solve_knob, jobs)
     if solved is None:  # no pool, or it broke - identical work, serially
-        solved = [_solve_point(*job) for job in jobs]
+        solved = [_solve_knob(*job) for job in jobs]
 
     # Pass 3: hand each knob its own slice back, in table order.
     knobs: list[dict[str, Any]] = []
@@ -700,6 +716,7 @@ def run_sensitivity(
     return {
         "baseline": baseline,
         "knobs": knobs,
+        "wc_basis": wc_basis,
         "target_psu": targets.get("target_psu"),
         "target_qoil": targets.get("target_qoil"),
         "target_qliq": targets.get("target_qliq"),
@@ -725,7 +742,10 @@ def _score(got: dict[str, Any], targets: dict[str, Optional[float]]) -> Optional
         usable target was supplied.
     """
     errs = []
-    for metric in METRICS:
+    # Oil and total liquid share the same rate signal at fixed WC. Keep liquid
+    # visible as a diagnostic, but do not count that signal twice in ranking.
+    metrics = ("psu", "qoil", "qpf") if targets.get("target_qoil", 0) else ("psu", "qliq", "qpf")
+    for metric in metrics:
         target = targets.get(f"target_{metric}")
         value = got.get(metric)
         if target is None or value is None or float(target) == 0.0:
@@ -776,7 +796,8 @@ def _resolve_combine(knobs: list[schemas.CombineKnob]) -> tuple[list[_Knob], int
 
 
 def _solve_chunk(
-    well: str, sp: schemas.SimParams, updates: list[dict[str, Any]]
+    well: str, sp: schemas.SimParams, updates: list[dict[str, Any]],
+    wc_basis: WcBasis = "fixed_oil_ipr",
 ) -> list[dict[str, Any]]:
     """One slice of permutation solves, in order.
 
@@ -788,9 +809,9 @@ def _solve_chunk(
     out: list[dict[str, Any]] = []
     for update in updates:
         try:
-            out.append(
-                _metrics(solve.solve_single(well, sp.model_copy(update=update)))
-            )
+            candidate = scenario_params(sp, update, wc_basis)
+            out.append({**_metrics(solve.solve_single(well, candidate)),
+                        "applied_inputs": scenario_patch(sp, candidate)})
         except solve.SolveFailure as exc:
             out.append({"error": exc.error})
         except ValueError as exc:
@@ -804,6 +825,7 @@ def _solve_parallel(
     updates: list[dict[str, Any]],
     workers: int,
     progress: Optional[Callable[[int, int], None]],
+    wc_basis: WcBasis = "fixed_oil_ipr",
 ) -> Optional[list[dict[str, Any]]]:
     """ProcessPool fan-out over chunked permutations; None = pool unusable.
 
@@ -833,7 +855,7 @@ def _solve_parallel(
         from server import pool as server_pool
 
         try:
-            got = server_pool.submit_all(_solve_chunk, [(well, sp, part) for part in slices])
+            got = server_pool.submit_all(_solve_chunk, [(well, sp, part, wc_basis) for part in slices])
         except Exception as exc:  # noqa: BLE001 - fall back, never fail the study
             log.warning("combine via server pool failed (%r); rerunning serially", exc)
             return None
@@ -847,7 +869,7 @@ def _solve_parallel(
     try:
         with pool_cls(max_workers=workers) as pool:
             futures = {
-                pool.submit(_solve_chunk, well, sp, part): i
+                pool.submit(_solve_chunk, well, sp, part, wc_basis): i
                 for i, part in enumerate(slices)
             }
             for fut in as_completed(futures):
@@ -867,6 +889,7 @@ def _solve_combos(
     sp: schemas.SimParams,
     updates: list[dict[str, Any]],
     progress: Optional[Callable[[int, int], None]],
+    wc_basis: WcBasis = "fixed_oil_ipr",
 ) -> list[dict[str, Any]]:
     """Every permutation solve, in ``updates`` order.
 
@@ -880,12 +903,12 @@ def _solve_combos(
     total = len(updates)
     workers = min(worker_ceiling(), total)
     if workers > 1 and total >= _PARALLEL_MIN_RUNS:
-        solved = _solve_parallel(well, sp, updates, workers, progress)
+        solved = _solve_parallel(well, sp, updates, workers, progress, wc_basis)
         if solved is not None:
             return solved
     out: list[dict[str, Any]] = []
     for done, update in enumerate(updates, start=1):
-        out.extend(_solve_chunk(well, sp, [update]))
+        out.extend(_solve_chunk(well, sp, [update], wc_basis))
         if progress is not None and (done % _PROGRESS_EVERY == 0 or done == total):
             progress(done, total)
     return out
@@ -897,6 +920,9 @@ def run_combine(
     targets: dict[str, Optional[float]],
     knobs: list[schemas.CombineKnob],
     progress: Optional[Callable[[int, int], None]] = None,
+    wc_basis: WcBasis = "fixed_oil_ipr",
+    test_key: Optional[str] = None,
+    installation_key: Optional[str] = None,
 ) -> dict[str, Any]:
     """Full factorial over the selected knobs: what can the pair reach?
 
@@ -944,7 +970,8 @@ def run_combine(
     base_res = solve.solve_single(well, sp)
     baseline: dict[str, Any] = {"value": 0.0, "label": "baseline", **_metrics(base_res)}
 
-    notes: list[str] = []
+    notes: list[str] = _scenario_notes(wc_basis)
+    notes.append("Ranking uses RMS fractional BHP, oil and PF error; liquid replaces oil only when oil is unavailable. Liquid is also shown for diagnosis. This single-test score is not an uncertainty-weighted fit or independent validation.")
     if baseline["sonic"]:
         notes.append(SONIC_NOTE)
 
@@ -984,7 +1011,7 @@ def run_combine(
             update[knob.field] = _field_value(knob, value)
         combos.append((values, labels, update))
 
-    solved = _solve_combos(well, sp, [c[2] for c in combos], progress)
+    solved = _solve_combos(well, sp, [c[2] for c in combos], progress, wc_basis)
 
     runs: list[dict[str, Any]] = []
     n_failed = 0
@@ -998,6 +1025,7 @@ def run_combine(
                 run[metric] = got[metric]
             run["sonic"] = got["sonic"]
             run["score"] = _score(got, targets)
+            run["applied_inputs"] = got["applied_inputs"]
         runs.append(run)
 
     envelope: dict[str, list[float]] = {}
@@ -1025,9 +1053,14 @@ def run_combine(
             "suction is set by the throat across this whole box."
         )
 
+    from woffl.flow.hydraulics import physics_model
+    snapshot = schemas.CombineRequest(well=well, params=sp, knobs=knobs,
+        wc_basis=wc_basis, test_key=test_key, installation_key=installation_key, **targets)
     return {
         "baseline": baseline,
         "runs": runs,
+        "request": snapshot.model_dump(),
+        "physics_model": physics_model(sp.hydraulics_model),
         "envelope": envelope,
         "reachable": reachable,
         "best_index": best_index,
@@ -1084,6 +1117,7 @@ def start_combine(req: schemas.CombineRequest) -> str:
         def report(done: int, total: int) -> None:
             job["progress"] = f"run {done}/{total}"
 
-        return run_combine(req.well, req.params, targets, req.knobs, progress=report)
+        return run_combine(req.well, req.params, targets, req.knobs, progress=report,
+            wc_basis=req.wc_basis, test_key=req.test_key, installation_key=req.installation_key)
 
     return jobs.start(_JOB_KIND, runner, progress="solving the baseline point...")

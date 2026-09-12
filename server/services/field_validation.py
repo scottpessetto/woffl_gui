@@ -68,8 +68,11 @@ def _rms(values):
 def evaluate_events(config, train, held, *, fit_function=None, predict_function=None, progress=None):
     """Fit training data, then predict held-out BHP/PF/oil with a fixed IPR.
 
-    Daily oil values are derived from BHP by the builder, so only actual well
-    tests contribute oil errors. Every failed held-out solve stays in the report.
+    Only actual tests contribute oil errors. Older snapshots contain daily oil
+    inferred from BHP; those values are ignored. The current fitter holds one
+    training-derived oil IPR fixed, so a rerun of an old snapshot is a new
+    experiment, not reproduction of the former per-point-IPR calibration.
+    Every failed held-out solve stays in the report.
     """
     from woffl.gui.fric_calibration import calibrate_multipoint
     from woffl.assembly.network_optimizer import NetworkOptimizer
@@ -85,6 +88,7 @@ def evaluate_events(config, train, held, *, fit_function=None, predict_function=
     fit = (fit_function or calibrate_multipoint)(cfg, nozzle, throat, fit_points,
                                                seed=(.03, .3, .4, 1., 1.), progress=progress)
     report = dict(physics_model=physics_model(cfg.hydraulics_model), hydraulics_model=cfg.hydraulics_model,
+                  calibration_contract="fixed-oil-ipr-v1",
                   well=cfg.well_name, train_points=len(train),
                   fit_points=len(fit_points), held_points=len(held), train_end=max(p["date"] for p in train),
                   held_start=min(p["date"] for p in held), refusal=fit.refusal,

@@ -66,7 +66,7 @@ def scores(rows):
                 pf_count=len(pf_pct), pf_median_abs_pct=median(pf_pct) if pf_pct else None)
 
 
-def assemble(config, tracker, test_frame, request, as_of):
+def assemble(config, tracker, test_frame, request, as_of, saved_calibration=None):
     """Freeze installation assignments and split tests without outcome-based scoring cuts."""
     from woffl.geometry import JetPump
 
@@ -173,6 +173,18 @@ def assemble(config, tracker, test_frame, request, as_of):
         cfg.ken_well, cfg.kth_well, cfg.kdi_well, cfg.fnz_well = .03, .3, .4, 1.
         if specs[era["installation_id"]]["tubing_od"] is not None:
             cfg.tubing_od = specs[era["installation_id"]]["tubing_od"]
+        era["pump_losses"] = "clean_reference"
+        if request.mode == "all_tests" and request.pump_losses == "saved_matching" and saved_calibration:
+            from server.services import pump_calibration, well_model
+            fit = saved_calibration
+            if (fit.get("status") == "active" and fit.get("pump") == era["pump"] and
+                pump_calibration.installation(fit.get("date_set")) == pump_calibration.installation(era["date_set"]) and
+                fit.get("well_model_fingerprint") == well_model.describe(cfg)["fingerprint"]):
+                coefs = fit["coefficients"]
+                cfg.ken_well, cfg.kth_well, cfg.kdi_well, cfg.fnz_well = (coefs[k] for k in ("ken", "kth", "kdi", "nozzle_area_factor"))
+                era["pump_losses"] = "saved_calibration"
+            elif pump_calibration.installation(fit.get("date_set")) == pump_calibration.installation(era["date_set"]):
+                era["flags"].append("Saved pump fit was not applied: its verified model or historical geometry does not match these replay inputs. Clean reference losses are shown.")
         return cfg
 
     work = []
@@ -257,7 +269,7 @@ def assemble(config, tracker, test_frame, request, as_of):
         ("One saved oil-rate-versus-BHP IPR is held fixed across all test points and pumps. Each test's measured WC/GOR supplies the water/gas mixture. This is a retrospective comparison using known composition, not held-out prediction validation."
          if request.mode == "all_tests" else
          "Inflow is fitted to earlier tests; WC/GOR are frozen from those tests."),
-        "Pump losses remain clean reference, not a multi-pump loss calibration. Fitted wear is never transferred across installations.",
+        "Saved losses apply only to the exact matching installation and well inputs when selected; all other pumps use clean reference losses. Fitted wear is never transferred across installations. This is not a multi-pump loss calibration.",
         "Uses saved/current geometry, PVT and reservoir-pressure priors; their historical values and signed gauge offsets are unverified.",
         "Predictions use test-day PF pressure and WHP. Each test's oil, BHP and PF rate are comparisons, not per-test solver anchors.",
         "Installation days excluded. Oil is scored only against actual tests. PF above 20,000 BPD is displayed but excluded from percentage scores.",
@@ -280,7 +292,8 @@ def predict_chunk(tasks):
         try:
             at = deepcopy(cfg)
             bore, profile, inflow, mixture, pf = NetworkOptimizer._create_well_objects(at)
-            pump = JetPump(at.installed_nozzle, at.installed_throat, ken=.03, kth=.3, kdi=.4)
+            pump = JetPump(at.installed_nozzle, at.installed_throat, ken=at.ken_well, kth=at.kth_well, kdi=at.kdi_well)
+            pump.dnz *= at.fnz_well ** .5
             bhp, sonic, oil, fwat, qpf, _mach = jetpump_solver(
                 controls["pwh"], at.form_temp, controls["ppf"], pump, bore, profile,
                 inflow, mixture, pf, at.jpump_direction, hydraulics_model=at.hydraulics_model)
@@ -323,7 +336,8 @@ def run(job, well, request):
     test_frame = fleet_tests[fleet_tests["well"] == well].copy()
     as_of = datetime.now(timezone.utc).isoformat()
     jobs.check_cancelled(job)
-    eras, rows, work, notes = assemble(cfg, tracker, test_frame, request, as_of)
+    calibration = context.get("pump_calibration") if source == "databricks" else None
+    eras, rows, work, notes = assemble(cfg, tracker, test_frame, request, as_of, calibration)
     if request.edited_inputs is not None:
         notes[0] = notes[0].replace("One saved oil-rate-versus-BHP IPR", "One edited oil-rate-versus-BHP IPR")
         notes.insert(0, "Preview of current well-input edits. Nothing is saved; optimization uses database inputs until Save well inputs succeeds.")

@@ -73,7 +73,9 @@ def _spread_days(start, n, ppf_lo=2800.0, ppf_hi=3600.0, bhp=320.0, rate=2400.0)
 
 
 def _build(daily, pf, tests=None, **kw):
-    tests_df = pd.DataFrame(tests) if tests is not None else None
+    # Composition-only observation: no valid test PF pressure, so it is an
+    # attachment source without becoming another fitting point.
+    tests_df = pd.DataFrame(tests if tests is not None else [_test_row("2026-06-10", ppf=np.nan)])
     return points_for_well(
         _WELL, jp_hist=_jp_hist(), tests_df=tests_df,
         daily_df=daily, pf_df=pf, **kw,
@@ -102,6 +104,43 @@ def test_era_gating_drops_pre_era_daily_and_test_rows():
     assert "2026-05-20" not in dates
     assert "2026-05-15" not in dates
     assert res["refusal"] is None
+
+
+def test_installation_day_is_ambiguous_even_after_exact_set_time():
+    daily, pf = _spread_days("2026-06-01", 12)
+    tests = pd.DataFrame([_test_row("2026-06-01T20:00:00"), _test_row("2026-06-05")])
+    result = points_for_well(_WELL, jp_hist=_jp_hist(pd.Timestamp("2026-06-01T15:30:00")),
+                            tests_df=tests, daily_df=daily, pf_df=pf)
+    assert result["pump"]["date_set"] == "2026-06-01T15:30:00"
+    assert not any(p["date"] == "2026-06-01" for p in result["points"])
+    assert {p["kind"] for p in result["excluded"] if p["date"] == "2026-06-01"} == {"daily", "test"}
+
+
+def test_circulation_conflict_excludes_test_and_daily_pressures():
+    daily, pf = _spread_days("2026-06-05", 12)
+    tests = [{**_test_row("2026-06-10"), "pf_source": "annulus"}]
+    result = _build(daily, pf, tests, direction="forward")
+    assert result["points"] == []
+    assert all("circulation" in p["reason"] for p in result["excluded"])
+
+
+@pytest.mark.parametrize("wc", [-.05, 1.0, 1.1])
+def test_invalid_measured_wc_is_not_clamped_or_replaced(wc):
+    daily, pf = _spread_days("2026-06-05", 12)
+    tests = [_test_row("2026-06-10", wc=wc), _test_row("2026-06-11", wc=.75)]
+    result = _build(daily, pf, tests)
+    assert not any(p["date"] == "2026-06-10" and p["kind"] == "test" for p in result["points"])
+    assert any(p["date"] == "2026-06-10" and "WC/GOR" in p["reason"] for p in result["excluded"])
+    assert all(p["wc"] == .75 for p in result["points"])
+
+
+def test_repeated_test_date_has_one_day_weight_and_replaces_daily():
+    daily, pf = _spread_days("2026-06-05", 12)
+    tests = [_test_row("2026-06-10"), _test_row("2026-06-10", oil=850.0)]
+    result = _build(daily, pf, tests)
+    on_day = [p for p in result["points"] if p["date"] == "2026-06-10"]
+    assert len(on_day) == 2 and all(p["kind"] == "test" for p in on_day)
+    assert sum(p["weight"] for p in on_day) == TEST_WEIGHT
 
 
 def test_shut_in_day_low_pf_rate_dropped():
@@ -144,7 +183,7 @@ def test_glitch_bhp_and_bad_ppf_days_dropped():
 # ---------------------------------------------------------------------------
 
 
-def test_nearest_test_within_30_days_attaches_and_fallback_beyond():
+def test_nearest_test_attaches_only_composition_and_missing_history_is_excluded():
     daily, pf = _spread_days("2026-06-05", 12)  # 06-05 .. 06-16
     # far daily 40+ days after the only test -> fallback values
     daily = pd.concat(
@@ -159,16 +198,15 @@ def test_nearest_test_within_30_days_attaches_and_fallback_beyond():
     )
     near = next(p for p in res["points"] if p["date"] == "2026-06-05")
     assert near["kind"] == "daily"
-    assert near["qtot"] == 2000.0
-    assert near["oil"] == 1200.0
+    assert near["qtot"] is None
+    assert near["oil"] is None
     assert near["wc"] == pytest.approx(0.4)
     assert near["fgor"] == 300.0
 
-    far = next(p for p in res["points"] if p["date"] == "2026-08-01")
-    assert far["qtot"] == 1500.0
-    assert far["wc"] == pytest.approx(0.6)
-    assert far["fgor"] == 250.0
-    assert far["oil"] == pytest.approx(1500.0 * 0.4)  # qtot * (1 - wc)
+    assert near["composition_lag_days"] == -5
+    assert near["composition_source"] == "nearest_test"
+    assert not any(p["date"] == "2026-08-01" for p in res["points"])
+    assert any(p["date"] == "2026-08-01" for p in res["excluded"])
 
 
 def test_attach_picks_nearest_of_two_tests_and_computes_wc_when_missing():
@@ -357,6 +395,6 @@ def test_pad_points_fail_soft_per_well(monkeypatch):
     assert _WELL in out
     assert "MPM-99" not in out  # per-well exception -> absent, never fatal
     assert out[_WELL]["n_test"] == 1
-    assert out[_WELL]["n_daily"] == 12
+    assert out[_WELL]["n_daily"] == 11  # same-day test replaces daily row
     # MPM-28 has no rows in either frame and no pump record for its name
     assert out["MPM-28"]["refusal"] == "no current pump record in jp_history"

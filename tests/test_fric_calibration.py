@@ -130,6 +130,7 @@ def test_subsonic_behavior_unchanged(monkeypatch):
 # are reachable only by fitting mach_crit > 1 - the P3 failure mode.
 
 import math
+import pytest
 from types import SimpleNamespace
 
 PPF_UNSOLVABLE = 9999.0  # sentinel ppf: the fake solver raises
@@ -169,6 +170,7 @@ def _mp_solver(*, jpump, ppf_surf, mach_crit=1.0, **kwargs):
 def _mp_config():
     return SimpleNamespace(
         res_pres=RES_PRES, form_temp=120.0, surf_pres=250.0,
+        qwf=900.0, pwf=500.0, form_wc=0.7, form_gor=300.0,
         jpump_direction="reverse",
         ken_well=None, kth_well=None, kdi_well=None,
         field_model="Schrader", oil_api=None, gas_sg=None, wat_sg=None,
@@ -226,7 +228,7 @@ def test_multipoint_recovers_known_params(monkeypatch):
     assert r.iterations > 0
     assert len(r.per_point) == len(pts)
     row = r.per_point[0]
-    assert set(row) == {"date", "kind", "ppf", "bhp_meas", "bhp_model",
+    assert set(row) >= {"date", "kind", "ppf", "bhp_meas", "bhp_model",
                         "pf_meas", "pf_model"}
     assert row["date"] == "2026-07-01" and row["kind"] == "daily"
     assert abs(row["bhp_model"] - row["bhp_meas"]) < 15.0
@@ -241,8 +243,78 @@ def test_multipoint_recovers_known_params(monkeypatch):
     assert abs(r.implied_beta - beta_true) < 0.02
 
     assert r.message.startswith(f"fit {len(pts)} points:")
-    assert "fnz" in r.message and "washout" in r.message
+    assert "fnz" in r.message and "effective area" in r.message
     assert "shared entry-energy balance" in r.message
+
+
+def test_fixed_ipr_does_not_follow_test_outcomes_and_scores_only_measured_oil(monkeypatch):
+    """A different test outcome must change the residual, never its IPR."""
+    _patch_mp(monkeypatch)
+    seen, costs = [], []
+
+    def solver(**kwargs):
+        seen.append((kwargs["ipr_su"], kwargs["prop_su"]))
+        return _mp_solver(**kwargs)
+
+    def fixed_minimize(fun, x0, **kwargs):
+        x = [TRUE[k] for k in ("ken", "kth", "kdi", "fnz")]
+        costs.append(fun(x))
+        return SimpleNamespace(x=x, nit=1)
+
+    monkeypatch.setattr(fc, "jetpump_solver", solver)
+    monkeypatch.setattr(fc, "minimize", fixed_minimize)
+    points = _mp_points(PPFS, **TRUE)
+    for p in points[:3]:
+        p.update(kind="test", oil=200.0)
+    # This is a legacy snapshot's manufactured daily rate. It must not score.
+    points[-1]["oil"] = 12345.0
+    first = fc.calibrate_multipoint(_mp_config(), "12", "B", points)
+    first_cost = costs[0]
+    assert first.n_oil == 3 and first.rms_oil_bopd == pytest.approx(0.0)
+    assert all(row["oil_meas"] is None for row in first.per_point if row["kind"] == "daily")
+    assert all(ipr[1] == pytest.approx(270.0) and ipr[2:] == (500.0, RES_PRES) for ipr, mix in seen)
+
+    costs.clear()
+    seen.clear()
+    points[0]["oil"] = 400.0
+    points[0]["wc"], points[0]["fgor"] = .85, 900.0
+    second = fc.calibrate_multipoint(_mp_config(), "12", "B", points)
+    assert costs[0] > first_cost
+    assert second.rms_oil_bopd == pytest.approx(200.0/math.sqrt(3))
+    assert second.rms_oil_pct == pytest.approx(50.0/math.sqrt(3))
+    assert all(ipr[1] == pytest.approx(270.0) and ipr[2:] == (500.0, RES_PRES) for ipr, mix in seen)
+    assert any(mix == ("mix", .85, 900.0) for ipr, mix in seen)
+
+
+@pytest.mark.parametrize("field,value", [("wc", 1.0), ("wc", -0.1), ("wc", None), ("fgor", -1.0), ("fgor", None)])
+def test_multipoint_excludes_invalid_composition_without_saved_fallback(monkeypatch, field, value):
+    _patch_mp(monkeypatch)
+    points = _mp_points(PPFS, **TRUE)
+    points[0][field] = value
+    result = fc.calibrate_multipoint(_mp_config(), "12", "B", points)
+    assert result.n_dropped == 1
+    assert not any(row["date"] == points[0]["date"] for row in result.per_point)
+
+
+def test_duplicate_test_day_cannot_increase_level_or_response_weight(monkeypatch):
+    from copy import deepcopy
+    _patch_mp(monkeypatch)
+    costs = []
+    def fixed_minimize(fun, x0, **kwargs):
+        x = [TRUE[k] for k in ("ken", "kth", "kdi", "fnz")]
+        costs.append(fun(x))
+        return SimpleNamespace(x=x, nit=1)
+    monkeypatch.setattr(fc, "minimize", fixed_minimize)
+    points = _mp_points(PPFS, **TRUE)
+    points[0].update(kind="test", oil=300.0, bhp=points[0]["bhp"]+100, weight=3.0)
+    fc.calibrate_multipoint(_mp_config(), "12", "B", points)
+    original = costs[0]
+    costs.clear()
+    repeated = deepcopy(points)
+    repeated[0]["weight"] = 1.5
+    repeated.append(deepcopy(repeated[0]))
+    fc.calibrate_multipoint(_mp_config(), "12", "B", repeated)
+    assert costs[0] == pytest.approx(original)
 
 
 def test_multipoint_huber_ignores_wild_outlier(monkeypatch):

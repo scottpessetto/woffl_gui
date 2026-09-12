@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
@@ -22,6 +23,21 @@ from woffl.gui.gaugeless_match import GaugelessMatchResult
 from server.main import app
 
 WELL = "MPB-28"
+
+
+@pytest.fixture(autouse=True)
+def offline_geometry(monkeypatch):
+    """Exercise named-well factories against fixed local properties only."""
+    from server.cache import clear_all_caches
+    from server.services import datasources
+    from woffl.assembly import databricks_client
+    monkeypatch.setattr(datasources, "well_chars_safe", lambda: (
+        pd.DataFrame([{"Well": WELL, "JP_TVD": 4065.}]), "csv_fallback"
+    ))
+    monkeypatch.setattr(databricks_client, "execute_query", lambda *a, **kw: pytest.fail("offline match-test queried warehouse"))
+    clear_all_caches()
+    yield
+    clear_all_caches()
 
 
 @pytest.fixture()

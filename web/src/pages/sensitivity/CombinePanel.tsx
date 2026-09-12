@@ -26,7 +26,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useCombineJob, useSensitivityCombine } from "../../api/hooks";
-import type { CombineKnob, SensitivityKnob, SimParams } from "../../api/types";
+import type { CombineKnob, CombineRequest, SensitivityKnob, SimParams, WcBasis } from "../../api/types";
 import { Button, Card, ErrorNote, Spinner } from "../../components/ui";
 import {
   type CombineState,
@@ -44,6 +44,7 @@ import {
 import { EnvelopeChart } from "./EnvelopeChart";
 import { PermutationScatter } from "./PermutationScatter";
 import { TopRunsTable } from "./TopRunsTable";
+import { matchingStudy } from "./study";
 
 const HELP =
   "Solves every combination of the selected inputs across the ranges set above, then reports " +
@@ -55,6 +56,7 @@ export function CombinePanel({
   targets,
   knobs,
   bounds,
+  wcBasis, testKey, installationKey, enabled,
 }: {
   well: string;
   params: SimParams;
@@ -62,6 +64,10 @@ export function CombinePanel({
   knobs: SensitivityKnob[];
   /** the same edited bounds the tornado is sweeping */
   bounds: BoundsMap;
+  wcBasis: WcBasis;
+  testKey: string | null;
+  installationKey: string;
+  enabled: boolean;
 }) {
   // Everything the engineer chose here belongs to the well it was chosen on,
   // and outlives the page: keying by well is what keeps MPI-31's envelope
@@ -114,28 +120,23 @@ export function CombinePanel({
   const settled = job.data?.status === "done" || job.data?.status === "error";
   const running = combine.isPending || (jobId !== null && !settled);
   const overCap = plan.count > MAX_COMBINE_RUNS;
-  const canRun = plan.entries.length > 0 && !overCap && !running;
+  const canRun = enabled && plan.entries.length > 0 && !overCap && !running;
+  const request: CombineRequest = { well, params, ...targets,
+    knobs: plan.entries.map((e) => e.req), wc_basis: wcBasis, test_key: testKey, installation_key: installationKey };
 
   const runStudy = () => {
+    if (!canRun) return;
     const labels: Record<string, string> = {};
     for (const e of plan.entries) labels[e.knob.id] = e.knob.label;
     const next: CombineState = {
       picked,
       levels,
       jobId: null,
-      fired: { ids: plan.entries.map((e) => e.knob.id), labels, count: plan.count },
+      fired: { ids: plan.entries.map((e) => e.knob.id), labels, count: plan.count, request },
     };
     setCombine(well, next);
     combine.mutate(
-      {
-        well,
-        params,
-        target_psu: targets.target_psu,
-        target_qoil: targets.target_qoil,
-        target_qliq: targets.target_qliq,
-        target_qpf: targets.target_qpf,
-        knobs: plan.entries.map((e) => e.req),
-      },
+      request,
       {
         onSuccess: (started) => {
           startedHere.current = started.job_id;
@@ -149,12 +150,15 @@ export function CombinePanel({
   // the job as an error status, so both have to reach the same note.
   const failed = job.data?.status === "error" ? new Error(job.data.error ?? "study failed") : null;
   const data = job.data?.status === "done" ? (job.data.result ?? undefined) : undefined;
+  const submitted = data?.request;
+  const stale = !matchingStudy(request, submitted);
+  const resultTargets = submitted ?? targets;
   const caption =
     data === undefined
       ? ""
       : data.n_failed === 0
         ? `${data.n_runs} permutations, all solved.`
-        : `${data.n_runs} permutations, ${data.n_failed} failed to solve and are left off the charts.`;
+        : `${data.n_runs} permutations, ${data.n_failed} failed to solve. The sampled range is incomplete.`;
 
   return (
     <Card padded={false} className="p-3">
@@ -262,8 +266,11 @@ export function CombinePanel({
           {combine.isError && <ErrorNote error={combine.error} />}
           {failed !== null && <ErrorNote error={failed} />}
 
-          {data !== undefined && fired !== null && !running && (
+          {data && !submitted && !running && <p className="text-xs text-amber-800">This older study has no saved input snapshot. Run the current case to view reproducible results.</p>}
+          {data !== undefined && submitted && fired !== null && !running && (
             <div className="space-y-3">
+              {stale && <p role="status" className="rounded bg-amber-50 p-2 text-xs text-amber-800">This study used different inputs, comparison test or hardware. Results retain the submitted case; run the current case before applying a scenario.</p>}
+              {submitted && <p className="text-xs text-slate-500">Submitted comparison: {submitted.test_key ?? "no measured test"}. {data.physics_model}. {submitted.wc_basis === "anchor_measurement" ? "Anchor measurement mode" : "Fixed oil IPR composition mode"}.</p>}
               {data.notes.map((note) => (
                 <p key={note} className="px-1 text-xs text-slate-500">
                   {note}
@@ -272,24 +279,27 @@ export function CombinePanel({
               <EnvelopeChart
                 envelope={data.envelope}
                 reachable={data.reachable}
-                targets={targets}
+                targets={resultTargets}
                 caption={caption}
               />
               <PermutationScatter
                 runs={data.runs}
                 baseline={data.baseline}
                 bestIndex={data.best_index}
-                targets={targets}
+                targets={resultTargets}
                 knobIds={fired.ids}
                 knobLabels={fired.labels}
               />
               <TopRunsTable
                 runs={data.runs}
                 bestIndex={data.best_index}
-                targets={targets}
+                targets={resultTargets}
                 knobIds={fired.ids}
                 knobLabels={fired.labels}
                 knobs={knobs}
+                request={submitted ?? null}
+                currentRequest={request}
+                canApply={!stale && enabled}
               />
             </div>
           )}

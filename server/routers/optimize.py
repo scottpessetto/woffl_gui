@@ -21,6 +21,7 @@ from server.services import (
     match_health,
     optimizer_runs,
     pad_curves,
+    plan_robustness,
 )
 
 router = APIRouter(prefix="/optimize", tags=["optimize"])
@@ -84,6 +85,31 @@ def run_status(job_id: str) -> Any:
             detail={"error": "invalid", "message": f"unknown or expired job {job_id}"},
         )
     return job
+
+
+@router.post("/robustness", response_model=schemas.OptimizeRunStarted)
+def start_robustness(req: schemas.PadRobustnessRequest) -> Any:
+    """Stress two fixed server-side I/M/E plans; no saves or reallocations."""
+    try:
+        return {"job_id": plan_robustness.start(req)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error": "invalid", "message": str(exc)}) from exc
+
+
+@router.get("/robustness/{job_id}")
+def robustness_status(job_id: str) -> Any:
+    job = plan_robustness.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail={"error": "invalid", "message": "Unknown or expired robustness job."})
+    return job
+
+
+@router.delete("/robustness/{job_id}")
+def cancel_robustness(job_id: str) -> Any:
+    from server import jobs
+    if not jobs.cancel(job_id, (plan_robustness.KIND,)):
+        raise HTTPException(status_code=404, detail={"error": "invalid", "message": "Unknown or expired robustness job."})
+    return {"cancelled": True}
 
 
 @router.get("/pump-curve", response_model=schemas.PumpCurveResponse)

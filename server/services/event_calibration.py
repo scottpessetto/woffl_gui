@@ -18,11 +18,13 @@ persisting an accepted fit is the save path's job.
 """
 
 from __future__ import annotations
+from copy import deepcopy
 
 from woffl.flow.entry_energy import MODEL_VERSION
 from woffl.flow.hydraulics import physics_model, validate_model
 
 import logging
+import math
 import os
 import tempfile
 import pandas as pd
@@ -61,7 +63,7 @@ def _num(v: Any) -> Optional[float]:
         f = float(v)
     except (TypeError, ValueError):
         return None
-    return f if f == f else None  # NaN-safe
+    return f if math.isfinite(f) else None
 
 
 def fit_payload(fit: Any) -> dict[str, Any]:
@@ -75,6 +77,10 @@ def fit_payload(fit: Any) -> dict[str, Any]:
         "rms_bhp_psi": float(fit.rms_bhp_psi),
         "rms_pf_pct": float(fit.rms_pf_pct),
         "rms_dbhp_psi": _num(fit.rms_dbhp_psi),
+        "rms_oil_bopd": _num(getattr(fit, "rms_oil_bopd", None)),
+        "rms_oil_pct": _num(getattr(fit, "rms_oil_pct", None)),
+        "n_oil": int(getattr(fit, "n_oil", 0)),
+        "per_point": getattr(fit, "per_point", []),
         "n_used": int(fit.n_used),
         "n_dropped": int(fit.n_dropped),
         "railed": list(fit.railed),
@@ -109,7 +115,7 @@ def _pump_label(nozzle: Any, throat: Any) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
-def _latest_test_target(well: str, era_start=None) -> Optional[dict[str, Any]]:
+def _latest_test_target(well: str, era_start=None, direction=None) -> Optional[dict[str, Any]]:
     """Newest test row carrying a measured BHP - the same row the web
     client's test picker defaults to (tests_json is newest-first, 6-month
     window like GET /wells/{name}/tests). None when no test has a BHP."""
@@ -122,9 +128,15 @@ def _latest_test_target(well: str, era_start=None) -> Optional[dict[str, Any]]:
         if era_start is not None:
             date = pd.to_datetime(row.get("date"), utc=True, errors="coerce")
             start = pd.to_datetime(era_start, utc=True, errors="coerce")
-            if pd.isna(date) or pd.isna(start) or date < start:
+            if pd.isna(date) or pd.isna(start) or date.normalize() <= start.normalize():
                 continue
-        if _num(row.get("bhp")) is not None:
+        wc = calibration_points._test_wc({"form_wc": row.get("form_wc"), "WtOilVol": row.get("oil"), "WtWaterVol": row.get("water")}, None)
+        gor = _num(row.get("fgor"))
+        pf = _num(row.get("pf_press"))
+        source_direction = {"annulus": "reverse", "tubing": "forward"}.get(row.get("pf_source"))
+        if direction and source_direction and source_direction != direction:
+            continue
+        if (_num(row.get("bhp")) or 0) > 50 and wc is not None and gor is not None and gor >= 0 and pf is not None and 800 <= pf <= 5500:
             return row
     return None
 
@@ -144,13 +156,19 @@ def _single_point_fallback(
     from woffl.gui import fric_calibration
 
     job["progress"] = "young era - matching latest test BHP instead..."
-    test = _latest_test_target(well, era_start) if era_start is not None else _latest_test_target(well)
+    test = _latest_test_target(well, era_start, getattr(config, "jpump_direction", None))
     if test is None:
         return None
 
-    wellbore, wellprof, inflow, res_mix, prop_pf = fric_calibration._build_well_objects(
-        config
-    )
+    wc = calibration_points._test_wc({"form_wc": test.get("form_wc"), "WtOilVol": test.get("oil"), "WtWaterVol": test.get("water")}, None)
+    gor = _num(test.get("fgor"))
+    if wc is None or gor is None or gor < 0:
+        return None
+    at = deepcopy(config)
+    # Change the measured water/gas mixture while preserving the approved oil curve.
+    at.qwf = float(config.qwf)*(1-float(config.form_wc))/(1-wc)
+    at.form_wc, at.form_gor = wc, gor
+    wellbore, wellprof, inflow, res_mix, prop_pf = fric_calibration._build_well_objects(at)
     whp = _num(test.get("whp"))
     pwh = whp if whp is not None and whp > 0 else float(config.surf_pres)
     pf_press = _num(test.get("pf_press"))
@@ -301,6 +319,8 @@ def _run_event_calibration_job(job: dict[str, Any], well: str, hydraulics_model:
         # A different return model needs its own fitted pump coefficients.
         config.ken_well, config.kth_well, config.kdi_well, config.fnz_well = .03, .3, .4, 1.
     config.hydraulics_model = selected
+    from server.services.well_model import describe
+    well_model = describe(config)
 
     current, _rates = optimizer_runs._current_and_tests([well])
     nozzle, throat = current.get(well, (None, None))
@@ -312,6 +332,7 @@ def _run_event_calibration_job(job: dict[str, Any], well: str, hydraulics_model:
         [well],
         res_pres={well: res_pres} if res_pres is not None else None,
         surf_pres={well: surf_pres} if surf_pres is not None else None,
+        directions={well: getattr(config, "jpump_direction", "reverse")},
     ).get(well)
 
     # The installed pump: the JP tracker's word first, else the era pump the
@@ -394,6 +415,9 @@ def _run_event_calibration_job(job: dict[str, Any], well: str, hydraulics_model:
     return optimizer_runs._plain(
         {
             "physics_model": physics_model(selected),
+            "well_model_fingerprint": well_model["fingerprint"],
+            "well_model_inputs": well_model["inputs"],
+            "calibration_contract": "fixed-oil-ipr-v1",
             "hydraulics_model": selected,
             "well": well,
             "pump": _pump_label(nozzle, throat),
@@ -409,6 +433,10 @@ def _run_event_calibration_job(job: dict[str, Any], well: str, hydraulics_model:
             "fit": fit,
             "mined_beta": mined_beta,
             "mined_beta_source": mined_beta_source,
+            "mined_beta_scope": "well_history" if mined_beta_source == "well" else mined_beta_source,
+            "response_validation": "diagnostic_not_holdout",
+            "data_exclusions": (built or {}).get("excluded", []),
+            "composition_policy": (built or {}).get("composition_policy"),
             "current": {
                 "nozzle_area_factor": _num(getattr(config, "fnz_well", None)) or 1.0,
                 "ken": _num(getattr(config, "ken_well", None)),

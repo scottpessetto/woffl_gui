@@ -3,11 +3,8 @@
  * combination inside the engineer's ranges, one horizontal bar per quantity
  * with the measured test as a gold reference line.
  *
- * The bar is the answer to the question the tornado cannot answer. A test
- * line sitting outside its bar means no permutation of these knobs, at any
- * setting the engineer said was believable, reaches that number - the model
- * is wrong somewhere the sweep is not looking. A line inside the bar means
- * the match exists and the scatter below says which run gets closest.
+ * Extrema cover solved samples only. Separate metric ranges do not establish
+ * that one sampled case jointly matches the test, or bound unsampled cases.
  *
  * Each quantity keeps its own axis and its own units. Four rates and
  * pressures normalised onto one axis would be a prettier chart and a lie.
@@ -24,9 +21,9 @@ import { type CombineTargets, niceRange, targetOf } from "./combine";
 import { METRICS, type MetricSpec } from "./metrics";
 
 const HELP =
-  "The lowest and highest each quantity reached across every solved permutation. " +
-  "The gold line is the measured test. A test line outside the bar cannot be matched " +
-  "by any combination of the selected inputs inside their ranges.";
+  "The lowest and highest each quantity reached across solved sampled permutations. " +
+  "The gold line is the measured test. This does not bound unsampled settings, " +
+  "or prove that one scenario matches all measured quantities together.";
 
 /** Vertical pitch of one metric row: bar, its tick labels, its axis name. */
 const ROW_PX = 80;
@@ -134,7 +131,7 @@ function envelopeOption(rows: EnvelopeRow[]): EChartsOption {
       tooltip: {
         formatter: (): string => {
           const out = [ttHeader(spec.label)];
-          out.push(ttRow(row.color, "Reachable", `${fmtNum(row.min, spec.dp)} to ${fmtNum(row.max, spec.dp)} ${spec.unit}`));
+          out.push(ttRow(row.color, "Sampled range", `${fmtNum(row.min, spec.dp)} to ${fmtNum(row.max, spec.dp)} ${spec.unit}`));
           if (row.target !== null) {
             out.push(ttRow(GOLD, "Measured test", `${fmtNum(row.target, spec.dp)} ${spec.unit}`));
             out.push(
@@ -213,17 +210,16 @@ export function EnvelopeChart({
   return (
     <Card padded={false} className="p-2">
       <p className="px-2 pt-1 text-xs font-semibold text-slate-600" title={HELP}>
-        Reachable Envelope
+        Sampled Scenario Envelope
       </p>
       <p className="px-2 text-[11px] text-slate-500">{caption}</p>
       {missed.length > 0 ? (
         <p className="px-2 pt-0.5 text-[11px] font-medium text-red-700">
-          Out of reach in these ranges: {missed.join(", ")}. No combination of the selected inputs
-          gets there.
+          Outside the solved samples: {missed.join(", ")}. Unsampled settings and failed cases are not bounded.
         </p>
       ) : scored.length > 0 ? (
         <p className="px-2 pt-0.5 text-[11px] font-medium text-blue-700">
-          Every measured quantity falls inside the reachable range.
+          Each measured quantity is inside its sampled range. A joint match still requires one scenario to agree with all measurements.
         </p>
       ) : null}
       {/* A four-row range bar has nothing to zoom into, and a disarmed brush

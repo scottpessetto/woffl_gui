@@ -27,6 +27,17 @@ from server.services import ipr, sensitivity, solve, wc_uncertainty
 router = APIRouter(tags=["compute"])
 
 
+@router.post("/common-ipr-fit", response_model=schemas.CommonOilIprResult)
+def post_common_ipr_fit(req: schemas.CommonOilIprRequest):
+    """Explicit read-only common oil IPR candidate; Save remains separate."""
+    from server.services import common_ipr
+    try:
+        with pool.cpu_slot():
+            return common_ipr.run(req)
+    except ValueError as exc:
+        raise _invalid(exc) from exc
+
+
 def _invalid(exc: Exception) -> HTTPException:
     return HTTPException(
         status_code=422,
@@ -149,6 +160,7 @@ def post_sensitivity(req: schemas.SensitivityRequest) -> schemas.SensitivityResp
                     "target_qpf": req.target_qpf,
                 },
                 req.bounds,
+                wc_basis=req.wc_basis,
             )
         )
     except solve.SolveFailure as exc:

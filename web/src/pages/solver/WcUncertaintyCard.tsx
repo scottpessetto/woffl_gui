@@ -2,7 +2,7 @@ import { ChevronDown, Loader2 } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 
 import { useWcUncertainty } from "../../api/hooks";
-import type { SimParams, WcMetricRange } from "../../api/types";
+import type { SimParams, WcBasis, WcMetricRange } from "../../api/types";
 import { Button, Card, ErrorNote, HelpPopover } from "../../components/ui";
 import { fmtNum } from "../../lib/format";
 import { useDebounced } from "../../lib/useDebounced";
@@ -33,11 +33,12 @@ export function WcUncertaintyCard({ well, params, enabled }: {
 }) {
   const [open, setOpen] = useState(false);
   const [width, setWidth] = useState("5");
+  const [basis, setBasis] = useState<WcBasis>("fixed_oil_ipr");
   const id = useId();
   const points = Number(width);
   const valid = width.trim() !== "" && Number.isFinite(points) && points >= 0 && points <= 100;
   const supported = !params.model_as_water && params.form_wc <= .99;
-  const req = useMemo(() => ({ well, params, uncertainty_points: valid ? points : 0 }), [well, params, valid, points]);
+  const req = useMemo(() => ({ well, params, uncertainty_points: valid ? points : 0, wc_basis: basis }), [well, params, valid, points, basis]);
   const debounced = useDebounced(req, 400);
   const settled = req === debounced;
   const active = open && enabled && supported && valid;
@@ -67,6 +68,14 @@ export function WcUncertaintyCard({ well, params, enabled }: {
             <p className="text-xs text-slate-500">Available in oil mode with formation WC from 0% to 99%.</p>
           ) : (
             <>
+              <label className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                WC scenario basis
+                <select aria-label="WC scenario basis" value={basis} onChange={(e) => setBasis(e.target.value as WcBasis)}
+                  className="rounded border border-slate-300 bg-white px-2 py-1">
+                  <option value="fixed_oil_ipr">Composition (keep oil IPR)</option>
+                  <option value="anchor_measurement">Anchor measurement (vary oil IPR)</option>
+                </select>
+              </label>
               <div className="flex flex-wrap items-end justify-between gap-3">
                 <div>
                   <label htmlFor={`${id}-width`} className="mb-1 block text-xs font-medium text-slate-600">Watercut uncertainty</label>
@@ -88,7 +97,7 @@ export function WcUncertaintyCard({ well, params, enabled }: {
                   </div>
                 </div>
                 <HelpPopover label="Assumptions" align="right" width="w-72" className="ml-auto">
-                  <p>Varies formation WC around the current input. Total-liquid IPR, GOR, operating pressures, pump and loss coefficients stay fixed. Returned power fluid is excluded from WC.</p>
+                  <p>{basis === "fixed_oil_ipr" ? "Varies formation WC while preserving the oil IPR. The liquid anchor is converted to the scenario WC." : "Varies uncertain anchor WC while holding its measured liquid rate fixed, changing the inferred oil IPR."} GOR, operating pressures and selected hardware stay fixed. Returned power fluid is excluded from WC.</p>
                   <p className="mt-2">Lower and upper values are the smallest and largest predictions across up to nine WC samples, including the base. Interior samples are included because the response can be nonlinear.</p>
                   <p className="mt-2">These are WC-only scenario ranges, not confidence intervals or a guarantee that all field uncertainty is covered. The starting +/-5 points is an example; set it to reflect your test uncertainty.</p>
                 </HelpPopover>
@@ -130,7 +139,7 @@ export function WcUncertaintyCard({ well, params, enabled }: {
                     </div>
                   )}
                   <p className="text-[11px] leading-relaxed text-slate-500">
-                    WC-only scenarios; total-liquid IPR and GOR held fixed. Not confidence intervals.
+                    {basis === "fixed_oil_ipr" ? "WC composition scenarios; oil IPR and GOR held fixed." : "Anchor WC measurement scenarios; liquid anchor and GOR held fixed, oil IPR varies."} Not confidence intervals.
                     {result.clipped && " WC range limited to 0% to 99%."}
                   </p>
                   {!result.complete && (

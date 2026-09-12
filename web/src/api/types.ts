@@ -196,6 +196,7 @@ export interface PropLock {
 }
 
 export interface PumpCalibrationScope {
+  well_model_fingerprint?: string | null;
   hydraulics_model?: HydraulicsModel;
   physics_model?: string;
   status: "active" | "none" | "legacy" | "stale" | "unavailable";
@@ -209,6 +210,8 @@ export interface PumpCalibrationScope {
 }
 
 export interface WellContext {
+  well_model_fingerprint?: string | null;
+  well_model_inputs?: Record<string, unknown> | null;
   pump_calibration?: PumpCalibrationScope;
   well: string;
   chars: Record<string, unknown>;
@@ -216,6 +219,8 @@ export interface WellContext {
   seeds: Partial<SimParams>;
   /** Measured jet-pump MD (ft) for the optimizer's WellConfig; not a SimParams field. */
   jpump_md: number | null;
+  geometry_issue?: string | null;
+  geometry_source?: "survey_measured_md" | "survey_inferred_md" | "estimated_field_profile" | null;
   /** Seeds the widget bounds altered on the way in, e.g. "pres: 5200 -> 5000 (...)". */
   clamped?: string[];
   as_built_locks: { tubing: boolean; casing: boolean; jpump_tvd: boolean };
@@ -283,8 +288,11 @@ export interface ApiErrorDetail {
   suggested_gor?: number | null;
 }
 
+export type WcBasis = "fixed_oil_ipr" | "anchor_measurement";
+
 export interface WcUncertaintyRequest extends SolveRequest {
   uncertainty_points: number; // percentage points, not a relative percent
+  wc_basis?: WcBasis;
 }
 
 export interface WcUncertaintyPoint {
@@ -301,6 +309,7 @@ export interface WcMetricRange {
 }
 
 export interface WcUncertaintyResponse {
+  wc_basis: WcBasis;
   physics_model: string;
   well: string;
   uncertainty_points: number;
@@ -394,6 +403,11 @@ export interface OptimizeRunRequest {
 }
 
 export interface PadRunRow {
+  outcome?: "modeled" | "economic_shut_in" | "failed_model" | "missing_inputs" | "unsupported_model";
+  outcome_reason?: string;
+  current_model_oil?: number | null;
+  current_model_pf?: number | null;
+  modeled_hardware_gain?: number | null;
   hydraulics_model?: HydraulicsModel;
   physics_model?: string;
   well: string;
@@ -420,7 +434,18 @@ export interface PadRunRow {
   has_friction: boolean;
 }
 
+export interface RunCoverage {
+  complete: boolean;
+  expected_online: number;
+  accounted_online: number;
+  unaccounted_wells: string[];
+  rows: { well: string; pad: string; role: "online" | "offline" | "future"; outcome: string; reason: string }[];
+}
+
 export interface PadRunResult {
+  robustness_available?: boolean;
+  robustness_unavailable_reason?: string | null;
+  coverage?: RunCoverage;
   pad: string;
   rows: PadRunRow[];
   meta: Record<string, unknown>; // pad_optimize meta contract, JSON-flattened
@@ -499,6 +524,7 @@ export interface ChokeLadderRung {
 }
 
 export interface ChokePlanResult {
+  coverage?: RunCoverage;
   pad: string;
   plan: ChokePlanRow[];
   meta: Record<string, unknown> & {
@@ -568,6 +594,7 @@ export interface CfpWellRow {
 }
 
 export interface CfpRunResult {
+  coverage?: RunCoverage;
   pads: string[];
   notes: string[];
   n_wells: number;
@@ -740,6 +767,13 @@ export interface EventCalFit {
   rms_bhp_psi: number;
   rms_pf_pct: number;
   rms_dbhp_psi: number | null;
+  rms_oil_bopd?: number | null;
+  rms_oil_pct?: number | null;
+  n_oil?: number;
+  per_point?: Array<{ date: string; kind: string; ppf: number; bhp_meas: number; bhp_model: number;
+    pf_meas: number; pf_model: number; oil_meas: number | null; oil_model: number;
+    wc: number; fgor: number; composition_source: string; anchor_date: string | null;
+    anchor_test_id: number | null; composition_lag_days: number | null }>;
   n_used: number;
   n_dropped: number;
   /** Params fitted onto a search bound - treat as low confidence. */
@@ -767,6 +801,13 @@ export interface SinglePointMatch {
 }
 
 export interface EventCalibrationResult {
+  well_model_fingerprint?: string;
+  well_model_inputs?: Record<string, unknown>;
+  calibration_contract?: string;
+  mined_beta_scope?: string | null;
+  response_validation?: string;
+  data_exclusions?: Array<{date: string; kind: string; reason: string}>;
+  composition_policy?: string | null;
   hydraulics_model?: HydraulicsModel;
   physics_model?: string;
   installation_date_set?: string | null;
@@ -1073,6 +1114,7 @@ export interface SensitivityKnob {
 /** POST /sensitivity - mirror of server.schemas.SensitivityResponse.
  * Read-only diagnostic: nothing here changes the model or is persisted. */
 export interface SensitivityResponse {
+  wc_basis: WcBasis;
   baseline: SensitivityPoint;
   knobs: SensitivityKnob[];
   // Measured test values to compare against, echoed back when supplied.
@@ -1085,6 +1127,7 @@ export interface SensitivityResponse {
 
 /** Mirror of server.schemas.SensitivityRequest. */
 export interface SensitivityRequest {
+  wc_basis?: WcBasis;
   well: string;
   params: SimParams;
   // Measured test values for the reference lines; all optional.
@@ -1109,6 +1152,7 @@ export interface CombineKnob {
 /** One permutation of the combined study - mirror of
  * server.schemas.CombineRun. Nulls where the solver failed. */
 export interface CombineRun {
+  applied_inputs: Partial<SimParams> | null;
   values: Record<string, number>; // knob id -> swept value, knob units
   labels: Record<string, string>; // knob id -> display value
   psu: number | null; // suction BHP, psig
@@ -1125,6 +1169,9 @@ export interface CombineRun {
 
 /** POST /sensitivity/combine - mirror of server.schemas.CombineRequest. */
 export interface CombineRequest {
+  wc_basis?: WcBasis;
+  test_key?: string | null;
+  installation_key?: string | null;
   well: string;
   params: SimParams;
   // Measured test values scored against; all optional.
@@ -1139,6 +1186,8 @@ export interface CombineRequest {
 
 /** Mirror of server.schemas.CombineResponse. Read-only diagnostic. */
 export interface CombineResponse {
+  request: CombineRequest | null;
+  physics_model: string;
   baseline: SensitivityPoint;
   runs: CombineRun[];
   /** Reachable [min, max] per metric across every solved run, keyed
@@ -1157,6 +1206,31 @@ export interface CombineResponse {
 
 /** POST /sensitivity/combine - mirror of server.schemas.CombineStarted. The
  * study is a background job; poll it with the id. */
+export interface CommonOilIprRequest {
+  well: string;
+  params: SimParams;
+  months: 6 | 12 | 24 | 60;
+  holdout_fraction: number;
+  exclude_tests: string[];
+  exclude_eras: string[];
+}
+
+export interface CommonOilIprResult {
+  request: CommonOilIprRequest;
+  as_of: string;
+  source: string;
+  qmax_oil: number | null;
+  seeds: { qwf: number } | null;
+  training: { tests: number; dates: number; installations: number; candidate_mae: number | null; baseline_mae: number | null };
+  holdout: CommonOilIprResult["training"];
+  split_date: string | null;
+  rows: { test_id: string; date: string; era_id: string | null; pump: string; bhp: number | null; oil: number | null;
+    wc: number | null; gor: number | null; liquid: number | null; reason: string | null; phase: string;
+    candidate_oil: number | null; baseline_oil: number | null }[];
+  eras: { id: string; date_set: string; pump: string }[];
+  notes: string[];
+}
+
 export interface CombineStarted {
   job_id: string;
 }
@@ -1481,6 +1555,7 @@ export interface PumpMatchRequest {
   mode: "all_tests" | "same_pump" | "previous_pump";
   training_tests: number;
   edited_inputs: PumpMatchWellInputs | null;
+  pump_losses: "saved_matching" | "clean_reference";
 }
 
 export interface PumpMatchScores {
@@ -1509,6 +1584,7 @@ export interface PumpMatchEra {
   training_start: string | null; training_end: string | null;
   training_installation_id: string | null; training_count: number;
   training_test_ids: string[]; prediction_config: Record<string, unknown> | null;
+  pump_losses: "saved_calibration" | "clean_reference";
   training_ppf_span: number | null; input_wc: number | null; input_gor: number | null;
   unavailable: string | null;
   fit_scores: PumpMatchScores; prediction_scores: PumpMatchScores; replay_scores: PumpMatchScores;

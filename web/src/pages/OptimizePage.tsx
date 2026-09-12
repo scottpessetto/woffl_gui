@@ -31,16 +31,16 @@ const INPUT_CLS =
   "h-8 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-800 " +
   "outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200";
 
-/** Missing-parts chips, or the green Ready check. */
+/** Persistence status; field validation is reviewed separately. */
 function FitStatus({ row }: { row: PadFitWell }) {
   const missing: string[] = [];
-  if (!row.has_curve) missing.push("IPR");
-  if (!row.has_friction) missing.push("reference pump");
+  if (!row.has_curve) missing.push("IPR not saved");
+  if (!row.has_friction) missing.push("reference pump assumptions");
   if (row.pump_calibration?.quality?.provisional) missing.push("review pump fit");
   if (missing.length === 0) {
     return (
       <span className="inline-flex items-center gap-1 text-emerald-700">
-        <Check className="h-3.5 w-3.5" /> Ready
+        <Check className="h-3.5 w-3.5" /> Inputs and pump fit saved
       </span>
     );
   }
@@ -48,7 +48,7 @@ function FitStatus({ row }: { row: PadFitWell }) {
     <span className="inline-flex flex-wrap gap-1">
       {missing.map((m) => (
         <span key={m} className="rounded bg-amber-50 px-1.5 py-px text-[11px] font-medium text-amber-700">
-          no {m}
+          {m}
         </span>
       ))}
     </span>

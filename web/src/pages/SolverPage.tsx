@@ -53,6 +53,7 @@ function Workbench({ well }: { well: string }) {
   const months = useParamsStore((s) => s.months);
   const cap = useParamsStore((s) => s.cap);
   const context = useParamsStore((s) => s.context);
+  const commonIprIntent = useParamsStore((s) => s.commonIprIntent);
   const set = useParamsStore((s) => s.set);
 
   const effective = useMemo(() => effectiveParams(params), [params]);
@@ -68,10 +69,12 @@ function Workbench({ well }: { well: string }) {
   const installsQ = useJpHistory(well);
 
   // --- local UI state: IPR anchor + comparison selection -------------------
-  const [anchorMode, setAnchorMode] = useState<AnchorMode>("recent");
+  const [anchorMode, setAnchorMode] = useState<AnchorMode>(commonIprIntent ? "manual" : "recent");
   const [anchorDate, setAnchorDate] = useState<string | null>(null);
-  const [decouple, setDecouple] = useState(false);
-  const [compareKey, setCompareKey] = useState<string | null>(null);
+  const sensitivityComparison = useRef(useSensitivityStore.getState().pendingComparison[well] ?? null);
+  const [decouple, setDecouple] = useState(sensitivityComparison.current !== null);
+  const [compareKey, setCompareKey] = useState<string | null>(sensitivityComparison.current);
+  useEffect(() => { useSensitivityStore.getState().takeComparison(well); }, [well]);
   const [showStrip, setShowStrip] = useState(true);
 
   // Seed the anchor ONCE per mount (= once per well): an applied pin means
@@ -80,11 +83,14 @@ function Workbench({ well }: { well: string }) {
   // test-derived fit never runs against it.
   const pinSeeded = useRef(false);
   useEffect(() => {
+    if (commonIprIntent) { setAnchorMode("manual"); setAnchorDate(null); pinSeeded.current = true; }
+  }, [commonIprIntent]);
+  useEffect(() => {
     const pin = pinQ.data;
     // BOTH inputs must have landed before latching: the pin usually resolves
     // first, and latching on it alone left a manual-anchor well showing "Most
     // recent" because ipr_source had not arrived yet.
-    if (pinSeeded.current || !pin || !context) return;
+    if (commonIprIntent || pinSeeded.current || !pin || !context) return;
     pinSeeded.current = true;
     if (pin.status === "applied" && pin.date_token) {
       setAnchorMode("specific");
@@ -92,7 +98,7 @@ function Workbench({ well }: { well: string }) {
     } else if (context.ipr_source === "manual") {
       setAnchorMode("manual");
     }
-  }, [pinQ.data, context]);
+  }, [pinQ.data, context, commonIprIntent]);
 
   const sortedTests = useMemo<WellTestRow[]>(() => {
     const rows = testsQ.data?.tests ?? [];
@@ -113,6 +119,7 @@ function Workbench({ well }: { well: string }) {
     simActive &&
     well !== "Custom" &&
     !params.model_as_water &&
+    !commonIprIntent &&
     anchorMode !== "manual" &&
     sortedTests.length >= 2;
   const iprFitQ = useIprFit(
@@ -283,6 +290,7 @@ function Workbench({ well }: { well: string }) {
       <div className="grid items-start gap-4 xl:grid-cols-2">
         <div className="space-y-4">
           <IprChart
+            preferOil={commonIprIntent}
             tests={sortedTests}
             fit={fit}
             params={params}
@@ -313,6 +321,7 @@ function Workbench({ well }: { well: string }) {
             well={well}
             anchorDate={anchorDate}
             onAnchorChange={(mode, date) => {
+              useParamsStore.getState().setCommonIprIntent(false);
               setAnchorMode(mode);
               setAnchorDate(date);
             }}

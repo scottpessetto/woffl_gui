@@ -127,21 +127,21 @@ class SimParams(BaseModel):
             casing_od=self.casing_od,
             casing_thickness=self.casing_thickness,
             form_wc=1.0 if self.model_as_water else self.form_wc,
-            form_gor=int(self.form_gor),
-            form_temp=int(self.form_temp),
+            form_gor=self.form_gor,
+            form_temp=self.form_temp,
             field_model=self.field_model,
             model_as_water=self.model_as_water,
             oil_api=self.oil_api,
             gas_sg=self.gas_sg,
             wat_sg=self.wat_sg,
             bubble_point=self.bubble_point,
-            surf_pres=int(self.surf_pres),
-            jpump_tvd=int(self.jpump_tvd),
+            surf_pres=self.surf_pres,
+            jpump_tvd=self.jpump_tvd,
             rho_pf=self.rho_pf,
-            ppf_surf=int(self.ppf_surf),
-            qwf=int(self.qwf),
-            pwf=int(self.pwf),
-            pres=int(self.pres),
+            ppf_surf=self.ppf_surf,
+            qwf=self.qwf,
+            pwf=self.pwf,
+            pres=self.pres,
             nozzle_batch_options=list(self.nozzle_batch_options),
             throat_batch_options=list(self.throat_batch_options),
             water_type=self.water_type,
@@ -248,6 +248,8 @@ class WellContext(BaseModel):
     # of the seeded TVD), ft. Consumed by the optimizer's WellConfig; NOT a
     # SimParams field, so it rides beside the seeds rather than inside them.
     jpump_md: Optional[float] = None
+    geometry_issue: Optional[str] = None
+    geometry_source: Optional[str] = None
     # Seeds that the widget bounds altered ("pres: 5200 -> 5000 (...)").
     # Empty when every seed was inside its bounds. Never silent (SRV-9).
     clamped: list[str] = []
@@ -255,6 +257,8 @@ class WellContext(BaseModel):
     prop_locks: dict[str, PropLock]  # form_wc / form_gor / res_pres
     pump: Optional[PumpInfo] = None
     pump_calibration: Optional[dict[str, Any]] = None
+    well_model_fingerprint: Optional[str] = None
+    well_model_inputs: Optional[dict[str, Any]] = None
     pf: Optional[PfSeed] = None
     ipr_info: Optional[str] = None  # human caption, e.g. "IPR values loaded from N tests"
     saved_ipr_info: Optional[str] = None  # "Restored saved IPR values (date - user)"
@@ -342,6 +346,7 @@ class SolveErrorDetail(BaseModel):
 
 class WcUncertaintyRequest(SolveRequest):
     uncertainty_points: float = Field(5.0, ge=0.0, le=100.0, allow_inf_nan=False)
+    wc_basis: Literal["fixed_oil_ipr", "anchor_measurement"] = "fixed_oil_ipr"
 
 
 class WcUncertaintyPoint(BaseModel):
@@ -359,6 +364,7 @@ class WcMetricRange(BaseModel):
 
 class WcUncertaintyResponse(BaseModel):
     physics_model: str = MODEL_VERSION
+    wc_basis: Literal["fixed_oil_ipr", "anchor_measurement"] = "fixed_oil_ipr"
     well: str
     uncertainty_points: float
     wc_base: float
@@ -993,6 +999,7 @@ class SensitivityResponse(BaseModel):
     target_qliq: Optional[float] = None
     target_qpf: Optional[float] = None
     notes: list[str] = []
+    wc_basis: Literal["fixed_oil_ipr", "anchor_measurement"] = "fixed_oil_ipr"
 
 
 class SensitivityRequest(BaseModel):
@@ -1013,6 +1020,7 @@ class SensitivityRequest(BaseModel):
     # Per-knob range overrides, keyed by knob id. An entry for an unknown
     # knob is ignored with a note; missing knobs keep their table range.
     bounds: dict[str, KnobBounds] = {}
+    wc_basis: Literal["fixed_oil_ipr", "anchor_measurement"] = "fixed_oil_ipr"
 
 
 class CombineKnob(BaseModel):
@@ -1043,6 +1051,8 @@ class CombineRun(BaseModel):
     # Root-mean-square fractional error across the SUPPLIED targets only.
     # None when no target was supplied or the run failed.
     score: Optional[float] = None
+    # Server-resolved delta, including oil-anchor conversion and clean hardware.
+    applied_inputs: Optional[dict[str, Any]] = None
 
 
 class CombineRequest(BaseModel):
@@ -1063,6 +1073,9 @@ class CombineRequest(BaseModel):
     target_qpf: Optional[float] = None
     # Knobs to vary together. Empty is an error, not an empty study.
     knobs: list[CombineKnob]
+    wc_basis: Literal["fixed_oil_ipr", "anchor_measurement"] = "fixed_oil_ipr"
+    test_key: Optional[str] = None
+    installation_key: Optional[str] = None
 
 
 class CombineResponse(BaseModel):
@@ -1081,6 +1094,8 @@ class CombineResponse(BaseModel):
     n_runs: int
     n_failed: int
     notes: list[str] = []
+    request: Optional[CombineRequest] = None
+    physics_model: str = MODEL_VERSION
 
 
 class CombineStarted(BaseModel):
@@ -1101,6 +1116,31 @@ class CombineJobStatus(BaseModel):
     error: Optional[str] = None
     started_at: str
     seconds: float
+
+
+class CommonOilIprRequest(BaseModel):
+    """Explicit candidate curve; hold reservoir pressure and composition fixed."""
+    model_config = {"extra": "forbid"}
+    well: str
+    params: SimParams
+    months: Literal[6, 12, 24, 60] = 24
+    holdout_fraction: float = Field(.25, ge=.2, le=.5)
+    exclude_tests: list[str] = Field(default_factory=list, max_length=1000)
+    exclude_eras: list[str] = Field(default_factory=list, max_length=200)
+
+
+class CommonOilIprResult(BaseModel):
+    request: CommonOilIprRequest
+    as_of: str
+    source: str
+    qmax_oil: Optional[float] = None
+    seeds: Optional[dict[str, float]] = None
+    training: dict[str, Any]
+    holdout: dict[str, Any]
+    split_date: Optional[str] = None
+    rows: list[dict[str, Any]]
+    eras: list[dict[str, Any]]
+    notes: list[str]
 
 
 class GaugeDay(BaseModel):
@@ -1427,6 +1467,7 @@ class PumpMatchRequest(BaseModel):
     mode: Literal["all_tests", "same_pump", "previous_pump"] = "all_tests"
     training_tests: int = Field(default=10, ge=3, le=20)
     edited_inputs: Optional[PumpMatchWellInputs] = None
+    pump_losses: Literal["saved_matching", "clean_reference"] = "saved_matching"
 
     @model_validator(mode="after")
     def preview_mode(self):
@@ -1489,6 +1530,7 @@ class PumpMatchEra(BaseModel):
     training_count: int = 0
     training_test_ids: list[str] = Field(default_factory=list)
     prediction_config: Optional[dict[str, Any]] = None
+    pump_losses: Literal["saved_calibration", "clean_reference"] = "clean_reference"
     training_ppf_span: Optional[float] = None
     input_wc: Optional[float] = None
     input_gor: Optional[float] = None
@@ -1521,6 +1563,17 @@ class PumpMatchJob(BaseModel):
     error: Optional[str] = None
     started_at: str
     seconds: float
+
+
+class PadRobustnessRequest(BaseModel):
+    """Small deterministic stress comparison of two fixed server-side plans."""
+
+    model_config = {"extra": "forbid", "allow_inf_nan": False}
+    source_job_id: str = Field(..., min_length=1, max_length=64)
+    wc_points: float = Field(3.0, ge=0.0, le=10.0)
+    gor_percent: float = Field(20.0, ge=0.0, le=50.0)
+    header_psi: float = Field(100.0, ge=0.0, le=250.0)
+    joint_cases: bool = False
 
 
 # ---------------------------------------------------------------------------

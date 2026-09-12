@@ -303,7 +303,7 @@ def _build_well_list(df: pd.DataFrame, source: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
+def well_context(well: str, months: int = 6, cap: int = 0, *, fresh: bool = False, tracker=None) -> dict[str, Any]:
     """Everything the client needs when a well is selected (WellContext shape).
 
     Replays the sidebar's seeding pipeline in order (a) chars, (b) pump
@@ -321,7 +321,12 @@ def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
         KeyError: when the well is not in the characteristics frame
             (the router maps this to a 404).
     """
-    chars_df, chars_source = datasources.well_chars_safe()
+    if fresh:
+        from woffl.assembly.databricks_client import fetch_well_props_enriched
+        chars_df, _missing = fetch_well_props_enriched()
+        chars_source = "databricks"
+    else:
+        chars_df, chars_source = datasources.well_chars_safe()
     matches = chars_df[chars_df["Well"] == well]
     if matches.empty:
         raise KeyError(well)
@@ -331,7 +336,7 @@ def well_context(well: str, months: int = 6, cap: int = 0) -> dict[str, Any]:
     clamped: list[str] = []
     _clamp_token = _CLAMP_LOG.set(clamped)
     try:
-        return _well_context_body(well, months, cap, row, chars_source, seeds, clamped)
+        return _well_context_body(well, months, cap, row, chars_source, seeds, clamped, fresh=fresh, tracker=tracker)
     finally:
         _CLAMP_LOG.reset(_clamp_token)
 
@@ -344,6 +349,7 @@ def _well_context_body(
     chars_source: str,
     seeds: dict[str, Any],
     clamped: list[str],
+    *, fresh: bool = False, tracker=None,
 ) -> dict[str, Any]:
 
     # -- (a) chars seeds -----------------------------------------------------
@@ -355,15 +361,26 @@ def _well_context_body(
     _seed(seeds, "form_temp", row.get("form_temp"), 70)
     _seed(seeds, "jpump_tvd", row.get("JP_TVD"), 4065, cast=int)
     _seed(seeds, "pres", row.get("res_pres"), 1700, cast=int)
+    is_sch_val = _opt_bool(row.get("is_sch"))
+    is_sch = True if is_sch_val is None else is_sch_val
+    seeds["field_model"] = "Schrader" if is_sch else "Kuparuk"
     # Measured pump MD for the optimizer's WellConfig (review 2026-09-01,
     # finding 2). Deliberately NOT a seed: the client lays every seed key
     # over its SimParams form, and jpump_md is not a SimParams field (the
     # single-well path re-resolves it from TVD in build_well_profile).
-    jpump_md_ctx = _resolve_seed_jpump_md(well, float(seeds["jpump_tvd"]))
-
-    is_sch_val = _opt_bool(row.get("is_sch"))
-    is_sch = True if is_sch_val is None else is_sch_val
-    seeds["field_model"] = "Schrader" if is_sch else "Kuparuk"
+    from server.services.factories import well_geometry
+    measured_md = frames.opt_float(row.get("JP_MD"))
+    jpump_md_ctx, geometry_source, geometry_issue = measured_md, None, None
+    try:
+        profile, geometry_source = well_geometry(
+            well, float(seeds["jpump_tvd"]), seeds["field_model"], measured_md, fresh=fresh
+        )
+        jpump_md_ctx = profile.jetpump_md
+    except (ValueError, OSError) as exc:
+        # Keep the sidebar and save controls available for reviewing the bad
+        # data. Config construction independently rejects the same geometry.
+        geometry_issue = str(exc)
+        log.warning("Well geometry unavailable for %s: %s", well, exc)
 
     # PVT preset by field model, THEN chars overrides (missing/NaN values
     # reset to the preset so the previous well's PVT can't leak across).
@@ -382,7 +399,10 @@ def _well_context_body(
     from server.services import pump_calibration
 
     pump: Optional[dict[str, Any]] = None
-    jp_hist_df, _jp_src = datasources.jp_history_safe()
+    if fresh:
+        jp_hist_df, _jp_src = (tracker if tracker is not None else datasources.jp_history_fresh()), "databricks"
+    else:
+        jp_hist_df, _jp_src = datasources.jp_history_safe()
     if jp_hist_df is not None:
         from woffl.assembly.jp_history import get_current_pump
 
@@ -521,7 +541,7 @@ def _well_context_body(
         from woffl.assembly.prop_hist_client import format_alaska
         from woffl.gui.ipr_anchor import load_saved_ipr, saved_wins
 
-        info = load_saved_ipr(well)
+        info = load_saved_ipr(well, fresh=True, strict=True) if fresh else load_saved_ipr(well)
         if info:
             # Historical friction rows have no installation binding. Retain them
             # for review; never silently transfer them to current/new hardware.
@@ -591,6 +611,8 @@ def _well_context_body(
                 ipr_source = "saved" if from_test else "manual"
                 ipr_r2 = None
     except Exception:
+        if fresh:
+            raise
         log.warning(
             "Saved-IPR seed failed for %s; auto-populated values stand.",
             well,
@@ -644,6 +666,25 @@ def _well_context_body(
     if direction is not None:
         seeds["jpump_direction"] = direction
 
+    # Bind calibration to the exact stable model optimization will load. The
+    # first resolve above chooses the saved hydraulic model; direction and MD
+    # must be finalized before its dependency identity can be checked.
+    from server.services import well_model
+    model_identity = None
+    try:
+        if geometry_issue:
+            raise ValueError(geometry_issue)
+        model_identity = well_model.from_context({
+            "well": well, "seeds": seeds,
+            "jpump_md": None if jpump_md_ctx is None else round(jpump_md_ctx, 1),
+        })
+    except (ValueError, OSError):
+        log.warning("Well-model identity unavailable for %s", well, exc_info=True)
+    calibration = pump_calibration.resolve(well, pump, legacy_friction,
+        well_model_fingerprint=model_identity["fingerprint"] if model_identity else None)
+    seeds.update(CLEAN_PUMP)
+    seeds.update(calibration["coefficients"])
+
     # -- as-built locks + raw chars ------------------------------------------------
     # A local-override row (jp_data/local_well_overrides.csv) carries typed
     # placeholders, not prop_hist measurements: nothing on it is as-built,
@@ -666,6 +707,8 @@ def _well_context_body(
         "chars_source": chars_source,
         "seeds": seeds,
         "jpump_md": None if jpump_md_ctx is None else round(jpump_md_ctx, 1),
+        "geometry_issue": geometry_issue,
+        "geometry_source": geometry_source,
         # Seeds the widget bounds ALTERED on the way in (empty = none). The
         # client shows these; a clamped seed is not the well's value.
         "clamped": list(clamped),
@@ -673,6 +716,8 @@ def _well_context_body(
         "prop_locks": prop_locks,
         "pump": pump,
         "pump_calibration": calibration,
+        "well_model_fingerprint": model_identity["fingerprint"] if model_identity else None,
+        "well_model_inputs": model_identity["inputs"] if model_identity else None,
         "pf": pf,
         "ipr_info": ipr_info,
         "ipr_source": ipr_source,
@@ -694,30 +739,10 @@ def _even_indices(size: int, cap: int = _PROFILE_MAX_POINTS) -> np.ndarray:
     return np.unique(np.linspace(0, size - 1, cap).round().astype(int))
 
 
-def _resolve_seed_jpump_md(well: str, jpump_tvd: float) -> Optional[float]:
-    """Pump MD for the context seeds: measured chars JP_MD, else the survey's
-    shallowest crossing of ``jpump_tvd``; None when neither is available."""
-    from server.services.factories import resolve_jetpump_md
-
-    try:
-        survey_df = datasources.survey(well)
-    except Exception:  # noqa: BLE001 - no survey is a normal state
-        survey_df = None
-    if survey_df is None or survey_df.empty:
-        # No survey: the measured MD alone is still the truth if chars has it.
-        from server.services.factories import _chars_jp_md
-
-        return _chars_jp_md(well)
-    try:
-        return resolve_jetpump_md(
-            well,
-            jpump_tvd,
-            survey_df["meas_depth"].tolist(),
-            survey_df["tvd_depth"].tolist(),
-        )
-    except Exception as exc:  # noqa: BLE001 - never block the context on this
-        log.warning("jpump_md seed failed for %s: %s", well, exc)
-        return None
+def _resolve_seed_jpump_md(well: str, jpump_tvd: float, field_model: str = "Schrader") -> float:
+    """Canonical measured/inferred pump MD; callers surface geometry conflicts."""
+    from server.services.factories import _chars_jp_md, well_geometry
+    return well_geometry(well, jpump_tvd, field_model, _chars_jp_md(well))[0].jetpump_md
 
 
 def _chars_jp_tvd(well: str) -> Optional[float]:

@@ -663,7 +663,7 @@ def _saved_ipr_prop_ids() -> list:
     )
 
 
-def load_saved_ipr(well_name: str):
+def load_saved_ipr(well_name: str, *, fresh: bool = False, strict: bool = False):
     """Latest saved IPR values + the anchor pin for one well, or None.
 
     One latest-per-prop query over prop_hist (memoized per well per session —
@@ -675,8 +675,12 @@ def load_saved_ipr(well_name: str):
 
     Returns the :func:`_assemble_saved_ipr` record (values, friction, locks,
     pin) or None. Fail-soft: any error → None (the sidebar seeds normally).
+
+    Save verification uses ``fresh=True, strict=True`` to bypass the warm
+    snapshot and propagate read failures. That read does not replace the warm
+    cache, so it cannot race an in-flight fleet refresh.
     """
-    if well_name in _saved_ipr_cache:
+    if not fresh and well_name in _saved_ipr_cache:
         return _saved_ipr_cache[well_name]
 
     result = None
@@ -703,9 +707,12 @@ def load_saved_ipr(well_name: str):
                 {str(r["prop_id"]): r for _, r in df.iterrows()}
             )
     except Exception:
+        if strict:
+            raise
         result = None
 
-    _saved_ipr_cache[well_name] = result
+    if not fresh:
+        _saved_ipr_cache[well_name] = result
     return result
 
 

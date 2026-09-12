@@ -57,7 +57,8 @@ def test_event_fallback_uses_saved_physics():
 def test_event_fallback_does_not_use_prior_pump_test():
     from server.services import event_calibration as ec
     with patch.object(ec.tests_svc, "tests_json", return_value=[
-        dict(date="2026-08-01", bhp=500.), dict(date="2026-07-01", bhp=450.)
+        dict(date="2026-08-01", bhp=500., form_wc=.6, fgor=300., pf_press=3168.),
+        dict(date="2026-07-01", bhp=450., form_wc=.6, fgor=300., pf_press=3168.),
     ]):
         assert ec._latest_test_target("W", "2026-09-01") is None
         assert ec._latest_test_target("W", "2026-07-15")["bhp"] == 500.

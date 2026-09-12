@@ -19,6 +19,8 @@ async def check():
     from fastapi.testclient import TestClient
     from playwright.async_api import async_playwright, expect
     from server.main import app
+    from server import schemas
+    from server.services import well_model
 
     coefs = dict(ken=.005, kth=.386, kdi=.072, nozzle_area_factor=1.01)
     scope = dict(status="none", coefficients={}, quality=None)
@@ -28,12 +30,20 @@ async def check():
         date_set="2026-08-10", source="databricks"), pump_calibration=scope,
         pf=None, clamped=[], jpump_md=None, ipr_info=None,
         ipr_source="manual", ipr_r2=None, test_count=0, saved_ipr_info="Manual IPR point")
+    context["seeds"] = schemas.SimParams(**context["seeds"], oil_api=22., gas_sg=.65,
+                                          wat_sg=1.02, bubble_point=1750.).model_dump()
+    identity = well_model.from_context(context)
+    context.update(well_model_fingerprint=identity["fingerprint"], well_model_inputs=identity["inputs"])
     fit = dict(ken=.005, kth=.386, kdi=.072, fnz=1.01, n_used=19, n_dropped=1,
         rms_bhp_psi=76., rms_pf_pct=61.5, rms_dbhp_psi=72., implied_beta=.268,
+        rms_oil_bopd=45., rms_oil_pct=18., n_oil=4,
         railed=["ken"], message="Provisional fit; check field response.")
     result = dict(well="MPE-42", pump="13C", era_start="2026-08-10", n_daily=16, n_test=4,
         ppf_spread=1625., refusal=None, method="event", fallback_reason=None, single=None,
         fit=fit, mined_beta=.062, mined_beta_source="well", current=dict(ken=.03, kth=.3, kdi=.4))
+    result.update(well_model_fingerprint=identity["fingerprint"], well_model_inputs=identity["inputs"],
+                  calibration_contract="fixed-oil-ipr-v1", mined_beta_scope="well_history",
+                  response_validation="diagnostic_not_holdout")
     client = TestClient(app)  # no lifespan, no warehouse warmup
     errors, requests = [], []
 
@@ -64,6 +74,7 @@ async def check():
                 requests.append((path, body))
                 assert body == {"job_id": "preview-fit"}
                 scope.update(status="active", coefficients=coefs, quality=dict(n=19, bhp=76., pf=61.5, bounds=["ken"]),
+                    well_model_fingerprint=identity["fingerprint"],
                     message="Saved calibration applies only to this installed pump.")
                 data = dict(message="Saved calibration for installed 13C (2026-08-10).")
             elif path.endswith("/save-ipr"):
@@ -90,8 +101,15 @@ async def check():
         try:
             await expect(page.get_by_role("button", name="Apply to inputs", exact=True)).to_be_enabled()
         except Exception:
-            print(errors, await page.locator("body").inner_text())
+            print(errors, await page.evaluate("""() => { const s=window.qaParams.getState(); return Object.entries(s.context.seeds).filter(([k,v]) => s.params[k] !== v).map(([k,v]) => [k,v,s.params[k]]); }"""), await page.locator("body").inner_text())
             raise
+        # An otherwise valid fit must stop being applicable when its IPR changes.
+        await page.evaluate("() => window.qaParams.getState().set('qwf', 1700)")
+        await expect(page.get_by_role("button", name="Apply to inputs", exact=True)).to_be_disabled()
+        await expect(page.get_by_role("button", name="Save installed-pump calibration", exact=True)).to_be_disabled()
+        await expect(page.get_by_role("button", name="Calibrate to field data", exact=True)).to_be_disabled()
+        await page.evaluate("() => window.qaParams.getState().set('qwf', 1521)")
+        await expect(page.get_by_role("button", name="Apply to inputs", exact=True)).to_be_enabled()
         async with page.expect_response(lambda r: urlparse(r.url).path == "/api/solve" and r.request.post_data_json["params"]["ken"] == .005):
             await page.get_by_role("button", name="Apply to inputs", exact=True).click()
         await expect(page.get_by_text("Session coefficients differ", exact=False)).to_be_visible()

@@ -81,7 +81,8 @@ async def check(url, executable):
         await page.route(re.compile(r"https?://[^/]+/api/"), route_api)
         await page.goto(url + "/solver")
         await page.evaluate("""async () => {
-            const { useParamsStore } = await import('/src/state/params.ts');
+            const paramsUrl = performance.getEntriesByType('resource').map(r => r.name).filter(n => n.includes('/src/state/params.ts')).at(-1);
+            const { useParamsStore } = await import(paramsUrl);
             useParamsStore.getState().set('form_wc', .8);
             useParamsStore.getState().run();
         }""")
@@ -93,6 +94,13 @@ async def check(url, executable):
         width = page.get_by_label("Watercut uncertainty", exact=True)
         await expect(card.get_by_text("WC 75.0% to 85.0%", exact=True)).to_be_visible()
         assert last_response["sample_count"] == 9
+        assert calls[-1]["wc_basis"] == "fixed_oil_ipr"
+        basis = page.get_by_label("WC scenario basis", exact=True)
+        await basis.select_option("anchor_measurement")
+        await expect(card.get_by_text("Anchor WC measurement scenarios", exact=False)).to_be_visible()
+        assert calls[-1]["wc_basis"] == "anchor_measurement"
+        await basis.select_option("fixed_oil_ipr")
+        await expect(card.get_by_text("WC composition scenarios", exact=False)).to_be_visible()
         await expect(page.get_by_text("Loading well data", exact=True)).to_have_count(0)
         await expect(card.get_by_text("Lower", exact=True)).to_have_count(2)
         await expect(card.get_by_text("Upper", exact=True)).to_have_count(2)
@@ -133,7 +141,8 @@ async def check(url, executable):
         # Parameter edits while collapsed do no envelope work; reopen with clipping.
         await toggle.click()
         await page.evaluate("""async () => {
-            const { useParamsStore } = await import('/src/state/params.ts');
+            const paramsUrl = performance.getEntriesByType('resource').map(r => r.name).filter(n => n.includes('/src/state/params.ts')).at(-1);
+            const { useParamsStore } = await import(paramsUrl);
             useParamsStore.getState().set('form_wc', .97);
         }""")
         await asyncio.sleep(.6)
@@ -174,7 +183,8 @@ async def check(url, executable):
         # Dewatering does not request or present oil uncertainty.
         before = len(calls)
         await page.evaluate("""async () => {
-            const { useParamsStore } = await import('/src/state/params.ts');
+            const paramsUrl = performance.getEntriesByType('resource').map(r => r.name).filter(n => n.includes('/src/state/params.ts')).at(-1);
+            const { useParamsStore } = await import(paramsUrl);
             useParamsStore.getState().set('model_as_water', true);
         }""")
         await expect(card.get_by_text("Available in oil mode", exact=False)).to_be_visible()

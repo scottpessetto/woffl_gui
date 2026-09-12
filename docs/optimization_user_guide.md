@@ -1,6 +1,6 @@
 # Saving a well fit for optimization
 
-Current behavior: September 12, 2026. See [the edit/preview/save delivery](well_input_save_workflow_2026-09-12.md)
+Current behavior: September 12, 2026. See [the well-fit workflow delivery](well_fit_workflow_delivery_2026-09-12.md)
 for verification and deployment status. The app is React/FastAPI; older Streamlit
 tab/CSV instructions do not describe the current workflow.
 
@@ -29,8 +29,18 @@ The preview holds one explicitly selected oil IPR across all pumps and dates.
 It uses each test's measured WC, GOR, PF pressure and WHP. Actual oil/BHP do not
 re-anchor the IPR at each test. Changed inputs hide the old preview until the
 comparison is rerun. **Saved in database** compares the loaded well fit instead;
-the plot explains when sidebar edits are excluded. These comparisons use clean
-pump losses and are retrospective, not independent qualification of sizing gains.
+the plot explains when sidebar edits are excluded. **Saved fit where valid**
+uses the installed-pump calibration only on its exact matching installation and
+well model; other pumps use clean reference losses. The table names the actual
+loss assumption. These comparisons are retrospective, not independent
+qualification of sizing gains.
+
+To propose a different common oil curve, expand **Fit one oil IPR across pump
+history**. Select the window and later dates held out, then fit a candidate.
+Reservoir pressure stays fixed. Review measured oil/BHP, exclusions and training
+versus holdout oil errors. **Apply candidate IPR** changes session inputs only;
+run the forward history preview and explicitly save when satisfied. The holdout
+curve score uses measured BHP and does not establish operating-rate accuracy.
 
 Save retains the displayed total-liquid IPR anchor/BHP, reservoir pressure,
 WC, GOR and WHP, plus supported changed bubble point/formation temperature.
@@ -91,7 +101,33 @@ anchor. See [pad formulation](optimization_redesign_2026-09.md) and
 ## Explore watercut sensitivity
 
 Expand **WC uncertainty** to view sampled oil and suction-BHP ranges, initially
-+/-5 percentage points. The liquid IPR anchor and GOR remain fixed. Failed
++/-5 percentage points. By default the oil IPR and GOR remain fixed while the
+liquid-anchor representation adjusts with WC. **Anchor measurement** is a
+separate explicit basis that changes inferred oil deliverability. Failed
 samples are disclosed; results refresh when inputs change. The range explores
 the selected installed/clean scenario and does not save inputs or change the
 optimizer. It is a sensitivity range, not a statistical confidence interval.
+
+Combined Match Sensitivities results preserve the original inputs and comparison
+targets. Apply is disabled when that study no longer describes the current well,
+hardware, inputs or comparison. A sampled envelope is not a proof that an
+unsampled case cannot match.
+
+## Review pad coverage and stress cases
+
+Every expected well has an explicit outcome. Missing inputs or failed physics
+do not mean the optimizer recommends shutting that well in. Incomplete online
+coverage makes the run exploratory and withholds whole-pad feasibility.
+
+**Current pumps at plan header** and **Modeled hardware gain** compare current
+and proposed hardware at the same pressure and well inputs. Measured test
+production is separate; differences from a biased baseline model are not counted
+as a hardware benefit.
+
+For a complete I/M/E JPCO run, expand **Stress-test current and proposed plans**.
+Choose WC/GOR/header ranges supported by your data. Optional joint cases state
+their assumed co-movement. The same two fixed plans are checked against plant
+capacity in each case. Unknown and infeasible cases stay visible. Gain ranges
+cover only cases where both plans are feasible; preference counts are not
+probabilities, and regret is relative only to the other plan. S-Pad and CFP
+require a separate coupled study and are not supported by this new control.

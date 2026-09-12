@@ -44,7 +44,8 @@ def test_bounds_include_interior_extrema(monkeypatch):
     assert result.oil.base == pytest.approx(93.75)
 
 
-def test_wc_changes_oil_anchor_once_and_isolates_mutable_pvt(monkeypatch):
+@pytest.mark.parametrize("basis", ["fixed_oil_ipr", "anchor_measurement"])
+def test_wc_basis_controls_oil_anchor_and_isolates_mutable_pvt(monkeypatch, basis):
     from woffl.assembly import solopump
 
     seen = []
@@ -56,16 +57,17 @@ def test_wc_changes_oil_anchor_once_and_isolates_mutable_pvt(monkeypatch):
     monkeypatch.setattr(solopump, "jetpump_solver", capture)
     params = schemas.SimParams(form_wc=.8, qwf=1000, form_gor=420)
     original = params.model_dump_json()
-    result = wc_uncertainty.run(schemas.WcUncertaintyRequest(params=params))
+    result = wc_uncertainty.run(schemas.WcUncertaintyRequest(params=params, wc_basis=basis))
     assert result.wc_low == pytest.approx(.75)
     assert result.wc_high == pytest.approx(.85)
     assert len(seen) == 9
     for point, kw in zip(result.points, seen):
-        assert kw["ipr_su"].qwf == pytest.approx(1000*(1-point.wc))
+        assert kw["ipr_su"].qwf == pytest.approx(200 if basis == "fixed_oil_ipr" else 1000*(1-point.wc))
         assert kw["prop_su"].fgor == 420
     assert len({id(kw["prop_su"]) for kw in seen}) == 9
     assert len({id(kw["prop_su"].oil) for kw in seen}) == 9
     assert params.model_dump_json() == original
+    assert result.wc_basis == basis
 
 
 @pytest.mark.parametrize("wc", [0., .99])

@@ -14,6 +14,7 @@ import { create } from "zustand";
 
 import type { HydraulicsModel, PropLock, SimParams, WellContext } from "../api/types";
 import { DEFAULT_PARAMS, PARAM_BOUNDS } from "../api/types";
+import { fitMatchesWellModel, hasWellModelEdits } from "../lib/wellModel";
 
 export interface AsBuiltLocks {
   tubing: boolean;
@@ -121,12 +122,15 @@ interface ParamsState {
    *  next engineer sees WHY these numbers, not just the numbers. */
   matchNote: string | null;
   setMatchNote: (note: string | null) => void;
+  /** Explicit common-curve Apply; Save clears any single-test anchor pin. */
+  commonIprIntent: boolean;
+  setCommonIprIntent: (value: boolean) => void;
 
   set: <K extends keyof SimParams>(key: K, value: SimParams[K]) => void;
   setMany: (partial: Partial<SimParams>) => void;
   refreshPumpContext: (ctx: WellContext) => void;
   useInstalledPump: () => void;
-  applyPumpFit: (result: { well: string; pump: string | null; era_start: string | null; installation_date_set?: string | null; hydraulics_model?: HydraulicsModel }, coefficients: Partial<SimParams>) => void;
+  applyPumpFit: (result: { well: string; pump: string | null; era_start: string | null; installation_date_set?: string | null; hydraulics_model?: HydraulicsModel; well_model_inputs?: Record<string, unknown> | null }, coefficients: Partial<SimParams>) => void;
   setWindow: (months: number, cap: number) => void;
   selectWell: (name: string) => void;
   applyContext: (ctx: WellContext) => void;
@@ -160,6 +164,8 @@ export const useParamsStore = create<ParamsState>((set) => ({
   manualFields: NO_MANUAL,
   matchNote: null,
   setMatchNote: (note) => set({ matchNote: note }),
+  commonIprIntent: false,
+  setCommonIprIntent: (value) => set({ commonIprIntent: value }),
 
   set: (key, value) =>
     set((s) => ({
@@ -181,13 +187,15 @@ export const useParamsStore = create<ParamsState>((set) => ({
       (k) => s.params[k] === (savedPumpCoefficients(s.context, s.params.hydraulics_model)[k] ?? CLEAN_PUMP[k]));
     const followSaved = s.params.pump_state !== "replacement" && wasSaved;
     const changed = before?.date_set !== after?.date_set || before?.nozzle_no !== after?.nozzle_no || before?.throat_ratio !== after?.throat_ratio;
+    const modelChanged = s.context.well_model_fingerprint !== ctx.well_model_fingerprint;
     return {
       // Refresh saved baselines/provenance after a save without reseeding or
       // erasing edits made while the request was running.
       context: ctx,
-      ...((changed || followSaved) ? { params: { ...s.params, ...CLEAN_PUMP, ...savedPumpCoefficients(ctx, s.params.hydraulics_model),
-        nozzle_no: after?.nozzle_no ?? s.params.nozzle_no, area_ratio: after?.throat_ratio ?? s.params.area_ratio,
-        pump_state: "installed" as const } } : {}),
+      ...((changed || followSaved || modelChanged) ? { params: { ...s.params, ...CLEAN_PUMP,
+        ...((changed || s.params.pump_state !== "replacement") ? savedPumpCoefficients(ctx, s.params.hydraulics_model) : {}),
+        ...(changed ? { nozzle_no: after?.nozzle_no ?? s.params.nozzle_no,
+          area_ratio: after?.throat_ratio ?? s.params.area_ratio, pump_state: "installed" as const } : {}) } } : {}),
     };
   }),
 
@@ -200,6 +208,7 @@ export const useParamsStore = create<ParamsState>((set) => ({
 
   applyPumpFit: (result, coefficients) => set((s) => {
     const pump = s.context?.pump;
+    if (hasWellModelEdits(s.params, s.context) || !fitMatchesWellModel(result.well_model_inputs, s.context)) return s;
     if ((result.hydraulics_model ?? "beggs") !== s.params.hydraulics_model) return s;
     if (s.well !== result.well || !pump?.date_set || pump.source !== "databricks" ||
         `${pump.nozzle_no}${pump.throat_ratio}` !== result.pump ||
@@ -232,6 +241,7 @@ export const useParamsStore = create<ParamsState>((set) => ({
       fitAppliedFor: null,
       manualFields: NO_MANUAL,
       matchNote: null,
+      commonIprIntent: false,
     })),
 
   applyContext: (ctx) =>
@@ -254,6 +264,7 @@ export const useParamsStore = create<ParamsState>((set) => ({
         // on the bench is hand-set any more.
         manualFields: NO_MANUAL,
         matchNote: null,
+        commonIprIntent: false,
       };
     }),
 
@@ -261,6 +272,7 @@ export const useParamsStore = create<ParamsState>((set) => ({
 
   applyIprSeeds: (seeds, release = false) =>
     set((s) => {
+      if (s.commonIprIntent && !release) return s;
       const filtered: Partial<SimParams> = { ...seeds };
       if (s.propLocks.form_wc.locked) delete filtered.form_wc;
       if (s.propLocks.form_gor.locked) delete filtered.form_gor;
@@ -280,6 +292,7 @@ export const useParamsStore = create<ParamsState>((set) => ({
         params: mergeClamped(s.params, filtered),
         manualFields: manual,
         matchNote: null,
+        commonIprIntent: false,
       };
     }),
 

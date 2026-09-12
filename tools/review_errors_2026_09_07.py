@@ -104,7 +104,8 @@ def calibration_fallback():
         return NS(best_ken=.07, best_kth=.6, best_kdi=.7, best_modeled_bhp=500.,
                   target_bhp=500., match_quality="good", message="probe")
 
-    with patch.object(ec, "_latest_test_target", return_value=dict(bhp=500., date="2020-01-01")), \
+    with patch.object(ec, "_latest_test_target", return_value=dict(
+            bhp=500., date="2020-01-01", form_wc=.6, fgor=300., pf_press=3168.)), \
          patch.object(fc, "_build_well_objects", return_value=(None,)*5), \
          patch.object(fc, "calibrate_friction_coefs", capture):
         ec._single_point_fallback({}, "Custom", cfg, "12", "B")

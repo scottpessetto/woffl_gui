@@ -343,8 +343,147 @@ def test_future_donor_seeding_failure_is_noted(client, monkeypatch):
     )
     body = _wait_done(client, r.json()["job_id"])
     assert body["status"] == "done"
-    assert {row["well"] for row in body["result"]["rows"]} == {"MPM-01", "MPM-02"}
+    assert {row["well"] for row in body["result"]["rows"]} == {"MPM-01", "MPM-02", "MPM-99"}
+    missing = next(row for row in body["result"]["rows"] if row["well"] == "MPM-99")
+    assert missing["outcome"] == "missing_inputs" and missing["oil"] is None
+    assert body["result"]["coverage"]["complete"] is False
     assert any("MPM-99" in n and "skipped" in n for n in body["result"]["notes"])
+
+
+def test_failed_model_is_not_economic_shut_in_and_leaves_load_unaccounted(client, monkeypatch):
+    """Identical missing selections have different outcomes when physics failed."""
+    import woffl.gui.pad_optimize as pad_optimize
+    monkeypatch.setattr(pad_optimize, "run_optimization", lambda *a, **kw: ([], object(), {
+        "feasible": True, "header_psi": 2600.0,
+        "reconciliation": [
+            {"Well": "MPM-01", "Status": "failed simulation", "Configs OK": 0, "Detail": "No lift solution."},
+            {"Well": "MPM-02", "Status": "simulated", "Configs OK": 3, "Detail": ""},
+        ],
+    }))
+    body = runs._run_pad_job({}, schemas.OptimizeRunRequest(kind="pad", pad="M"))
+    rows = {r["well"]: r for r in body["rows"]}
+    assert rows["MPM-01"]["outcome"] == "failed_model"
+    assert rows["MPM-02"]["outcome"] == "economic_shut_in"
+    assert rows["MPM-01"]["oil"] is None
+    assert body["coverage"]["unaccounted_wells"] == ["MPM-01"]
+    assert body["coverage"]["accounted_online"] == 1
+    assert body["meta"]["feasible"] is None
+    assert body["meta"]["modeled_subset_feasible"] is True
+    assert body["meta"]["recommendation_status"] == "incomplete_exploratory"
+    assert body["meta"]["modeled_hardware_gain_bopd"] is None
+
+
+def test_hydration_failure_stays_visible_in_expected_pad_coverage(client, monkeypatch):
+    import woffl.gui.pad_optimize as pad_optimize
+    def context(well, *a):
+        if well == "MPM-02":
+            raise RuntimeError("source unavailable")
+        return {"seeds": dict(_SEEDS[well])}
+    monkeypatch.setattr(wells_svc, "well_context", context)
+    monkeypatch.setattr(pad_optimize, "run_optimization", lambda configs, *a, **kw: (
+        [_FakeResult(c.well_name) for c in configs], object(), {"feasible": True}))
+    body = runs._run_pad_job({}, schemas.OptimizeRunRequest(kind="pad", pad="M"))
+    assert body["n_wells"] == 1
+    assert body["coverage"]["expected_online"] == 2
+    assert body["coverage"]["accounted_online"] == 1
+    assert len(body["rows"]) == 2
+    missing = next(r for r in body["rows"] if r["well"] == "MPM-02")
+    assert missing["outcome"] == "missing_inputs"
+    assert missing["pf"] is None and missing["oil"] is None
+    assert body["meta"]["feasible"] is None
+
+
+def test_hardware_counterfactual_keeps_measured_bias_out_of_gain(client, monkeypatch):
+    import woffl.gui.pad_optimize as pad_optimize
+    monkeypatch.setattr(runs, "_current_and_tests", lambda names: (
+        {w: ("12", "B") for w in names}, {w: (9999.0, None) for w in names}))
+    monkeypatch.setattr(runs, "_modeled_current", lambda configs, current, header, opt: {
+        c.well_name: {"oil": 250., "pf": 3000., "form_water": 900., "ppf": header} for c in configs})
+    monkeypatch.setattr(pad_optimize, "run_optimization", lambda configs, *a, **kw: (
+        [_FakeResult(c.well_name) for c in configs], object(), {"header_psi": 2600., "feasible": True}))
+    body = runs._run_pad_job({}, schemas.OptimizeRunRequest(kind="pad", pad="M"))
+    assert body["coverage"]["complete"] is True
+    assert body["meta"]["current_model_oil_bopd"] == 500.
+    assert body["meta"]["modeled_hardware_gain_bopd"] == 0.
+    assert all(r["modeled_hardware_gain"] == 0. for r in body["rows"])
+    assert all(r["test_oil"] == 9999. and r["test_pf"] is None for r in body["rows"])
+    assert "same plan header" in body["meta"]["comparison_basis"]
+
+
+def test_current_counterfactual_reuses_winner_and_preserves_inputs(monkeypatch):
+    """No extra batch for cached installed candidates; controls are identical."""
+    import woffl.assembly.network_optimizer as network
+    cfg = runs._config_from_seeds("MPM-01", "M", {
+        **_SEEDS["MPM-01"], "nozzle_no": "12", "area_ratio": "B", "ppf_surf": 2300., "form_gor": 777.})
+    original = vars(cfg).copy()
+    class Winner:
+        def get_pump_performance(self, well, n, t, *, pump_state):
+            assert (well, n, t, pump_state) == ("MPM-01", "12", "B", "installed")
+            return {"oil_rate": 250., "lift_water": 3000., "formation_water": 900.}
+    monkeypatch.setattr(network, "NetworkOptimizer", lambda *a, **kw: pytest.fail("winner already has this current candidate"))
+    result = runs._modeled_current([cfg], {"MPM-01": ("12", "B")}, 2600., Winner())
+    assert result["MPM-01"]["ppf"] == 2600.
+    assert result["MPM-01"]["oil"] == 250.
+    assert vars(cfg) == original
+
+
+def test_current_counterfactual_missing_candidate_uses_same_header_and_oil_ipr(monkeypatch):
+    import woffl.assembly.network_optimizer as network
+    cfg = runs._config_from_seeds("MPM-01", "M", {
+        **_SEEDS["MPM-01"], "nozzle_no": "12", "area_ratio": "B", "ppf_surf": 2300., "form_gor": 777.})
+    class Batch:
+        def __init__(self, configs, constraint, nozzles, throats, **kw):
+            assert len(configs) == 1
+            clone = configs[0]
+            assert clone is not cfg and clone.ppf_surf_well == constraint.pressure == 2600.
+            assert clone.qwf * (1 - clone.form_wc) == cfg.qwf * (1 - cfg.form_wc)
+            assert clone.form_gor == 777. and clone.pwf == cfg.pwf and clone.res_pres == cfg.res_pres
+        def run_all_batch_simulations(self, **kw):
+            pass
+        def get_pump_performance(self, *a, **kw):
+            return {"oil_rate": 251., "lift_water": 3001., "formation_water": 901.}
+    monkeypatch.setattr(network, "NetworkOptimizer", Batch)
+    result = runs._modeled_current([cfg], {"MPM-01": ("12", "B")}, 2600.)
+    assert result["MPM-01"]["oil"] == 251.
+    assert cfg.ppf_surf_well == 2300.
+
+
+@pytest.mark.parametrize("invalid", [{"form_wc": .99}, {"qwf": 0.}, {"pwf": 1700.}])
+def test_invalid_oil_model_is_accounted_without_entering_pad_sweep(client, monkeypatch, invalid):
+    import woffl.gui.pad_optimize as pad_optimize
+    monkeypatch.setattr(wells_svc, "well_context", lambda well, *a: {
+        "seeds": {**_SEEDS[well], **(invalid if well == "MPM-01" else {})}})
+    def run(configs, *a, **kw):
+        assert [c.well_name for c in configs] == ["MPM-02"]
+        return [_FakeResult("MPM-02")], object(), {"feasible": True}
+    monkeypatch.setattr(pad_optimize, "run_optimization", run)
+    result = runs._run_pad_job({}, schemas.OptimizeRunRequest(kind="pad", pad="M"))
+    row = next(r for r in result["rows"] if r["well"] == "MPM-01")
+    assert row["outcome"] == "unsupported_model"
+    assert row["oil"] is None and row["pf"] is None
+    assert result["coverage"]["unaccounted_wells"] == ["MPM-01"]
+    assert result["meta"]["feasible"] is None
+
+
+def test_recent_test_context_retains_missing_pf_as_unknown(monkeypatch):
+    import pandas as pd
+    monkeypatch.setattr(runs.datasources, "jp_history_safe", lambda: (None, "fixture"))
+    monkeypatch.setattr(runs.tests_svc, "tests_for_well", lambda *a: pd.DataFrame({
+        "WtDate": [pd.Timestamp("2026-09-10")], "WtOilVol": [123.]}))
+    pumps, rates = runs._current_and_tests(["MPM-01"])
+    assert pumps == {} and rates == {"MPM-01": (123., None)}
+
+
+def test_no_usable_wells_returns_missing_rows_without_running_optimizer(client, monkeypatch):
+    import woffl.gui.pad_optimize as pad_optimize
+    monkeypatch.setattr(wells_svc, "well_context", lambda *a: {"seeds": {"form_wc": .999}})
+    monkeypatch.setattr(pad_optimize, "run_optimization", lambda *a, **kw: pytest.fail("no inputs to simulate"))
+    result = runs._run_pad_job({}, schemas.OptimizeRunRequest(kind="pad", pad="M"))
+    assert len(result["rows"]) == 2 and result["n_wells"] == 0
+    assert all(r["outcome"] == "unsupported_model" and r["oil"] is None for r in result["rows"])
+    assert result["coverage"]["expected_online"] == 2
+    assert result["coverage"]["accounted_online"] == 0
+    assert result["meta"]["feasible"] is None
 
 
 def test_cfp_pads_filter_and_water_enrichment(client, monkeypatch):

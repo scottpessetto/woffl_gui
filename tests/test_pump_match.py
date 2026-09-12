@@ -317,12 +317,12 @@ def test_default_replay_uses_saved_well_inputs_and_keeps_failure_coverage(runtim
     assert changed["well_inputs"]["qwf"] == 400.
 
 
-def test_worker_forwards_model_and_uses_clean_hardware(monkeypatch):
+def test_worker_forwards_model_and_scoped_hardware(monkeypatch):
     from woffl.assembly import solopump
     cfg, _, _ = inputs()
     cfg.hydraulics_model = "hagedorn_brown"
     cfg.installed_nozzle, cfg.installed_throat = "13", "C"
-    cfg.ken_well, cfg.fnz_well = 99., 2.
+    cfg.ken_well, cfg.kth_well, cfg.kdi_well, cfg.fnz_well = .12, .35, .42, 1.1
     monkeypatch.setattr("woffl.assembly.network_optimizer.NetworkOptimizer._create_well_objects", lambda *_: (1, 2, 3, 4, 5))
     calls = []
     def solve(*args, **kwargs):
@@ -332,7 +332,79 @@ def test_worker_forwards_model_and_uses_clean_hardware(monkeypatch):
     result = pm.predict_chunk([(cfg, {"date": "2026-02-15", "ppf": 3000., "pwh": 200.}, 7)])
     assert result[0][1]["predicted_liquid"] == 200.
     assert calls[0][1]["hydraulics_model"] == "hagedorn_brown"
-    assert calls[0][0][3].ken == .03
+    assert calls[0][0][3].ken == .12
+    from woffl.geometry import JetPump
+    assert calls[0][0][3].dnz == pytest.approx(JetPump("13", "C").dnz * 1.1**.5)
+    assert (calls[0][0][3].kth, calls[0][0][3].kdi) == (.35, .42)
+
+
+def scoped_history():
+    from server.services.well_model import describe
+    cfg, tracker, tests = inputs()
+    # Two installations of the SAME catalog size must retain distinct scope.
+    tracker.loc[0, "Nozzle Number"] = "13"
+    coefs = dict(ken=.005, kth=.386, kdi=.072, nozzle_area_factor=1.01)
+    fit = dict(status="active", pump="13C", date_set=tracker.iloc[-1]["Date Set"],
+               well_model_fingerprint=describe(cfg)["fingerprint"], coefficients=coefs)
+    return cfg, tracker, tests, fit
+
+
+def test_saved_history_fit_applies_only_to_its_exact_installation_with_measured_composition():
+    cfg, tracker, tests, fit = scoped_history()
+    tests.loc[tests.WtDate.str.startswith("2026-02"), ["form_wc", "fgor"]] = [.82, 700.]
+    eras, rows, work, _ = pm.assemble(cfg, tracker, tests, schemas.PumpMatchRequest(),
+                                     "2026-03-01T00:00:00Z", fit)
+    assert [e["pump_losses"] for e in eras] == ["clean_reference", "saved_calibration"]
+    assert eras[0]["pump"] == eras[1]["pump"] == "13C"
+    for at, controls, index in work:
+        if rows[index]["date"].startswith("2026-02"):
+            assert (at.ken_well, at.kth_well, at.kdi_well, at.fnz_well) == (.005, .386, .072, 1.01)
+            assert (at.form_wc, at.form_gor) == (.82, 700.)
+        else:
+            assert (at.ken_well, at.kth_well, at.kdi_well, at.fnz_well) == (.03, .3, .4, 1.)
+        assert at.qwf*(1-at.form_wc) == pytest.approx(cfg.qwf*(1-cfg.form_wc))
+        assert set(controls) == {"date", "ppf", "pwh"}
+
+
+@pytest.mark.parametrize("change", ["status", "time", "pump", "hash", "curve", "geometry", "hydraulics", "clean", "chronological"])
+def test_saved_history_fit_never_crosses_unsupported_scope(change):
+    cfg, tracker, tests, fit = scoped_history()
+    req = schemas.PumpMatchRequest(training_tests=3)
+    if change == "status": fit["status"] = "stale"
+    elif change == "time": fit["date_set"] = "2026-02-01T17:00:00Z"
+    elif change == "pump": fit["pump"] = "12C"
+    elif change == "hash": fit["well_model_fingerprint"] = "0"*32
+    elif change == "curve": cfg.qwf += 10.
+    elif change == "geometry": tracker.loc[1, "Tubing Diameter"] = 3.5
+    elif change == "hydraulics": cfg.hydraulics_model = "drift_flux"
+    elif change == "clean": req.pump_losses = "clean_reference"
+    elif change == "chronological": req.mode = "same_pump"
+    eras, _, work, _ = pm.assemble(cfg, tracker, tests, req, "2026-03-01T00:00:00Z", fit)
+    assert work
+    assert all(e["pump_losses"] == "clean_reference" for e in eras)
+    assert all((at.ken_well, at.kth_well, at.kdi_well, at.fnz_well) == (.03, .3, .4, 1.) for at, _, _ in work)
+
+
+@pytest.mark.parametrize("model", ["beggs", "hagedorn_brown", "drift_flux"])
+def test_replay_worker_matches_real_installed_single_and_batch_predictions(model):
+    from server.services.optimizer_runs import _config_from_seeds
+    from server.services.solve import solve_single, run_batch
+    sp = schemas.SimParams(nozzle_no="13", area_ratio="C", hydraulics_model=model,
+        ken=.005, kth=.386, kdi=.072, nozzle_area_factor=1.01,
+        nozzle_batch_options=["13"], throat_batch_options=["C"])
+    cfg = _config_from_seeds("Custom", "", sp.model_dump())
+    before = deepcopy(vars(cfg))
+    result = pm.predict_chunk([(cfg, {"date": "2026-02-15", "ppf": sp.ppf_surf, "pwh": sp.surf_pres}, 7)])
+    index, replay = result[0]
+    assert index == 7 and "message" not in replay
+    single = solve_single("Custom", sp)
+    installed = next(r for r in run_batch("Custom", sp)["rows"] if r["pump_state"] == "installed")
+    for key, single_key, batch_key in (("predicted_bhp", "psu", "psu_solv"),
+            ("predicted_oil", "qoil_std", "qoil_std"), ("predicted_pf", "qnz_bwpd", "lift_wat")):
+        assert replay[key] == pytest.approx(single[single_key], abs=1e-8)
+        assert replay[key] == pytest.approx(installed[batch_key], abs=1e-8)
+    assert replay["predicted_liquid"] == pytest.approx(single["qoil_std"]+single["fwat_bwpd"], abs=1e-8)
+    assert vars(cfg) == before
 
 
 def test_edited_input_preview_keeps_test_composition_and_hardware_without_saving(runtime, monkeypatch):

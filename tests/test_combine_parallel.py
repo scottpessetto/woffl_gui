@@ -43,6 +43,10 @@ def fake_solve(monkeypatch):
         return _res(v)
 
     monkeypatch.setattr(sens.solve, "solve_single", solve_single)
+    # This fixture isolates scheduling, while scenario contract tests use
+    # real SimParams and the real builder.
+    monkeypatch.setattr(sens, "scenario_params", lambda base, update, basis: update)
+    monkeypatch.setattr(sens, "scenario_patch", lambda base, candidate: candidate)
     return solve_single
 
 

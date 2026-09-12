@@ -93,7 +93,7 @@ async def check():
             await route.fulfill(json=data)
 
         await page.route(re.compile(r"https?://[^/]+/api/"), api)
-        await page.goto("http://127.0.0.1:5176/jp-history?well=MPE-42&match=1")
+        await page.goto((sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:5176") + "/jp-history?well=MPE-42&match=1")
         button = page.get_by_role("button", name="Save well inputs", exact=True)
         await expect(button).to_be_visible()
         await expect(button).to_be_disabled()
@@ -171,6 +171,20 @@ async def check():
         await expect(page.get_by_text("Fixture anchor cleared.", exact=True)).to_be_visible()
         await expect(button).to_be_enabled()
         assert clears == 1
+        # Unsupported model edits cannot be persisted by the eight-field
+        # save. Their restore action preserves the intended (unsaved) IPR.
+        await page.set_viewport_size(dict(width=1440, height=1050))
+        await page.get_by_text("Advanced", exact=True).click()
+        api_input = page.get_by_label("Oil API", exact=True)
+        original_api = await api_input.input_value()
+        await api_input.fill("31")
+        await api_input.press("Enter")
+        await expect(page.get_by_text("Save well inputs does not save these settings.", exact=False)).to_be_visible()
+        await page.get_by_role("button", name="Restore session-only settings", exact=True).click()
+        await expect(api_input).to_have_value(original_api)
+        await expect(qwf).to_have_value("600")
+        await expect(page.get_by_role("button", name="Restore session-only settings", exact=True)).to_have_count(0)
+        await expect(page.get_by_text("1 well input differs", exact=False)).to_be_visible()
         assert not errors, errors
         await browser.close()
     print(json.dumps(dict(status="passed", previews=len(starts), intercepted_saves=len(saves),

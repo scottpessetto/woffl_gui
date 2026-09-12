@@ -27,7 +27,7 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 
 import { useSensitivity, useWellTests } from "../api/hooks";
-import type { SensitivityKnob, SensitivityResponse, WellTestRow } from "../api/types";
+import type { SensitivityKnob, SensitivityResponse, WcBasis, WellTestRow } from "../api/types";
 import { ErrorNote, InfoNote, WarnNote } from "../components/ui";
 import { fmtDate } from "../lib/format";
 import { useDebounced } from "../lib/useDebounced";
@@ -52,6 +52,7 @@ const RANGE_NOTE = /overrid|clamp|ignor/i;
 export default function SensitivityPage() {
   const well = useParamsStore((s) => s.well);
   const params = useParamsStore((s) => s.params);
+  const context = useParamsStore((s) => s.context);
   const simActive = useParamsStore((s) => s.simActive);
   const months = useParamsStore((s) => s.months);
   const cap = useParamsStore((s) => s.cap);
@@ -65,6 +66,7 @@ export default function SensitivityPage() {
   const resetBounds = useSensitivityStore((s) => s.resetBounds);
   const setView = useSensitivityStore((s) => s.setView);
   const selectedId = view.selectedId;
+  const basis = view.wcBasis ?? "fixed_oil_ipr";
   // Every bounds edit is a new query key and the sweep takes about a second,
   // so `query.data` goes undefined while the server works. Holding the last
   // response keeps the editor mounted through the refetch - an input that
@@ -117,7 +119,9 @@ export default function SensitivityPage() {
     [latestTest],
   );
 
-  const query = useSensitivity(well, debounced, targets, sentBounds, simActive);
+  const query = useSensitivity(well, debounced, { ...targets, wc_basis: basis }, sentBounds, simActive);
+  const currentSweep = effective === debounced && bounds === sentBounds && query.data !== undefined && !query.isFetching && !query.isError;
+  const installationKey = JSON.stringify(context?.pump ?? null);
 
   if (query.data !== undefined) held.current = query.data;
   const data: SensitivityResponse | null = query.data ?? held.current;
@@ -187,13 +191,23 @@ export default function SensitivityPage() {
 
   return (
     <div className="space-y-4">
+      <label className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+        WC scenario basis
+        <select aria-label="Sensitivity WC basis" value={basis}
+          onChange={(e) => setView(well, { ...view, wcBasis: e.target.value as WcBasis })}
+          className="rounded border border-slate-300 bg-white px-2 py-1">
+          <option value="fixed_oil_ipr">Composition (keep oil IPR)</option>
+          <option value="anchor_measurement">Anchor measurement (vary oil IPR)</option>
+        </select>
+      </label>
+      <p className="text-xs text-slate-500">WC/GOR composition changes keep one oil IPR by default. Selecting qwf, anchor BHP or reservoir pressure deliberately explores a changed curve. Historical test values are comparison targets; the sidebar supplies the operating conditions.</p>
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1 w-fit">
           {METRICS.map((m) => (
             <button
               key={m.id}
               type="button"
-              onClick={() => setView(well, { metricId: m.id, selectedId })}
+              onClick={() => setView(well, { ...view, metricId: m.id, selectedId })}
               className={
                 metricId === m.id
                   ? "rounded-md bg-blue-600 px-3 py-1 text-sm font-medium text-white"
@@ -238,7 +252,8 @@ export default function SensitivityPage() {
         </p>
       ))}
 
-      <div className="grid items-start gap-4 lg:grid-cols-2">
+      {!currentSweep && <p role="status" className="text-xs text-amber-700">Inputs changed. Previous sweep predictions are hidden while the current case is evaluated.</p>}
+      {currentSweep && <div className="grid items-start gap-4 lg:grid-cols-2">
         <TornadoChart
           rows={rows}
           spec={spec}
@@ -250,7 +265,7 @@ export default function SensitivityPage() {
         {selected !== null && (
           <DetailSweep knob={selected} spec={spec} baseline={baseline} target={target} />
         )}
-      </div>
+      </div>}
 
       <KnobTable
         knobs={ordered}
@@ -265,10 +280,14 @@ export default function SensitivityPage() {
           bounds, answering whether any combination reaches the measured test */}
       <CombinePanel
         well={well}
-        params={debounced}
+        params={effective}
         knobs={data.knobs}
         bounds={bounds}
         targets={targets}
+        wcBasis={basis}
+        testKey={latestTest ? testKey(latestTest) : null}
+        installationKey={installationKey}
+        enabled={currentSweep}
       />
     </div>
   );

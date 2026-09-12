@@ -3,15 +3,21 @@
 Operating rules for coding agents in this repo. Read this before touching anything.
 Prose lives in `docs/`; this file is only the rules you will otherwise violate.
 
-Latest implementation: [September 12 edit/preview/save workflow](docs/well_input_save_workflow_2026-09-12.md).
+Latest implementation: [September 12 well-fit workflow](docs/well_fit_workflow_delivery_2026-09-12.md).
 Solver and JP History have persistent well-save controls, explicit read-only
 states and historical previews of supported edits. Save refreshes the database
 baseline without losing session edits; new optimization runs load saved values.
 The [Pump Match Over Time delivery](docs/pump_match_ui_2026-09-12.md) records the replay.
+Latest review: [well fitting, sensitivities and pad decisions](docs/well_fit_pad_workflow_review_2026-09-12.md).
+Its fixed-IPR calibration, sensitivity/Apply parity and missing-model coverage
+findings are implemented in the delivery record. Common oil-IPR refitting is
+explicit, and I/M/E fixed-plan stress cases are available. Read the delivery's
+remaining work before treating a saved model as qualified for pad decisions.
 The shared production plot defaults to saved-well BHP/oil predictions at every
 usable test, with chronological validation modes also available. Shared
-multi-installation pump-loss fitting remains unfinished; all replay modes use
-clean-reference pump losses. No deployment was performed.
+multi-installation pump-loss fitting remains unfinished. Every-test replay can
+use a saved fit for its exact matching installation/model; other installations
+use clean reference losses. No deployment was performed.
 Historical replay now uses each test's WC/GOR while preserving one saved oil
 IPR across all pumps. Do not introduce automatic IPR shifts; the user wants
 one IPR describing the well. See the [fixed-IPR investigation](docs/well_match_diagnostic_2026-09-12.md)
@@ -99,9 +105,9 @@ escapes, rather than line-slicing/reconstructing source through the shell.
 
 (`tests/test_joint_match_sweep.py` was deleted; the old `--deselect` of it is a no-op and was dropped from the command on 2026-09-02.)
 
-Latest recorded green baseline: **2,006 Python tests and 18 frontend tests passed**
-(2026-09-12 edit/preview/save), plus the TypeScript/Vite production build.
-See [the delivery record](docs/well_input_save_workflow_2026-09-12.md). The
+Latest recorded green baseline: **2,116 Python tests and 29 frontend tests passed**
+(2026-09-12 well-fit workflow), plus the TypeScript/Vite production build.
+See [the delivery record](docs/well_fit_workflow_delivery_2026-09-12.md). The
 [recovered review](docs/recovered_review_2026-09-11.md) records the prior fixes.
 Earlier counts in dated reports are milestones, not the current baseline.
 Live tests are opt-in (`--run-live`); ordinary verification stays offline.
@@ -470,9 +476,9 @@ Remaining as of this handoff:
 - Reconcile fleet outliers (PF allocation, gauge datum, circulation, IPR and
   contemporaneous WC/GOR). Then validate pressure response on independent events.
   The frozen 35-well audit predates scoped-fit hydration and is retrospective.
-- Measurement-informed WC ranges, correlated WC/GOR/IPR uncertainty, and robust
-  low/base/high optimization remain proposals. The GUI currently provides only
-  fixed-GOR sensitivity, not calibration or optimization bounds.
+- Measurement-informed ranges and coupled S/CFP uncertainty remain unfinished.
+  I/M/E now compare two fixed plans under bounded WC/GOR/header stress cases;
+  these are engineering assumptions, not probabilities or confidence bounds.
 - Fluid approximations remain: SG-scaled pure water rather than brine chemistry,
   bulk PF column, isothermal PVT, empirical oil/acoustic correlations. Numerical
   consistency tests are necessary but do not settle field-model accuracy.

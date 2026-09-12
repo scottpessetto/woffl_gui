@@ -1,6 +1,7 @@
 """Small WC-only scenario envelope using the same solve as the workbench.
 
-The total-liquid IPR anchor and GOR stay fixed. Each scenario builds fresh
+The oil IPR and GOR normally stay fixed; anchor measurement uncertainty is
+an explicit alternative. Each scenario builds fresh
 mutable PVT objects via solve_single. These sampled extrema are not statistical
 confidence limits; failed samples remain visible and make the range incomplete.
 """
@@ -11,6 +12,7 @@ import math
 
 from server import schemas
 from server.services import solve
+from server.services.scenarios import scenario_params
 
 
 def run(req: schemas.WcUncertaintyRequest) -> schemas.WcUncertaintyResponse:
@@ -34,7 +36,7 @@ def run(req: schemas.WcUncertaintyRequest) -> schemas.WcUncertaintyResponse:
     points = []
     for wc in cuts:
         try:
-            candidate = sp.model_copy(deep=True, update={"form_wc": wc})
+            candidate = scenario_params(sp, {"form_wc": wc}, req.wc_basis)
             result = solve.solve_single(req.well, candidate)
             if not all(math.isfinite(result[k]) for k in ("psu", "qoil_std", "fwat_bwpd", "qnz_bwpd")):
                 raise ValueError("No finite prediction at this watercut.")
@@ -51,6 +53,7 @@ def run(req: schemas.WcUncertaintyRequest) -> schemas.WcUncertaintyResponse:
     from woffl.flow.hydraulics import physics_model
     return schemas.WcUncertaintyResponse(
         physics_model=physics_model(sp.hydraulics_model),
+        wc_basis=req.wc_basis,
         well=req.well, uncertainty_points=req.uncertainty_points,
         wc_base=sp.form_wc, wc_low=low, wc_high=high,
         clipped=raw_low < 0 or raw_high > .99,

@@ -6,7 +6,7 @@
  * reservoir pressure, so dragging ResP redraws instantly.
  */
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import type { IprFitResponse, JpInstallRow, SimParams, SolveResult, WellTestRow } from "../../api/types";
 import type { EChartsOption } from "../../charts/echarts";
@@ -38,6 +38,7 @@ export function IprChart({
   installs,
   loading = false,
   gaugeSlot,
+  preferOil = false,
 }: {
   tests: WellTestRow[];
   fit: IprFitResponse | null;
@@ -49,12 +50,15 @@ export function IprChart({
   loading?: boolean;
   /** The memory-gauge control, rendered in the card header's left slot. */
   gaugeSlot?: ReactNode;
+  /** Default to the invariant oil basis when a common oil curve is applied. */
+  preferOil?: boolean;
 }) {
   // Old GUI: checkbox "Show JP label inside each test point"
   // (mva_show_jp_labels_{well}); per-well because the workbench remounts.
   const [showJpLabels, setShowJpLabels] = useState(false);
   // X-axis quantity: total liquid (the fitted curve's native rate) or oil.
-  const [rateMode, setRateMode] = useState<RateMode>("liquid");
+  const [rateMode, setRateMode] = useState<RateMode>(preferOil ? "oil" : "liquid");
+  useEffect(() => { if (preferOil) setRateMode("oil"); }, [preferOil]);
   // The curve IS the sidebar inflow, always. It used to prefer the server
   // fit, which was invisible while the fit was auto-applied into the sidebar
   // on every open - but the moment the engineer's numbers outrank the fit (a
@@ -247,6 +251,7 @@ export function IprChart({
                   <button
                     key={m.id}
                     type="button"
+                    aria-pressed={rateMode === m.id}
                     onClick={() => setRateMode(m.id)}
                     className={
                       rateMode === m.id

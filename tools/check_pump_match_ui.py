@@ -100,7 +100,7 @@ async def check():
             await route.fulfill(json=data)
 
         await page.route(re.compile(r"https?://[^/]+/api/"), api)
-        await page.goto("http://127.0.0.1:5176/jp-history?well=MPE-42&match=1")
+        await page.goto((sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:5176") + "/jp-history?well=MPE-42&match=1")
         await expect(page.get_by_label("Show model match", exact=True)).to_be_checked()
         await expect(page.get_by_label("History comparison", exact=True)).to_have_value("all_tests")
         await expect(page.get_by_label("Training tests", exact=True)).to_have_count(0)

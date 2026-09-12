@@ -1,6 +1,12 @@
 # Documentation index
 
-Updated September 12, 2026. The [edit/preview/save workflow](well_input_save_workflow_2026-09-12.md)
+Updated September 12, 2026. The [well-fit workflow delivery](well_fit_workflow_delivery_2026-09-12.md)
+implements fixed-IPR calibration, explicit common oil-IPR fitting, sensitivity
+parity, saved-model identity/replay and bounded I/M/E fixed-plan stress cases.
+It records remaining multi-installation and independent qualification work.
+The preceding [well-fit, sensitivity and pad-decision review](well_fit_pad_workflow_review_2026-09-12.md)
+preserves the original findings and offline sensitivity/Apply reproduction.
+The [edit/preview/save workflow](well_input_save_workflow_2026-09-12.md)
 adds visible well-save controls, historical previews of sidebar edits, saved
 baseline refresh and verified hydration into new optimization configurations.
 The [Pump Match Over Time implementation](pump_match_ui_2026-09-12.md)
@@ -25,6 +31,9 @@ inputs and revision; later implementation notes do not retroactively rerun them.
 
 | Guide | Use it for |
 |---|---|
+| [Well-fit workflow delivery](well_fit_workflow_delivery_2026-09-12.md) | Current workflow, integrated checks, saved-model identity and remaining qualification work |
+| [Sensitivities and common oil IPR](sensitivity_common_ipr_2026-09-12.md) | Scenario/Apply consistency and explicit chronological common-curve fitting |
+| [Pad accounting and stress cases](pad_decision_accounting_2026-09-12.md) | Complete modeled coverage, hardware counterfactual and bounded I/M/E plan comparisons |
 | [App README](../README.md) / [frontend README](../web/README.md) | Setup, checks and frontend conventions |
 | [Optimization user guide](optimization_user_guide.md) | Save well inputs, fit/save installed pumps, run optimization and explore WC |
 | [Web architecture](web_port.md) | API, caching, writes and deployment; later sections include port history |

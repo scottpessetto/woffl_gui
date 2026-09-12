@@ -18,6 +18,12 @@ from woffl.geometry.jetpump import JetPump
 WELL = "MPE-42"
 PUMP = {"nozzle_no": "13", "throat_ratio": "C", "date_set": "2026-08-10", "source": "databricks"}
 COEFS = {"ken": .005, "kth": .386, "kdi": .072, "nozzle_area_factor": 1.01}
+MODEL_CONTEXT = {"well": WELL, "seeds": schemas.SimParams().model_dump()}
+
+
+def fingerprint(model="beggs"):
+    from server.services.well_model import from_context
+    return from_context(MODEL_CONTEXT, model)["fingerprint"]
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +39,7 @@ def offline(monkeypatch):
 
 
 def record():
-    return {"v": 1, "n": "13", "t": "C", "i": pc.installation(PUMP["date_set"]),
+    return {"v": 2, "u": fingerprint(), "n": "13", "t": "C", "i": pc.installation(PUMP["date_set"]),
             "m": MODEL_VERSION, "k": list(COEFS.values()),
             "q": {"bhp": 76., "pf": 61.5, "n": 19, "bounds": ["ken"]}}
 
@@ -45,7 +51,7 @@ def install_record(monkeypatch, rec):
 
 def test_fit_reloads_only_for_its_installation_and_model(monkeypatch):
     install_record(monkeypatch, record())
-    result = pc.resolve(WELL, PUMP)
+    result = pc.resolve(WELL, PUMP, well_model_fingerprint=fingerprint())
     assert result["status"] == "active"
     assert result["coefficients"] == COEFS
     assert result["quality"]["pf"] == 61.5
@@ -62,11 +68,11 @@ def test_fit_reloads_only_for_its_installation_and_model(monkeypatch):
 @pytest.mark.parametrize("model", ["hagedorn_brown", "drift_flux"])
 def test_alternative_fit_reloads_only_with_matching_hydraulics(monkeypatch, model):
     from woffl.flow.hydraulics import physics_model
-    rec = {**record(), "h": model, "m": physics_model(model)}
+    rec = {**record(), "h": model, "m": physics_model(model), "u": fingerprint(model)}
     install_record(monkeypatch, rec)
-    active = pc.resolve(WELL, PUMP)
+    active = pc.resolve(WELL, PUMP, well_model_fingerprint=fingerprint(model))
     assert active["hydraulics_model"] == model and active["coefficients"] == COEFS
-    assert pc.resolve(WELL, PUMP, hydraulics_model=model)["status"] == "active"
+    assert pc.resolve(WELL, PUMP, hydraulics_model=model, well_model_fingerprint=fingerprint(model))["status"] == "active"
     assert not pc.resolve(WELL, PUMP, hydraulics_model="beggs")["coefficients"]
     later = pc.resolve(WELL, {**PUMP, "date_set": "2026-09-10"})
     assert later["status"] == "stale" and not later["coefficients"]
@@ -98,14 +104,46 @@ def test_fleet_calibration_read_is_one_select(monkeypatch):
     assert len(calls) == 1 and calls[0].startswith("SELECT ")
 
 
+def test_legacy_and_changed_well_models_never_activate(monkeypatch):
+    for rec in ({**record(), "v": 1}, record()):
+        install_record(monkeypatch, rec)
+        result = pc.resolve(WELL, PUMP, well_model_fingerprint="0" * 32)
+        assert result["status"] == "stale"
+        assert not result["coefficients"]
+
+
+def test_changed_well_inputs_reject_old_completed_job(save_case, monkeypatch):
+    from server.services import wells
+    result, rows, evicted = save_case
+    changed = {**MODEL_CONTEXT, "seeds": {**MODEL_CONTEXT["seeds"], "qwf": 2000.5}}
+    monkeypatch.setattr(wells, "well_context", lambda *a, **kw: changed)
+    with pytest.raises(ValueError, match="Well inputs changed"):
+        pc.save_fit(WELL, "job")
+    assert not rows and not evicted
+
+
+def test_unavailable_fresh_well_properties_prevent_save(save_case, monkeypatch):
+    from server.services import wells
+    _, rows, evicted = save_case
+    def unavailable(*a, **kw):
+        assert kw["fresh"] is True and kw["tracker"] is not None
+        raise RuntimeError("properties unavailable")
+    monkeypatch.setattr(wells, "well_context", unavailable)
+    with pytest.raises(ValueError, match="Could not verify fresh well inputs"):
+        pc.save_fit(WELL, "job")
+    assert not rows and not evicted
+
+
 @pytest.fixture()
 def save_case(monkeypatch):
-    from server.services import datasources, ipr
+    from server.services import datasources, ipr, wells
     from woffl.assembly import databricks_client
     fit = {**COEFS, "fnz": COEFS["nozzle_area_factor"], "rms_bhp_psi": 76.,
            "rms_pf_pct": 61.5, "n_used": 19, "railed": ["ken"], "implied_beta": .268}
     result = {"well": WELL, "pump": "13C", "era_start": PUMP["date_set"],
-              "physics_model": MODEL_VERSION, "fit": fit, "mined_beta": .062}
+              "physics_model": MODEL_VERSION, "fit": fit, "mined_beta": .062,
+              "well_model_fingerprint": fingerprint()}
+    monkeypatch.setattr(wells, "well_context", lambda *a, **kw: MODEL_CONTEXT)
     monkeypatch.setattr(pc.jobs, "get", lambda *a, **kw: {"status": "done", "result": result})
     monkeypatch.setattr(databricks_client, "fetch_jp_history", lambda: pd.DataFrame([{
         "Well Name": WELL, "Nozzle Number": 13, "Throat Ratio": "C",
@@ -136,9 +174,10 @@ def test_save_is_one_atomic_installation_record_with_quality(save_case):
 def test_alternative_model_saves_atomically_with_precise_coefficients(save_case, model):
     from woffl.flow.hydraulics import physics_model
     result, rows, evicted = save_case
-    result.update(hydraulics_model=model, physics_model=physics_model(model))
+    result.update(hydraulics_model=model, physics_model=physics_model(model), well_model_fingerprint=fingerprint(model))
     result["fit"].update(ken=.005123456789012345, kth=.38612345678901234,
                          kdi=.07212345678901234, fnz=1.0123456789012345,
+                         rms_oil_bopd=135.12345, rms_oil_pct=42.56789, n_oil=19,
                          rms_dbhp_psi=72.12345, railed=["ken", "kth", "kdi", "fnz"])
     pc.save_fit(WELL, "job")
     assert len(rows) == 1 and evicted == [WELL]

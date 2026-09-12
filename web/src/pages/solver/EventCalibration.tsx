@@ -26,6 +26,7 @@ import { useMeta, useSavePumpCalibration, useOptimizeJob, useStartEventCalibrati
 import { HYDRAULICS_LABELS, type HydraulicsModel, type EventCalibrationResult, type WellContext } from "../../api/types";
 import { Button } from "../../components/ui";
 import { fmtNum } from "../../lib/format";
+import { calibrationInputBlocker, fitMatchesWellModel, hasWellModelEdits } from "../../lib/wellModel";
 import { useOptimizeStore } from "../../state/optimize";
 import { useParamsStore } from "../../state/params";
 
@@ -38,17 +39,19 @@ function matchesInstallation(result: EventCalibrationResult, pump: WellContext["
 function SaveFit({ result, jobId }: { result: EventCalibrationResult; jobId: string }) {
   const context = useParamsStore((s) => s.context);
   const model = useParamsStore((s) => s.params.hydraulics_model);
+  const params = useParamsStore((s) => s.params);
   const meta = useMeta();
   const save = useSavePumpCalibration(result.well);
-  const valid = matchesInstallation(result, context?.pump, model);
+  const valid = matchesInstallation(result, context?.pump, model) && fitMatchesWellModel(result.well_model_inputs, context) && !hasWellModelEdits(params, context);
+  const inputBlocker = calibrationInputBlocker(params, context);
   const hasFit = !result.refusal && (result.fit || (result.single && !["pinned", "failed"].includes(result.single.match_quality)));
   if (!hasFit) return null;
   return <div className="basis-full space-y-1 text-xs text-slate-500">
     <Button size="sm" variant="secondary" disabled={!valid || !meta.data?.writes_enabled || save.isPending}
       busy={save.isPending} onClick={() => save.mutate(jobId)}>Save installed-pump calibration</Button>
-    <p>Calibration uses saved well inputs and in-era tests. Save changed well inputs before refitting.</p>
+    <p>Calibration holds one saved oil IPR fixed and uses each test's WC/GOR. Save changed well inputs before refitting.</p>
     <p>{HYDRAULICS_LABELS[result.hydraulics_model ?? "beggs"]}. Saves this fit for {result.pump}, installed {result.era_start?.slice(0, 10)}. Save well inputs using the bar at the top of this page.</p>
-    {!valid && <p className="text-amber-700">The installation or hydraulics differs from this fit. Refresh the well and calibrate again.</p>}
+    {!valid && <p className="text-amber-700">{inputBlocker ?? "The saved well model, installation or hydraulics differs from this fit. Calibrate again using the current saved model and intended hydraulics."}</p>}
     {!meta.data?.writes_enabled && <p>Saving is unavailable while this app is in read-only mode. Apply remains available for this session.</p>}
     {save.data && <p className="text-emerald-700">{save.data.message}</p>}
     {save.isError && <p className="text-amber-700">{save.error.message}</p>}
@@ -73,7 +76,8 @@ function SinglePointBlock({ result }: { result: EventCalibrationResult }) {
   const applyFit = useParamsStore((s) => s.applyPumpFit);
   const context = useParamsStore((s) => s.context);
   const model = useParamsStore((s) => s.params.hydraulics_model);
-  const validScope = matchesInstallation(result, context?.pump, model);
+  const params = useParamsStore((s) => s.params);
+  const validScope = matchesInstallation(result, context?.pump, model) && fitMatchesWellModel(result.well_model_inputs, context) && !hasWellModelEdits(params, context);
   const single = result.single;
 
   if (!single) {
@@ -131,7 +135,8 @@ function ResultBlock({ result }: { result: EventCalibrationResult }) {
   const applyFit = useParamsStore((s) => s.applyPumpFit);
   const context = useParamsStore((s) => s.context);
   const model = useParamsStore((s) => s.params.hydraulics_model);
-  const validScope = matchesInstallation(result, context?.pump, model);
+  const params = useParamsStore((s) => s.params);
+  const validScope = matchesInstallation(result, context?.pump, model) && fitMatchesWellModel(result.well_model_inputs, context) && !hasWellModelEdits(params, context);
   const fit = result.fit;
 
   if (result.method === "single_point") return <SinglePointBlock result={result} />;
@@ -166,6 +171,7 @@ function ResultBlock({ result }: { result: EventCalibrationResult }) {
   const qualityLine =
     `RMS BHP ${Math.round(fit.rms_bhp_psi)} psi | PF ${fit.rms_pf_pct.toFixed(1)}%` +
     (fit.rms_dbhp_psi !== null ? ` | dBHP ${Math.round(fit.rms_dbhp_psi)} psi` : "") +
+    (fit.rms_oil_bopd != null ? ` | Oil ${fmtNum(fit.rms_oil_bopd)} BOPD (${fmtNum(fit.rms_oil_pct)}%, ${fit.n_oil} measured tests)` : " | No measured oil score") +
     ` | ${fit.n_used} points (${result.n_daily} daily / ${result.n_test} tests, ` +
     `spread ${Math.round(result.ppf_spread)} psi)` +
     (fit.n_dropped > 0 ? ` - ${fit.n_dropped} dropped` : "");
@@ -189,19 +195,21 @@ function ResultBlock({ result }: { result: EventCalibrationResult }) {
       <p className="text-xs text-slate-700">{headline}</p>
       {(modelBeta !== null || minedBeta !== null) && (
         <p className="text-xs text-slate-700">
-          response: model {modelBeta !== null ? modelBeta.toFixed(3) : "n/a"} vs measured{" "}
+          Response diagnostic: model {modelBeta !== null ? modelBeta.toFixed(3) : "n/a"} vs {result.mined_beta_source === "well" ? "well history" : "reference"}{" "}
           {minedBeta !== null ? minedBeta.toFixed(3) : "n/a"}
           {result.mined_beta_source ? ` (${result.mined_beta_source})` : ""}
-          {betaOk && <span className="ml-1 text-emerald-700">{"\u2713"} reproduced</span>}
+          {betaOk && <span className="ml-1">within the diagnostic tolerance</span>}
         </p>
       )}
       {betaKnown && !betaOk && (
         <p className="text-xs text-amber-700">
-          response not reproduced - treat suction sensitivity as evidence-layer
+          Response differs from the reference; pressure-change accuracy remains unverified.
         </p>
       )}
       <p className="font-mono text-[11px] text-slate-500">{paramsLine}</p>
       <p className="font-mono text-[11px] text-slate-500">{qualityLine}</p>
+      <p className="text-xs text-slate-500">One saved oil IPR across the fitting window. Oil is scored only on measured tests; daily rows supply pressure/PF evidence. These are fitting diagnostics, not independent holdout validation. Well-history response can include earlier installations.</p>
+      {result.data_exclusions && result.data_exclusions.length > 0 && <p className="text-xs text-amber-700">{result.data_exclusions.length} observations excluded for missing or unsupported measurements.</p>}
       {fit.railed.length > 0 && (
         <p className="text-xs text-amber-700">
           railed on a search bound: {fit.railed.join(", ")} - treat as low confidence
@@ -235,6 +243,10 @@ export function EventCalibration({ well }: { well: string }) {
   // Solver detour used to drop the id and orphan the fit (review
   // 2026-09-01, WEB-8). Per-well keys keep one well's fit off another.
   const model = useParamsStore((s) => s.params.hydraulics_model);
+  const params = useParamsStore((s) => s.params);
+  const context = useParamsStore((s) => s.context);
+  const unsaved = hasWellModelEdits(params, context);
+  const inputBlocker = calibrationInputBlocker(params, context);
   const jobKey = model === "beggs" ? `event_cal:${well}` : `event_cal:${well}:${model}`;
   const jobId = useOptimizeStore((s) => s.lastJob[jobKey] ?? null);
   const setLastJob = useOptimizeStore((s) => s.setLastJob);
@@ -261,7 +273,7 @@ export function EventCalibration({ well }: { well: string }) {
       <Button
         variant="primary"
         size="sm"
-        disabled={running}
+        disabled={running || unsaved}
         busy={running}
         title={
           "Fits the pump model to this pump era's daily field history; " +
@@ -278,6 +290,7 @@ export function EventCalibration({ well }: { well: string }) {
           {running ? "Calibrating..." : "Calibrate to field data"}
         </span>
       </Button>
+      {unsaved && <p className="basis-full text-xs text-amber-700">{inputBlocker}</p>}
       {running && (
         <span className="text-xs text-slate-500">
           {job.data?.progress ?? "Starting calibration..."}

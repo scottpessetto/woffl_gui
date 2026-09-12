@@ -5,7 +5,8 @@ coefficients via ``scipy.optimize.minimize`` (Nelder-Mead) to find the
 combination minimizing |modeled_BHP − target_BHP| at the latest-test
 conditions for a single well.
 
-The objective is BHP-only. knz (nozzle) is held fixed at 0.01 — varying it
+The single-point objective is BHP-only. The multipoint path below fits BHP,
+PF and measured test oil against one approved oil IPR. knz is held at 0.01; varying it
 trades off against PF rate match without improving BHP, and the field
 typically sees PF rate match well at the default. Solver failures inside
 the search are absorbed by returning a 1e6 penalty so the optimizer steps
@@ -497,7 +498,7 @@ def compute_bhp_decomposition(
 # Fits (ken, kth, kdi, fnz) against the current pump era. Entry-energy-v1
 # derives choking from the shared energy balance; the historical fifth
 # coordinate remains 1.0 for response/seed compatibility and is not searched.
-# Each point keeps its own oil-basis Vogel anchor.
+# One approved oil-basis Vogel IPR is held fixed for the entire fit.
 
 FNZ_BOUNDS = (0.8, 1.3)
 # Retired compatibility coordinate; never searched by the fitter.
@@ -508,6 +509,8 @@ MP_KNZ = 0.01                 # nozzle loss held fixed, as in the 1-pt path
 MP_SEED_KDI = 0.40            # library BatchPump default, not NEUTRAL_KDI
 MP_BHP_SCALE_PSI = 50.0       # 1-sigma BHP mismatch in the objective
 MP_PF_SCALE_FRAC = 0.05       # 1-sigma PF-rate mismatch (fraction of meas)
+MP_OIL_SCALE_FRAC = 0.10      # engineering residual scale, not measured uncertainty
+MP_OIL_SCALE_MIN_BOPD = 10.0
 MP_PWF_MARGIN_PSI = 25.0      # point dropped unless bhp < res_pres - margin
 MP_MAXITER = 100
 MP_POOR_RMS_PF_PCT = 5.0      # with MULTISTART_THRESHOLD, gates the alt start
@@ -560,6 +563,9 @@ class MultipointResult:
     refusal: Optional[str]
     iterations: int
     message: Optional[str]
+    rms_oil_bopd: Optional[float] = None
+    rms_oil_pct: Optional[float] = None
+    n_oil: int = 0
 
 
 def _build_well_objects(well_config):
@@ -587,7 +593,7 @@ def _point_pvt_components(well_config):
 
 
 def _point_inflow(oil_rate: float, pwf: float, pres: float):
-    """Oil-basis Vogel anchored on one point's own (rate, bhp)."""
+    """Oil-basis Vogel from the approved well anchor, independent of outcomes."""
     from woffl.flow.inflow import InFlow
 
     return InFlow(qwf=oil_rate, pwf=pwf, pres=pres)
@@ -596,7 +602,7 @@ def _point_inflow(oil_rate: float, pwf: float, pres: float):
 def _point_res_mix(wc: float, fgor: float, pvt):
     from woffl.pvt.resmix import ResMix
 
-    oil, water, gas = pvt
+    oil, water, gas = copy.deepcopy(pvt)
     return ResMix(wc=wc, fgor=fgor, oil=oil, wat=water, gas=gas)
 
 
@@ -613,10 +619,10 @@ def _huber(u: float) -> float:
     return MP_HUBER_DELTA * (2.0 * au - MP_HUBER_DELTA)
 
 
-def _mp_pair_diffs(pts: list[tuple[float, float, float]]) -> list[tuple[float, float]]:
-    """Paired differences over SOLVED points: [(dpsu_model, dbhp_meas), ...].
+def _mp_pair_diffs(pts: list[tuple]) -> list[tuple[float, float, float]]:
+    """Paired differences over solved points: (model delta, measured delta, weight).
 
-    ``pts`` is (ppf, bhp_meas, psu_model) per surviving point. ALL point
+    ``pts`` is (ppf, bhp_meas, psu_model, date, weight) per surviving point. ALL point
     combinations separated by at least MP_MIN_DPPF_PSI in ppf qualify -
     single day-pairs are noisy (gauge scatter, transients), and the miner's
     lesson applies here too: the response signal lives in the AGGREGATE of
@@ -633,8 +639,11 @@ def _mp_pair_diffs(pts: list[tuple[float, float, float]]) -> list[tuple[float, f
         lo = by_ppf[i]
         for j in range(i + 1, len(by_ppf)):
             hi = by_ppf[j]
+            if len(lo) > 3 and lo[3] is not None and lo[3] == hi[3]:
+                continue  # repeated tests on one day are not pressure events
             if hi[0] - lo[0] >= MP_MIN_DPPF_PSI:
-                diffs.append((hi[2] - lo[2], hi[1] - lo[1]))
+                weight = lo[4]*hi[4] if len(lo) > 4 else 1.0
+                diffs.append((hi[2] - lo[2], hi[1] - lo[1], weight))
     return diffs
 
 
@@ -691,10 +700,11 @@ def calibrate_multipoint(
     result dict ({"points": [...], "refusal": ...}) also works — a builder
     refusal is mirrored straight into the result without fitting.
 
-    Well objects are built ONCE from the config; each point then gets its
-    own IPR anchor (oil-basis through that point's qtot/wc at pwf = bhp,
-    pres = config res_pres) and its own ResMix at the point's wc/fgor (PVT
-    components built once, mixes cached per unique wc/fgor). fnz scales the
+    Well objects are built ONCE from the config. One approved oil IPR is
+    held fixed; each point gets its measured/attached test wc/fgor mixture.
+    Observed BHP, oil and PF never redefine inflow. Daily oil/qtot fields in
+    older snapshots are ignored: they were inferred from a nearby test and
+    are not independent rate observations. fnz scales the
     nozzle area: dnz_eff = dnz_catalog * sqrt(fnz). The flow limit follows
     the shared, unscaled throat-entry energy balance.
 
@@ -707,9 +717,12 @@ def calibrate_multipoint(
     (all combinations with |dppf| >= 100 psi):
         w_pair * H((dpsu_model - dbhp_meas)/25)
     where H is the Huber loss (_huber: quadratic within MP_HUBER_DELTA,
-    linear outside) and w_pair = sum(level weights) / n_pairs, so the
-    response carries the same total weight as the level. Oil is excluded
-    (circular under per-point anchoring). A point whose solve fails
+    linear outside). Pair weights are products of the point weights,
+    normalized to the total level weight. Same-date pairs are excluded,
+    so repeated tests cannot manufacture additional pressure evidence. Actual tests also
+    contribute H((oil_model-oil_test)/max(10 BOPD, 10% oil_test)). These are
+    engineering residual scales, not calibrated measurement uncertainties.
+    A point whose solve fails
     contributes a flat penalty during the search, is excluded from
     pairing, and is dropped (counted in n_dropped) at the optimum; more
     than half the input points dropping is a refusal.
@@ -744,7 +757,14 @@ def calibrate_multipoint(
     direction = getattr(well_config, "jpump_direction", "reverse")
     surf_pres = getattr(well_config, "surf_pres", None)
 
-    # --- per-point prep: IPR anchor + ResMix, independent of the params ---
+    oil_anchor = float(well_config.qwf) * (1.0 - float(well_config.form_wc))
+    anchor_bhp = float(well_config.pwf)
+    if (not np.isfinite(oil_anchor) or oil_anchor <= 0 or
+            not np.isfinite(anchor_bhp) or not 0 <= anchor_bhp < res_pres):
+        return _mp_refused("saved inputs do not define a positive oil IPR", seed)
+    inflow = _point_inflow(oil_anchor, anchor_bhp, res_pres)
+
+    # --- per-point prep: measured composition, never a new IPR ---
     pvt = _point_pvt_components(well_config)
     mix_cache: dict[tuple[float, float], object] = {}
     ctxs: list[dict] = []
@@ -754,35 +774,39 @@ def calibrate_multipoint(
             bhp = float(pt["bhp"])
             ppf = float(pt["ppf"])
             pf_rate = float(pt["pf_rate"])
-            # A daily with no near test carries wc/fgor = None (builder
-            # contract) - fall back to the config's saved formation values.
-            wc_raw = pt.get("wc")
-            wc = float(wc_raw) if wc_raw is not None else float(well_config.form_wc)
-            fgor_raw = pt.get("fgor")
-            fgor = (
-                float(fgor_raw)
-                if fgor_raw is not None
-                else float(well_config.form_gor)
-            )
+            wc = float(pt["wc"])
+            fgor = float(pt["fgor"])
         except (KeyError, TypeError, ValueError):
             n_dropped += 1
             continue
-        pwh = pt.get("pwh")
-        pwh = float(pwh) if pwh is not None else surf_pres
-        oil = pt.get("oil")
-        if oil is None and pt.get("qtot") is not None:
-            oil = float(pt["qtot"]) * (1.0 - wc)
-        # pwf must sit safely below res_pres or the Vogel anchor degenerates.
+        try:
+            pwh = pt.get("pwh")
+            pwh = float(pwh) if pwh is not None else surf_pres
+            weight = float(pt.get("weight", 1.0))
+        except (ValueError, TypeError):
+            n_dropped += 1
+            continue
+        oil = pt.get("oil") if pt.get("kind") == "test" else None
+        try:
+            oil = float(oil) if oil is not None else None
+        except (TypeError, ValueError):
+            oil = None
+        if oil is not None and (not np.isfinite(oil) or oil <= 0):
+            oil = None
         if (
             pwh is None
-            or oil is None or oil <= 0
-            or pf_rate <= 0
+            or not np.isfinite(float(pwh)) or not np.isfinite(pf_rate) or pf_rate <= 0
+            or not np.isfinite(wc) or not 0 <= wc < 1
+            or not np.isfinite(fgor) or fgor < 0
             or not np.isfinite(bhp) or not np.isfinite(ppf)
             or bhp >= res_pres - MP_PWF_MARGIN_PSI
         ):
             n_dropped += 1
             continue
-        key = (round(wc, 6), round(fgor, 3))
+        if not np.isfinite(weight) or weight <= 0:
+            n_dropped += 1
+            continue
+        key = (wc, fgor)
         if key not in mix_cache:
             mix_cache[key] = _point_res_mix(wc, fgor, pvt)
         ctxs.append(
@@ -793,9 +817,14 @@ def calibrate_multipoint(
                 "bhp": bhp,
                 "pf_rate": pf_rate,
                 "pwh": float(pwh),
-                "weight": float(pt.get("weight") or 1.0),
-                "inflow": _point_inflow(float(oil), bhp, res_pres),
+                "weight": weight,
+                "inflow": inflow,
                 "res_mix": mix_cache[key],
+                "oil": oil, "wc": wc, "fgor": fgor,
+                "composition_source": pt.get("composition_source", "test" if pt.get("kind") == "test" else "legacy_attachment"),
+                "anchor_date": pt.get("anchor_date"),
+                "anchor_test_id": pt.get("anchor_test_id"),
+                "composition_lag_days": pt.get("composition_lag_days"),
             }
         )
 
@@ -811,7 +840,7 @@ def calibrate_multipoint(
     dnz_catalog = float(JetPump(nozzle, throat, knz=MP_KNZ).dnz)
 
     def _solve_all(x, cs=None):
-        """Solve every point at params x -> list of (psu, qnz) | None."""
+        """Solve every point at params x -> list of (psu, qnz, oil) | None."""
         cs = ctxs if cs is None else cs
         ken, kth, kdi, fnz, mach_crit = x
         try:
@@ -822,7 +851,7 @@ def calibrate_multipoint(
         out = []
         for ctx in cs:
             try:
-                psu, _sonic, _qoil, _fwat, qnz, _mach = jetpump_solver(
+                psu, _sonic, qoil, _fwat, qnz, _mach = jetpump_solver(
                     pwh=ctx["pwh"],
                     tsu=tsu,
                     ppf_surf=ctx["ppf"],
@@ -837,12 +866,11 @@ def calibrate_multipoint(
                     mach_crit=mach_crit,
                 )
                 if (
-                    psu is None or qnz is None
-                    or np.isnan(psu) or np.isnan(qnz)
+                    not all(v is not None and np.isfinite(v) for v in (psu, qnz, qoil))
                 ):
                     out.append(None)
                 else:
-                    out.append((float(psu), float(qnz)))
+                    out.append((float(psu), float(qnz), float(qoil)))
             except Exception:
                 out.append(None)
         return out
@@ -871,21 +899,24 @@ def calibrate_multipoint(
         solved: list[tuple[float, float, float]] = []
         for ctx, res in zip(ctxs, _solve_all(x)):
             if res is None:
-                total += SOLVER_FAIL_PENALTY
+                total += ctx["weight"] * SOLVER_FAIL_PENALTY
                 continue
-            psu, qnz = res
+            psu, qnz, oil = res
             bhp_term = (psu - ctx["bhp"]) / MP_BHP_SCALE_PSI
             pf_term = (qnz - ctx["pf_rate"]) / (MP_PF_SCALE_FRAC * ctx["pf_rate"])
             total += ctx["weight"] * (_huber(bhp_term) + _huber(pf_term))
+            if ctx["oil"] is not None:
+                scale = max(MP_OIL_SCALE_MIN_BOPD, MP_OIL_SCALE_FRAC * ctx["oil"])
+                total += ctx["weight"] * _huber((oil - ctx["oil"]) / scale)
             w_solved += ctx["weight"]
-            solved.append((ctx["ppf"], ctx["bhp"], psu))
+            solved.append((ctx["ppf"], ctx["bhp"], psu, ctx["date"], ctx["weight"]))
         # Paired-difference term (see MP_DBHP_SCALE): the TOTAL pair weight
         # matches the total level weight so response and level pull equally.
         diffs = _mp_pair_diffs(solved)
         if diffs:
-            w_pair = w_solved / max(1, len(diffs))
-            for d_model, d_meas in diffs:
-                total += w_pair * _huber((d_model - d_meas) / MP_DBHP_SCALE)
+            w_pair = w_solved / sum(w for _, _, w in diffs)
+            for d_model, d_meas, weight in diffs:
+                total += w_pair * weight * _huber((d_model - d_meas) / MP_DBHP_SCALE)
         return total
 
     def _run(x0, stage: str = "seed"):
@@ -915,7 +946,7 @@ def calibrate_multipoint(
             if res is None:
                 drops += 1
                 continue
-            psu, qnz = res
+            psu, qnz, oil = res
             rows.append(
                 {
                     "date": ctx["date"],
@@ -925,6 +956,13 @@ def calibrate_multipoint(
                     "bhp_model": psu,
                     "pf_meas": ctx["pf_rate"],
                     "pf_model": qnz,
+                    "oil_meas": ctx["oil"], "oil_model": oil,
+                    "wc": ctx["wc"], "fgor": ctx["fgor"],
+                    "composition_source": ctx["composition_source"],
+                    "anchor_date": ctx["anchor_date"],
+                    "anchor_test_id": ctx["anchor_test_id"],
+                    "composition_lag_days": ctx["composition_lag_days"],
+                    "weight": ctx["weight"],
                 }
             )
             used.append(ctx)
@@ -934,11 +972,11 @@ def calibrate_multipoint(
         rms_bhp = float(np.sqrt(se_bhp / n)) if n else float("nan")
         rms_pf = float(np.sqrt(se_pf / n)) if n else float("nan")
         diffs = _mp_pair_diffs(
-            [(row["ppf"], row["bhp_meas"], row["bhp_model"]) for row in rows]
+            [(row["ppf"], row["bhp_meas"], row["bhp_model"], row["date"], row["weight"]) for row in rows]
         )
         n_pairs = len(diffs)
         rms_dbhp = (
-            float(np.sqrt(sum((dm - dq) ** 2 for dm, dq in diffs) / n_pairs))
+            float(np.sqrt(sum(w*(dm - dq) ** 2 for dm, dq, w in diffs) / sum(w for _, _, w in diffs)))
             if n_pairs
             else None
         )
@@ -999,19 +1037,24 @@ def calibrate_multipoint(
         r.iterations = iters
         return r
 
-    # --- implied beta: -(dpsu/dppf) at the last used point's IPR anchor ---
+    oil_rows = [row for row in rows if row["oil_meas"] is not None]
+    rms_oil = float(np.sqrt(np.mean([(r["oil_model"]-r["oil_meas"])**2 for r in oil_rows]))) if oil_rows else None
+    rms_oil_pct = float(np.sqrt(np.mean([(100*(r["oil_model"]-r["oil_meas"])/r["oil_meas"])**2 for r in oil_rows]))) if oil_rows else None
+
+    # Diagnostic only: fixed IPR/composition at supported PF pressures.
     implied_beta = None
     if used:
         ppf_med = float(np.median([c["ppf"] for c in used]))
         anchor = used[-1]
         psus = []
-        for ppf_probe in (ppf_med, ppf_med - MP_BETA_DPPF):
+        lower = max(min(c["ppf"] for c in used), ppf_med - MP_BETA_DPPF)
+        for ppf_probe in (ppf_med, lower):
             probe = dict(anchor)
             probe["ppf"] = ppf_probe
             res = _solve_all(best_x, [probe])[0]
             psus.append(res[0] if res is not None else None)
-        if psus[0] is not None and psus[1] is not None:
-            implied_beta = float(-(psus[0] - psus[1]) / MP_BETA_DPPF)
+        if psus[0] is not None and psus[1] is not None and ppf_med > lower:
+            implied_beta = float(-(psus[0] - psus[1]) / (ppf_med-lower))
 
     message = (
         f"fit {len(used)} points: RMS BHP {rms_bhp:.0f} psi, "
@@ -1020,7 +1063,7 @@ def calibrate_multipoint(
     if rms_dbhp is not None:
         message += f", dBHP {rms_dbhp:.0f} psi over {n_pairs} pairs"
     message += (
-        f"; fnz {fnz:.2f} (washout {(fnz - 1.0) * 100.0:+.0f}%), "
+        f"; fnz {fnz:.2f} (effective area {(fnz - 1.0) * 100.0:+.0f}% from catalog), "
         "shared entry-energy balance"
     )
 
@@ -1042,4 +1085,7 @@ def calibrate_multipoint(
         refusal=None,
         iterations=iters,
         message=message,
+        rms_oil_bopd=rms_oil,
+        rms_oil_pct=rms_oil_pct,
+        n_oil=len(oil_rows),
     )

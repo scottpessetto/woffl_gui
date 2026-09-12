@@ -35,6 +35,7 @@ from woffl.flow.hydraulics import physics_model
 import logging
 
 import math
+from copy import copy
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from typing import Any, Optional
@@ -132,16 +133,24 @@ def _config_from_seeds(name: str, pad: str, seeds: dict[str, Any]):
             "oil producer; mark the well offline (bring-online candidate) instead"
         )
 
+    if f("qwf", 750.0) <= 0:
+        raise ValueError("inflow liquid rate must be positive")
+    if f("pwf", 500.0) >= f("pres", 1700.0):
+        raise ValueError("flowing pressure must be below reservoir pressure")
+
+    from server.services.factories import well_geometry
+    profile, _geometry_source = well_geometry(
+        name, f("jpump_tvd", 4065.0), str(seeds.get("field_model") or "Schrader"), f("jpump_md")
+    )
+
     return WellConfig(
         well_name=name,
         res_pres=f("pres", 1700.0),
         form_temp=f("form_temp", 120.0),
         jpump_tvd=f("jpump_tvd", 4065.0),
-        # Measured pump MD from the context (chars JP_MD, else the survey's
-        # shallowest crossing). Without it WellConfig.__post_init__ sets
-        # jpump_md = jpump_tvd and every optimizer well was traversed as a
-        # VERTICAL hole to the pump (review 2026-09-01, finding 2).
-        jpump_md=f("jpump_md"),
+        # Preserve measured MD; otherwise use the same survey/estimated-field
+        # TVD crossing as Solver. Never let WellConfig assume MD equals TVD.
+        jpump_md=profile.jetpump_md,
         tubing_od=f("tubing_od", 4.5),
         tubing_thickness=f("tubing_thickness", 0.271),
         casing_od=f("casing_od", 6.875),
@@ -183,6 +192,7 @@ def _build_configs(
     note: list[str],
     prov: Optional[dict[str, dict[str, Any]]] = None,
     include_offline: bool = False,
+    coverage: Optional[dict[str, dict[str, Any]]] = None,
 ) -> list[Any]:
     """WellConfigs for every ACTIVE well on ``pads`` + the future wells.
 
@@ -198,6 +208,19 @@ def _build_configs(
     universe = wells_svc.list_wells()["wells"]
     by_pad = [w["name"] for w in universe if w.get("pad") in pads]
     donors = {fw.match for fw in future}
+    if coverage is not None:
+        for row in universe:
+            name = row["name"]
+            if name in by_pad:
+                coverage[name] = {
+                    "well": name, "pad": row.get("pad", ""),
+                    "role": "offline" if name in offline else "online",
+                    "outcome": "offline" if name in offline else "missing_inputs",
+                    "reason": ("Offline today; included as a bring-online candidate." if include_offline else "Excluded by the run's offline selection.") if name in offline else "Well inputs have not been loaded.",
+                }
+        for fw in future:
+            coverage[fw.name] = {"well": fw.name, "pad": fw.pad or pads[0],
+                "role": "future", "outcome": "missing_inputs", "reason": "Donor inputs unavailable."}
 
     seeds_by_well: dict[str, dict[str, Any]] = {}
     for name in sorted(set(by_pad) | donors):
@@ -205,6 +228,8 @@ def _build_configs(
             continue
         try:
             ctx = wells_svc.well_context(name, 6, 0)
+            if ctx.get("geometry_issue"):
+                raise ValueError(ctx["geometry_issue"])
             seeds = dict(ctx["seeds"])
             # Measured pump MD rides beside the seeds (not a SimParams field);
             # without it WellConfig models MD = TVD (review 2026-09-01, #2).
@@ -224,6 +249,8 @@ def _build_configs(
                 }
         except Exception as exc:  # noqa: BLE001 - fail-soft per well
             note.append(f"{name}: seeding failed ({exc})")
+            if coverage is not None and name in coverage and name not in offline:
+                coverage[name].update(outcome="missing_inputs", reason=f"Well inputs unavailable: {exc}")
 
     configs: list[Any] = []
     pad_of = {w["name"]: w.get("pad", "") for w in universe}
@@ -235,8 +262,12 @@ def _build_configs(
             continue
         try:
             configs.append(_config_from_seeds(name, pad_of.get(name, ""), seeds))
+            if coverage is not None and name not in offline:
+                coverage[name].update(outcome="not_evaluated", reason="Model inputs loaded; no operating result yet.")
         except Exception as exc:  # noqa: BLE001
             note.append(f"{name}: invalid model ({exc})")
+            if coverage is not None and name not in offline:
+                coverage[name].update(outcome="unsupported_model", reason=str(exc))
 
     for fw in future:
         target_pad = fw.pad.strip().upper() if fw.pad is not None else pads[0]
@@ -254,15 +285,97 @@ def _build_configs(
                 fw.name, target_pad, {k: v for k, v in seeds.items() if k not in {"jpump_md", "nozzle_no", "area_ratio", "ken", "kth", "kdi", "nozzle_area_factor"}}
             )
             configs.append(cfg)
+            if coverage is not None:
+                coverage[fw.name].update(outcome="not_evaluated", reason="Donor model loaded; no operating result yet.")
             note.append(f"{fw.name}: future well modeled on {fw.match}'s saved fit")
         except Exception as exc:  # noqa: BLE001
             note.append(f"{fw.name}: invalid model ({exc})")
+            if coverage is not None:
+                coverage[fw.name].update(outcome="unsupported_model", reason=str(exc))
     return configs
+
+
+def _coverage_summary(ledger: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Account for requested wells without inventing missing rates or loads."""
+    accounted = {"modeled", "economic_shut_in", "held_measured", "offline"}
+    rows = list(ledger.values())
+    unaccounted = [r["well"] for r in rows if r["role"] != "offline" and r["outcome"] not in accounted]
+    return {
+        "complete": not unaccounted,
+        "expected_online": sum(r["role"] == "online" for r in rows),
+        "accounted_online": sum(r["role"] == "online" and r["outcome"] in accounted for r in rows),
+        "unaccounted_wells": unaccounted,
+        "rows": rows,
+    }
+
+
+def _qualify_coverage(meta: dict[str, Any], coverage: dict[str, Any]) -> None:
+    """Subset feasibility does not establish whole-pad feasibility."""
+    meta["recommendation_status"] = "complete_model_coverage" if coverage["complete"] else "incomplete_exploratory"
+    if not coverage["complete"]:
+        meta["modeled_subset_feasible"] = meta.get("feasible")
+        meta["feasible"] = None
+
+
+def _unmodeled_pad_row(entry: dict[str, Any]) -> dict[str, Any]:
+    """A requested well stays visible even when no WellConfig could be built."""
+    empty = ("current_pump", "test_oil", "test_pf", "pump", "pump_state", "oil", "pf",
+             "form_water", "suction", "sonic", "marginal_oil", "ipr_source", "ipr_r2",
+             "current_model_oil", "current_model_pf", "modeled_hardware_gain")
+    return {"well": entry["well"], "outcome": entry["outcome"], "outcome_reason": entry["reason"],
+            **dict.fromkeys(empty), "has_friction": False}
+
+
+def _modeled_current(configs: list[Any], current: dict[str, tuple[str, str]],
+                     header: Optional[float], optimizer: Any = None) -> dict[str, dict[str, float]]:
+    """Current hardware at the proposal's pressure and saved well inputs.
+
+    Uses the same frozen saved well inputs as the proposal. Measured oil/PF
+    never scale this prediction. This isolates the hardware decision; it is
+    not a claim about today's production or pressure-change uplift. Unknown
+    current hardware is a gap. Reuse the winning grid, then one pooled batch
+    for current candidates absent from that grid.
+    """
+    from woffl.assembly.network_optimizer import NetworkOptimizer, PowerFluidConstraint
+    from woffl.assembly.parallelism import worker_ceiling
+
+    if header is None or not math.isfinite(float(header)) or float(header) <= 0:
+        return {}
+    eligible = []
+    for cfg in configs:
+        pump = current.get(cfg.well_name)
+        if not pump:
+            continue
+        if (cfg.installed_nozzle, cfg.installed_throat) != pump:
+            continue
+        clone = copy(cfg)
+        clone.ppf_surf_well = float(header)
+        eligible.append(clone)
+    if not eligible:
+        return {}
+    get_perf = getattr(optimizer, "get_pump_performance", None)
+    perfs = {c.well_name: get_perf(c.well_name, *current[c.well_name], pump_state="installed")
+             for c in eligible} if get_perf else {}
+    missing = [c for c in eligible if perfs.get(c.well_name) is None]
+    if missing:
+        pumps = [current[c.well_name] for c in missing]
+        opt = NetworkOptimizer(missing,
+            PowerFluidConstraint(total_rate=500000.0, pressure=float(header), rho_pf=None),
+            sorted({p[0] for p in pumps}), sorted({p[1] for p in pumps}), marginal_watercut=1.0)
+        opt.run_all_batch_simulations(max_workers=worker_ceiling())
+        perfs.update({c.well_name: opt.get_pump_performance(c.well_name, *current[c.well_name], pump_state="installed") for c in missing})
+    out = {}
+    for cfg in eligible:
+        perf = perfs.get(cfg.well_name)
+        if perf is not None:
+            out[cfg.well_name] = {"oil": float(perf["oil_rate"]), "pf": float(perf["lift_water"]),
+                "form_water": float(perf["formation_water"]), "ppf": float(cfg.ppf_surf_well)}
+    return out
 
 
 def _current_and_tests(
     wells: list[str],
-) -> tuple[dict[str, tuple[str, str]], dict[str, tuple[float, float]]]:
+) -> tuple[dict[str, tuple[str, str]], dict[str, tuple[float, Optional[float]]]]:
     """Current pump per well (JP tracker) + median recent test (oil, PF).
 
     Mirrors pad_helpers.recent_test_rates: the median of up to 5 recent
@@ -271,7 +384,7 @@ def _current_and_tests(
     from woffl.assembly.jp_history import get_current_pump
 
     current: dict[str, tuple[str, str]] = {}
-    rates: dict[str, tuple[float, float]] = {}
+    rates: dict[str, tuple[float, Optional[float]]] = {}
 
     jp_hist, _source = datasources.jp_history_safe()
     for well in wells:
@@ -291,8 +404,8 @@ def _current_and_tests(
                 recent = recent[pd.to_numeric(recent["WtOilVol"], errors="coerce") > 0].head(5)
                 if not recent.empty:
                     oil = float(pd.to_numeric(recent["WtOilVol"], errors="coerce").median())
-                    pf = float(pd.to_numeric(recent.get("lift_wat"), errors="coerce").median())
-                    rates[well] = (oil, pf if math.isfinite(pf) else 0.0)
+                    pf = float(pd.to_numeric(recent["lift_wat"], errors="coerce").median()) if "lift_wat" in recent else float("nan")
+                    rates[well] = (oil, pf if math.isfinite(pf) else None)
         except Exception:  # noqa: BLE001
             pass
     return current, rates
@@ -360,9 +473,19 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
     defaults = _PAD_DEFAULTS[pad]
     notes: list[str] = []
     prov: dict[str, dict[str, Any]] = {}
-    configs = _build_configs([pad], set(req.offline), req.future, notes, prov)
+    ledger: dict[str, dict[str, Any]] = {}
+    configs = _build_configs([pad], set(req.offline), req.future, notes, prov, coverage=ledger)
     if len(configs) == 0:
-        raise ValueError(f"no active wells with usable saved fits on {pad}-Pad")
+        coverage = _coverage_summary(ledger)
+        meta = {"feasible": None}
+        _qualify_coverage(meta, coverage)
+        if coverage["complete"]:
+            meta["recommendation_status"] = "no_online_wells"
+        notes.append(f"No active wells with usable inputs on {pad}-Pad; no optimization was performed.")
+        return {"pad": pad, "physics_model": MODEL_VERSION, "n_wells": 0, "meta": meta,
+                "notes": notes, "coverage": coverage,
+                **({"plan": []} if req.strategy == "choke" else
+                   {"rows": [_unmodeled_pad_row(r) for r in ledger.values() if r["role"] != "offline"]})}
 
     job["progress"] = f"simulating {len(configs)} wells..."
 
@@ -411,6 +534,14 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
                 prov.get(row["well"])
                 or {"ipr_source": None, "ipr_r2": None, "has_friction": False}
             )
+            if row["well"] in ledger:
+                outcome = ("unsupported_model" if row.get("basis") == "none" else
+                           "economic_shut_in" if row.get("action") == "shut" else
+                           "held_measured" if row.get("basis") == "test" else "modeled")
+                if row.get("basis") == "test" and (test_rates.get(row["well"]) or (None, None))[1] is None:
+                    outcome = "unsupported_model"
+                ledger[row["well"]].update(outcome=outcome,
+                    reason="No modeled or measured operating contribution." if outcome == "unsupported_model" else "Included in the choke plan.")
         for row in plan:
             if row.get("suction_basis") != "evidence":
                 continue
@@ -425,6 +556,8 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
                 if beta is not None and floor is not None
                 else f"{w}: suction from field data"
             )
+        coverage = _coverage_summary(ledger)
+        _qualify_coverage(meta, coverage)
         return _plain(
             {
                 "pad": pad,
@@ -433,6 +566,7 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
                 "meta": meta,
                 "notes": notes,
                 "n_wells": len(configs),
+                "coverage": coverage,
             }
         )
 
@@ -453,24 +587,50 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
     job["progress"] = "assembling results..."
     names = [c.well_name for c in configs]
     current, test_rates = _current_and_tests(names)
+    job["progress"] = "checking installed pumps at the plan header..."
+    try:
+        current_model = _modeled_current(configs, current, meta.get("header_psi"), _optimizer)
+    except Exception as exc:
+        current_model = {}
+        notes.append(f"Current-pump counterfactual unavailable ({exc}); no modeled hardware gain reported.")
 
     chosen = {r.well_name: r for r in results}
+    reconciliation = _plain(meta.get("reconciliation")) or []
+    reconciled = {r["Well"]: r for r in reconciliation}
     rows: list[dict[str, Any]] = []
     for cfg in configs:
         r = chosen.get(cfg.well_name)
         cur = current.get(cfg.well_name)
         tr = test_rates.get(cfg.well_name)
+        rc = reconciled.get(cfg.well_name, {})
+        outcome = "modeled" if r else "economic_shut_in" if rc.get("Configs OK", 0) > 0 else "failed_model"
+        reason = ("Selected modeled operating point." if r else
+                  "Viable pump candidates were not allocated under this run's objective and water budget." if outcome == "economic_shut_in" else
+                  rc.get("Detail") or "No usable candidate result; this is not a shut-in recommendation.")
+        ledger[cfg.well_name].update(outcome=outcome, reason=reason)
+        base = current_model.get(cfg.well_name)
+        if ledger[cfg.well_name]["role"] == "future":
+            base = {"oil": 0.0, "pf": 0.0, "form_water": 0.0, "ppf": None}
+        proposed_oil = r.predicted_oil_rate if r else 0.0 if outcome == "economic_shut_in" else None
+        delta = proposed_oil - base["oil"] if base is not None and proposed_oil is not None else None
+        if delta is not None and abs(delta) < 1e-8:
+            delta = 0.0
         rows.append(
             {
                 "well": cfg.well_name,
                 "current_pump": f"{cur[0]}{cur[1]}" if cur else None,
                 "test_oil": tr[0] if tr else None,
                 "test_pf": tr[1] if tr else None,
+                "outcome": outcome,
+                "outcome_reason": reason,
+                "current_model_oil": base["oil"] if base else None,
+                "current_model_pf": base["pf"] if base else None,
+                "modeled_hardware_gain": delta,
                 "pump": f"{r.recommended_nozzle}{r.recommended_throat}" if r else None,
                 "pump_state": getattr(r, "pump_state", None) if r else None,
-                "oil": r.predicted_oil_rate if r else None,
-                "pf": r.allocated_power_fluid if r else None,
-                "form_water": r.predicted_formation_water if r else None,
+                "oil": proposed_oil,
+                "pf": r.allocated_power_fluid if r else 0.0 if outcome == "economic_shut_in" else None,
+                "form_water": r.predicted_formation_water if r else 0.0 if outcome == "economic_shut_in" else None,
                 "suction": r.suction_pressure if r else None,
                 "sonic": bool(r.sonic_status) if r else None,
                 "marginal_oil": r.marginal_oil_rate if r else None,
@@ -483,6 +643,37 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
             }
         )
 
+    shown = {r["well"] for r in rows}
+    for entry in ledger.values():
+        if entry["role"] == "offline" or entry["well"] in shown:
+            continue
+        rows.append(_unmodeled_pad_row(entry))
+    coverage = _coverage_summary(ledger)
+    _qualify_coverage(meta, coverage)
+    comparison_complete = coverage["complete"] and all(r["modeled_hardware_gain"] is not None for r in rows)
+    meta["current_model_oil_bopd"] = sum(r["current_model_oil"] for r in rows) if comparison_complete else None
+    meta["modeled_hardware_gain_bopd"] = sum(r["modeled_hardware_gain"] for r in rows) if comparison_complete else None
+    meta["comparison_basis"] = "Installed and proposed pumps at the same plan header and saved well inputs. This isolates the hardware decision; recent test oil is context, not the modeled baseline. Future wells start offline. Current hardware at this header is a counterfactual, not a separate plant-feasible plan."
+    can_stress = (pad in {"I", "M", "E"} and coverage["complete"] and len(configs) <= 100 and
+                  meta.get("header_psi") is not None and all(
+                      ledger[c.well_name]["role"] == "future" or
+                      current.get(c.well_name) == (c.installed_nozzle, c.installed_throat)
+                      for c in configs))
+    snapshot = None
+    if can_stress:
+        from server.services.plan_robustness import source_fingerprint
+        snapshot = {
+            "version": 1, "physics_model": MODEL_VERSION,
+            "request": req.model_dump(mode="json"), "configs": [asdict(c) for c in configs],
+            "header_psi": meta["header_psi"], "lambda_used": meta.get("lambda_used", 0.0),
+            "current": {c.well_name: None if ledger[c.well_name]["role"] == "future" else
+                        [*current[c.well_name], "installed"] for c in configs},
+            "proposed": {r["well"]: [chosen[r["well"]].recommended_nozzle,
+                         chosen[r["well"]].recommended_throat, getattr(chosen[r["well"]], "pump_state", None) or "installed"]
+                         if r["well"] in chosen else None for r in rows},
+        }
+        snapshot["source_fingerprint"] = source_fingerprint(snapshot["configs"])
+
     keep = (
         "header_psi", "total_pf_bpd", "total_machine_water_bpd", "total_oil_bopd", "n_pumps", "converged",
         "in_range", "recirc", "over_capacity", "feasible", "sweep", "history",
@@ -493,6 +684,7 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         "amp_limited", "setpoint_psi",
         "curve_header_psi", "coupling_residual_psi", "search_header_psi",
         "qualified_selections", "rejected_selections", "search_scope",
+        "recommendation_status", "modeled_subset_feasible", "current_model_oil_bopd", "modeled_hardware_gain_bopd", "comparison_basis",
     )
     return _plain(
         {
@@ -502,6 +694,12 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
             "meta": {k: meta.get(k) for k in keep if k in meta},
             "notes": notes,
             "n_wells": len(configs),
+            "coverage": coverage,
+            "robustness_available": can_stress,
+            "robustness_unavailable_reason": None if can_stress else (
+                "S-Pad requires a coupled fixed-curve stress study; controlled-header stress cases support I/M/E only."
+                if pad == "S" else "Resolve incomplete coverage/current pump identity, then run again to capture the two fixed plans."),
+            "_plan_snapshot": snapshot,
         }
     )
 
@@ -518,6 +716,7 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
     from woffl.gui.cfp_pad_plant import PLANT
 
     notes: list[str] = []
+    ledger: dict[str, dict[str, Any]] = {}
     offline = set(req.offline)
     # Stable order: the canonical CFP four first, then any extra non-POPs
     # pads (L, R, ...) in the order given. The schema already rejected POPs
@@ -533,7 +732,7 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
     # Offline wells are hydrated too: they are the bring-online candidates
     # (marked online=False below). Until 2026-09-01 they were dropped here,
     # so the SI/BOL ladder could never price bringing a shut-in well back on.
-    configs = _build_configs(run_pads, offline, req.future, notes, include_offline=True)
+    configs = _build_configs(run_pads, offline, req.future, notes, include_offline=True, coverage=ledger)
     if len(configs) == 0:
         raise ValueError(f"no active wells with usable saved fits on pads {', '.join(run_pads)}")
 
@@ -545,8 +744,10 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
     for cfg in configs:
         if cfg.pwf >= cfg.res_pres:
             bad.append(f"{cfg.well_name} (pwf {cfg.pwf:,.0f} >= ResP {cfg.res_pres:,.0f})")
+            ledger[cfg.well_name].update(outcome="unsupported_model", reason="Flowing pressure is not below reservoir pressure.")
         elif not cfg.qwf or cfg.qwf <= 0:
             bad.append(f"{cfg.well_name} (no usable test rate)")
+            ledger[cfg.well_name].update(outcome="unsupported_model", reason="No usable inflow rate.")
         else:
             usable.append(cfg)
     if bad:
@@ -574,6 +775,7 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         )
         if cur is None:
             skipped.append(cfg.well_name)
+            ledger[cfg.well_name].update(outcome="missing_inputs", reason="No tracked current pump; no response surface was built.")
             continue
         current[cfg.well_name] = cur
         pad_configs.setdefault(cfg.pad, []).append(cfg)
@@ -686,6 +888,14 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
             }
         )
 
+    for w in surfaces.wells:
+        ledger[w].update(outcome="modeled", reason=(
+            "Offline baseline; included as a bring-online candidate in the measured-anchor delta model."
+            if ledger[w]["role"] == "offline" else "Included in the measured-anchor delta model."))
+    coverage = _coverage_summary(ledger)
+    if not coverage["complete"]:
+        notes.append("Incomplete exploratory CFP comparison: omitted wells' pressure/oil response and possible changes are unknown. The measured pressure anchor is preserved; this is not a complete field recommendation.")
+
     return _plain(
         {
             "pads": sorted(pad_configs),
@@ -695,5 +905,6 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
             "p0_psi": p0,
             "summary": summary,
             "wells": well_rows,
+            "coverage": coverage,
         }
     )

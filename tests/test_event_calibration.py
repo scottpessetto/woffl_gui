@@ -34,6 +34,7 @@ def _cfg(well=WELL, ken=0.05, kth=0.30, kdi=0.30, res_pres=1700.0, surf_pres=210
         res_pres=res_pres,
         surf_pres=surf_pres,
         form_temp=140.0,
+        qwf=1000.0, pwf=700.0, form_wc=.7, form_gor=500.0,
     )
 
 
@@ -86,7 +87,8 @@ def _ev_row(beta=0.062, source="well"):
 
 def _test_row(bhp=800.0, whp=95.0, pf_press=3100.0, date="2026-08-01"):
     """One tests_json row - only the keys the fallback leg reads."""
-    return {"date": date, "bhp": bhp, "whp": whp, "pf_press": pf_press}
+    return {"date": date, "bhp": bhp, "whp": whp, "pf_press": pf_press,
+            "form_wc": .8, "fgor": 750.0, "oil": 200.0, "water": 800.0}
 
 
 def _single_result(match_quality="good", message=None):
@@ -193,6 +195,11 @@ def test_happy_path_payload_and_kind(client):
     assert r["single"] is None
     assert r["mined_beta"] == 0.062
     assert r["mined_beta_source"] == "well"
+    assert r["mined_beta_scope"] == "well_history"
+    assert r["response_validation"] == "diagnostic_not_holdout"
+    assert r["calibration_contract"] == "fixed-oil-ipr-v1"
+    assert len(r["well_model_fingerprint"]) == 32
+    assert r["well_model_inputs"]["oil_qmax"] > 0
     assert r["current"] == {"ken": 0.05, "kth": 0.30, "kdi": 0.30, "nozzle_area_factor": 1.0}
 
     fit = r["fit"]
@@ -205,6 +212,7 @@ def test_happy_path_payload_and_kind(client):
         "rms_bhp_psi": 28.0,
         "rms_pf_pct": 3.1,
         "rms_dbhp_psi": 14.0,
+        "rms_oil_bopd": None, "rms_oil_pct": None, "n_oil": 0, "per_point": [],
         "n_used": 11,
         "n_dropped": 1,
         "railed": ["ken"],
@@ -330,6 +338,39 @@ def test_builder_refusal_falls_back_to_single_point(client, monkeypatch):
     assert seen["ken"] == 0.05
     assert seen["nozzle"] == "12" and seen["throat"] == "B"
     assert seen["knz"] == 0.01
+
+
+def test_single_fallback_uses_actual_composition_without_changing_saved_oil_ipr(client, monkeypatch):
+    from copy import deepcopy
+    import woffl.gui.fric_calibration as fc
+    from server.services.well_model import describe
+    config = _cfg()
+    config.hydraulics_model = "beggs"
+    before = deepcopy(vars(config))
+    monkeypatch.setattr(ec.tests_svc, "tests_json", lambda *a, **kw: [_test_row()])
+    seen = []
+    monkeypatch.setattr(fc, "_build_well_objects", lambda cfg: (seen.append(deepcopy(cfg)) or ("wb", "wp", "ipr", "mix", "pf")))
+    monkeypatch.setattr(fc, "calibrate_friction_coefs", lambda **kw: _single_result())
+    result = ec._single_point_fallback({}, WELL, config, "12", "B", "2026-06-01")
+    assert result is not None and vars(config) == before
+    at = seen[0]
+    assert at.form_wc == .8 and at.form_gor == 750.0
+    assert at.qwf*(1-at.form_wc) == pytest.approx(config.qwf*(1-config.form_wc))
+    assert at.pwf == config.pwf and at.res_pres == config.res_pres
+    assert describe(at)["fingerprint"] == describe(config)["fingerprint"]
+
+
+@pytest.mark.parametrize("change", [{"form_wc": 1.0}, {"fgor": None}, {"pf_press": None}, {"date": "2026-06-01T20:00:00"}, {"pf_source": "tubing"}])
+def test_single_fallback_requires_unambiguous_measured_test_conditions(client, monkeypatch, change):
+    row = {**_test_row(), **change}
+    monkeypatch.setattr(ec.tests_svc, "tests_json", lambda *a, **kw: [row])
+    assert ec._latest_test_target(WELL, "2026-06-01", "reverse") is None
+
+
+@pytest.mark.parametrize("change", [{"form_wc": None}, {"fgor": None}, {"fgor": -1.}])
+def test_single_fallback_refuses_missing_composition_even_if_selector_returns_it(client, monkeypatch, change):
+    monkeypatch.setattr(ec, "_latest_test_target", lambda *args: {**_test_row(), **change, "oil": None, "water": None})
+    assert ec._single_point_fallback({}, WELL, _cfg(), "12", "B") is None
 
 
 def test_fallback_skips_tests_without_bhp(client, monkeypatch):

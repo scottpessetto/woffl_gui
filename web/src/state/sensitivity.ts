@@ -20,6 +20,7 @@
  */
 
 import { create } from "zustand";
+import type { CombineRequest, WcBasis } from "../api/types";
 
 import type { BoundsMap } from "../pages/sensitivity/bounds";
 
@@ -32,10 +33,12 @@ export interface FiredStudy {
   ids: string[];
   labels: Record<string, string>;
   count: number;
+  request?: CombineRequest;
 }
 
 /** Which tornado metric is showing and which input row is expanded. */
 export interface ViewState {
+  wcBasis?: WcBasis;
   /** MetricId, held loosely: storage is untrusted, so the page resolves it
    *  against METRICS and falls back to the first entry. */
   metricId: string;
@@ -106,6 +109,9 @@ function persist(state: SensitivityState): void {
 }
 
 interface SensitivityState extends Persisted {
+  pendingComparison: Record<string, string>;
+  queueComparison: (well: string, key: string) => void;
+  takeComparison: (well: string) => string | null;
   /** well -> testKey of the Solver's CURRENT comparison test. The sensitivity
    *  targets follow it, so "Match Sensitivities" scores against the test the
    *  engineer is looking at, not silently the most recent one (review
@@ -126,6 +132,13 @@ const initial = restore();
 export const useSensitivityStore = create<SensitivityState>((set, get) => ({
   ...initial,
   compareKey: {},
+  pendingComparison: {},
+  queueComparison: (well, key) => set((s) => ({ pendingComparison: { ...s.pendingComparison, [well]: key } })),
+  takeComparison: (well) => {
+    const key = get().pendingComparison[well] ?? null;
+    set((s) => { const next = { ...s.pendingComparison }; delete next[well]; return { pendingComparison: next }; });
+    return key;
+  },
 
   setCompareKey: (well, key) =>
     set((s) => (s.compareKey[well] === key ? s : { compareKey: { ...s.compareKey, [well]: key } })),

@@ -169,26 +169,10 @@ def power_fluid(field_model: Optional[str], rho_pf: Optional[float] = None) -> F
 # The preset-model path, used when no survey CSV exists (or the caller is
 # Custom).
 def _preset_well_profile(field_model: Optional[str], jpump_tvd: Optional[float]) -> WellProfile:
-    """WellProfile from the field-model preset, rebuilt at ``jpump_tvd``."""
-    model = (field_model or "schrader").lower()
-    well_profile = WellProfile.kuparuk() if model == "kuparuk" else WellProfile.schrader()
-
-    if jpump_tvd is not None:
-        try:
-            jpump_md = well_profile.md_interp(jpump_tvd)
-            well_profile = WellProfile(
-                md_list=well_profile.md_ray,
-                vd_list=well_profile.vd_ray,
-                jetpump_md=jpump_md,
-            )
-        except ValueError as exc:
-            log.warning(
-                "jetpump_tvd=%s is outside the %s profile's range (%s); using the default jetpump MD",
-                jpump_tvd,
-                model,
-                exc,
-            )
-    return well_profile
+    """Estimated field profile at the requested TVD, with no silent depth reset."""
+    if jpump_tvd is None:
+        return WellProfile.kuparuk() if (field_model or "schrader").lower() == "kuparuk" else WellProfile.schrader()
+    return well_geometry(None, jpump_tvd, field_model or "Schrader")[0]
 
 
 # maxsize mirrors the Streamlit site: keyed on (well, jpump_tvd, field_model),
@@ -199,6 +183,63 @@ def _preset_well_profile(field_model: Optional[str], jpump_tvd: Optional[float])
 # from JP_MD along the same survey, so the normal case matches to well under a
 # foot; a sidebar TVD override lands outside and falls back to the crossing.
 _JP_MD_MATCH_FT = 5.0
+
+
+def well_geometry(
+    well: Optional[str], jpump_tvd: float, field_model: str,
+    measured_md: Optional[float] = None, *, fresh: bool = False,
+) -> tuple[WellProfile, str]:
+    """Canonical local geometry for Solver, saved models and optimization.
+
+    Missing surveys use the field template, explicitly an estimate. A supplied
+    measured MD is preserved only when its TVD agrees within survey precision;
+    changing a pump's physical depth to hide conflicting inputs is not a fit.
+    This helper reads no warehouse properties: callers supply measured MD.
+    """
+    from server.services.depth_interp import first_crossing_md
+
+    tvd = float(jpump_tvd)
+    if not np.isfinite(tvd) or tvd <= 0:
+        raise ValueError("Pump TVD must be finite and positive")
+    survey = None
+    if well and well != "Custom":
+        reader = getattr(datasources.survey, "__wrapped__", datasources.survey) if fresh else datasources.survey
+        survey = reader(well)
+        path = config.SURVEY_DIR / f"{well} Deviation Survey.csv"
+        if (survey is None or survey.empty) and path.is_file():
+            raise ValueError(f"Deviation survey for {well} could not be read; verify the survey before modeling")
+    has_survey = survey is not None and not survey.empty
+    if has_survey:
+        try:
+            md, vd = survey["meas_depth"].to_numpy(float), survey["tvd_depth"].to_numpy(float)
+            if not np.isfinite(md).all() or not np.isfinite(vd).all():
+                raise ValueError("survey depths must be finite")
+            # Validate the whole profile before interpolating, including toe-up
+            # surveys and conflicting duplicate stations.
+            profile = WellProfile(md, vd, float(np.min(md)))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid deviation survey for {well}: {exc}") from exc
+    else:
+        profile = WellProfile.kuparuk() if field_model.lower() == "kuparuk" else WellProfile.schrader()
+
+    if measured_md is not None:
+        pump_md = float(measured_md)
+        if not np.isfinite(pump_md) or not profile.md_ray[0] <= pump_md <= profile.md_ray[-1] or pump_md <= 0:
+            raise ValueError(f"Pump MD {pump_md:g} ft is outside the available well profile")
+        actual_tvd = float(profile.vd_interp(pump_md))
+        if abs(actual_tvd - tvd) > _JP_MD_MATCH_FT:
+            basis = "deviation survey" if has_survey else "estimated field profile (no well survey)"
+            raise ValueError(
+                f"Pump MD {pump_md:g} ft gives TVD {actual_tvd:.1f} ft on the {basis}, "
+                f"but saved TVD is {tvd:g} ft; reconcile the depth data before modeling"
+            )
+    else:
+        pump_md = first_crossing_md(profile.md_ray, profile.vd_ray, tvd)
+        if pump_md is None:
+            basis = "deviation survey" if has_survey else "estimated field profile"
+            raise ValueError(f"The {basis} never reaches pump TVD {tvd:g} ft; verify the geometry before modeling")
+    source = ("survey_measured_md" if measured_md is not None else "survey_inferred_md") if has_survey else "estimated_field_profile"
+    return WellProfile(profile.md_ray, profile.vd_ray, float(pump_md)), source
 
 
 def _chars_jp_md(well: str) -> Optional[float]:
@@ -257,39 +298,19 @@ def resolve_jetpump_md(
 
 @ttl_cache(config.TTL_PROFILES, maxsize=512)
 def build_well_profile(well: Optional[str], jpump_tvd: float, field_model: str) -> WellProfile:
-    """WellProfile from the well's deviation survey, else the preset model.
+    """Canonical well geometry, allowing an explicit session TVD preview.
 
-    Args:
-        well: GUI well name, or None for Custom (always uses the preset).
-        jpump_tvd: Jetpump true vertical depth, ft. Converted to MD by
-            ``resolve_jetpump_md`` (measured chars JP_MD when it agrees, else
-            the shallowest survey crossing - never np.interp on a toe-up
-            survey).
-        field_model: "Schrader" or "Kuparuk" preset used as fallback.
-
-    Returns:
-        WellProfile positioned at the requested jetpump TVD.
+    Saved MD/TVD conflicts raise. When the user deliberately changes TVD away
+    from the saved characteristic, infer the new MD on the same profile.
     """
+    measured = None
     if well is not None:
-        survey_data = datasources.survey(well)
-        if survey_data is not None and not survey_data.empty:
-            try:
-                md_list = survey_data["meas_depth"].tolist()
-                tvd_list = survey_data["tvd_depth"].tolist()
-                jpump_md = resolve_jetpump_md(well, jpump_tvd, md_list, tvd_list)
-                if jpump_md is None:
-                    raise ValueError(
-                        f"survey never reaches {jpump_tvd:.0f} ft TVD "
-                        f"(max {max(tvd_list):.0f} ft)"
-                    )
-                return WellProfile(md_list=md_list, vd_list=tvd_list, jetpump_md=jpump_md)
-            except Exception as exc:
-                log.warning(
-                    "Error creating well profile from survey data for %s: %s. Using default model.",
-                    well,
-                    exc,
-                )
-    return _preset_well_profile(field_model, jpump_tvd)
+        measured = _chars_jp_md(well)
+        from server.services.wells import _chars_jp_tvd
+        saved_tvd = _chars_jp_tvd(well)
+        if saved_tvd is not None and abs(float(jpump_tvd) - saved_tvd) > _JP_MD_MATCH_FT:
+            measured = None
+    return well_geometry(well, jpump_tvd, field_model, measured)[0]
 
 
 def build_sim_objects(

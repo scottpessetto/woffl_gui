@@ -60,6 +60,46 @@ def context(monkeypatch):
     return saved, run
 
 
+def test_fresh_save_context_bypasses_cached_chars_ipr_and_tracker(context, monkeypatch):
+    from woffl.assembly import databricks_client
+    reads = []
+    fresh = _saved({})
+    fresh.update(values={"qwf_liq": 1234.5, "pwf": 650.25, "res_pres": 1900.5, "form_wc": .75},
+                 saved_at=pd.Timestamp("2026-09-12"))
+    monkeypatch.setattr(databricks_client, "fetch_well_props_enriched", lambda:
+        (pd.DataFrame([{"Well": "MPB-28", "res_pres": 1800., "JP_MD": 4350.5, "form_temp": 95.5}]), []))
+    def load(well, **kwargs):
+        reads.append(kwargs)
+        return fresh
+    monkeypatch.setattr(ipr_anchor, "load_saved_ipr", load)
+    tracker = pd.DataFrame([{"Well Name": "MPB-28", "Date Set": pd.Timestamp("2026-08-10"),
+        "Nozzle Number": 13, "Throat Ratio": "C", "Circ Direction": "reverse"}])
+    result = wells_svc.well_context("MPB-28", fresh=True, tracker=tracker)
+    assert reads == [{"fresh": True, "strict": True}]
+    assert result["seeds"]["qwf"] == 1234.5
+    assert result["seeds"]["pres"] == 1900.5
+    assert result["seeds"]["form_temp"] == 95.5
+    assert result["jpump_md"] == 4350.5
+    assert result["pump"]["nozzle_no"] == "13"
+    # These intentionally conflicting fixture depths must leave the context
+    # reviewable without declaring a valid saved model.
+    assert "reconcile the depth data" in result["geometry_issue"]
+    assert result["geometry_source"] is None
+    assert result["well_model_fingerprint"] is None
+    assert result["well_model_inputs"] is None
+
+
+def test_fresh_save_context_does_not_hide_property_read_failures(context, monkeypatch):
+    from woffl.assembly import databricks_client
+    monkeypatch.setattr(databricks_client, "fetch_well_props_enriched", lambda:
+        (pd.DataFrame([{"Well": "MPB-28", "JP_MD": 4300.}]), []))
+    def unavailable(*a, **kw):
+        raise RuntimeError("Property read unavailable")
+    monkeypatch.setattr(ipr_anchor, "load_saved_ipr", unavailable)
+    with pytest.raises(RuntimeError, match="Property read unavailable"):
+        wells_svc.well_context("MPB-28", fresh=True, tracker=pd.DataFrame(columns=["Well Name"]))
+
+
 def test_legacy_friction_is_reported_but_not_inherited(context):
     saved, run = context
     saved["MPB-28"] = _saved({"ken": .005, "nozzle_area_factor": 1.12, "mach_crit": 1.6})

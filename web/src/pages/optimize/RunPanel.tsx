@@ -28,6 +28,7 @@ import type {
   PadRunResult,
   PadRunRow,
   RunPad,
+  RunCoverage,
 } from "../../api/types";
 import { Card, Spinner, WarnNote } from "../../components/ui";
 import { WellHistoryLink } from "../../components/WellHistoryLink";
@@ -39,6 +40,8 @@ import { CfpResultCharts } from "./CfpCharts";
 import { ChokeDumbbell, IprLandingTable } from "./ChokeCharts";
 import { usePadOffline } from "./offline";
 import { PadCharts } from "./PadCharts";
+import { unselectedOutcomeLabel } from "./outcomes";
+import { PlanRobustness } from "./PlanRobustness";
 
 const NOZZLE_OPTIONS = ["8", "9", "10", "11", "12", "13", "14", "15"];
 const THROAT_OPTIONS = ["X", "A", "B", "C", "D", "E"];
@@ -176,6 +179,22 @@ function FitSource({ row }: { row: Pick<PadRunRow, "ipr_source" | "ipr_r2" | "ha
   );
 }
 
+function CoverageNotice({ coverage, cfp = false }: { coverage?: RunCoverage; cfp?: boolean }) {
+  if (!coverage) return <WarnNote>This older result has no complete well accounting. Run again before reviewing a pad recommendation.</WarnNote>;
+  return (
+    <div className="space-y-2">
+      {!coverage.complete && <WarnNote>
+        Incomplete exploratory run: {coverage.unaccounted_wells.join(", ")} have no accounted operating model.
+        {cfp ? " The measured pressure anchor is preserved; these wells' response and possible changes are unknown." : " Their online water loads are unaccounted for; these totals do not establish a feasible whole-pad plan."}
+      </WarnNote>}
+      <details className="text-xs text-slate-600">
+        <summary className="cursor-pointer">Well accounting: {coverage.accounted_online}/{coverage.expected_online} online wells accounted for</summary>
+        <div className="mt-2 space-y-1">{coverage.rows.map((r) => <p key={r.well}><strong>{r.well}</strong> ({r.role}): {r.reason}</p>)}</div>
+      </details>
+    </div>
+  );
+}
+
 function PadResults({ result }: { result: PadRunResult }) {
   const meta = result.meta;
   const nPumpsUsed = metaNum(meta, "n_pumps");
@@ -191,6 +210,7 @@ function PadResults({ result }: { result: PadRunResult }) {
   const totalTestOil = result.rows.reduce((a, r) => a + (r.test_oil ?? 0), 0);
   return (
     <div className="space-y-3">
+      <CoverageNotice coverage={result.coverage} />
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         <Metric label="Header" value={`${fmtNum(metaNum(meta, "header_psi"))} psi`} />
         <Metric label="Total PF" value={`${fmtNum(metaNum(meta, "total_pf_bpd"))} BPD`} />
@@ -201,8 +221,10 @@ function PadResults({ result }: { result: PadRunResult }) {
             title="Formation water plus lift water handled by the pad pumps"
           />
         )}
-        <Metric label="Optimized oil" value={`${fmtNum(metaNum(meta, "total_oil_bopd"))} BOPD`} />
-        <Metric label="Current test oil" value={`${fmtNum(totalTestOil)} BOPD`} />
+        <Metric label={result.coverage?.complete ? "Proposed modeled oil" : "Subset modeled oil"} value={`${fmtNum(metaNum(meta, "total_oil_bopd"))} BOPD`} />
+        <Metric label="Current pumps at plan header" value={`${fmtNum(metaNum(meta, "current_model_oil_bopd"))} BOPD`} />
+        <Metric label="Modeled hardware gain" value={`${fmtNum(metaNum(meta, "modeled_hardware_gain_bopd"))} BOPD`} />
+        <Metric label="Recent test oil (context)" value={`${fmtNum(totalTestOil)} BOPD`} title="Sum of recent positive-test medians; test dates can differ. This is not the modeled baseline or an optimization gain." />
         <Metric
           label="Water price"
           value={lam === null ? "-" : `${fmtNum(lam * 1000, 1)} BOPD/MBPD`}
@@ -215,6 +237,7 @@ function PadResults({ result }: { result: PadRunResult }) {
           }
         />
       </div>
+      {typeof meta.comparison_basis === "string" && <p className="text-xs text-slate-500">{meta.comparison_basis}</p>}
       {nPumpsUsed !== null && (
         <p className="text-xs text-slate-500">
           Plant modeled with {nPumpsUsed} booster pump{nPumpsUsed === 1 ? "" : "s"} online.
@@ -252,8 +275,10 @@ function PadResults({ result }: { result: PadRunResult }) {
               <th className="px-2 py-1.5 text-left font-semibold">Current</th>
               <th className={TH_CLS}>Test oil</th>
               <th className={TH_CLS}>Test PF</th>
+              <th className={TH_CLS} title="Installed pump modeled at the proposal header with the same saved well inputs">Current model oil</th>
               <th className="px-2 py-1.5 text-left font-semibold">Plan</th>
               <th className={TH_CLS}>Oil</th>
+              <th className={TH_CLS}>Hardware gain</th>
               <th className={TH_CLS}>PF</th>
               <th className={TH_CLS}>Suction</th>
               <th className={TH_CLS}>Marginal</th>
@@ -271,9 +296,12 @@ function PadResults({ result }: { result: PadRunResult }) {
                   <td className="px-2 py-1 text-left text-slate-600">{r.current_pump ?? "-"}</td>
                   <td className={clsx(TD_CLS, "text-slate-600")}>{fmtNum(r.test_oil)}</td>
                   <td className={clsx(TD_CLS, "text-slate-500")}>{fmtNum(r.test_pf)}</td>
+                  <td className={TD_CLS}>{fmtNum(r.current_model_oil ?? null)}</td>
                   <td className="px-2 py-1 text-left">
                     {r.pump === null ? (
-                      <span className="font-medium text-amber-700">SHUT IN</span>
+                      <span className="font-medium text-amber-700" title={r.outcome_reason}>
+                        {unselectedOutcomeLabel(r)}
+                      </span>
                     ) : (
                       <span className={clsx("font-medium", change ? "text-blue-700" : "text-slate-700")}>
                         {r.pump}
@@ -283,6 +311,7 @@ function PadResults({ result }: { result: PadRunResult }) {
                     )}
                   </td>
                   <td className={clsx(TD_CLS, "text-slate-700")}>{fmtNum(r.oil)}</td>
+                  <td className={TD_CLS}>{fmtNum(r.modeled_hardware_gain ?? null)}</td>
                   <td className={clsx(TD_CLS, "text-slate-600")}>{fmtNum(r.pf)}</td>
                   <td className={clsx(TD_CLS, "text-slate-500")}>{fmtNum(r.suction)}</td>
                   <td className={clsx(TD_CLS, "text-slate-500")}>{fmtNum(r.marginal_oil, 2)}</td>
@@ -350,6 +379,7 @@ function ChokePlanResults({ result }: { result: ChokePlanResult }) {
   const headerToday = metaNum(meta, "header_today_psi");
   return (
     <div className="space-y-3">
+      <CoverageNotice coverage={result.coverage} />
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         <Metric
           label="Header"
@@ -624,6 +654,7 @@ function CfpResults({ result }: { result: CfpRunResult }) {
   const inPlan = new Set(planActions.map((a) => `${a.type}-${a.well}`));
   return (
     <div className="space-y-3">
+      <CoverageNotice coverage={result.coverage} cfp />
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         <Metric label="Discharge today" value={`${fmtNum(s.today.pressure)} psi`} />
         <Metric
@@ -1158,6 +1189,7 @@ export function RunPanel({
         </div>
       )}
       {padResult !== null && <PadResults result={padResult} />}
+      {padResult !== null && jobId && <PlanRobustness key={jobId} sourceJobId={jobId} available={padResult.robustness_available === true} unavailableReason={padResult.robustness_unavailable_reason} />}
       {chokeResult !== null && <ChokePlanResults result={chokeResult} />}
       {result !== null && "summary" in result && <CfpResults result={result} />}
     </div>

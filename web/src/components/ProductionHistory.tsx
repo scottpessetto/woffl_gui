@@ -7,6 +7,7 @@ import { fmtDate, fmtNum } from "../lib/format";
 import { changedWellInputs, wellInputProblem, wellInputValues } from "../lib/wellInputs";
 import { useParamsStore } from "../state/params";
 import { HistoryStrip } from "./HistoryStrip";
+import { CommonOilIprFit } from "./CommonOilIprFit";
 import { Button, ErrorNote } from "./ui";
 
 const CHECKBOX = "h-4 w-4 rounded border-slate-300 accent-blue-600";
@@ -27,6 +28,7 @@ export function ProductionHistory(props: {
   const [mode, setMode] = useState<PumpMatchRequest["mode"]>("all_tests");
   const allTests = mode === "all_tests";
   const [useEdits, setUseEdits] = useState(false);
+  const [pumpLosses, setPumpLosses] = useState<PumpMatchRequest["pump_losses"]>("saved_matching");
   const preview = allTests && useEdits;
   const inputProblem = preview ? wellInputProblem(params) : null;
   const changed = changedWellInputs(params, context?.seeds).length;
@@ -41,9 +43,10 @@ export function ProductionHistory(props: {
   const cancel = useCancelPumpMatch();
   const cancelJob = cancel.mutate;
   const request = useMemo<PumpMatchRequest>(() => ({ hydraulics_model: model, months, mode, training_tests: training,
-    edited_inputs: preview ? previewValues : null }), [model, months, mode, training, preview, previewValues]);
+    edited_inputs: preview ? previewValues : null, pump_losses: allTests ? pumpLosses : "clean_reference" }), [model, months, mode, training, preview, previewValues, allTests, pumpLosses]);
   // A new source snapshot or saved context immediately hides the earlier curve.
-  const key = stableStringify({ well: data.well, request, data, seeds: context?.seeds, md: context?.jpump_md });
+  const key = stableStringify({ well: data.well, request, data, seeds: context?.seeds, md: context?.jpump_md,
+    calibration: context?.pump_calibration, wellModel: context?.well_model_fingerprint });
   const latestKey = useRef(key);
   latestKey.current = key;
   const currentId = handle?.key === key ? handle.id : null;
@@ -90,6 +93,7 @@ export function ProductionHistory(props: {
   }
 
   return <div className="space-y-3">
+    <CommonOilIprFit key={data.well} well={data.well} onApply={() => { setShow(true); setMode("all_tests"); setUseEdits(true); }} />
     <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600">
       <label className="flex cursor-pointer items-center gap-2">
         <input className={CHECKBOX} type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />
@@ -106,6 +110,11 @@ export function ProductionHistory(props: {
           value={useEdits ? "edited" : "saved"} onChange={(e) => setUseEdits(e.target.value === "edited")}>
           <option value="saved">Saved in database</option>
           <option value="edited">Current edits (preview)</option>
+        </select></label>}
+        {allTests && <label>Pump losses <select aria-label="History pump losses" className={`${SELECT} ml-1`}
+          value={pumpLosses} onChange={(e) => setPumpLosses(e.target.value as PumpMatchRequest["pump_losses"])}>
+          <option value="saved_matching">Saved fit where valid</option>
+          <option value="clean_reference">Clean reference</option>
         </select></label>}
         <label>History <select aria-label="History window" className={`${SELECT} ml-1`} value={months}
           onChange={(e) => setMonths(Number(e.target.value) as PumpMatchRequest["months"])}>
@@ -127,7 +136,7 @@ export function ProductionHistory(props: {
         : mode === "previous_pump"
           ? "Predicts the next installation using the preceding pump's last training tests."
           : "Fits the first training tests on each installation, then predicts later tests."}</p>
-      <p>{preview ? "Uses the preview well inputs with saved well geometry" : "Uses saved well geometry, fluid properties and reservoir pressure"}; pump losses stay at clean reference.
+      <p>{preview ? "Uses the preview well inputs with saved well geometry" : "Uses saved well geometry, fluid properties and reservoir pressure"}; {allTests && pumpLosses === "saved_matching" ? "saved pump losses apply only to their matching installation and well inputs; other pumps use clean reference losses" : "pump losses stay at clean reference"}.
         {allTests ? " The IPR stays fixed. This comparison uses known test composition." : " This mode refits inflow from earlier tests and freezes their WC/GOR for later predictions; it does not change the saved IPR."}</p>
       <p>History sets the chart window. {allTests ? "Every test with usable inputs is attempted, including early tests and short pump runs." : "Earlier tests can still train the model."} Gaps have an explanation below.</p>
       {allTests && <p>{preview
@@ -175,7 +184,7 @@ export function ProductionHistory(props: {
             const s = allTests ? e.replay_scores : e.prediction_scores;
             return <tr key={e.installation_id} className={`border-b border-slate-100 ${selectedEra === e.installation_id ? "bg-blue-50" : ""}`}>
               <td className="px-2 py-2"><button className="text-left text-blue-700 underline" onClick={() => { setSelectedEra(e.installation_id); setTestId(null); }}>{e.pump} / {fmtDate(e.date_set)}</button></td>
-              <td className="px-2 py-2">{allTests ? preview ? "Edited inflow" : "Saved inflow" : `${e.training_count} tests`}</td><td className="px-2 py-2">{s.solved}/{s.attempted}</td>
+              <td className="px-2 py-2">{allTests ? <>{preview ? "Edited inflow" : "Saved inflow"}<br />{e.pump_losses === "saved_calibration" ? "Saved pump fit" : "Clean pump reference"}</> : `${e.training_count} tests`}</td><td className="px-2 py-2">{s.solved}/{s.attempted}</td>
               <td className="px-2 py-2">{fmtNum(s.bhp_rms)} / {fmtNum(s.bhp_bias)}</td>
               <td className="px-2 py-2">{fmtNum(s.oil_mae)}</td><td className="px-2 py-2">{errorPercent(s.oil_median_abs_pct)}</td>
               <td className="px-2 py-2">{errorPercent(s.pf_median_abs_pct)}</td>

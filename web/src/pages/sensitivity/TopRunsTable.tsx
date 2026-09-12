@@ -12,45 +12,25 @@
 import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 
-import type { CombineRun, SensitivityKnob, SimParams } from "../../api/types";
+import type { CombineRequest, CombineRun, SensitivityKnob } from "../../api/types";
 import { CRIMSON, SLATE } from "../../charts/theme";
 import { Button, Card, type Column, DataTable } from "../../components/ui";
 import { fmtNum } from "../../lib/format";
-import { useParamsStore } from "../../state/params";
+import { effectiveParams, useParamsStore } from "../../state/params";
+import { useSensitivityStore } from "../../state/sensitivity";
+import { appliedStudyParams, matchingStudy } from "./study";
 import { type CombineTargets, runReadings } from "./combine";
 import { METRICS, signed } from "./metrics";
 
 const SCORE_HELP =
-  "Root-mean-square fractional error across the measured quantities only. Lower is better; " +
-  "zero would match every measured number exactly.";
+  "RMS fractional error in measured BHP, oil and PF; liquid replaces oil only if oil is unavailable. " +
+  "Lower is closer on this test. This is not an uncertainty-weighted fit or independent validation.";
 
 type Row = Record<string, unknown>;
 
 /** DataTable rows are loosely keyed, so every numeric cell narrows here. */
 function num(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
-}
-
-/**
- * The sidebar patch that reproduces one permutation.
- *
- * Catalog inputs carry an option INDEX in `values` and the option string in
- * `labels`; `nozzle_no` and `area_ratio` are string fields on SimParams, so
- * the label is the value to write. Everything else is already in the field's
- * own units. Inputs that were not varied are left alone.
- */
-function runPatch(run: CombineRun, knobs: SensitivityKnob[]): Partial<SimParams> {
-  const patch: Record<string, string | number> = {};
-  for (const k of knobs) {
-    if (!(k.id in run.values)) continue;
-    const label = run.labels[k.id];
-    if (k.kind === "catalog") {
-      if (label !== undefined) patch[k.field] = label;
-    } else {
-      patch[k.field] = run.values[k.id];
-    }
-  }
-  return patch as Partial<SimParams>;
 }
 
 /**
@@ -85,6 +65,7 @@ export function TopRunsTable({
   knobIds,
   knobLabels,
   knobs,
+  request, currentRequest, canApply,
 }: {
   runs: CombineRun[];
   bestIndex: number | null;
@@ -94,6 +75,9 @@ export function TopRunsTable({
   knobLabels: Record<string, string>;
   /** the full input list, for the field name and kind behind each column */
   knobs: SensitivityKnob[];
+  request: CombineRequest | null;
+  currentRequest: CombineRequest;
+  canApply: boolean;
 }) {
   const setMany = useParamsStore((s) => s.setMany);
   const setMatchNote = useParamsStore((s) => s.setMatchNote);
@@ -173,20 +157,27 @@ export function TopRunsTable({
       render: (row) => {
         const run = row.run as CombineRun | undefined;
         if (run === undefined) return null;
-        const patch = runPatch(run, knobs);
+        const patch = run.applied_inputs ?? {};
         const fields = Object.keys(patch);
         if (fields.length === 0) return null;
         return (
           <Button
             variant="secondary"
             size="sm"
-            title={`Write this permutation into the sidebar (${fields.join(", ")}) and open the Solver. The open-time IPR fit will leave these alone. Nothing is saved until you save the well default there.`}
+            disabled={!canApply || !request || !run.applied_inputs}
+            title={`Apply this submitted scenario (${fields.join(", ")}) and open Solver with the same comparison test. Saving well inputs is a separate action.`}
             onClick={() => {
-              setMany(patch);
+              if (!canApply || !request) return;
+              const live = useParamsStore.getState();
+              if (!matchingStudy({ ...currentRequest, well: live.well, params: effectiveParams(live.params), installation_key: JSON.stringify(live.context?.pump ?? null) }, request)) return;
+              const candidate = appliedStudyParams(request, run);
+              if (!candidate) return;
+              setMany(candidate);
+              if (request.test_key) useSensitivityStore.getState().queueComparison(request.well, request.test_key);
               // Provenance travels with the numbers: the Solver shows it and
               // the save comment prefills with it, so prop_hist records WHY
               // this curve rather than just what it was.
-              setMatchNote(matchNote(row, run, runs.length, knobLabels));
+              setMatchNote(`${matchNote(row, run, runs.length, knobLabels)}. Comparison ${request.test_key ?? "none"}; ${request.wc_basis ?? "fixed_oil_ipr"}.`);
               navigate("/solver");
             }}
           >
@@ -196,7 +187,7 @@ export function TopRunsTable({
       },
     });
     return cols;
-  }, [knobIds, knobLabels, bestIndex, knobs, setMany, setMatchNote, navigate, runs.length]);
+  }, [knobIds, knobLabels, bestIndex, knobs, setMany, setMatchNote, navigate, runs.length, request, currentRequest, canApply]);
 
   if (rows.length === 0) return null;
 
@@ -208,7 +199,7 @@ export function TopRunsTable({
       <p className="px-2 pb-1.5 text-[11px] text-slate-500">
         {unscored
           ? "No measured test on this well, so these are the first ten permutations in factorial order."
-          : "Ranked by RMS fractional error against the measured test. The red score is the best run."}
+          : "Ranked by BHP, oil and PF fractional error (liquid substitutes for missing oil). Liquid remains visible for diagnosis. The highlighted score is closest on this test."}
       </p>
       <DataTable
         columns={columns}
