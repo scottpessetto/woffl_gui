@@ -203,6 +203,8 @@ function PadResults({ result }: { result: PadRunResult }) {
   const lam = metaNum(meta, "lambda_used");
   const lamSource = typeof meta.lambda_source === "string" ? meta.lambda_source : null;
   const wcEquiv = metaNum(meta, "marginal_wc_used");
+  const allocation = meta.allocation_status != null && typeof meta.allocation_status === "object"
+    ? meta.allocation_status as Record<string, unknown> : null;
   const agreement =
     meta.solver_agreement && typeof meta.solver_agreement === "object"
       ? (meta.solver_agreement as { agree?: boolean; mckp_objective?: number; milp_objective?: number; error?: string })
@@ -238,6 +240,13 @@ function PadResults({ result }: { result: PadRunResult }) {
         />
       </div>
       {typeof meta.comparison_basis === "string" && <p className="text-xs text-slate-500">{meta.comparison_basis}</p>}
+      {lam !== null && <p className="text-xs text-slate-600">{lam === 0
+        ? "Objective: maximize oil within plant capacity."
+        : `Objective: oil minus a manual water price of ${fmtNum(lam * 1000, 1)} BOPD/MBPD.`}</p>}
+      {metaNum(meta, "diagnostic_lambda") !== null && <p className="text-xs text-slate-500">
+        Estimated value of capacity: {fmtNum((metaNum(meta, "diagnostic_lambda") ?? 0) * 1000, 1)} BOPD/MBPD.
+        {" "}This is a frontier estimate, separate from the allocation objective.
+      </p>}
       {nPumpsUsed !== null && (
         <p className="text-xs text-slate-500">
           Plant modeled with {nPumpsUsed} booster pump{nPumpsUsed === 1 ? "" : "s"} online.
@@ -252,6 +261,15 @@ function PadResults({ result }: { result: PadRunResult }) {
         <WarnNote>Plant coupling did not converge - treat the header and totals as approximate.</WarnNote>
       )}
       {meta.over_capacity === true && <WarnNote>Plan exceeds plant capacity.</WarnNote>}
+      {meta.feasible === false && <WarnNote>This plan does not meet all modeled operating limits. Resolve the conditions below before treating it as an operating recommendation.</WarnNote>}
+      {(meta.in_range === false || meta.recirc === true) && <WarnNote>Machine flow is outside the modeled operating range or requires recirculation. Net well demand alone does not establish a valid machine operating point.</WarnNote>}
+      {Array.isArray(meta.operating_assumptions) && meta.operating_assumptions.map((note, i) =>
+        <WarnNote key={i}>{String(note)}</WarnNote>)}
+      {allocation && <p className="text-xs text-slate-500">
+        Allocation status: {String(allocation.status ?? "unknown")} ({String(allocation.solver ?? "unspecified solver")}).
+        {typeof allocation.refinement_reason === "string" && ` Precision refinement: ${allocation.refinement_reason}.`}
+        {" "}This applies to the sampled pump choices; pressure search and model support are checked separately.
+      </p>}
       {typeof meta.search_scope === "string" && (
         <p className="text-xs text-slate-500">
           Pump choices were checked at their coupled station pressure. Pressure-balance error:
@@ -333,7 +351,9 @@ function PadResults({ result }: { result: PadRunResult }) {
       )}
       {agreement && !agreement.error && agreement.agree === true && (
         <p className="text-xs text-slate-500">
-          MILP and CP-SAT agree on the allocation objective at the search header.
+          {allocation?.requested_solver === "cp-sat" && typeof allocation.refinement_reason === "string"
+            ? "The CP-SAT request used original-unit MILP refinement. The repeated MILP result agrees; this is not an independent solver cross-check."
+            : "MILP and CP-SAT agree on the allocation objective at the search header."}
         </p>
       )}
       {result.notes.length > 0 && (
@@ -375,7 +395,7 @@ const ACTION_META: Record<
 function ChokePlanResults({ result }: { result: ChokePlanResult }) {
   const meta = result.meta;
   const lam = metaNum(meta, "lambda_bopd_per_bpd");
-  const projD = metaNum(meta, "projected_d_oil_bopd");
+  const projD = meta.feasible === false ? null : metaNum(meta, "projected_d_oil_bopd");
   const headerToday = metaNum(meta, "header_today_psi");
   return (
     <div className="space-y-3">
@@ -395,25 +415,32 @@ function ChokePlanResults({ result }: { result: ChokePlanResult }) {
         <Metric
           label="Proj. vs today"
           value={projD === null ? "-" : `${projD >= 0 ? "+" : ""}${fmtNum(projD)} BOPD`}
-          title="Test-anchored: measured oil x the model ratio between the plan and today (model bias cancels)"
+          title="Test-anchored projection using the modeled rate ratio. It assumes the model's relative pressure response is accurate."
         />
         <Metric
-          label={meta.water_key === "totl_wat" ? "Marginal water value" : "Marginal PF value"}
+          label="Selected reduction tradeoff"
           value={lam === null ? "no trims" : `${fmtNum(lam * 1000)} BOPD/MBPD`}
-          title="Oil given up per MBPD of machine capacity freed by the last trim"
+          title="Largest average oil loss per MBPD freed among selected reductions; a diagnostic, separate from the maximum-oil objective"
         />
       </div>
       <p className="text-xs text-slate-500">
-        Installed pumps HELD - no changeouts. {fmtNum(metaNum(meta, "n_choked"))} choked,{" "}
+        Existing and planned pumps held. {fmtNum(metaNum(meta, "n_choked"))} choked,{" "}
         {fmtNum(metaNum(meta, "n_shut"))} shut in, {fmtNum(metaNum(meta, "n_full"))} full open.
       </p>
       {meta.recirc === true && (
         <WarnNote>
-          Total PF sits below the {fmtNum(metaNum(meta, "min_total_flow"))} BPD min-flow
-          (recirc) floor for this pump count - the HP bank will trip without recycle.
+          Machine demand sits below the {fmtNum(metaNum(meta, "min_total_flow"))} BPD minimum
+          for this pump count. A qualified recycle or operating arrangement is needed.
         </WarnNote>
       )}
       {meta.over_capacity === true && <WarnNote>Plan exceeds plant capacity.</WarnNote>}
+
+      {meta.feasible === false && <WarnNote>This choke plan does not meet all modeled operating limits. Its projected gain is withheld.</WarnNote>}
+      {Array.isArray(meta.operating_assumptions) && meta.operating_assumptions.map((note, i) =>
+        <WarnNote key={i}>{String(note)}</WarnNote>)}
+      {meta.allocation_status != null && typeof meta.allocation_status === "object" && <p className="text-xs text-slate-500">
+        Allocation status: {String((meta.allocation_status as Record<string, unknown>).status ?? "unknown")} on the sampled choke settings.
+      </p>}
 
       <ChokeDumbbell plan={result.plan} />
 
@@ -451,7 +478,7 @@ function ChokePlanResults({ result }: { result: ChokePlanResult }) {
               <th
                 rowSpan={2}
                 className={clsx(TH_CLS, "border-l border-slate-200 align-bottom")}
-                title="Most trustworthy per-well number: measured test oil x the model's ratio between this setting and today (model bias cancels)"
+                title="Measured test oil times the modeled rate ratio; accuracy depends on the relative pressure response"
               >
                 Proj. oil (BOPD)
               </th>
@@ -656,28 +683,37 @@ function CfpResults({ result }: { result: CfpRunResult }) {
     <div className="space-y-3">
       <CoverageNotice coverage={result.coverage} cfp />
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-        <Metric label="Discharge today" value={`${fmtNum(s.today.pressure)} psi`} />
+        <Metric label="Reference discharge" value={`${fmtNum(s.today.pressure)} psi`} />
         <Metric
           label={`Modeled oil (${result.n_wells} run wells)`}
           value={`${fmtNum(s.today.oil)} BOPD`}
-          title="Total MODELED oil across the wells in this run, at today's discharge pressure - the optimizer's baseline, not field production. Plan gains are measured against this number."
+          title="Modeled oil across these run wells at the reference discharge. Plan gains are measured against this baseline."
         />
-        <Metric label="Plant water" value={`${fmtNum(s.today.water)} BWPD`} />
+        <Metric label="Modeled run-well water" value={`${fmtNum(s.today.water)} BWPD`} title="Machine-water contribution from these modeled wells; not measured total CFP throughput." />
         <Metric
           label="Shadow price"
           value={s.lambda_bopd_per_psi !== null ? `${fmtNum(s.lambda_bopd_per_psi, 2)} BOPD/psi` : "-"}
         />
         <Metric
-          label="Best plan gain"
-          value={s.plan_gain !== null ? `+${fmtNum(s.plan_gain)} BOPD` : "-"}
+          label="Best supported plan gain"
+          value={s.plan_gain !== null ? `${s.plan_gain > 0 ? "+" : ""}${fmtNum(s.plan_gain)} BOPD` : "-"}
         />
       </div>
 
       <CfpResultCharts result={result} />
+      {s.plan_status === "no_feasible_plan" && <WarnNote>No supported plan meets the pressure and required-online constraints.</WarnNote>}
+      {s.search_scope && <p className="text-xs text-slate-500">{typeof s.search_scope === "string"
+        ? s.search_scope : s.search_scope.global_optimum_on_surfaces === true
+          ? "All combinations were evaluated on the sampled response tables. The result remains conditional on those tables and plant assumptions."
+          : "The plan is the best supported combination found in a bounded search; global optimality is not established."}
+        {typeof s.search_scope === "object" && s.search_scope.direct_solver_validated === false
+          && " Final pressure rates are interpolated from the tables; a direct final-pressure well solve has not been performed."}
+      </p>}
+      {(s.required_wells?.length ?? 0) > 0 && <p className="text-xs text-slate-600">Required online: {s.required_wells?.join(", ")}</p>}
 
       {planActions.length > 0 && (
         <Card padded={false} className="overflow-x-auto">
-          <p className="px-3 pt-2 text-xs font-semibold text-slate-600">Best plan</p>
+          <p className="px-3 pt-2 text-xs font-semibold text-slate-600">Best supported plan</p>
           <table className="w-full border-collapse text-[13px]">
             <thead>
               <tr className="border-b border-slate-200 text-slate-600">
@@ -760,6 +796,20 @@ function CfpResults({ result }: { result: CfpRunResult }) {
         </Card>
       )}
 
+      {s.pairs.length > 0 && <Card padded={false} className="overflow-x-auto">
+        <p className="px-3 pt-2 text-xs font-semibold text-slate-600">Bring online with an offset</p>
+        <p className="px-3 py-1 text-xs text-slate-500">Jointly evaluated changes, including wells that cannot operate alone. Net oil includes the pressure response of existing wells.</p>
+        <table className="w-full border-collapse text-[13px]"><thead><tr className="border-b border-slate-200">
+          <th className="px-3 py-2 text-left">Bring online</th><th className="px-3 py-2 text-left">Offset</th>
+          <th className={TH_CLS}>Net oil (BOPD)</th><th className={TH_CLS}>Discharge after</th>
+        </tr></thead><tbody>{s.pairs.map((pair, i) => <tr key={`${pair.bring_on.well}-${pair.offset.well}-${i}`} className="border-b border-slate-100">
+          <td className="px-3 py-1.5">{pair.bring_on.well}: {pair.bring_on.to}</td>
+          <td className="px-3 py-1.5">{pair.offset.well}: {pair.offset.from} to {pair.offset.to}</td>
+          <td className={TD_CLS}>{pair.fleet_oil_delta > 0 ? "+" : ""}{fmtNum(pair.fleet_oil_delta)}</td>
+          <td className={TD_CLS}>{fmtNum(pair.pressure_after)} psi</td>
+        </tr>)}</tbody></table>
+      </Card>}
+
       {singles.length > 0 && (
         <Card padded={false} className="overflow-x-auto">
           <p className="px-3 pt-2 text-xs font-semibold text-slate-600">
@@ -824,6 +874,7 @@ export function RunPanel({
   const runKey = kind === "cfp" ? "CFP" : (pad as string);
   const wells = useWells();
   const futureByPad = useOptimizeStore((s) => s.future);
+  const requiredByPad = useOptimizeStore((s) => s.requiredOnline);
   const lastJob = useOptimizeStore((s) => s.lastJob);
   const setLastJob = useOptimizeStore((s) => s.setLastJob);
 
@@ -833,8 +884,8 @@ export function RunPanel({
   const [throats, setThroats] = useState(["A", "B", "C", "D"]);
   const [method, setMethod] = useState<"milp" | "mckp">("milp");
   const [strategy, setStrategy] = useState<"jpco" | "choke">("jpco");
-  // Water price λ (BOPD per BPD of lift water). auto = the plant budget's own
-  // shadow price; the manual default is 0.02 BOPD/BPD = 20 BOPD/MBPD.
+  // The default maximizes oil within capacity. A manual water price changes
+  // that objective; its starting value is 0.02 BOPD/BPD = 20 BOPD/MBPD.
   const [autoLam, setAutoLam] = useState(true);
   const [manualLam, setManualLam] = useState(0.02);
   // Header setpoint for the free-pressure pads (I/M/E). auto = sweep the
@@ -845,9 +896,11 @@ export function RunPanel({
   const [manualSetpoint, setManualSetpoint] = useState(3200);
   const [nPumps, setNPumps] = useState<number | null>(null);
   const [p0, setP0] = useState(2792);
+  const [referencePadPf, setReferencePadPf] = useState<Record<string, string>>({});
   const [slope, setSlope] = useState(13.69);
   const [cPadPf, setCPadPf] = useState(3400);
   const [cfpPads, setCfpPads] = useState<string[]>([...CFP_PADS]);
+  useEffect(() => { if (pad === "S") setStrategy("jpco"); }, [pad]);
   // E-Pad booster configuration. Defaults mirror server.schemas
   // OptimizeRunRequest: the Summit workbook's suction cell and I-Pad's
   // operational header cap, neither of them an E-Pad measurement.
@@ -930,6 +983,7 @@ export function RunPanel({
       pad,
       offline,
       future,
+      required_wells: runPads.flatMap((p) => requiredByPad[p] ?? []),
       nozzles,
       throats,
       method,
@@ -943,6 +997,7 @@ export function RunPanel({
       p0_psi: p0,
       psi_per_kbpd: slope,
       c_pad_pf_psi: cPadPf,
+      cfp_pad_pf_psi: Object.fromEntries(Object.entries(referencePadPf).filter(([, value]) => value.trim() !== "").map(([p, value]) => [p, Number(value)])),
       cfp_pads: cfpPads,
       e_pad_build: ePadBuild,
       e_pad_suction_psi: ePadSuction,
@@ -975,7 +1030,7 @@ export function RunPanel({
                 className="mt-1 block h-8 rounded-md border border-slate-300 bg-white px-2 text-sm"
               >
                 <option value="jpco">Resize pumps (JPCO)</option>
-                <option value="choke">Choke / shut in (hold pumps)</option>
+                <option value="choke" disabled={pad === "S"}>Choke / shut in (hold pumps){pad === "S" ? " - unavailable on S" : ""}</option>
               </select>
             </label>
           )}
@@ -1007,12 +1062,12 @@ export function RunPanel({
                   onChange={(e) => setMethod(e.target.value === "mckp" ? "mckp" : "milp")}
                   className="mt-1 block h-8 rounded-md border border-slate-300 bg-white px-2 text-sm"
                 >
-                  <option value="milp">MILP (exact)</option>
+                  <option value="milp">MILP</option>
                   <option value="mckp">MCKP (CP-SAT)</option>
                 </select>
               </label>
-              <div title="Oil given up per barrel of lift water in the objective (oil - λ·water). auto = the plant budget's own shadow price off the pooled pump frontier; set it by hand to price water at the plant's real marginal cost. Both solvers use it identically.">
-                <span className="text-xs font-medium text-slate-500">Water price λ (BOPD/BPD)</span>
+              <div title="Default: maximize oil within the plant's machine-water capacity. Uncheck to apply an additional deliberate oil-equivalent water cost.">
+                <span className="text-xs font-medium text-slate-500">Allocation objective</span>
                 <div className="mt-1 flex h-8 items-center gap-2">
                   <label className="flex cursor-pointer items-center gap-1 text-xs text-slate-600">
                     <input
@@ -1021,10 +1076,11 @@ export function RunPanel({
                       onChange={(e) => setAutoLam(e.target.checked)}
                       className="h-4 w-4 rounded border-slate-300 accent-blue-600"
                     />
-                    auto
+                    Maximize oil within capacity
                   </label>
                   {!autoLam && (
                     <input
+                      aria-label="Manual water price (BOPD/BPD)"
                       type="number"
                       value={manualLam}
                       min={0}
@@ -1067,13 +1123,13 @@ export function RunPanel({
             )
           ) : (
             <>
-              <div title="B/G/C/J are the CFP pads. L, R, ... also send their produced water through the CFP machines and may join; their PF is modeled at the C-Pad booster pressure. POPs pads separate water on-pad and are not offered.">
+              <div title="B/G/C/J use the CFP response model. Additional pads assume locally boosted PF; incremental routing from POPS pads is not qualified here.">
                 <p className="mb-1 text-xs font-medium text-slate-500">CFP pads in the run</p>
                 <ChipToggle options={cfpPadOptions} selected={cfpPads} onChange={setCfpPads} />
               </div>
               <label className="block">
-                <span className="text-xs font-medium text-slate-500">PW discharge today (psi)</span>
-                <input type="number" value={p0} min={2300} max={2900} step={5} onChange={(e) => setP0(Number(e.target.value))} className={clsx(INPUT_CLS, "mt-1 block")} />
+                <span className="text-xs font-medium text-slate-500">Reference PW discharge (psi)</span>
+                <input type="number" value={p0} min={2300} max={2880} step={5} onChange={(e) => setP0(Number(e.target.value))} className={clsx(INPUT_CLS, "mt-1 block")} />
               </label>
               <label className="block">
                 <span className="text-xs font-medium text-slate-500">Machine slope (psi/kBPD)</span>
@@ -1086,6 +1142,16 @@ export function RunPanel({
             </>
           )}
         </div>
+
+        {kind === "cfp" && <details className="border-t border-slate-100 pt-2 text-xs text-slate-600">
+          <summary className="cursor-pointer">Pad PF at the same reference conditions</summary>
+          <p className="my-2">Enter pressures corresponding to the reference discharge and online configuration. Blank fields use fixed line-loss assumptions. The reference discharge is a manual scenario value.</p>
+          <div className="flex flex-wrap gap-3">{["B", "G", "J"].filter((p) => cfpPads.includes(p)).map((p) => <label key={p}>
+            {p}-Pad PF (psi)<input type="number" min={1000} max={5000} placeholder="assumed" value={referencePadPf[p] ?? ""}
+              onChange={(e) => setReferencePadPf((prev) => ({ ...prev, [p]: e.target.value }))}
+              className={clsx(INPUT_CLS, "ml-2")} />
+          </label>)}</div>
+        </details>}
 
         {kind === "pad" && pad === "E" && (
           // E-Pad's booster is the one plant whose configuration is not a

@@ -16,6 +16,9 @@ const STORAGE_KEY = "woffl.optimize";
 export interface FutureWell {
   name: string; // engineer-chosen label, e.g. "MPL-88"
   match: string; // donor well whose saved fit it copies
+  require_online?: boolean;
+  nozzle?: string;
+  throat?: string;
 }
 
 interface Persisted {
@@ -25,6 +28,7 @@ interface Persisted {
    *  long-term shut-in wells arrive pre-ticked from the downtime log: without
    *  a record of the override the auto-tick would return on every reload. */
   keepOnline: Record<string, string[]>;
+  requiredOnline: Record<string, string[]>;
   future: Record<string, FutureWell[]>; // pad -> planned wells
   /** Run-tab key ("S"|"I"|"M"|"CFP") -> last job id, to re-attach after tab
    * switches/reloads. Server jobs expire after ~1 h; a 404 clears it. */
@@ -41,6 +45,7 @@ function restore(): Persisted {
         offline: p.offline && typeof p.offline === "object" ? p.offline : {},
         keepOnline:
           p.keepOnline && typeof p.keepOnline === "object" ? p.keepOnline : {},
+        requiredOnline: p.requiredOnline && typeof p.requiredOnline === "object" ? p.requiredOnline : {},
         future: p.future && typeof p.future === "object" ? p.future : {},
         lastJob: p.lastJob && typeof p.lastJob === "object" ? p.lastJob : {},
       };
@@ -48,7 +53,7 @@ function restore(): Persisted {
   } catch {
     // storage unavailable - defaults still work in-memory
   }
-  return { pad: null, offline: {}, keepOnline: {}, future: {}, lastJob: {} };
+  return { pad: null, offline: {}, keepOnline: {}, requiredOnline: {}, future: {}, lastJob: {} };
 }
 
 function persist(state: OptimizeState): void {
@@ -59,6 +64,7 @@ function persist(state: OptimizeState): void {
         pad: state.pad,
         offline: state.offline,
         keepOnline: state.keepOnline,
+        requiredOnline: state.requiredOnline,
         future: state.future,
         lastJob: state.lastJob,
       }),
@@ -76,6 +82,8 @@ interface OptimizeState extends Persisted {
   setWellOffline: (pad: string, well: string, offline: boolean) => void;
   addFuture: (pad: string, fw: FutureWell) => void;
   removeFuture: (pad: string, name: string) => void;
+  updateFuture: (pad: string, name: string, patch: Partial<FutureWell>) => void;
+  setRequiredOnline: (pad: string, well: string, required: boolean) => void;
   setLastJob: (runKey: string, jobId: string | null) => void;
 }
 
@@ -109,7 +117,7 @@ export const useOptimizeStore = create<OptimizeState>((set, get) => ({
   addFuture: (pad, fw) => {
     set((s) => {
       const cur = s.future[pad] ?? [];
-      if (cur.some((f) => f.name === fw.name)) return s; // names are row identity
+      if (Object.values(s.future).flat().some((f) => f.name.toLowerCase() === fw.name.toLowerCase())) return s;
       return { future: { ...s.future, [pad]: [...cur, fw] } };
     });
     persist(get());
@@ -119,6 +127,18 @@ export const useOptimizeStore = create<OptimizeState>((set, get) => ({
     set((s) => ({
       future: { ...s.future, [pad]: (s.future[pad] ?? []).filter((f) => f.name !== name) },
     }));
+    persist(get());
+  },
+
+  updateFuture: (pad, name, patch) => {
+    set((s) => ({ future: { ...s.future, [pad]: (s.future[pad] ?? []).map((f) => f.name === name ? { ...f, ...patch, name: f.name } : f) } }));
+    persist(get());
+  },
+
+  setRequiredOnline: (pad, well, required) => {
+    set((s) => ({ requiredOnline: { ...s.requiredOnline, [pad]: required
+      ? [...new Set([...(s.requiredOnline[pad] ?? []), well])]
+      : (s.requiredOnline[pad] ?? []).filter((w) => w !== well) } }));
     persist(get());
   },
 

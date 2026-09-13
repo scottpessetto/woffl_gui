@@ -3,7 +3,14 @@
 Operating rules for coding agents in this repo. Read this before touching anything.
 Prose lives in `docs/`; this file is only the rules you will otherwise violate.
 
-Latest implementation: [September 12 well-fit workflow](docs/well_fit_workflow_delivery_2026-09-12.md).
+Latest optimization implementation: [September 12 capacity repairs](docs/pad_cfp_capacity_delivery_2026-09-12.md).
+Default pad runs maximize oil within capacity; manual water pricing is explicit.
+Required-online constraints, qualified plant delivery and solver outcomes are
+preserved through API/UI. CFP uses a coherent manual reference, unclipped lower
+pressure domain and combined candidate search. The delivery distinguishes these
+repairs from remaining field qualification and the full new-well comparison study.
+
+Latest well-fit implementation: [September 12 well-fit workflow](docs/well_fit_workflow_delivery_2026-09-12.md).
 Solver and JP History have persistent well-save controls, explicit read-only
 states and historical previews of supported edits. Save refreshes the database
 baseline without losing session edits; new optimization runs load saved values.
@@ -105,9 +112,9 @@ escapes, rather than line-slicing/reconstructing source through the shell.
 
 (`tests/test_joint_match_sweep.py` was deleted; the old `--deselect` of it is a no-op and was dropped from the command on 2026-09-02.)
 
-Latest recorded green baseline: **2,116 Python tests and 29 frontend tests passed**
-(2026-09-12 well-fit workflow), plus the TypeScript/Vite production build.
-See [the delivery record](docs/well_fit_workflow_delivery_2026-09-12.md). The
+Latest recorded green baseline: **2,198 Python tests and 29 frontend tests passed**
+(2026-09-12 capacity repairs), plus the TypeScript/Vite production build.
+See [the delivery record](docs/pad_cfp_capacity_delivery_2026-09-12.md). The
 [recovered review](docs/recovered_review_2026-09-11.md) records the prior fixes.
 Earlier counts in dated reports are milestones, not the current baseline.
 Live tests are opt-in (`--run-live`); ordinary verification stays offline.
@@ -492,8 +499,9 @@ Settled decisions — do not relitigate:
 - A WC ≥ 0.99 well raises unless `offline=True`. Silently zeroing is the worst option.
 - `prop_xref` deliberately excludes pump identity (`jp_nozzle`, `jp_throat_ratio`) and workflow
   state (`well_reviewed`, `well_offline`).
-- CFP moves models **deltas off a measured anchor only**. Never reintroduce an exogenous /
-  bottom-up plant water load.
+- CFP moves models **deltas off a stated reference anchor only**. Use measured
+  conditions when available; label manual scenarios and never mix asynchronous
+  pad pressures into them. Never reintroduce an exogenous / bottom-up plant load.
 - Pump-at-test-date tenure is **set-to-set** (`Date Set` → next `Date Set`). `Date Pulled` is
   never consulted.
 
@@ -519,7 +527,7 @@ Settled decisions — do not relitigate:
 | wc / GOR / FGOR | Water cut (fraction) / gas-oil ratio / formation GOR |
 | form-WC vs total-WC | Formation-water cut vs total (formation + lift water) cut — mixing bases over-recommends bring-online |
 | marginal WC | Legacy economics gate (water cut above which a well stops paying for its water). Since 2026-09 it is only a LABEL: the optimizers price water with λ, and a gate w maps to λ = (1 − w) / w |
-| λ / water price | BOPD given up per BPD of lift water in the pad objective oil − λ·water; one λ for every engine (`docs/optimization_redesign_2026-09.md`). auto = the plant budget's own shadow price off the pooled pump frontier |
+| λ / water price | BOPD given up per BPD of machine water in the pad objective oil − λ·water. Default λ=0 maximizes oil within capacity; manual prices change the objective. Concave-frontier λ is a separate capacity-value diagnostic (`docs/pad_cfp_capacity_delivery_2026-09-12.md`). |
 | SI / BOL / LTSI | Shut in / bring on line / long-term shut-in (mechanical, out of Triage scope) |
 | joint match | Solve IPR + PF pressure + friction coefs so the installed pump reproduces a test's oil AND PF |
 | backmatch | Oil-only inverse: infer the `pwf` at which the installed pump makes the test's oil rate |

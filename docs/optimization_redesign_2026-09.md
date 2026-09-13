@@ -1,5 +1,14 @@
 # Pad optimization redesign — one formulation (2026-09-02)
 
+**September 12 correction:** default runs now use lambda = 0 to maximize oil
+within capacity. Manual/legacy prices still change the objective deliberately.
+The concave-hull capacity estimate is diagnostic only. Required-online wells
+must select one valid option. Failed allocators raise typed failures; original
+resource units qualify returned choices, with precise MILP refinement for
+fractional CP resource coefficients. Delivered-header and operating-range
+qualification precede pad ranking. These corrections supersede the original
+automatic-pricing behavior below. See [delivery](pad_cfp_capacity_delivery_2026-09-12.md).
+
 Decisions taken with Scott on 2026-09-02, following the 2026-09-01 review (§8).
 For the September 8 save/fit/run workflow, see [the user guide](optimization_user_guide.md)
 and [handoff](session_learnings_2026-09-08.md). Later fixes preserve the priced

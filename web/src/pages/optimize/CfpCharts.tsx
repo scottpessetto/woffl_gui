@@ -10,7 +10,7 @@
  *    encoding of the anchored plant's pressure endogeneity - the actions'
  *    own deltas deliberately do NOT sum to the fleet delta.
  * 3. Today vs plan per well (dumbbell, sorted by delta) - where the barrels
- *    actually move. Solid dot = today (measured state), hollow ring = plan
+ *    actually move. Solid dot = modeled reference, hollow ring = plan
  *    (house fill semantics); connector green for gains, crimson for losses.
  */
 
@@ -61,7 +61,7 @@ function frontierOption(result: CfpRunResult): EChartsOption | null {
         },
       },
       {
-        name: "Today",
+        name: "Reference",
         type: "scatter",
         symbolSize: 12,
         data: [[s.today.pressure, s.today.oil]],
@@ -104,7 +104,7 @@ function bridgeOption(result: CfpRunResult): EChartsOption | null {
     { label: "pressure feedback", delta: feedback },
   ];
 
-  const categories = ["Today", ...steps.map((x) => x.label), "Plan"];
+  const categories = ["Reference", ...steps.map((x) => x.label), "Plan"];
   const base: (number | null)[] = [0];
   const rise: { value: number | null; itemStyle?: { color: string } }[] = [
     { value: s.today.oil, itemStyle: { color: SLATE } },
@@ -128,7 +128,7 @@ function bridgeOption(result: CfpRunResult): EChartsOption | null {
       formatter: (raw: unknown): string => {
         const arr = raw as { dataIndex: number; axisValue: string }[];
         const i = arr[0]?.dataIndex ?? 0;
-        if (i === 0) return `Today: ${fmtNum(s.today.oil)} BOPD`;
+        if (i === 0) return `Reference: ${fmtNum(s.today.oil)} BOPD`;
         if (i === categories.length - 1) return `Plan: ${fmtNum(plan.oil)} BOPD`;
         const st = steps[i - 1];
         return `${st.label}: ${st.delta >= 0 ? "+" : ""}${fmtNum(st.delta)} BOPD`;
@@ -167,7 +167,7 @@ function dumbbellOption(result: CfpRunResult): { option: EChartsOption; height: 
           const r = rows[p.dataIndex];
           return [
             `<b>${r.well}</b> (${r.pad}-Pad)`,
-            `Today: ${r.baseline_label} - ${fmtNum(r.baseline_oil)} BOPD`,
+            `Reference: ${r.baseline_label} - ${fmtNum(r.baseline_oil)} BOPD`,
             `Plan: ${r.plan_label} - ${fmtNum(r.plan_oil)} BOPD`,
             `Delta: ${r.plan_oil - r.baseline_oil >= 0 ? "+" : ""}${fmtNum(r.plan_oil - r.baseline_oil)} BOPD`,
           ].join("<br/>");
@@ -196,7 +196,7 @@ function dumbbellOption(result: CfpRunResult): { option: EChartsOption; height: 
           data: rows.map((r) => [r.baseline_oil, r.plan_oil]),
         },
         {
-          name: "Today",
+          name: "Reference",
           type: "scatter",
           symbolSize: 8,
           data: rows.map((r, i) => [r.baseline_oil, i]),
@@ -228,7 +228,7 @@ export function CfpResultCharts({ result }: { result: CfpRunResult }) {
           <Card padded={false} className="p-2">
             <p
               className="px-2 pt-1 text-xs font-semibold text-slate-600"
-              title="Total modeled oil across the run's wells at each PW discharge pressure - the efficiency frontier. Slate dot = today, crimson diamond = best plan, dashed line = 2,900 psi trip."
+              title="Total modeled oil across the run's wells at each PW discharge pressure - the efficiency frontier. Slate dot = modeled reference, crimson diamond = best supported plan, dashed line = 2,900 psi trip."
             >
               Modeled oil vs PW discharge
             </p>
@@ -238,7 +238,7 @@ export function CfpResultCharts({ result }: { result: CfpRunResult }) {
         {bridge && (
           <Card padded={false} className="p-2">
             <p className="px-2 pt-1 text-xs font-semibold text-slate-600">
-              Today to plan, by action
+              Reference to plan, by action
             </p>
             <ChartPanel option={bridge} height={300} zoom={{ xAxisIndex: "none", yAxisIndex: "none" }} />
           </Card>
@@ -247,7 +247,7 @@ export function CfpResultCharts({ result }: { result: CfpRunResult }) {
       {dumbbell && (
         <Card padded={false} className="p-2">
           <p className="px-2 pt-1 text-xs font-semibold text-slate-600">
-            Today vs plan by well
+            Reference vs plan by well
           </p>
           <ChartPanel option={dumbbell.option} height={dumbbell.height} zoom={{ xAxisIndex: [0], yAxisIndex: "none" }} />
         </Card>

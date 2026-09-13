@@ -83,7 +83,10 @@ def water_price(optimizer: "NetworkOptimizer") -> float:
     """
     lam = getattr(optimizer, "water_price", None)
     if lam is not None:
-        return max(0.0, float(lam))
+        value = float(lam)
+        if not np.isfinite(value):
+            raise ValueError("Water price must be finite")
+        return max(0.0, value)
     mwc, active = _marginal_wc_settings(optimizer)
     return marginal_wc_to_lambda(mwc) if active else 0.0
 
@@ -135,12 +138,14 @@ def derive_lambda(
 # motivated this: a well upsized 13C->15B for ~2 BOPD at +1,500 BPD PF).
 
 
-def _valid_configs(df: "pd.DataFrame") -> "pd.DataFrame":
+def _valid_configs(df: "pd.DataFrame", *, deduplicate: bool = True) -> "pd.DataFrame":
     """Batch-df rows the solver actually converged on (``error`` == "na" —
     the literal sentinel ``BatchPump._run_core`` writes on success). Falls
     back to ``qoil_std`` non-null when the "error" column isn't present
     (older/mocked frames), so this stays usable outside the full BatchPump
-    pipeline. Never mutates ``df``."""
+    pipeline. ``deduplicate=False`` counts successful simulations independently
+    of identical hardware outcomes removed from the decision set. Never mutates
+    ``df``."""
     if "error" in df.columns:
         err = df["error"]
         # "na" is the success sentinel; an empty / missing cell (mocked or
@@ -148,11 +153,13 @@ def _valid_configs(df: "pd.DataFrame") -> "pd.DataFrame":
         valid = df[err.isna() | err.astype(str).str.strip().isin(("na", ""))]
     else:
         valid = df
-    if "qoil_std" in valid.columns:
-        valid = valid[valid["qoil_std"].notna()]
+    # [LIBRARY change -> upstream PR to kwellis/woffl] Patch 46: a success
+    # marker does not make NaN, infinite or negative production rates usable.
+    from woffl.assembly.network import valid_rate_rows
+    valid = valid_rate_rows(valid)
     # [LIBRARY change -> upstream PR to kwellis/woffl] no changeout for an
     # exactly identical modeled outcome. Keep both candidates in batch reports.
-    if "pump_state" in valid:
+    if deduplicate and "pump_state" in valid:
         keys = [k for k in ("nozzle", "throat", "qoil_std", "lift_wat", "form_wat", "psu_solv", "sonic_status", "mach_te") if k in valid]
         valid = valid.sort_values("pump_state", kind="stable").drop_duplicates(keys)
     return valid
@@ -166,7 +173,8 @@ def _pareto_frontier(df: "pd.DataFrame", water_key: str) -> list[tuple[float, fl
     mutates ``df``."""
     if water_key not in df.columns or "qoil_std" not in df.columns:
         return []
-    pairs = df[[water_key, "qoil_std"]].dropna()
+    from woffl.assembly.network import valid_rate_rows
+    pairs = valid_rate_rows(df)[[water_key, "qoil_std"]].dropna()
     if pairs.empty:
         return []
     ordered = pairs.sort_values(by=[water_key, "qoil_std"], ascending=[True, False])
@@ -183,13 +191,28 @@ def _pareto_frontier(df: "pd.DataFrame", water_key: str) -> list[tuple[float, fl
 def _frontier_segments(
     frontier: list[tuple[float, float]],
 ) -> list[tuple[float, float]]:
-    """(water_delta, oil_per_water) marginal segments along a frontier,
-    anchored at the origin (a well producing nothing costs nothing). The
-    first frontier point sitting exactly at water=0 contributes no segment —
-    it's free oil, nothing to pool against the budget."""
-    segments = []
-    prev_water, prev_oil = 0.0, 0.0
+    """Marginal segments of the upper concave hull, anchored at shutdown.
+
+    This is a continuous relaxation diagnostic, not the discrete allocation's
+    exact marginal value. Concavification prevents pooling a high-return later
+    step before buying its lower-return prerequisite. Free oil at zero water
+    changes the origin's oil but consumes no budget.
+    """
+    # [LIBRARY change -> upstream PR to kwellis/woffl] Patch 46.
+    hull = [(0.0, 0.0)]
     for water, oil in frontier:
+        if water == 0:
+            hull[0] = (0.0, max(hull[0][1], oil))
+            continue
+        while len(hull) >= 2:
+            a, b = hull[-2:]
+            if (b[1] - a[1]) * (water - b[0]) > (oil - b[1]) * (b[0] - a[0]):
+                break
+            hull.pop()
+        hull.append((water, oil))
+    segments = []
+    prev_water, prev_oil = hull[0]
+    for water, oil in hull[1:]:
         dw = water - prev_water
         if dw > 0:
             segments.append((dw, (oil - prev_oil) / dw))
@@ -408,306 +431,115 @@ class _WellView:
         self.df = df
 
 
-def milp_optimization(
-    optimizer: "NetworkOptimizer", water_key: str = "lift_wat"
-) -> list["OptimizationResult"]:
-    """Optimal allocation via mixed-integer linear programming.
-
-    Formulates pump selection as a multiple-choice knapsack problem and
-    solves it exactly using MILP.  Each well may be assigned at most one
-    pump configuration (nozzle/throat).  The solver maximizes total oil
-    production subject to the water-budget constraint.
-
-    Args:
-        optimizer: NetworkOptimizer instance with batch results already run
-        water_key: Which water stream the budget constrains. "lift_wat"
-            (power fluid only — PF-only POPS pads, where formation water
-            passes through to the plant) or "totl_wat" (lift + formation —
-            full-POPS pads whose pad pump handles the entire stream).
-
-    Returns:
-        List of OptimizationResult objects
-
-    Raises:
-        ValueError: If batch results haven't been run or water_key unknown
-    """
-    from scipy.optimize import Bounds, LinearConstraint, milp as scipy_milp
-    import warnings
-    from scipy.sparse import csc_array
-    from scipy.sparse import vstack as sp_vstack
-
-    from woffl.assembly.network_optimizer import OptimizationResult
-
-    def milp(**kwargs):
-        # [LIBRARY change -> upstream PR to kwellis/woffl] SciPy forwards
-        # HiGHS options not in its small public option set. Bound native
-        # threads as well as process count; suppress only this known notice.
-        kwargs.setdefault("options", {})["threads"] = 1
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message="Unrecognized options detected:.*threads.*",
-                                    category=RuntimeWarning)
-            return scipy_milp(**kwargs)
+def _allocation_candidates(optimizer):
+    """One validated candidate/performance table for both allocation engines."""
+    from woffl.assembly.network import valid_rate_rows
 
     if not optimizer.batch_results:
         raise ValueError("Must run batch simulations before optimization")
+    names, candidates, excluded = [], [], {}
+    for well in optimizer.wells:
+        name = well.well_name
+        bp = optimizer.batch_results.get(name)
+        rows = []
+        if bp is not None:
+            for _, row in _valid_configs(bp.df).iterrows():
+                perf = optimizer.get_pump_performance(name, row["nozzle"], row["throat"],
+                    **({"pump_state": row["pump_state"]} if "pump_state" in row else {}))
+                if perf is None:
+                    continue
+                rows.append(dict(nozzle=row["nozzle"], throat=row["throat"],
+                    pump_state=perf.get("pump_state"), qoil_std=perf["oil_rate"],
+                    lift_wat=perf["lift_water"], form_wat=perf["formation_water"],
+                    totl_wat=perf["total_water"], perf=perf))
+        df = pd.DataFrame(rows, columns=["nozzle", "throat", "pump_state", "qoil_std",
+                                        "lift_wat", "form_wat", "totl_wat", "perf"])
+        df = valid_rate_rows(df).reset_index(drop=True)
+        names.append(name)
+        candidates.append(df)
+        excluded[name] = int(len(bp.df) - len(df)) if bp is not None else 0
+    return names, candidates, excluded
 
-    try:
-        perf_key = {"lift_wat": "lift_water", "totl_wat": "total_water"}[water_key]
-        marg_key = {
-            "lift_wat": "marginal_oil_lift_water",
-            "totl_wat": "marginal_oil_total_water",
-        }[water_key]
-    except KeyError:
-        raise ValueError(
-            f"Unknown water_key: {water_key}. Use 'lift_wat' or 'totl_wat'"
-        ) from None
 
-    # ── Build decision-variable list ──────────────────────────────────────
-    # Each variable x[k] ∈ {0,1} represents selecting config k for a well.
-    configs: list[dict] = []
-    well_names: list[str] = []
+def _allocate(optimizer, water_key, method):
+    # [LIBRARY change -> upstream PR to kwellis/woffl] Patch 46: common valid
+    # candidates, required online wells and explicit successful/failure status.
+    from woffl.assembly.network import AllocationError, optimize_jet_pumps, solve_milp_choices
+    from woffl.assembly.network_optimizer import OptimizationResult
 
-    # Every converged config is a candidate. The economics live in the
-    # OBJECTIVE (oil - λ·water), not in a pre-filter: the old marginal-WC
-    # gate read a per-row ratio that existed only on semifinalist rows and
-    # failed open elsewhere (review 2026-09-01, OPT-A3), and it could not
-    # re-spend the water it freed. See docs/optimization_redesign_2026-09.md.
-    lam = water_price(optimizer)
+    if water_key not in _MARG_COLS:
+        raise ValueError(f"Unknown water_key: {water_key}. Use 'lift_wat' or 'totl_wat'")
+    optimizer.optimization_results = None
+    optimizer.allocation_status = None
+    if not optimizer.batch_results:
+        raise ValueError("Must run batch simulations before optimization")
     optimizer.mwc_excluded = {}
     optimizer.mwc_excluded_wells = []
-    optimizer.lambda_used = lam
+    optimizer.mckp_skipped = []
+    required = set(getattr(optimizer, "required_wells", None) or ())
+    excluded = {}
+    try:
+        names, candidates, excluded = _allocation_candidates(optimizer)
+        optimizer.mckp_skipped = [name for name, df in zip(names, candidates) if df.empty]
+        lam = water_price(optimizer)
+        optimizer.lambda_used = lam
+        if method == "milp":
+            selected, status = solve_milp_choices(names, candidates, optimizer.power_fluid.total_rate,
+                                                  water_key, lam, required)
+        else:
+            table = optimize_jet_pumps(
+                well_list=[_WellView(name, df) for name, df in zip(names, candidates)],
+                qpf_tot=optimizer.power_fluid.total_rate, water_key=water_key,
+                allow_shutin=True, water_price=lam, all_configs=True, required_wells=required)
+            status = dict(table.attrs.get("allocation_status") or {})
+            selected = {}
+            for _, row in table.iterrows():
+                if row["nozzle"] == "off":
+                    continue
+                i = names.index(row["wellname"])
+                df = candidates[i]
+                mask = (df["nozzle"] == row["nozzle"]) & (df["throat"] == row["throat"])
+                state = row.get("pump_state")
+                if pd.notna(state):
+                    mask &= df["pump_state"] == state
+                hits = df.index[mask]
+                if not len(hits):
+                    raise AllocationError(f"Selected pump for {row['wellname']} has no matching performance", "error")
+                selected[row["wellname"]] = (i, int(hits[0]))
+        status.update(excluded_candidates=excluded,
+                      unsupported_wells=[name for name, df in zip(names, candidates) if df.empty])
+        optimizer.allocation_status = status
+    except AllocationError as exc:
+        optimizer.allocation_status = {**exc.details, "excluded_candidates": excluded}
+        raise
+    except Exception as exc:
+        error = AllocationError(f"{method.upper()} allocation error: {exc}", "error", solver=method)
+        optimizer.allocation_status = error.details
+        raise error from exc
 
-    for well in optimizer.wells:
-        wn = well.well_name
-        if wn not in optimizer.batch_results:
-            continue
-        batch_pump = optimizer.batch_results[wn]
-        successful = _valid_configs(batch_pump.df)
-        for _, row in successful.iterrows():
-            perf = optimizer.get_pump_performance(wn, row["nozzle"], row["throat"], **({"pump_state": row["pump_state"]} if "pump_state" in row else {}))
-            if perf is None:
-                continue
-            configs.append(
-                {
-                    "well_name": wn,
-                    "nozzle": row["nozzle"],
-                    "throat": row["throat"],
-                    "perf": perf,
-                }
-            )
-        if wn not in well_names:
-            well_names.append(wn)
-
-    if not configs:
-        optimizer.optimization_results = []
-        return []
-
-    n = len(configs)
-    n_wells = len(well_names)
-    well_idx = {wn: i for i, wn in enumerate(well_names)}
-
-    # ── Objective: maximize Σ (oil − λ·water)  →  minimize the negative ────
-    c = np.array(
-        [-(cfg["perf"]["oil_rate"] - lam * cfg["perf"][perf_key]) for cfg in configs]
-    )
-
-    # ── Constraint 1: at most one config per well ─────────────────────────
-    row_ids, col_ids, vals = [], [], []
-    for k, cfg in enumerate(configs):
-        row_ids.append(well_idx[cfg["well_name"]])
-        col_ids.append(k)
-        vals.append(1.0)
-    A_well = csc_array((vals, (row_ids, col_ids)), shape=(n_wells, n))
-
-    # ── Constraint 2: Σ water[k]*x[k] ≤ budget ──────────────────────────
-    # water_key picks the constrained stream: lift water (PF budget) or
-    # lift + formation (full-POPS pad pump limit).
-    pf_vals = np.array([[cfg["perf"][perf_key] for cfg in configs]])
-    A_pf = csc_array(pf_vals)
-
-    A = sp_vstack([A_well, A_pf], format="csc")
-    b_upper = np.concatenate([np.ones(n_wells), [optimizer.power_fluid.total_rate]])
-    b_lower = np.full(n_wells + 1, -np.inf)
-
-    constraints = LinearConstraint(A, lb=b_lower, ub=b_upper)
-
-    # ── Bounds & integrality ──────────────────────────────────────────────
-    bounds = Bounds(lb=np.zeros(n), ub=np.ones(n))
-    integrality = np.ones(n)  # all binary
-
-    result = milp(c=c, constraints=constraints, bounds=bounds, integrality=integrality,
-                  options={"mip_rel_gap": 0.0})
-
-    if not result.success:
-        optimizer.optimization_results = []
-        return []
-
-    # ── Extract selected configurations ───────────────────────────────────
-    # [LIBRARY change -> upstream PR to kwellis/woffl] O02: preserve the
-    # optimal priced objective, then maximize oil among tied allocations.
-    if lam > 0:
-        oil_objective = -np.array([cfg["perf"]["oil_rate"] for cfg in configs])
-        tied = milp(
-            c=oil_objective,
-            constraints=[constraints, LinearConstraint(c, result.fun, result.fun)],
-            bounds=bounds, integrality=integrality,
-            options={"mip_rel_gap": 0.0},
-        )
-        if tied.success and float(c @ np.rint(tied.x)) <= result.fun + 1e-7:
-            result = tied
-    selected = np.where(result.x > 0.5)[0]
-
+    marginal = "marginal_oil_lift_water" if water_key == "lift_wat" else "marginal_oil_total_water"
     results = []
-    for k in selected:
-        cfg = configs[k]
-        perf = cfg["perf"]
-        results.append(
-            OptimizationResult(
-                well_name=cfg["well_name"],
-                recommended_nozzle=cfg["nozzle"],
-                recommended_throat=cfg["throat"],
-                allocated_power_fluid=perf["lift_water"],
-                predicted_oil_rate=perf["oil_rate"],
-                predicted_formation_water=perf["formation_water"],
-                predicted_lift_water=perf["lift_water"],
-                suction_pressure=perf["suction_pressure"],
-                marginal_oil_rate=perf[marg_key],
-                sonic_status=perf["sonic_status"],
-                mach_te=perf["mach_te"],
-                # [LIBRARY change -> upstream PR to kwellis/woffl]
-                pump_state=perf.get("pump_state"),
-            )
-        )
-
+    for name, (i, j) in selected.items():
+        row = candidates[i].iloc[j]
+        perf = row["perf"]
+        results.append(OptimizationResult(
+            well_name=name, recommended_nozzle=row["nozzle"], recommended_throat=row["throat"],
+            allocated_power_fluid=perf["lift_water"], predicted_oil_rate=perf["oil_rate"],
+            predicted_formation_water=perf["formation_water"], predicted_lift_water=perf["lift_water"],
+            suction_pressure=perf["suction_pressure"], marginal_oil_rate=perf[marginal],
+            sonic_status=perf["sonic_status"], mach_te=perf["mach_te"], pump_state=perf.get("pump_state")))
     optimizer.optimization_results = results
     return results
 
 
-def mckp_optimization(
-    optimizer: "NetworkOptimizer", water_key: str = "lift_wat"
-) -> list["OptimizationResult"]:
-    """Optimal allocation via Multi-Choice Knapsack (OR-Tools CP-SAT).
+def milp_optimization(optimizer: "NetworkOptimizer", water_key: str = "lift_wat") -> list["OptimizationResult"]:
+    """Original-unit MILP allocation; status is retained on the optimizer."""
+    return _allocate(optimizer, water_key, "milp")
 
-    Bridges the GUI's NetworkOptimizer interface to
-    network.optimize_jet_pumps() which uses the CP-SAT constraint solver.
 
-    Each well picks exactly one jet pump from its semi-finalists to maximize
-    total oil production subject to the power-fluid budget constraint.
-
-    Args:
-        optimizer: NetworkOptimizer instance with batch results already run
-
-    Returns:
-        List of OptimizationResult objects
-
-    Raises:
-        ValueError: If batch results haven't been run
-    """
-    from woffl.assembly.network import optimize_jet_pumps
-    from woffl.assembly.network_optimizer import OptimizationResult
-
-    if not optimizer.batch_results:
-        raise ValueError("Must run batch simulations before optimization")
-
-    try:
-        marg_col = _MARG_COLS[water_key]
-        marg_perf_key = {
-            "lift_wat": "marginal_oil_lift_water",
-            "totl_wat": "marginal_oil_total_water",
-        }[water_key]
-    except KeyError:
-        raise ValueError(
-            f"Unknown water_key: {water_key}. Use 'lift_wat' or 'totl_wat'"
-        ) from None
-
-    lam = water_price(optimizer)
-    optimizer.lambda_used = lam
-
-    # The SAME candidate set as the MILP: every converged config (not the
-    # upstream "semi-finalist" subset, which kept only the best throat per
-    # nozzle and so could never pick 12A over 12B). One bad well contributes
-    # no configs rather than aborting the run.
-    batch_pumps = []
-    skipped = []
-    for well in optimizer.wells:
-        wn = well.well_name
-        if wn not in optimizer.batch_results:
-            continue
-        df = _valid_configs(optimizer.batch_results[wn].df)
-        if df.empty:
-            skipped.append(wn)
-            continue
-        batch_pumps.append(_WellView(wn, df))
-
-    optimizer.mwc_excluded = {}
-    optimizer.mwc_excluded_wells = []
-    optimizer.mckp_skipped = skipped
-
-    if skipped:
-        logger.warning(
-            "MCKP: skipping %d well(s) with no converged config: %s",
-            len(skipped),
-            ", ".join(skipped),
-        )
-
-    if not batch_pumps:
-        optimizer.optimization_results = []
-        return []
-
-    # Call upstream MCKP solver. allow_shutin=True matches the MILP's
-    # "at most one" semantics (implicit shut-in when a well cannot be fed);
-    # with exactly-one the model was INFEASIBLE at any tight budget and the
-    # RuntimeError below escaped every caller, so one high-header trial
-    # killed a whole I/M/E sweep (review 2026-09-01, OPT-A4). water_price and
-    # all_configs make its objective and candidate set the MILP's.
-    try:
-        mckp_df = optimize_jet_pumps(
-            well_list=batch_pumps,
-            qpf_tot=optimizer.power_fluid.total_rate,
-            water_key=water_key,
-            allow_shutin=True,
-            water_price=lam,
-            all_configs=True,
-        )
-    except RuntimeError as exc:
-        logger.warning("MCKP: no feasible allocation at this budget (%s); trial empty", exc)
-        optimizer.optimization_results = []
-        return []
-
-    # Convert MCKP result DataFrame to OptimizationResult objects
-    results = []
-    for _, row in mckp_df.iterrows():
-        well_name = row["wellname"]
-        nozzle = str(row["nozzle"])
-        throat = str(row["throat"])
-
-        # Look up full performance from batch results
-        perf = optimizer.get_pump_performance(well_name, nozzle, throat, **({"pump_state": row["pump_state"]} if "pump_state" in row else {}))
-        if perf is None:
-            continue
-
-        results.append(
-            OptimizationResult(
-                well_name=well_name,
-                recommended_nozzle=nozzle,
-                recommended_throat=throat,
-                allocated_power_fluid=perf["lift_water"],
-                predicted_oil_rate=perf["oil_rate"],
-                predicted_formation_water=perf["formation_water"],
-                predicted_lift_water=perf["lift_water"],
-                suction_pressure=perf["suction_pressure"],
-                # Follow the constrained stream, matching the MILP path (a
-                # totl_wat run used to report lift-water marginals here).
-                marginal_oil_rate=perf[marg_perf_key],
-                sonic_status=perf["sonic_status"],
-                mach_te=perf["mach_te"],
-                # [LIBRARY change -> upstream PR to kwellis/woffl]
-                pump_state=perf.get("pump_state"),
-            )
-        )
-
-    optimizer.optimization_results = results
-    return results
+def mckp_optimization(optimizer: "NetworkOptimizer", water_key: str = "lift_wat") -> list["OptimizationResult"]:
+    """CP-SAT allocation with precise-resource refinement and typed failure."""
+    return _allocate(optimizer, water_key, "mckp")
 
 
 def optimize(

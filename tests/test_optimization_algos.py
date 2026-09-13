@@ -304,7 +304,7 @@ class TestMckpOptimization:
         assert len(results) <= 1
         assert sum(r.allocated_power_fluid for r in results) <= 400.0 + 1
 
-    def test_solver_runtime_error_returns_empty_trial(self, monkeypatch):
+    def test_solver_runtime_error_remains_distinct_from_empty_trial(self, monkeypatch):
         import woffl.assembly.network as network_mod
 
         opt = _make_optimizer_with_results()
@@ -314,8 +314,10 @@ class TestMckpOptimization:
 
         # mckp_optimization imports the solver locally from woffl.assembly.network
         monkeypatch.setattr(network_mod, "optimize_jet_pumps", boom)
-        assert mckp_optimization(opt) == []
-        assert opt.optimization_results == []
+        with pytest.raises(network_mod.AllocationError, match="MCKP infeasible"):
+            mckp_optimization(opt)
+        assert opt.optimization_results is None
+        assert opt.allocation_status["status"] == "error"
 
     def test_one_pump_per_well(self):
         """MCKP should assign at most one pump config per well."""

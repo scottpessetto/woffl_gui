@@ -1,0 +1,511 @@
+{
+  "assumptions": "Real plant curves and real MILP; synthetic constant machine-water well responses; no field qualification.",
+  "plant_windows": {
+    "S": {
+      "flow": [
+        22950.0,
+        55080.0
+      ],
+      "pressure": [
+        2314.7639178630384,
+        3641.3933501132756
+      ],
+      "budget_at_floor": 55080.0,
+      "budget_at_ceiling": 55080.0,
+      "water_key": "lift_wat"
+    },
+    "I": {
+      "flow": [
+        0.0,
+        55444.58261063222
+      ],
+      "pressure": [
+        1600.0,
+        3500.0
+      ],
+      "budget_at_floor": 55444.58261063222,
+      "budget_at_ceiling": 32293.510315834912,
+      "water_key": "lift_wat"
+    },
+    "M": {
+      "flow": [
+        25053.0,
+        104394.0
+      ],
+      "pressure": [
+        1700.0,
+        3500.0
+      ],
+      "budget_at_floor": 104393.99999999993,
+      "budget_at_ceiling": 74780.41179739108,
+      "water_key": "totl_wat"
+    },
+    "E": {
+      "flow": [
+        8100.0,
+        32400.0
+      ],
+      "pressure": [
+        3000.0,
+        3500.0
+      ],
+      "budget_at_floor": 32400.0,
+      "budget_at_ceiling": 32400.0,
+      "water_key": "totl_wat"
+    }
+  },
+  "cases": {
+    "S_over_capacity": {
+      "expected": 6,
+      "selected": 2,
+      "selected_names": [
+        "SYN-0",
+        "SYN-1"
+      ],
+      "header_psi": 3125.3838187058436,
+      "machine_water": 40000.0,
+      "lift_water": 40000.0,
+      "budget": 55080.0,
+      "oil": 790.0,
+      "feasible": null,
+      "qualified": 2,
+      "rejected": 0,
+      "converged": true,
+      "in_range": true,
+      "actual_delivered_header": 3130.600207297689,
+      "actual_over_capacity": false,
+      "closure_error_psi": 5.216388591845316,
+      "sweep": [
+        {
+          "header_psi": 3702.7638227623793,
+          "total_pf_bpd": 20000.0,
+          "total_machine_water_bpd": 20000.0,
+          "total_oil_bopd": 400.0,
+          "objective_bopd_equiv": 400.0,
+          "lambda": 0.0,
+          "total_flow_bpd": 22950.0,
+          "search_header_psi": 3641.3933501132756,
+          "converged": true,
+          "coupling_residual_psi": -7.1851608755941925,
+          "coupling_error": null
+        },
+        {
+          "header_psi": 3702.7638227623793,
+          "total_pf_bpd": 20000.0,
+          "total_machine_water_bpd": 20000.0,
+          "total_oil_bopd": 400.0,
+          "objective_bopd_equiv": 400.0,
+          "lambda": 0.0,
+          "total_flow_bpd": 39015.0,
+          "search_header_psi": 3170.753947343151,
+          "converged": true,
+          "coupling_residual_psi": -7.1851608755941925,
+          "coupling_error": null
+        },
+        {
+          "header_psi": 3125.3838187058436,
+          "total_pf_bpd": 40000.0,
+          "total_machine_water_bpd": 40000.0,
+          "total_oil_bopd": 790.0,
+          "objective_bopd_equiv": 790.0,
+          "lambda": 0.0,
+          "total_flow_bpd": 55080.0,
+          "search_header_psi": 2314.7639178630384,
+          "converged": true,
+          "coupling_residual_psi": 5.216388591845316,
+          "coupling_error": null
+        }
+      ]
+    },
+    "I_over_capacity": {
+      "expected": 6,
+      "selected": 2,
+      "selected_names": [
+        "SYN-0",
+        "SYN-1"
+      ],
+      "header_psi": 1600.0,
+      "machine_water": 40000.0,
+      "lift_water": 40000.0,
+      "budget": 55444.58261063222,
+      "oil": 790.0,
+      "feasible": true,
+      "qualified": null,
+      "rejected": null,
+      "converged": true,
+      "in_range": true,
+      "actual_delivered_header": 1600.0,
+      "actual_over_capacity": false,
+      "closure_error_psi": 0.0,
+      "sweep": [
+        {
+          "header_psi": 1600.0,
+          "total_pf_bpd": 40000.0,
+          "total_machine_water_bpd": 40000.0,
+          "total_oil_bopd": 790.0,
+          "objective_bopd_equiv": 790.0,
+          "lambda": 0.0
+        },
+        {
+          "header_psi": 2550.0,
+          "total_pf_bpd": 40000.0,
+          "total_machine_water_bpd": 40000.0,
+          "total_oil_bopd": 790.0,
+          "objective_bopd_equiv": 790.0,
+          "lambda": 0.0
+        },
+        {
+          "header_psi": 3500.0,
+          "total_pf_bpd": 20000.0,
+          "total_machine_water_bpd": 20000.0,
+          "total_oil_bopd": 400.0,
+          "objective_bopd_equiv": 400.0,
+          "lambda": 0.0
+        }
+      ]
+    },
+    "M_over_capacity": {
+      "expected": 6,
+      "selected": 5,
+      "selected_names": [
+        "SYN-0",
+        "SYN-1",
+        "SYN-2",
+        "SYN-3",
+        "SYN-4"
+      ],
+      "header_psi": 1700.0,
+      "machine_water": 100000.0,
+      "lift_water": 98100.0,
+      "budget": 104393.99999999993,
+      "oil": 1900.0,
+      "feasible": true,
+      "qualified": null,
+      "rejected": null,
+      "converged": true,
+      "in_range": true,
+      "actual_delivered_header": 1700.0,
+      "actual_over_capacity": false,
+      "closure_error_psi": 0.0,
+      "sweep": [
+        {
+          "header_psi": 1700.0,
+          "total_pf_bpd": 98100.0,
+          "total_machine_water_bpd": 100000.0,
+          "total_oil_bopd": 1900.0,
+          "objective_bopd_equiv": 1900.0,
+          "lambda": 0.0
+        },
+        {
+          "header_psi": 2600.0,
+          "total_pf_bpd": 98100.0,
+          "total_machine_water_bpd": 100000.0,
+          "total_oil_bopd": 1900.0,
+          "objective_bopd_equiv": 1900.0,
+          "lambda": 0.0
+        },
+        {
+          "header_psi": 3500.0,
+          "total_pf_bpd": 58830.0,
+          "total_machine_water_bpd": 60000.0,
+          "total_oil_bopd": 1170.0,
+          "objective_bopd_equiv": 1170.0,
+          "lambda": 0.0
+        }
+      ]
+    },
+    "E_over_capacity": {
+      "expected": 6,
+      "selected": 1,
+      "selected_names": [
+        "SYN-0"
+      ],
+      "header_psi": 3000.0,
+      "machine_water": 20000.0,
+      "lift_water": 19600.0,
+      "budget": 32400.0,
+      "oil": 400.0,
+      "feasible": true,
+      "qualified": null,
+      "rejected": null,
+      "converged": true,
+      "in_range": true,
+      "actual_delivered_header": 3000.0,
+      "actual_over_capacity": false,
+      "closure_error_psi": 0.0,
+      "sweep": [
+        {
+          "header_psi": 3000.0,
+          "total_pf_bpd": 19600.0,
+          "total_machine_water_bpd": 20000.0,
+          "total_oil_bopd": 400.0,
+          "objective_bopd_equiv": 400.0,
+          "lambda": 0.0
+        },
+        {
+          "header_psi": 3250.0,
+          "total_pf_bpd": 19600.0,
+          "total_machine_water_bpd": 20000.0,
+          "total_oil_bopd": 400.0,
+          "objective_bopd_equiv": 400.0,
+          "lambda": 0.0
+        },
+        {
+          "header_psi": 3500.0,
+          "total_pf_bpd": 19600.0,
+          "total_machine_water_bpd": 20000.0,
+          "total_oil_bopd": 400.0,
+          "objective_bopd_equiv": 400.0,
+          "lambda": 0.0
+        }
+      ]
+    },
+    "E_low_branch_pinned": {
+      "expected": 1,
+      "selected": 1,
+      "selected_names": [
+        "SYN-0"
+      ],
+      "header_psi": 3500.0,
+      "machine_water": 4000.0,
+      "lift_water": 3600.0,
+      "budget": 32400.0,
+      "oil": 400.0,
+      "feasible": true,
+      "qualified": null,
+      "rejected": null,
+      "converged": true,
+      "in_range": true,
+      "actual_delivered_header": 3229.8099315712484,
+      "actual_over_capacity": false,
+      "closure_error_psi": -270.1900684287516,
+      "sweep": [
+        {
+          "header_psi": 3500.0,
+          "total_pf_bpd": 3600.0,
+          "total_machine_water_bpd": 4000.0,
+          "total_oil_bopd": 400.0,
+          "objective_bopd_equiv": 400.0,
+          "lambda": 0.0
+        }
+      ]
+    },
+    "E_low_branch_swept": {
+      "expected": 1,
+      "selected": 1,
+      "selected_names": [
+        "SYN-0"
+      ],
+      "header_psi": 3500.0,
+      "machine_water": 4000.0,
+      "lift_water": 3500.0,
+      "budget": 32400.0,
+      "oil": 500.0,
+      "feasible": true,
+      "qualified": null,
+      "rejected": null,
+      "converged": true,
+      "in_range": true,
+      "actual_delivered_header": 3229.8099315712484,
+      "actual_over_capacity": false,
+      "closure_error_psi": -270.1900684287516,
+      "sweep": [
+        {
+          "header_psi": 3000.0,
+          "total_pf_bpd": 3600.0,
+          "total_machine_water_bpd": 4000.0,
+          "total_oil_bopd": 400.0,
+          "objective_bopd_equiv": 400.0,
+          "lambda": 0.0
+        },
+        {
+          "header_psi": 3250.0,
+          "total_pf_bpd": 3550.0,
+          "total_machine_water_bpd": 4000.0,
+          "total_oil_bopd": 450.0,
+          "objective_bopd_equiv": 450.0,
+          "lambda": 0.0
+        },
+        {
+          "header_psi": 3500.0,
+          "total_pf_bpd": 3500.0,
+          "total_machine_water_bpd": 4000.0,
+          "total_oil_bopd": 500.0,
+          "objective_bopd_equiv": 500.0,
+          "lambda": 0.0
+        }
+      ]
+    },
+    "S_below_minimum": {
+      "expected": 1,
+      "selected": 1,
+      "selected_names": [
+        "SYN-0"
+      ],
+      "header_psi": 3702.7638227623793,
+      "machine_water": 20000.0,
+      "lift_water": 20000.0,
+      "budget": 55080.0,
+      "oil": 400.0,
+      "feasible": null,
+      "qualified": 1,
+      "rejected": 0,
+      "converged": true,
+      "in_range": false,
+      "actual_delivered_header": 3695.578661886785,
+      "actual_over_capacity": false,
+      "closure_error_psi": -7.1851608755941925,
+      "sweep": [
+        {
+          "header_psi": 3702.7638227623793,
+          "total_pf_bpd": 20000.0,
+          "total_machine_water_bpd": 20000.0,
+          "total_oil_bopd": 400.0,
+          "objective_bopd_equiv": 400.0,
+          "lambda": 0.0,
+          "total_flow_bpd": 22950.0,
+          "search_header_psi": 3641.3933501132756,
+          "converged": true,
+          "coupling_residual_psi": -7.1851608755941925,
+          "coupling_error": null
+        },
+        {
+          "header_psi": 3702.7638227623793,
+          "total_pf_bpd": 20000.0,
+          "total_machine_water_bpd": 20000.0,
+          "total_oil_bopd": 400.0,
+          "objective_bopd_equiv": 400.0,
+          "lambda": 0.0,
+          "total_flow_bpd": 39015.0,
+          "search_header_psi": 3170.753947343151,
+          "converged": true,
+          "coupling_residual_psi": -7.1851608755941925,
+          "coupling_error": null
+        },
+        {
+          "header_psi": 3702.7638227623793,
+          "total_pf_bpd": 20000.0,
+          "total_machine_water_bpd": 20000.0,
+          "total_oil_bopd": 400.0,
+          "objective_bopd_equiv": 400.0,
+          "lambda": 0.0,
+          "total_flow_bpd": 55080.0,
+          "search_header_psi": 2314.7639178630384,
+          "converged": true,
+          "coupling_residual_psi": -7.1851608755941925,
+          "coupling_error": null
+        }
+      ]
+    },
+    "S_failed_far_bracket": {
+      "expected": 1,
+      "selected": 0,
+      "selected_names": [],
+      "header_psi": 3886.8752407096904,
+      "machine_water": 0,
+      "lift_water": 0,
+      "budget": 55080.0,
+      "oil": 0,
+      "feasible": null,
+      "qualified": 1,
+      "rejected": 1,
+      "converged": true,
+      "in_range": false,
+      "actual_delivered_header": null,
+      "actual_over_capacity": false,
+      "closure_error_psi": null,
+      "sweep": [
+        {
+          "header_psi": 3886.8752407096904,
+          "total_pf_bpd": 0,
+          "total_machine_water_bpd": 0,
+          "total_oil_bopd": 0,
+          "objective_bopd_equiv": 0.0,
+          "lambda": 0.0,
+          "total_flow_bpd": 22950.0,
+          "search_header_psi": 3641.3933501132756,
+          "converged": true,
+          "coupling_residual_psi": 0.0,
+          "coupling_error": null
+        },
+        {
+          "header_psi": 3886.8752407096904,
+          "total_pf_bpd": 0,
+          "total_machine_water_bpd": 0,
+          "total_oil_bopd": 0,
+          "objective_bopd_equiv": 0.0,
+          "lambda": 0.0,
+          "total_flow_bpd": 39015.0,
+          "search_header_psi": 3170.753947343151,
+          "converged": true,
+          "coupling_residual_psi": 0.0,
+          "coupling_error": null
+        },
+        {
+          "header_psi": 2314.7639178630384,
+          "total_pf_bpd": 40000.0,
+          "total_machine_water_bpd": 40000.0,
+          "total_oil_bopd": 400.0,
+          "objective_bopd_equiv": 400.0,
+          "lambda": 0.0,
+          "total_flow_bpd": 55080.0,
+          "search_header_psi": 2314.7639178630384,
+          "converged": false,
+          "coupling_residual_psi": 815.8362894346506,
+          "coupling_error": "SYN-0 selected pump does not solve at 3886.9 psi"
+        }
+      ]
+    },
+    "E_suction_above_cap": {
+      "expected": 1,
+      "selected": 1,
+      "selected_names": [
+        "SYN-0"
+      ],
+      "header_psi": 3600.0,
+      "machine_water": 20000.0,
+      "lift_water": 19600.0,
+      "budget": 32400.0,
+      "oil": 400.0,
+      "feasible": true,
+      "qualified": null,
+      "rejected": null,
+      "converged": true,
+      "in_range": true,
+      "actual_delivered_header": 3600.0,
+      "actual_over_capacity": false,
+      "closure_error_psi": 0.0,
+      "sweep": [
+        {
+          "header_psi": 3600.0,
+          "total_pf_bpd": 19600.0,
+          "total_machine_water_bpd": 20000.0,
+          "total_oil_bopd": 400.0,
+          "objective_bopd_equiv": 400.0,
+          "lambda": 0.0
+        }
+      ]
+    }
+  },
+  "E_amp_report": {
+    "flow": 18000.0,
+    "actual_frontier": 3673.4373242686397,
+    "envelope": {
+      "flow": 18000.0,
+      "max_discharge_psi": 3673.4373242686397,
+      "per_pump_bpd": 18000.0,
+      "feasible": true,
+      "recirc": false,
+      "pumps": [
+        {
+          "name": "SM25000 - 26 stg (in well)",
+          "n": 1,
+          "hz": 60.0,
+          "dP": 873.4373242686397,
+          "amps": 100.3161432,
+          "amp_limit": 50.0
+        }
+      ]
+    }
+  }
+}

@@ -369,7 +369,8 @@ export interface OptimizeRunRequest {
   kind: "pad" | "cfp";
   pad: RunPad | null;
   offline: string[];
-  future: { name: string; match: string; pad?: string }[];
+  future: { name: string; match: string; pad?: string; require_online?: boolean; nozzle?: string; throat?: string }[];
+  required_wells?: string[];
   nozzles: string[];
   throats: string[];
   /** "jpco" resizes pumps; "choke" holds every installed pump and only
@@ -377,8 +378,8 @@ export interface OptimizeRunRequest {
   strategy: "jpco" | "choke";
   method: "milp" | "mckp";
   /** Water price λ, BOPD given up per BPD of lift water, in the knapsack
-   *  objective oil − λ·water. null = auto (the plant budget's own shadow
-   *  price). Wins over marginal_wc when both are set. */
+   *  objective oil − λ·water. null = maximum oil within capacity.
+   *  Wins over marginal_wc when both are set. */
   lambda_bopd_per_bpd: number | null;
   marginal_wc: number | null; // legacy gate, mapped to λ = (1 − wc) / wc
   parsimony_bopd: number; // DEPRECATED: accepted and ignored by the server
@@ -391,6 +392,7 @@ export interface OptimizeRunRequest {
   p0_psi: number;
   psi_per_kbpd: number;
   c_pad_pf_psi: number;
+  cfp_pad_pf_psi?: Record<string, number>;
   cfp_pads: string[]; // which of B/G/C/J participate (cfp runs)
   /** E-Pad booster configuration. None of these four is a measured E-Pad
    *  tag - no SCADA point, no motor nameplate and no piping rating came with
@@ -569,7 +571,7 @@ export interface CfpPlanAction {
 }
 
 export interface CfpPlan {
-  lam: number;
+  lam: number | null;
   pressure: number;
   oil: number;
   water: number;
@@ -577,6 +579,15 @@ export interface CfpPlan {
   actions: CfpPlanAction[];
   n_changes: number;
   choices: Record<string, string>;
+}
+
+export interface CfpPair {
+  bring_on: Pick<CfpMoveRow, "well" | "to" | "from" | "type">;
+  offset: Pick<CfpMoveRow, "well" | "to" | "from" | "type">;
+  fleet_oil_delta: number;
+  pressure_after: number;
+  pressure_delta: number;
+  at_trip: boolean;
 }
 
 /** Today-vs-plan per well, read off the same response surfaces. */
@@ -604,11 +615,14 @@ export interface CfpRunResult {
     lambda_bopd_per_psi: number | null;
     singles: CfpMoveRow[];
     n_positive_singles: number;
-    pairs: Record<string, unknown>[];
+    pairs: CfpPair[];
     frontier: CfpFrontierPoint[];
     plan: CfpPlan | null;
     plan_gain: number | null;
     baseline: Record<string, string>;
+    plan_status?: string;
+    search_scope?: string | Record<string, unknown>;
+    required_wells?: string[];
   };
   wells: CfpWellRow[];
 }

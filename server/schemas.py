@@ -415,6 +415,28 @@ class FutureWellSpec(BaseModel):
     name: str = Field(..., min_length=1, max_length=24)
     match: str  # donor well whose saved fit models it
     pad: Optional[str] = Field(None, min_length=1, max_length=8)
+    require_online: bool = False
+    nozzle: Optional[str] = None
+    throat: Optional[str] = None
+
+    @field_validator("name", "match")
+    @classmethod
+    def _study_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Well names must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def _planned_pump(self):
+        if (self.nozzle is None) != (self.throat is None):
+            raise ValueError("A planned pump needs both nozzle and throat")
+        if self.nozzle is not None:
+            from woffl.geometry.jetpump import JetPump
+            self.nozzle = self.nozzle.strip()
+            self.throat = self.throat.strip().upper()
+            JetPump(self.nozzle, self.throat)
+        return self
 
 
 class OptimizeRunRequest(BaseModel):
@@ -427,6 +449,7 @@ class OptimizeRunRequest(BaseModel):
     pad: Optional[Literal["S", "I", "M", "E"]] = None  # required when kind=pad
     offline: list[str] = []
     future: list[FutureWellSpec] = []
+    required_wells: list[str] = []  # required online in the proposed allocation
     nozzles: list[str] = ["9", "10", "11", "12", "13", "14", "15"]
     throats: list[str] = ["A", "B", "C", "D"]
     # pad-run knobs (mirror pad_page Configure stage)
@@ -437,8 +460,8 @@ class OptimizeRunRequest(BaseModel):
     strategy: Literal["jpco", "choke"] = "jpco"
     method: Literal["milp", "mckp"] = "milp"
     # Water price λ (BOPD given up per BPD of lift water) in the knapsack
-    # objective, oil − λ·water. None = auto: the plant budget's own shadow
-    # price off the pooled Pareto frontier (docs/optimization_redesign_2026-09.md).
+    # objective, oil − λ·water. None = maximize oil under the plant budget;
+    # a derived resource value is reported separately, not charged again.
     # Takes precedence over marginal_wc when both are given.
     lambda_bopd_per_bpd: Optional[float] = Field(None, ge=0.0, le=10.0)
     # Legacy gate, mapped to the same price: λ = (1 − wc) / wc. None = auto.
@@ -454,13 +477,16 @@ class OptimizeRunRequest(BaseModel):
     # there is no setpoint to pin.
     setpoint_psi: Optional[float] = Field(None, ge=1000.0, le=5000.0)
     # cfp-run knobs (mirror cfp_pad_page Configure stage)
-    p0_psi: float = Field(2792.0, ge=2300.0, le=2900.0)
+    p0_psi: float = Field(2792.0, ge=2300.0, le=2880.0)
     psi_per_kbpd: float = Field(13.69, ge=9.0, le=17.5)
     c_pad_pf_psi: float = Field(3400.0, ge=1000.0, le=5000.0)
+    # Optional manual pad pressures from the SAME reference conditions as P0.
+    # Empty uses documented line-loss assumptions; never mix in live clusters.
+    cfp_pad_pf_psi: dict[str, float] = {}
     # Pads in the run (default: the four CFP pads). Any non-POPs pad may
     # join - its water rides the CFP machines; PF for pads beyond B/G/J is
     # modeled as boosted on-pad at c_pad_pf_psi (the C-Pad treatment). POPs
-    # pads separate water on-pad, so they never load the machines: rejected.
+    # incremental POPS routing is unqualified in this model: rejected.
     cfp_pads: list[str] = ["B", "G", "C", "J"]
     # e-pad-run knobs. E-Pad's booster is the only plant whose configuration
     # is NOT a measured tag: no E-Pad SCADA point, no motor nameplate, and no
@@ -473,6 +499,23 @@ class OptimizeRunRequest(BaseModel):
     e_pad_max_header_psi: float = Field(3500.0, ge=1000.0, le=5000.0)
     e_pad_amp_limit_a: Optional[float] = Field(None, gt=0.0, le=5000.0)
 
+    @model_validator(mode="after")
+    def _study_constraints(self):
+        names = [f.name.casefold() for f in self.future]
+        if len(names) != len(set(names)):
+            raise ValueError("Future well names must be unique across all pads")
+        self.required_wells = list(dict.fromkeys(w.strip() for w in self.required_wells if w.strip()))
+        if self.kind == "pad" and set(self.required_wells) & set(self.offline):
+            raise ValueError("A pad well cannot be both excluded offline and required online")
+        if self.kind == "pad" and self.pad == "E" and self.e_pad_suction_psi >= self.e_pad_max_header_psi:
+            raise ValueError("E-Pad suction must be below the header cap")
+        if self.kind == "pad" and self.strategy == "choke" and any(f.nozzle is None for f in self.future):
+            raise ValueError("Choose a planned nozzle and throat for each future well before a choke run")
+        for pad, pressure in self.cfp_pad_pf_psi.items():
+            if pad not in {"B", "G", "J"} or not 1000 <= pressure <= 5000:
+                raise ValueError("Reference pad PF must be B/G/J pressures between 1000 and 5000 psi")
+        return self
+
     @field_validator("cfp_pads")
     @classmethod
     def _cfp_pads_not_pops(cls, v: list[str]) -> list[str]:
@@ -482,8 +525,8 @@ class OptimizeRunRequest(BaseModel):
         pops = [p for p in pads if p in DEFAULT_POPS_PADS]
         if pops:
             raise ValueError(
-                f"POPs pads ({', '.join(sorted(set(pops)))}) separate water on-pad - "
-                "their water never rides the CFP machines, so they cannot join a CFP run"
+                f"POPs pads ({', '.join(sorted(set(pops)))}) have no qualified incremental "
+                "water-routing model for this CFP run"
             )
         return pads
 

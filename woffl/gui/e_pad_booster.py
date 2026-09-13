@@ -287,6 +287,13 @@ class EPadBooster:
         lower speed, so deliverable pressure collapses toward shut-in. None
         when the flow cannot be passed in range, or not within amps.
         """
+        hz = self.max_hz_at_flow(flow_bpd, sg, hz_max, amps_per_bhp, amp_limit)
+        return None if hz is None else self.dp_psi(flow_bpd, hz, sg, condition)
+
+    def max_hz_at_flow(self, flow_bpd: float, sg: float, hz_max: float,
+                       amps_per_bhp: float, amp_limit: Optional[float]) -> Optional[float]:
+        """Highest usable speed (Hz), enforcing the same range and amp limits
+        used by the capability frontier and operating-point report."""
         window = self.hz_window_in_ror(flow_bpd, hz_max)
         if window is None:
             return None
@@ -304,7 +311,7 @@ class EPadBooster:
                     else:
                         lo = mid
                 hz_hi = lo
-        return self.dp_psi(flow_bpd, hz_hi, sg, condition)
+        return hz_hi
 
     def throttled_duty(
         self,

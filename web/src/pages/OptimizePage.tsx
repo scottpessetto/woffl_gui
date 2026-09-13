@@ -89,6 +89,9 @@ function PadReadiness({ pad }: { pad: string }) {
   const setWellOffline = useOptimizeStore((s) => s.setWellOffline);
   const addFuture = useOptimizeStore((s) => s.addFuture);
   const removeFuture = useOptimizeStore((s) => s.removeFuture);
+  const updateFuture = useOptimizeStore((s) => s.updateFuture);
+  const requiredOnline = useOptimizeStore((s) => s.requiredOnline);
+  const setRequiredOnline = useOptimizeStore((s) => s.setRequiredOnline);
 
   // Well name -> Single Well solver, same selection flow as the sidebar
   // picker (context fetch seeds the params on arrival).
@@ -116,11 +119,13 @@ function PadReadiness({ pad }: { pad: string }) {
   }, [statusQ.data]);
 
   const wellNames = useMemo(() => (wells.data?.wells ?? []).map((w) => w.name), [wells.data]);
+  const duplicateName = [...wellNames, ...Object.values(futureByPad).flat().map((f) => f.name)]
+    .some((n) => n.toLowerCase() === newName.trim().toLowerCase());
 
   const addRow = () => {
     const name = newName.trim();
-    if (!name || !wellNames.includes(newMatch)) return;
-    addFuture(pad, { name, match: newMatch });
+    if (!name || duplicateName || !wellNames.includes(newMatch)) return;
+    addFuture(pad, { name, match: newMatch, require_online: true });
     setNewName("");
     setNewMatch("");
   };
@@ -143,6 +148,7 @@ function PadReadiness({ pad }: { pad: string }) {
                 <th className="px-3 py-2 font-semibold">Pump calibration</th>
                 <th className="px-3 py-2 font-semibold">Fit status</th>
                 <th className="px-3 py-2 text-center font-semibold">Offline</th>
+                <th className="px-3 py-2 text-center font-semibold" title="The proposed plan must keep this well producing. Separate from its current online/offline state.">Required online</th>
                 <th className="w-8 px-2 py-2"></th>
               </tr>
             </thead>
@@ -184,10 +190,15 @@ function PadReadiness({ pad }: { pad: string }) {
                         type="checkbox"
                         checked={isOffline}
                         onChange={() => setWellOffline(pad, row.well, !isOffline)}
-                        title="Exclude this well from the optimization run"
+                        title="Offline in the reference state. Pad runs exclude it; CFP runs may bring it online."
                         className="h-4 w-4 rounded border-slate-300 accent-blue-600"
                       />
                     </td>
+                    <td className="px-3 py-1.5 text-center"><input type="checkbox"
+                      aria-label={`Require ${row.well} online`}
+                      checked={(requiredOnline[pad] ?? []).includes(row.well)}
+                      onChange={(e) => setRequiredOnline(pad, row.well, e.target.checked)}
+                      className="h-4 w-4 accent-blue-600" /></td>
                     <td></td>
                   </tr>
                 );
@@ -211,9 +222,26 @@ function PadReadiness({ pad }: { pad: string }) {
                     </td>
                     <td className="px-3 py-1.5 text-slate-600">
                       Clean reference
+                      <div className="mt-1 flex gap-1" title="Optional planned pump for a hold-pumps choke run; resize runs search the replacement catalog.">
+                        <select aria-label={`Planned nozzle for ${f.name}`} value={f.nozzle ?? ""}
+                          onChange={(e) => updateFuture(pad, f.name, e.target.value ? { nozzle: e.target.value, throat: f.throat ?? "B" } : { nozzle: undefined, throat: undefined })}
+                          className="h-7 rounded border border-slate-300 bg-white text-xs">
+                          <option value="">Choke pump...</option>
+                          {["8", "9", "10", "11", "12", "13", "14", "15"].map((n) => <option key={n}>{n}</option>)}
+                        </select>
+                        {f.nozzle && <select aria-label={`Planned throat for ${f.name}`} value={f.throat ?? "B"}
+                          onChange={(e) => updateFuture(pad, f.name, { throat: e.target.value })}
+                          className="h-7 rounded border border-slate-300 bg-white text-xs">
+                          {["X", "A", "B", "C", "D", "E"].map((t) => <option key={t}>{t}</option>)}
+                        </select>}
+                      </div>
                     </td>
                     <td className="px-3 py-1.5">{donor?.has_curve ? "Donor well inputs saved" : "Review donor IPR"}</td>
                     <td className="px-3 py-1.5 text-center text-[11px] text-slate-400">planned</td>
+                    <td className="px-3 py-1.5 text-center"><input type="checkbox"
+                      aria-label={`Require ${f.name} online`} checked={f.require_online ?? false}
+                      onChange={(e) => updateFuture(pad, f.name, { require_online: e.target.checked })}
+                      className="h-4 w-4 accent-blue-600" /></td>
                     <td className="px-2 py-1.5">
                       <button
                         type="button"
@@ -252,13 +280,13 @@ function PadReadiness({ pad }: { pad: string }) {
                     </datalist>
                   </div>
                 </td>
-                <td className="px-3 py-2" colSpan={3}>
+                <td className="px-3 py-2" colSpan={4}>
                   <button
                     type="button"
-                    disabled={!newName.trim() || !wellNames.includes(newMatch)}
+                    disabled={!newName.trim() || duplicateName || !wellNames.includes(newMatch)}
                     onClick={addRow}
                     title={
-                      !newName.trim()
+                      duplicateName ? "Use a name that does not identify an existing or planned well" : !newName.trim()
                         ? "Name the planned well first"
                         : !wellNames.includes(newMatch)
                           ? "Pick the existing well whose saved fit it should use"

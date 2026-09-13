@@ -30,6 +30,7 @@ modules it unifies.
 """
 
 import json
+import math
 from glob import glob
 from pathlib import Path
 from typing import Iterable, Optional
@@ -237,7 +238,7 @@ class PadPlant:
         PowerFluidConstraint's 1000 psi, or the plant suction when that sits
         higher (M-Pad's LP-held 1,400); ceiling: the operational cap when the
         plant has one, else the constraint's 5000."""
-        return (
+        band = (
             clamp_to_pf_constraint(self.suction_psi()),
             (
                 self.max_header_psi
@@ -245,6 +246,9 @@ class PadPlant:
                 else PF_CONSTRAINT_MAX_PSI
             ),
         )
+        if not all(math.isfinite(float(p)) for p in band) or band[0] > band[1]:
+            raise ValueError("Plant pressure limits form an invalid clamping band")
+        return band
 
     def match_check_header(self, total_pf: float, n_pumps: int | None = None) -> float:
         """Header the pre-flight match check models the wells at, from the

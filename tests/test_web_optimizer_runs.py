@@ -75,6 +75,94 @@ def test_unknown_job_is_404(client):
     assert client.get("/api/optimize/run/nope").status_code == 404
 
 
+@pytest.mark.parametrize("payload", [
+    {"kind": "cfp", "p0_psi": 2890},
+    {"kind": "cfp", "cfp_pad_pf_psi": {"B": 999}},
+    {"kind": "pad", "pad": "E", "e_pad_suction_psi": 3600, "e_pad_max_header_psi": 3500},
+    {"kind": "pad", "pad": "M", "required_wells": ["MPM-01"], "offline": ["MPM-01"]},
+    {"kind": "pad", "pad": "M", "strategy": "choke", "future": [{"name": "NEW", "match": "MPM-01"}]},
+    {"kind": "cfp", "future": [{"name": "NEW", "match": "MPM-01", "pad": "B"}, {"name": "new", "match": "MPM-01", "pad": "G"}]},
+])
+def test_incoherent_capacity_study_rejected_before_job(client, payload):
+    assert client.post("/api/optimize/run", json=payload).status_code == 422
+
+
+def test_future_name_cannot_replace_an_existing_well(client):
+    req = schemas.OptimizeRunRequest(kind="pad", pad="M", future=[{"name": "mpm-01", "match": "MPB-28"}])
+    with pytest.raises(ValueError, match="existing"):
+        runs._run_pad_job({}, req)
+
+
+def test_missing_required_model_is_not_silently_excluded(client):
+    req = schemas.OptimizeRunRequest(kind="pad", pad="M", required_wells=["UNKNOWN"])
+    with pytest.raises(ValueError, match="Required online.*UNKNOWN"):
+        runs._run_pad_job({}, req)
+
+
+@pytest.mark.parametrize("strategy", ["jpco", "choke"])
+def test_required_future_and_planned_pump_reach_pad_engine(client, monkeypatch, strategy):
+    import woffl.gui.pad_optimize as pad_optimize
+    captured = {}
+
+    def capture(configs, plant, *args, **kw):
+        captured.update(kw)
+        if strategy == "choke":
+            captured["current"] = args[1]
+        raise RuntimeError("captured engine request")
+
+    monkeypatch.setattr(runs.evidence_svc, "pad_evidence", lambda *args: {})
+    monkeypatch.setattr(pad_optimize, "run_optimization", capture)
+    monkeypatch.setattr(pad_optimize, "run_choke_optimization", capture)
+    req = schemas.OptimizeRunRequest(kind="pad", pad="M", strategy=strategy,
+        required_wells=["MPM-01"], future=[{"name": "NEW", "match": "MPB-28",
+        "require_online": True, "nozzle": "11", "throat": "c"}])
+    with pytest.raises(RuntimeError, match="captured engine request"):
+        runs._run_pad_job({}, req)
+    assert captured["required_wells"] == {"MPM-01", "NEW"}
+    if strategy == "choke":
+        assert captured["current"]["NEW"] == ("11", "C")
+
+
+def test_cfp_reference_grid_and_water_delta_use_one_baseline(client, monkeypatch):
+    """The old pump may not solve at the new pressure; its before-water is
+    evaluated at the reference, and no asynchronous live PF is substituted."""
+    from types import SimpleNamespace
+    import woffl.gui.cfp_moves as cfp_moves
+    from server.services import datasources
+    captured = {}
+    monkeypatch.setattr(runs, "_current_and_tests", lambda names: ({n: ("12", "B") for n in names}, {}))
+
+    def forbidden_live_pf():
+        raise AssertionError("manual reference must not mix in live pad pressures")
+
+    monkeypatch.setattr(datasources, "pf_latest_safe", forbidden_live_pf)
+
+    def surfaces(pad_configs, online, current, plant, **kw):
+        captured.update(kw)
+        return SimpleNamespace(wells={"MPB-28": SimpleNamespace(pad="B", online=True)})
+
+    def summary(surfaces, plant, **kw):
+        return {"today": {"pressure": 2793., "oil": 100., "water": 500.},
+            "baseline": {"MPB-28": "12B"}, "plan": {"choices": {"MPB-28": "SI"}, "pressure": 2802.},
+            "singles": [{"well": "MPB-28", "from": "12B", "to": "SI", "pressure_after": 2802.}]}
+
+    def option(ws, label, pressure):
+        if label == "SI":
+            return 0., 0.
+        return (100., 500.) if pressure == 2793. else None
+
+    monkeypatch.setattr(cfp_moves, "build_response_surfaces", surfaces)
+    monkeypatch.setattr(cfp_moves, "anchor", lambda *args, **kw: object())
+    monkeypatch.setattr(cfp_moves, "moves_summary", summary)
+    monkeypatch.setattr(cfp_moves, "option_at", option)
+    req = schemas.OptimizeRunRequest(kind="cfp", cfp_pads=["B"], p0_psi=2793., cfp_pad_pf_psi={"B": 2675.})
+    result = runs._run_cfp_job({}, req)
+    assert 2793. in captured["p_grid"] and max(captured["p_grid"]) == 2880.
+    assert captured["p0"] == 2793. and captured["measured_pad_pf"] == {"B": 2675.}
+    assert result["anchor_basis"] == "manual_reference"
+    assert result["summary"]["singles"][0]["own_water_delta"] == -500.
+
+
 def test_pad_run_lifecycle_and_hydration(client, monkeypatch):
     captured: dict = {}
 
@@ -393,19 +481,25 @@ def test_hydration_failure_stays_visible_in_expected_pad_coverage(client, monkey
     assert body["meta"]["feasible"] is None
 
 
-def test_hardware_counterfactual_keeps_measured_bias_out_of_gain(client, monkeypatch):
+@pytest.mark.parametrize("feasible", [True, False])
+def test_hardware_counterfactual_keeps_measured_bias_out_of_gain(client, monkeypatch, feasible):
     import woffl.gui.pad_optimize as pad_optimize
     monkeypatch.setattr(runs, "_current_and_tests", lambda names: (
         {w: ("12", "B") for w in names}, {w: (9999.0, None) for w in names}))
     monkeypatch.setattr(runs, "_modeled_current", lambda configs, current, header, opt: {
         c.well_name: {"oil": 250., "pf": 3000., "form_water": 900., "ppf": header} for c in configs})
     monkeypatch.setattr(pad_optimize, "run_optimization", lambda configs, *a, **kw: (
-        [_FakeResult(c.well_name) for c in configs], object(), {"header_psi": 2600., "feasible": True}))
+        [_FakeResult(c.well_name) for c in configs], object(), {"header_psi": 2600., "feasible": feasible,
+        "min_total_flow": 9000., "hydraulically_feasible": True}))
     body = runs._run_pad_job({}, schemas.OptimizeRunRequest(kind="pad", pad="M"))
     assert body["coverage"]["complete"] is True
     assert body["meta"]["current_model_oil_bopd"] == 500.
-    assert body["meta"]["modeled_hardware_gain_bopd"] == 0.
-    assert all(r["modeled_hardware_gain"] == 0. for r in body["rows"])
+    assert body["meta"]["modeled_hardware_gain_bopd"] == (0. if feasible else None)
+    assert all(r["modeled_hardware_gain"] == (0. if feasible else None) for r in body["rows"])
+    assert body["meta"]["min_total_flow"] == 9000.
+    if not feasible:
+        assert body["meta"]["recommendation_status"] == "conditional_operating_limits"
+        assert any("gains withheld" in note for note in body["notes"])
     assert all(r["test_oil"] == 9999. and r["test_pf"] is None for r in body["rows"])
     assert "same plan header" in body["meta"]["comparison_basis"]
 

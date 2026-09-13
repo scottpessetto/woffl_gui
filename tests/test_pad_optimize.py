@@ -907,7 +907,7 @@ class TestMarginalWcAutoDeriveAndParsimony:
             _wells("W1"), CurvePlant(), 3, ["12", "13"], ["B", "C"], "milp", None
         )
         assert meta["marginal_wc_used"] == pytest.approx(1.0)
-        assert meta["marginal_wc_source"] == "auto (plant-derived)"
+        assert meta["marginal_wc_source"] == "auto (maximum oil)"
         assert meta["pf_slack"] is True
         assert meta["parsimony_swaps"] == []
         assert optimizer.marginal_watercut == pytest.approx(1.0)
@@ -917,7 +917,7 @@ class TestMarginalWcAutoDeriveAndParsimony:
         # it: frontier (1000,100) ratio .1, (3000,130) -> seg dw=2000,
         # doil=30, ratio .015. cap=1500 crosses the second segment.
         plant = CurvePlant()
-        plant.flow_window = lambda n_pumps=None: (10000.0, 1500.0)
+        plant.flow_window = lambda n_pumps=None: (1000.0, 1500.0)
         fake_core.Optimizer.batch_dfs = {
             "W1": _derive_batch_df(
                 [("12", "B", 100.0, 1000.0), ("13", "C", 130.0, 3000.0)]
@@ -927,10 +927,13 @@ class TestMarginalWcAutoDeriveAndParsimony:
         results, optimizer, meta = po.run_optimization(
             _wells("W1"), plant, 3, ["12", "13"], ["B", "C"], "milp", None
         )
-        assert meta["marginal_wc_source"] == "auto (plant-derived)"
-        assert meta["pf_slack"] is False
-        assert meta["marginal_wc_used"] == pytest.approx(1.0 / 1.015)
-        assert optimizer.marginal_watercut == pytest.approx(1.0 / 1.015)
+        assert meta["marginal_wc_source"] == "auto (maximum oil)"
+        assert meta["pf_slack"] is True  # indivisible choice leaves 500 BPD
+        assert meta["diagnostic_pf_slack"] is False
+        assert meta["diagnostic_lambda"] == pytest.approx(.015)
+        assert meta["marginal_wc_used"] == 1.
+        assert optimizer.marginal_watercut == 1.
+        assert optimizer.water_price == 0.
 
     def test_auto_derive_meta_keys_on_pressure_sweep(self, fake_core):
         fake_core.Optimizer.batch_dfs = {
@@ -940,7 +943,7 @@ class TestMarginalWcAutoDeriveAndParsimony:
         results, optimizer, meta = po.run_optimization(
             _wells("W1"), FreePlant(), None, ["12"], ["B"], "mckp", None, n_steps=5
         )
-        assert meta["marginal_wc_source"] == "auto (plant-derived)"
+        assert meta["marginal_wc_source"] == "auto (maximum oil)"
         assert meta["marginal_wc_used"] == pytest.approx(1.0)
         assert meta["pf_slack"] is True
         assert meta["parsimony_swaps"] == []

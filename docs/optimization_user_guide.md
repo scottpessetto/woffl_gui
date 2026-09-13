@@ -92,11 +92,42 @@ clean replacements, including the same size when included in the pump grid.
 Legacy/unverified fits use visible reference assumptions until refitted and saved.
 Future wells borrow donor well properties with clean pump assumptions.
 
-Pad optimization uses oil minus the selected water price times machine water.
-E/M machines handle total water; I/S use lift water. Both allocation engines
-share the objective and candidates. CFP moves are changes from the measured plant
-anchor. See [pad formulation](optimization_redesign_2026-09.md) and
-[CFP methodology](cfp_moves_methodology.md) for the exact constraints.
+Pad optimization defaults to **Maximize oil within capacity**. Uncheck it to
+enter a deliberate water price; that changes the objective to oil minus price
+times machine water. E/M machines handle total water; I/S use lift water. A
+separate frontier estimate describes the value of capacity, without charging
+for the constraint twice. Both allocation engines share valid candidates;
+installed pumps remain options even outside the replacement grid.
+
+For a new-well study, add a unique future-well name and its donor on Pad review.
+New rows default to **Required online**. Leave that checked to require the
+proposed well in the result. Existing wells also have this constraint when an
+engineer wants to prevent shutting them in. Missing required models or an
+unserviceable required set fail explicitly. **Offline** describes baseline
+status: excluded from a pad run, or available to bring online in CFP. It is
+different from a constraint on the proposed plan.
+
+Resize runs search the selected replacement grid. A hold-pumps choke run needs
+an explicit planned nozzle/throat on every future row; it holds that hardware
+while allocating lower-pressure settings and permitted shut-ins. Choke is
+available on I/M/E; S-Pad currently requires its coupled resize workflow.
+Duplicate future names and names colliding with existing wells are rejected.
+
+CFP uses a **manual reference discharge**, which must describe the same online
+configuration as the board and remain at or below 2,880 psi. Enter B/G/J PF
+pressures under **Pad PF at the same reference conditions** if contemporaneous
+measurements are available. Blank entries use line-loss assumptions. Unrelated
+latest measurements are not mixed into this reference. CFP models changes in
+water demand from its reference; the displayed modeled run-well water is not
+measured total plant throughput. Bring-online/offset pairs appear together,
+including combinations that only operate when both actions are taken.
+
+Results disclose allocation/search status, unsupported pressure ranges and
+minimum-flow conditions. A hydraulically closed plan below a recommended
+operating range is conditional, not a qualified operating recommendation.
+No recycle flow is assumed without a verified recycle model. See the
+[capacity delivery](pad_cfp_capacity_delivery_2026-09-12.md) for validation and
+remaining limitations.
 
 ## Explore watercut sensitivity
 

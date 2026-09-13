@@ -313,6 +313,10 @@ class NetworkOptimizer:
         # Results storage
         self.batch_results: dict[str, BatchPump] = {}
         self.optimization_results: Optional[list[OptimizationResult]] = None
+        # [LIBRARY change -> upstream PR to kwellis/woffl] Patch 46: explicit
+        # online constraints and solver outcome survive both allocation adapters.
+        self.required_wells: set[str] = set()
+        self.allocation_status: Optional[dict] = None
         self.calibration_factors: dict[str, float] = {}
 
         # Drop accounting, filled by optimization_algorithms for the UI:
@@ -547,8 +551,13 @@ class NetworkOptimizer:
 
         row = matching_rows.iloc[0]
 
-        # Return None if oil rate is NaN (simulation failed)
-        if pd.isna(row["qoil_std"]):
+        # [LIBRARY change -> upstream PR to kwellis/woffl] Patch 46: malformed
+        # rates cannot enter a plan or create fictitious spare water capacity.
+        try:
+            rates = [float(row[key]) for key in ("qoil_std", "form_wat", "lift_wat", "totl_wat")]
+        except (TypeError, ValueError):
+            return None
+        if not all(np.isfinite(rate) and rate >= 0 for rate in rates):
             return None
 
         return {
@@ -820,6 +829,8 @@ def reconcile_wells(optimizer: "NetworkOptimizer", results) -> pd.DataFrame:
     allocated = {r.well_name for r in (results or [])}
     mwc_wells = set(getattr(optimizer, "mwc_excluded_wells", []) or [])
     mckp_skipped = set(getattr(optimizer, "mckp_skipped", []) or [])
+    allocation = getattr(optimizer, "allocation_status", None) or {}
+    allocation_finished = allocation.get("status") in ("optimal", "feasible")
 
     rows = []
     for well in optimizer.wells:
@@ -837,7 +848,8 @@ def reconcile_wells(optimizer: "NetworkOptimizer", results) -> pd.DataFrame:
             )
             continue
         df = bp.df
-        ok = int(df["qoil_std"].notna().sum()) if "qoil_std" in df.columns else 0
+        from woffl.assembly.optimization_algorithms import _valid_configs
+        ok = len(_valid_configs(df, deduplicate=False)) if "qoil_std" in df.columns else 0
         failed = int(len(df)) - ok
         detail = ""
         if failed and "error" in df.columns and "qoil_std" in df.columns:
@@ -859,13 +871,16 @@ def reconcile_wells(optimizer: "NetworkOptimizer", results) -> pd.DataFrame:
             n = (getattr(optimizer, "mwc_excluded", {}) or {}).get(wn, 0)
             detail = f"all {n} viable config(s) above the marginal-WC threshold"
         elif wn in mckp_skipped:
-            status = "no semi-finalists"
-            detail = detail or "no Pareto semi-finalists (MCKP searches only those)"
-        elif results:
+            status = "failed simulation"
+            detail = detail or "no valid allocation candidates"
+        elif results or allocation_finished:
             status = "not allocated"
             detail = (
-                "solver left the well out under the water budget (implicit shut-in)"
+                "shut in by the allocation under the selected water budget and objective"
             )
+        elif allocation.get("status"):
+            status = "allocation failed"
+            detail = allocation.get("message", "allocation did not produce a qualified plan")
         else:
             status = "simulated"
         rows.append(
@@ -882,6 +897,7 @@ def reconcile_wells(optimizer: "NetworkOptimizer", results) -> pd.DataFrame:
         rows, columns=["Well", "Status", "Configs OK", "Configs Failed", "Detail"]
     )
     order = {
+        "allocation failed": -1,
         "failed simulation": 0,
         "not simulated": 1,
         "above marginal WC": 2,

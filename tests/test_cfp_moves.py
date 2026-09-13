@@ -12,6 +12,8 @@ Anchor: P0 = 2,800 psi, s = 15 psi per 1,000 BPD, trip 2,900 / margin 20.
 Baseline water W0 = 5,000 + 2,000 + 1,000 = 8,000; baseline oil = 405.
 """
 
+from itertools import product
+
 import pytest
 
 from woffl.gui import cfp_moves as cm
@@ -149,6 +151,26 @@ class TestInterp:
 
 
 class TestAnchor:
+    def test_missing_current_label_never_becomes_an_idle_baseline(self):
+        s = _surfaces()
+        del s.wells["RESP"].options["12B"]
+        assert s.baseline_choices()["RESP"] == "12B"
+        with pytest.raises(ValueError, match="RESP"):
+            _plant(s)
+
+    def test_anchor_above_trip_margin_is_rejected_without_moving_baseline(self):
+        s = _surfaces()
+        s.p0 = 2890.
+        s.p_grid = [*GRID, 2900.]
+        with pytest.raises(ValueError, match="trip-minus-margin"):
+            _plant(s)
+
+    def test_anchor_outside_grid_is_rejected_explicitly(self):
+        s = _surfaces()
+        s.p0 = 2400.
+        with pytest.raises(ValueError, match="inside the response grid"):
+            _plant(s)
+
     def test_baseline_water_is_the_models_own_sum(self):
         s = _surfaces()
         assert _plant(s).baseline_water == pytest.approx(8000.0)
@@ -233,6 +255,30 @@ class TestSingleMoves:
 
 
 class TestPairs:
+    def test_bring_online_offset_can_be_feasible_when_bring_online_alone_is_not(self):
+        s = Surfaces(GRID, P0, {
+            "Offset": WellSurface("Offset", "B", True, "A", {"A": _opt(100., 4000.)}),
+            "New": WellSurface("New", "B", False, None, {"B": _opt(300., 4000.)}),
+        })
+        s.wells["New"].options["B"]["oil"][:3] = [None]*3
+        s.wells["New"].options["B"]["water"][:3] = [None]*3
+        pairs = pair_moves(s, _plant(s))
+        assert len(pairs) == 1
+        pair = pairs[0]
+        assert pair["pressure_after"] == P0 and pair["fleet_oil_delta"] == 200.
+        assert pair["own_water_delta"] == 0 and pair["own_oil_delta"] == 200.
+        assert pair["bring_on"]["standalone_feasible"] is False
+        assert pair["bring_on"]["fleet_oil_delta"] is None
+        assert pair["bring_on"]["standalone_domain_reason"] == "missing_pump_response"
+
+    def test_pair_search_budget_is_reported(self, monkeypatch):
+        monkeypatch.setattr(cm, "MAX_PAIR_EVALUATIONS", 1)
+        s = _surfaces()
+        out = moves_summary(s, _plant(s))
+        assert out["search_scope"]["pair_evaluated"] == 1
+        assert out["search_scope"]["pair_combinations"] > 1
+        assert out["search_scope"]["pair_search_complete"] is False
+
     def test_bol_plus_si_beats_both_halves(self):
         """BOL1 + SI PIG: net +2,000 BPD → −30 psi → RESP 285, fleet 585 —
         +180 vs +170 (BOL alone) and +10 (SI alone)."""
@@ -314,6 +360,197 @@ def test_moves_summary_carries_the_whole_decision():
     assert out["lambda_bopd_per_psi"] == pytest.approx(0.5, abs=0.01)
     assert out["singles"] and out["pairs"] and out["frontier"]
     assert out["n_positive_singles"] >= 2  # BOL1 and SI-PIG
+
+
+def test_added_load_below_grid_is_infeasible_with_unclipped_residual():
+    s = Surfaces(GRID, P0, {
+        "Existing": WellSurface("Existing", "B", True, "A", {"A": _opt(100., 1000.)}),
+        "New": WellSurface("New", "B", False, None, {"B": _opt(500., 30000.)}),
+    })
+    plant = _plant(s)
+    assert plant.pressure_at(31000.) == (2350., False)
+    state = settle({"Existing": "A", "New": "B"}, s, plant)
+    assert not state["feasible"] and not state["converged"]
+    assert state["raw_pressure_psi"] == 2350.
+    assert state["pressure_residual_psi"] == -150.
+    assert state["domain_reason"] == "required_pressure_below_response_grid"
+    out = moves_summary(s, plant, required_wells={"New"})
+    assert out["plan"] is None and out["plan_gain"] is None
+    assert out["plan_status"] == "no_feasible_plan"
+    assert out["search_scope"]["rejected_choices_by_reason"]["required_pressure_below_response_grid"] > 0
+
+
+def test_required_future_stays_on_even_when_gain_is_negative():
+    s = Surfaces(GRID, P0, {
+        "Existing": WellSurface("Existing", "B", True, "A", {"A": _opt(1000., 1000., 2.)}),
+        "New": WellSurface("New", "B", False, None, {"B": _opt(10., 4000.)}),
+    })
+    out = moves_summary(s, _plant(s), required_wells={"New"})
+    assert out["today"]["oil"] == 1000. and out["baseline"]["New"] == OFF
+    assert out["plan"]["choices"]["New"] == "B"
+    assert out["plan_gain"] == pytest.approx(-110.)
+    assert out["baseline_meets_requirements"] is False
+    assert moves_summary(s, _plant(s))["plan_gain"] == 0.
+
+
+def test_required_existing_well_can_resize_but_cannot_shut_in():
+    s = _surfaces()
+    s.wells["PIG"].options["10A"] = _opt(4., 500.)
+    out = moves_summary(s, _plant(s), required_wells={"PIG"})
+    assert out["plan"]["choices"]["PIG"] == "10A"
+    assert not any(m["well"] == "PIG" and m["to"] == SI for m in out["singles"])
+    assert out["baseline_meets_requirements"] is True
+
+
+def test_unknown_required_well_is_not_silently_dropped():
+    s = _surfaces()
+    with pytest.raises(ValueError, match="Missing"):
+        moves_summary(s, _plant(s), required_wells={"Missing"})
+
+
+def test_required_well_with_no_pump_response_has_no_plan():
+    s = _surfaces()
+    s.wells["BOL1"].options = {}
+    out = moves_summary(s, _plant(s), required_wells={"BOL1"})
+    assert out["plan"] is None and out["today"]["oil"] == 405.
+    assert out["search_scope"]["combinations"] == 0
+    assert out["search_scope"]["global_optimum_on_surfaces"] is True
+
+
+def test_bounded_feasibility_seed_keeps_multiple_required_future_wells(monkeypatch):
+    monkeypatch.setattr(cm, "MAX_EXACT_COMBINATIONS", 0)
+    s = _surfaces()
+    s.wells["BOL2"] = WellSurface("BOL2", "B", False, None, {"A": _opt(50., 1000.)})
+    out = moves_summary(s, _plant(s), required_wells={"BOL1", "BOL2"})
+    assert all(out["plan"]["choices"][w] not in (SI, OFF) for w in ("BOL1", "BOL2"))
+    assert out["search_scope"]["global_optimum_on_surfaces"] is False
+    assert out["search_scope"]["method"] == "lambda_moves_and_bounded_neighborhood"
+
+
+def test_required_new_well_can_need_two_offsets_to_fit_the_pressure_domain():
+    s = Surfaces(GRID, P0, {
+        "Old1": WellSurface("Old1", "B", True, "A", {"A": _opt(100., 10000.)}),
+        "Old2": WellSurface("Old2", "B", True, "A", {"A": _opt(100., 10000.)}),
+        "New": WellSurface("New", "B", False, None, {"B": _opt(500., 35000.)}),
+    })
+    out = moves_summary(s, _plant(s), required_wells={"New"})
+    assert out["plan"]["choices"] == {"Old1": SI, "Old2": SI, "New": "B"}
+    assert out["plan"]["pressure"] == 2575. and out["plan_gain"] == 300.
+    assert out["singles"] == [] and out["pairs"] == []
+
+
+_AUDIT_CASES = {
+    "below_do_nothing": [
+        [(400, 8000, .2), (525, 17000, .315), (200, 2500, .16)],
+        [(675, 18000, .54), (200, 17500, .02), (475, 13000, .285)],
+        [(525, 17500, .105), (250, 2000, .1), (175, 4500, .1575)],
+    ],
+    "worse_than_own_single": [
+        [(625, 1500, .5625), (650, 7000, .585), (600, 16000, .12)],
+        [(575, 7500, .2875), (550, 2500, 0.), (700, 18000, .63)],
+        [(250, 12000, .025), (700, 8000, .14), (425, 14500, .0425)],
+    ],
+    "missed_two_resize_optimum": [
+        [(525, 3000, .2625), (400, 15000, 0.), (275, 10500, .2475)],
+        [(500, 17500, 0.), (400, 9000, .32), (700, 17000, .49)],
+        [(550, 13500, .11), (400, 1500, 0.), (500, 9000, .5)],
+    ],
+}
+
+
+def _audit_surfaces(case):
+    return Surfaces(GRID, P0, {
+        w: WellSurface(w, "B", True, "current", {
+            lab: _opt(*values) for lab, values in zip(("current", "alt1", "alt2"), rows)
+        }) for w, rows in zip(("A", "B", "C"), _AUDIT_CASES[case])
+    })
+
+
+def _analytic_best(case):
+    """Independent enumeration using the affine equations, not settle()."""
+    rows = _AUDIT_CASES[case]
+    baseline_water = sum(w[0][1] for w in rows)
+    values = []
+    for picks in product(*(w+[(0., 0., 0.)] for w in rows)):
+        pressure = min(2880., P0+15.*(baseline_water-sum(p[1] for p in picks))/1000.)
+        if pressure < min(GRID):
+            continue
+        values.append(sum(oil+slope*(pressure-P0) for oil, _water, slope in picks))
+    return max(values)
+
+
+@pytest.mark.parametrize("case", list(_AUDIT_CASES))
+def test_small_exact_search_matches_independent_enumeration(case):
+    s = _audit_surfaces(case)
+    out = moves_summary(s, _plant(s))
+    assert out["plan"]["oil"] == pytest.approx(_analytic_best(case))
+    assert out["plan"]["oil"] >= out["today"]["oil"]
+    assert out["plan_gain"] >= max(m["fleet_oil_delta"] for m in out["singles"])-1e-9
+    assert out["search_scope"]["global_optimum_on_surfaces"] is True
+    assert out["search_scope"]["direct_solver_validated"] is False
+
+
+@pytest.mark.parametrize("case", ["below_do_nothing", "worse_than_own_single"])
+def test_evaluated_baseline_and_singles_cannot_lose_even_without_refinement(monkeypatch, case):
+    monkeypatch.setattr(cm, "MAX_EXACT_COMBINATIONS", 0)
+    monkeypatch.setattr(cm, "MAX_NEIGHBOR_EVALUATIONS", 0)
+    s = _audit_surfaces(case)
+    out = moves_summary(s, _plant(s))
+    assert out["plan_gain"] >= 0
+    assert out["plan_gain"] >= max(m["fleet_oil_delta"] for m in out["singles"])-1e-9
+    assert out["search_scope"]["neighborhood_evaluated"] == 0
+    assert out["search_scope"]["global_optimum_on_surfaces"] is False
+    if case == "worse_than_own_single":
+        assert out["plan"]["lam"] is None
+
+
+def test_bounded_neighborhood_recovers_a_missed_resize_combination(monkeypatch):
+    monkeypatch.setattr(cm, "MAX_EXACT_COMBINATIONS", 0)
+    s = _audit_surfaces("missed_two_resize_optimum")
+    out = moves_summary(s, _plant(s))
+    assert out["plan"]["oil"] == pytest.approx(1818.9375)
+    assert out["search_scope"]["global_optimum_on_surfaces"] is False
+    assert out["search_scope"]["neighborhood_evaluated"] <= cm.MAX_NEIGHBOR_EVALUATIONS
+
+
+def test_neighborhood_budget_is_enforced(monkeypatch):
+    monkeypatch.setattr(cm, "MAX_EXACT_COMBINATIONS", 0)
+    monkeypatch.setattr(cm, "MAX_NEIGHBOR_EVALUATIONS", 1)
+    s = _surfaces()
+    out = moves_summary(s, _plant(s))
+    assert out["search_scope"]["neighborhood_evaluated"] == 1
+    assert out["search_scope"]["neighborhood_budget_exhausted"] is True
+
+
+def test_exhausted_choices_do_not_claim_global_optimum_for_multiple_pressure_branches():
+    s = _surfaces()
+    s.wells["PIG"].options["12B"]["water"][1] = 2100.
+    out = moves_summary(s, _plant(s))
+    assert out["search_scope"]["all_choices_evaluated"] is True
+    assert out["search_scope"]["unique_pressure_response"] is False
+    assert out["search_scope"]["global_optimum_on_surfaces"] is False
+
+
+def test_identical_clean_replacement_keeps_installed_pump_on_a_tie():
+    s = Surfaces(GRID, P0, {"Well": WellSurface("Well", "B", True, "13C", {
+        "13C (clean)": _opt(100., 1000.), "13C": _opt(100., 1000.),
+    })})
+    out = moves_summary(s, _plant(s))
+    assert out["plan"]["choices"]["Well"] == "13C" and out["plan"]["n_changes"] == 0
+
+
+def test_action_deltas_use_baseline_and_plan_pressures_when_old_pump_is_unavailable():
+    s = Surfaces(GRID, P0, {"Well": WellSurface("Well", "B", True, "A", {
+        "A": _opt(100., 1000.), "B": _opt(200., 2000.),
+    })})
+    s.wells["Well"].options["A"]["oil"][:3] = [None]*3
+    s.wells["Well"].options["A"]["water"][:3] = [None]*3
+    out = moves_summary(s, _plant(s))
+    assert out["plan"]["pressure"] == 2785.
+    action = out["plan"]["actions"][0]
+    assert action["own_oil_delta"] == 100. and action["own_water_delta"] == 1000.
+    move = next(m for m in out["singles"] if m["to"] == "B")
+    assert move["own_oil_delta"] == 100. and move["own_water_delta"] == 1000.
 
 
 # ── Stage A builder against a fake optimizer ────────────────────────────────

@@ -34,6 +34,7 @@ only the ``PadPlant`` face on it. Fork-only, MPU pump data, no upstream PR.
 """
 
 from typing import Iterable, Optional
+from math import isfinite
 
 from woffl.gui.e_pad_booster import EPadBooster, candidates, defaults
 from woffl.gui.pad_plant_base import (
@@ -123,6 +124,15 @@ class EPadPlant(PadPlant):
             d["amps_per_bhp"] if amps_per_bhp is None else amps_per_bhp
         )
         self.amp_limit = None if amp_limit is None else float(amp_limit)
+        if not all(isfinite(v) for v in (self._suction, self._sg, self.condition,
+                                         self.hz_max, self.max_header_psi, self.amps_per_bhp)):
+            raise ValueError("E-Pad plant inputs must be finite")
+        if not 0 <= self._suction < self.max_header_psi <= 5000 or self.max_header_psi < 1000:
+            raise ValueError("E-Pad header cap must exceed suction and stay within 1000-5000 psi")
+        if min(self._sg, self.condition, self.hz_max, self.amps_per_bhp) <= 0:
+            raise ValueError("E-Pad fluid, condition, speed and amp conversion must be positive")
+        if self.amp_limit is not None and (not isfinite(self.amp_limit) or self.amp_limit <= 0):
+            raise ValueError("E-Pad amp limit must be finite and positive")
 
     # -- pad physics ---------------------------------------------------------
 
@@ -226,11 +236,18 @@ class EPadPlant(PadPlant):
     def pressure_window(self, n_pumps: int | None = None) -> tuple[float, float]:
         floor = max(self._suction + _SWEEP_FLOOR_LIFT_PSI, PF_CONSTRAINT_MIN_PSI)
         peak = self.max_discharge_pressure(self.knee_flow())
+        if peak is None:
+            # Amp limits can move the maximum away from the nominal knee.
+            available = [self.max_discharge_pressure(q) for q in PadPlant._curve_grid(self.flow_ceiling(), _SCAN_POINTS)]
+            peak = max((p for p in available if p is not None), default=None)
+        if peak is None:
+            raise ValueError("E-Pad has no operating pressure inside its speed, amp and flow limits")
         ceiling = clamp_to_pf_constraint(
-            min(self.max_header_psi, peak if peak is not None else self.max_header_psi)
+            min(self.max_header_psi, peak)
         )
-        if ceiling <= floor:
-            ceiling = floor + 500.0
+        if ceiling <= max(self._suction, PF_CONSTRAINT_MIN_PSI):
+            raise ValueError("E-Pad has no boosted operating pressure within its header cap")
+        floor = min(floor, ceiling)
         return floor, ceiling
 
     def flags(self, q_total: float, n_pumps: int | None = None) -> dict:
@@ -250,14 +267,14 @@ class EPadPlant(PadPlant):
         n_pumps: int | None = None,
         at_pressure: float | None = None,
     ) -> list[dict]:
-        """Per-flow frontier rows: the deliverable header and the speed / amps
-        it takes. ``n_pumps`` and ``at_pressure`` are ignored - one machine,
-        and the frontier already is the pressure."""
+        """One consistent speed/head/amp point per flow. The represented
+        policy runs at available speed and throttles surplus pressure; a
+        requested header above the frontier or cap is explicitly infeasible."""
         rows = []
         for q in flows:
-            window = self.build.hz_window_in_ror(q, self.hz_max)
+            hz = self.build.max_hz_at_flow(q, self._sg, self.hz_max, self.amps_per_bhp, self.amp_limit)
             psi = self.max_discharge_pressure(q)
-            if window is None or psi is None:
+            if hz is None or psi is None:
                 rows.append(
                     {
                         "flow": q,
@@ -269,13 +286,16 @@ class EPadPlant(PadPlant):
                     }
                 )
                 continue
-            hz = window[1]
+            feasible = at_pressure is None or (
+                self._suction <= at_pressure <= self.max_header_psi and at_pressure <= psi + 1e-7)
             rows.append(
                 {
                     "flow": q,
                     "max_discharge_psi": psi,
                     "per_pump_bpd": q,
-                    "feasible": True,
+                    "feasible": feasible,
+                    "delivered_header_psi": min(psi, self.max_header_psi if at_pressure is None else at_pressure),
+                    "throttle_psi": max(0., psi - (self.max_header_psi if at_pressure is None else at_pressure)),
                     "recirc": False,
                     "pumps": [
                         {

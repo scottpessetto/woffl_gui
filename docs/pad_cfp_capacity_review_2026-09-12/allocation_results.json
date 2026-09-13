@@ -1,0 +1,1730 @@
+{
+  "scope": "offline synthetic allocation audit, no physics or live data",
+  "versions": {
+    "numpy": "2.4.4",
+    "scipy": "1.17.1",
+    "ortools": "9.15.6755"
+  },
+  "cases": [
+    {
+      "name": "hard_capacity_oil",
+      "inputs": {
+        "groups": {
+          "A": [
+            {
+              "qoil_std": 100,
+              "lift_wat": 1000,
+              "form_wat": 0.0,
+              "totl_wat": 1000.0,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ],
+          "B": [
+            {
+              "qoil_std": 61,
+              "lift_wat": 600,
+              "form_wat": 0.0,
+              "totl_wat": 600.0,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ]
+        },
+        "capacity": 1000,
+        "water_price": 0.0,
+        "water_key": "lift_wat"
+      },
+      "oracle": {
+        "objective": 100.0,
+        "oil": 100.0,
+        "water": 1000.0,
+        "choices": {
+          "A": "12A:installed",
+          "B": "off"
+        }
+      },
+      "milp": {
+        "objective": 100.0,
+        "oil": 100.0,
+        "water": 1000.0,
+        "choices": {
+          "A": "12A:installed"
+        },
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "B",
+            "Status": "not allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": "solver left the well out under the water budget (implicit shut-in)"
+          },
+          {
+            "Well": "A",
+            "Status": "allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": 0,
+            "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+            "success": true,
+            "mip_gap": 0.0,
+            "mip_node_count": 0
+          }
+        ]
+      },
+      "mckp": {
+        "objective": 100.0,
+        "oil": 100.0,
+        "water": 1000.0,
+        "choices": {
+          "A": "12A:installed"
+        },
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "B",
+            "Status": "not allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": "solver left the well out under the water budget (implicit shut-in)"
+          },
+          {
+            "Well": "A",
+            "Status": "allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": "OPTIMAL",
+            "objective": 10000.0,
+            "objective_bound": 10000.0
+          }
+        ]
+      }
+    },
+    {
+      "name": "auto_shadow_price_changes_discrete_oil_winner",
+      "inputs": {
+        "groups": {
+          "A": [
+            {
+              "qoil_std": 100,
+              "lift_wat": 1000,
+              "form_wat": 0.0,
+              "totl_wat": 1000.0,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ],
+          "B": [
+            {
+              "qoil_std": 61,
+              "lift_wat": 600,
+              "form_wat": 0.0,
+              "totl_wat": 600.0,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ]
+        },
+        "capacity": 1000,
+        "water_price": 0.1,
+        "water_key": "lift_wat"
+      },
+      "oracle": {
+        "objective": 1.0,
+        "oil": 61.0,
+        "water": 600.0,
+        "choices": {
+          "A": "off",
+          "B": "12A:installed"
+        }
+      },
+      "milp": {
+        "objective": 1.0,
+        "oil": 61.0,
+        "water": 600.0,
+        "choices": {
+          "B": "12A:installed"
+        },
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "not allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": "solver left the well out under the water budget (implicit shut-in)"
+          },
+          {
+            "Well": "B",
+            "Status": "allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": 0,
+            "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+            "success": true,
+            "mip_gap": 0.0,
+            "mip_node_count": 0
+          },
+          {
+            "status": 0,
+            "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+            "success": true,
+            "mip_gap": 0.0,
+            "mip_node_count": 0
+          }
+        ]
+      },
+      "mckp": {
+        "objective": 1.0,
+        "oil": 61.0,
+        "water": 600.0,
+        "choices": {
+          "B": "12A:installed"
+        },
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "not allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": "solver left the well out under the water budget (implicit shut-in)"
+          },
+          {
+            "Well": "B",
+            "Status": "allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": "OPTIMAL",
+            "objective": 100.0,
+            "objective_bound": 100.0
+          },
+          {
+            "status": "OPTIMAL",
+            "objective": 6100.0,
+            "objective_bound": 6100.0
+          }
+        ]
+      },
+      "auto_lambda": {
+        "value": 0.1,
+        "slack": false,
+        "unpriced_capacity_oracle": {
+          "objective": 100.0,
+          "oil": 100.0,
+          "water": 1000.0,
+          "choices": {
+            "A": "12A:installed",
+            "B": "off"
+          }
+        }
+      }
+    },
+    {
+      "name": "exact_fit_subcent_capacity_single",
+      "inputs": {
+        "groups": {
+          "A": [
+            {
+              "qoil_std": 500,
+              "lift_wat": 1000.001,
+              "form_wat": 0.0,
+              "totl_wat": 1000.001,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ]
+        },
+        "capacity": 1000.001,
+        "water_price": 0.0,
+        "water_key": "lift_wat"
+      },
+      "oracle": {
+        "objective": 500.0,
+        "oil": 500.0,
+        "water": 1000.001,
+        "choices": {
+          "A": "12A:installed"
+        }
+      },
+      "milp": {
+        "objective": 500.0,
+        "oil": 500.0,
+        "water": 1000.001,
+        "choices": {
+          "A": "12A:installed"
+        },
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": 0,
+            "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+            "success": true,
+            "mip_gap": 0.0,
+            "mip_node_count": 0
+          }
+        ]
+      },
+      "mckp": {
+        "objective": 0.0,
+        "oil": 0,
+        "water": 0,
+        "choices": {},
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "simulated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": "OPTIMAL",
+            "objective": -0.0,
+            "objective_bound": -0.0
+          }
+        ]
+      }
+    },
+    {
+      "name": "exact_fit_subcent_capacity_two",
+      "inputs": {
+        "groups": {
+          "A": [
+            {
+              "qoil_std": 500,
+              "lift_wat": 1000.001,
+              "form_wat": 0.0,
+              "totl_wat": 1000.001,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ],
+          "B": [
+            {
+              "qoil_std": 100,
+              "lift_wat": 500.001,
+              "form_wat": 0.0,
+              "totl_wat": 500.001,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ]
+        },
+        "capacity": 1500.002,
+        "water_price": 0.0,
+        "water_key": "lift_wat"
+      },
+      "oracle": {
+        "objective": 600.0,
+        "oil": 600.0,
+        "water": 1500.002,
+        "choices": {
+          "A": "12A:installed",
+          "B": "12A:installed"
+        }
+      },
+      "milp": {
+        "objective": 600.0,
+        "oil": 600.0,
+        "water": 1500.002,
+        "choices": {
+          "A": "12A:installed",
+          "B": "12A:installed"
+        },
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          },
+          {
+            "Well": "B",
+            "Status": "allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": 0,
+            "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+            "success": true,
+            "mip_gap": 0.0,
+            "mip_node_count": 0
+          }
+        ]
+      },
+      "mckp": {
+        "objective": 500.0,
+        "oil": 500.0,
+        "water": 1000.001,
+        "choices": {
+          "A": "12A:installed"
+        },
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "B",
+            "Status": "not allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": "solver left the well out under the water budget (implicit shut-in)"
+          },
+          {
+            "Well": "A",
+            "Status": "allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": "OPTIMAL",
+            "objective": 50000.0,
+            "objective_bound": 50000.0
+          }
+        ]
+      }
+    },
+    {
+      "name": "capacity_just_below_required",
+      "inputs": {
+        "groups": {
+          "A": [
+            {
+              "qoil_std": 500,
+              "lift_wat": 1000.001,
+              "form_wat": 0.0,
+              "totl_wat": 1000.001,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ]
+        },
+        "capacity": 1000,
+        "water_price": 0.0,
+        "water_key": "lift_wat"
+      },
+      "oracle": {
+        "objective": 0.0,
+        "oil": 0.0,
+        "water": 0.0,
+        "choices": {
+          "A": "off"
+        }
+      },
+      "milp": {
+        "objective": 0.0,
+        "oil": 0,
+        "water": 0,
+        "choices": {},
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "simulated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": 0,
+            "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+            "success": true,
+            "mip_gap": 0.0,
+            "mip_node_count": 0
+          }
+        ]
+      },
+      "mckp": {
+        "objective": 0.0,
+        "oil": 0,
+        "water": 0,
+        "choices": {},
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "simulated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": "OPTIMAL",
+            "objective": -0.0,
+            "objective_bound": -0.0
+          }
+        ]
+      }
+    },
+    {
+      "name": "zero_profit_prefers_production",
+      "inputs": {
+        "groups": {
+          "A": [
+            {
+              "qoil_std": 100,
+              "lift_wat": 1000,
+              "form_wat": 0.0,
+              "totl_wat": 1000.0,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ]
+        },
+        "capacity": 1000,
+        "water_price": 0.1,
+        "water_key": "lift_wat"
+      },
+      "oracle": {
+        "objective": 0.0,
+        "oil": 100.0,
+        "water": 1000.0,
+        "choices": {
+          "A": "12A:installed"
+        }
+      },
+      "milp": {
+        "objective": 0.0,
+        "oil": 100.0,
+        "water": 1000.0,
+        "choices": {
+          "A": "12A:installed"
+        },
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": 0,
+            "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+            "success": true,
+            "mip_gap": 0.0,
+            "mip_node_count": 0
+          },
+          {
+            "status": 0,
+            "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+            "success": true,
+            "mip_gap": 0.0,
+            "mip_node_count": 0
+          }
+        ]
+      },
+      "mckp": {
+        "objective": 0.0,
+        "oil": 100.0,
+        "water": 1000.0,
+        "choices": {
+          "A": "12A:installed"
+        },
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": "OPTIMAL",
+            "objective": -0.0,
+            "objective_bound": -0.0
+          },
+          {
+            "status": "OPTIMAL",
+            "objective": 10000.0,
+            "objective_bound": 10000.0
+          }
+        ]
+      }
+    },
+    {
+      "name": "all_negative_profit_is_all_shutin",
+      "inputs": {
+        "groups": {
+          "A": [
+            {
+              "qoil_std": 100,
+              "lift_wat": 1000,
+              "form_wat": 0.0,
+              "totl_wat": 1000.0,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ],
+          "B": [
+            {
+              "qoil_std": 20,
+              "lift_wat": 500,
+              "form_wat": 0.0,
+              "totl_wat": 500.0,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ]
+        },
+        "capacity": 2000,
+        "water_price": 0.2,
+        "water_key": "lift_wat"
+      },
+      "oracle": {
+        "objective": 0.0,
+        "oil": 0.0,
+        "water": 0.0,
+        "choices": {
+          "A": "off",
+          "B": "off"
+        }
+      },
+      "milp": {
+        "objective": 0.0,
+        "oil": 0,
+        "water": 0,
+        "choices": {},
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "simulated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          },
+          {
+            "Well": "B",
+            "Status": "simulated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": 0,
+            "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+            "success": true,
+            "mip_gap": 0.0,
+            "mip_node_count": 0
+          },
+          {
+            "status": 0,
+            "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+            "success": true,
+            "mip_gap": 0.0,
+            "mip_node_count": 0
+          }
+        ]
+      },
+      "mckp": {
+        "objective": 0.0,
+        "oil": 0,
+        "water": 0,
+        "choices": {},
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "simulated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          },
+          {
+            "Well": "B",
+            "Status": "simulated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": "OPTIMAL",
+            "objective": -0.0,
+            "objective_bound": -0.0
+          },
+          {
+            "status": "OPTIMAL",
+            "objective": -0.0,
+            "objective_bound": -0.0
+          }
+        ]
+      }
+    },
+    {
+      "name": "zero_oil_and_negative_oil",
+      "inputs": {
+        "groups": {
+          "A": [
+            {
+              "qoil_std": 0,
+              "lift_wat": 100,
+              "form_wat": 0.0,
+              "totl_wat": 100.0,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ],
+          "B": [
+            {
+              "qoil_std": -2,
+              "lift_wat": 100,
+              "form_wat": 0.0,
+              "totl_wat": 100.0,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ]
+        },
+        "capacity": 200,
+        "water_price": 0.0,
+        "water_key": "lift_wat"
+      },
+      "oracle": {
+        "objective": 0.0,
+        "oil": 0.0,
+        "water": 0.0,
+        "choices": {
+          "A": "off",
+          "B": "off"
+        }
+      },
+      "milp": {
+        "objective": 0.0,
+        "oil": 0,
+        "water": 0,
+        "choices": {},
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "simulated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          },
+          {
+            "Well": "B",
+            "Status": "simulated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": 0,
+            "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+            "success": true,
+            "mip_gap": 0.0,
+            "mip_node_count": 0
+          }
+        ]
+      },
+      "mckp": {
+        "objective": 0.0,
+        "oil": 0,
+        "water": 0,
+        "choices": {},
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "simulated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          },
+          {
+            "Well": "B",
+            "Status": "simulated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": "OPTIMAL",
+            "objective": -0.0,
+            "objective_bound": -0.0
+          }
+        ]
+      }
+    },
+    {
+      "name": "negative_water_not_rejected",
+      "inputs": {
+        "groups": {
+          "A": [
+            {
+              "qoil_std": 0,
+              "lift_wat": -100,
+              "form_wat": 0.0,
+              "totl_wat": -100.0,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ],
+          "B": [
+            {
+              "qoil_std": 500,
+              "lift_wat": 200,
+              "form_wat": 0.0,
+              "totl_wat": 200.0,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ]
+        },
+        "capacity": 100,
+        "water_price": 0.0,
+        "water_key": "lift_wat"
+      },
+      "oracle": {
+        "objective": 500.0,
+        "oil": 500.0,
+        "water": 100.0,
+        "choices": {
+          "A": "12A:installed",
+          "B": "12A:installed"
+        }
+      },
+      "milp": {
+        "objective": 500.0,
+        "oil": 500.0,
+        "water": 100.0,
+        "choices": {
+          "A": "12A:installed",
+          "B": "12A:installed"
+        },
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          },
+          {
+            "Well": "B",
+            "Status": "allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": 0,
+            "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+            "success": true,
+            "mip_gap": 0.0,
+            "mip_node_count": 0
+          }
+        ]
+      },
+      "mckp": {
+        "objective": 500.0,
+        "oil": 500.0,
+        "water": 100.0,
+        "choices": {
+          "A": "12A:installed",
+          "B": "12A:installed"
+        },
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          },
+          {
+            "Well": "B",
+            "Status": "allocated",
+            "Configs OK": 1,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": "OPTIMAL",
+            "objective": 50000.0,
+            "objective_bound": 50000.0
+          }
+        ]
+      }
+    },
+    {
+      "name": "nan_water_not_rejected",
+      "inputs": {
+        "groups": {
+          "A": [
+            {
+              "qoil_std": 100,
+              "lift_wat": "nan",
+              "form_wat": 0.0,
+              "totl_wat": "nan",
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ]
+        },
+        "capacity": 1000,
+        "water_price": 0.0,
+        "water_key": "lift_wat"
+      },
+      "oracle": {
+        "error": "InvalidOperation: [<class 'decimal.InvalidOperation'>]"
+      },
+      "milp": {
+        "error": "ValueError: `c` must be a one-dimensional array of finite numbers with at least one element.",
+        "raw_solver_diagnostics_not_returned_by_app": []
+      },
+      "mckp": {
+        "error": "ValueError: cannot convert float NaN to integer",
+        "raw_solver_diagnostics_not_returned_by_app": []
+      }
+    },
+    {
+      "name": "infinite_oil_not_rejected",
+      "inputs": {
+        "groups": {
+          "A": [
+            {
+              "qoil_std": "inf",
+              "lift_wat": 100,
+              "form_wat": 0.0,
+              "totl_wat": 100.0,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ]
+        },
+        "capacity": 1000,
+        "water_price": 0.0,
+        "water_key": "lift_wat"
+      },
+      "oracle": {
+        "objective": "inf",
+        "oil": "inf",
+        "water": 100.0,
+        "choices": {
+          "A": "12A:installed"
+        }
+      },
+      "milp": {
+        "error": "ValueError: `c` must be a one-dimensional array of finite numbers with at least one element.",
+        "raw_solver_diagnostics_not_returned_by_app": []
+      },
+      "mckp": {
+        "error": "OverflowError: cannot convert float infinity to integer",
+        "raw_solver_diagnostics_not_returned_by_app": []
+      }
+    },
+    {
+      "name": "quantized_secondary_oil_changes_primary",
+      "inputs": {
+        "groups": {
+          "A": [
+            {
+              "qoil_std": 100.001,
+              "lift_wat": 100,
+              "form_wat": 0.0,
+              "totl_wat": 100.0,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            },
+            {
+              "qoil_std": 1000,
+              "lift_wat": 1000,
+              "form_wat": 0.0,
+              "totl_wat": 1000.0,
+              "nozzle": "12",
+              "throat": "B",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ]
+        },
+        "capacity": 1000,
+        "water_price": 1.0,
+        "water_key": "lift_wat"
+      },
+      "oracle": {
+        "objective": 0.001,
+        "oil": 100.001,
+        "water": 100.0,
+        "choices": {
+          "A": "12A:installed"
+        }
+      },
+      "milp": {
+        "objective": 0.0010000000000047748,
+        "oil": 100.001,
+        "water": 100.0,
+        "choices": {
+          "A": "12A:installed"
+        },
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "allocated",
+            "Configs OK": 2,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": 0,
+            "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+            "success": true,
+            "mip_gap": 0.0,
+            "mip_node_count": 0
+          },
+          {
+            "status": 0,
+            "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+            "success": true,
+            "mip_gap": 0.0,
+            "mip_node_count": 0
+          }
+        ]
+      },
+      "mckp": {
+        "objective": 0.0,
+        "oil": 1000.0,
+        "water": 1000.0,
+        "choices": {
+          "A": "12B:installed"
+        },
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "allocated",
+            "Configs OK": 2,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": "OPTIMAL",
+            "objective": -0.0,
+            "objective_bound": -0.0
+          },
+          {
+            "status": "OPTIMAL",
+            "objective": 100000.0,
+            "objective_bound": 100000.0
+          }
+        ]
+      }
+    },
+    {
+      "name": "identical_same_size_keeps_installed",
+      "inputs": {
+        "groups": {
+          "A": [
+            {
+              "qoil_std": 100,
+              "lift_wat": 1000,
+              "form_wat": 0.0,
+              "totl_wat": 1000.0,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "replacement",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            },
+            {
+              "qoil_std": 100,
+              "lift_wat": 1000,
+              "form_wat": 0.0,
+              "totl_wat": 1000.0,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ]
+        },
+        "capacity": 2000,
+        "water_price": 0.0,
+        "water_key": "lift_wat"
+      },
+      "oracle": {
+        "objective": 100.0,
+        "oil": 100.0,
+        "water": 1000.0,
+        "choices": {
+          "A": "12A:replacement"
+        }
+      },
+      "milp": {
+        "objective": 100.0,
+        "oil": 100.0,
+        "water": 1000.0,
+        "choices": {
+          "A": "12A:installed"
+        },
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "allocated",
+            "Configs OK": 2,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": 0,
+            "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+            "success": true,
+            "mip_gap": 0.0,
+            "mip_node_count": 0
+          }
+        ]
+      },
+      "mckp": {
+        "objective": 100.0,
+        "oil": 100.0,
+        "water": 1000.0,
+        "choices": {
+          "A": "12A:installed"
+        },
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "allocated",
+            "Configs OK": 2,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": "OPTIMAL",
+            "objective": 10000.0,
+            "objective_bound": 10000.0
+          }
+        ]
+      }
+    },
+    {
+      "name": "total_water_capacity",
+      "inputs": {
+        "groups": {
+          "A": [
+            {
+              "qoil_std": 100,
+              "lift_wat": 100,
+              "form_wat": 900,
+              "totl_wat": 1000,
+              "nozzle": "12",
+              "throat": "A",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            },
+            {
+              "qoil_std": 80,
+              "lift_wat": 300,
+              "form_wat": 100,
+              "totl_wat": 400,
+              "nozzle": "12",
+              "throat": "B",
+              "pump_state": "installed",
+              "psu_solv": 500.0,
+              "sonic_status": false,
+              "mach_te": 0.5,
+              "molwr": 0.0,
+              "motwr": 0.0,
+              "error": "na",
+              "semi": true
+            }
+          ]
+        },
+        "capacity": 500,
+        "water_price": 0.0,
+        "water_key": "totl_wat"
+      },
+      "oracle": {
+        "objective": 80.0,
+        "oil": 80.0,
+        "water": 400.0,
+        "choices": {
+          "A": "12B:installed"
+        }
+      },
+      "milp": {
+        "objective": 80.0,
+        "oil": 80.0,
+        "water": 400.0,
+        "choices": {
+          "A": "12B:installed"
+        },
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "allocated",
+            "Configs OK": 2,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": 0,
+            "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+            "success": true,
+            "mip_gap": 0.0,
+            "mip_node_count": 0
+          }
+        ]
+      },
+      "mckp": {
+        "objective": 80.0,
+        "oil": 80.0,
+        "water": 400.0,
+        "choices": {
+          "A": "12B:installed"
+        },
+        "feasible_original": true,
+        "reconciliation": [
+          {
+            "Well": "A",
+            "Status": "allocated",
+            "Configs OK": 2,
+            "Configs Failed": 0,
+            "Detail": ""
+          }
+        ],
+        "raw_solver_diagnostics_not_returned_by_app": [
+          {
+            "status": "OPTIMAL",
+            "objective": 8000.0,
+            "objective_bound": 8000.0
+          }
+        ]
+      }
+    }
+  ],
+  "mandatory": {
+    "inputs": {
+      "Existing": [
+        {
+          "qoil_std": 100,
+          "lift_wat": 1000,
+          "form_wat": 0.0,
+          "totl_wat": 1000.0,
+          "nozzle": "12",
+          "throat": "A",
+          "pump_state": "installed",
+          "psu_solv": 500.0,
+          "sonic_status": false,
+          "mach_te": 0.5,
+          "molwr": 0.0,
+          "motwr": 0.0,
+          "error": "na",
+          "semi": true
+        }
+      ],
+      "Future": [
+        {
+          "qoil_std": 10,
+          "lift_wat": 500,
+          "form_wat": 0.0,
+          "totl_wat": 500.0,
+          "nozzle": "12",
+          "throat": "A",
+          "pump_state": "installed",
+          "psu_solv": 500.0,
+          "sonic_status": false,
+          "mach_te": 0.5,
+          "molwr": 0.0,
+          "motwr": 0.0,
+          "error": "na",
+          "semi": true
+        }
+      ]
+    },
+    "capacity": 1000,
+    "exactly_one_oracle": null,
+    "gui_all_optional": {
+      "objective": 100.0,
+      "oil": 100.0,
+      "water": 1000.0,
+      "choices": {
+        "Existing": "12A:installed"
+      },
+      "feasible_original": true,
+      "reconciliation": [
+        {
+          "Well": "Future",
+          "Status": "not allocated",
+          "Configs OK": 1,
+          "Configs Failed": 0,
+          "Detail": "solver left the well out under the water budget (implicit shut-in)"
+        },
+        {
+          "Well": "Existing",
+          "Status": "allocated",
+          "Configs OK": 1,
+          "Configs Failed": 0,
+          "Detail": ""
+        }
+      ],
+      "raw_solver_diagnostics_not_returned_by_app": [
+        {
+          "status": "OPTIMAL",
+          "objective": 10000.0,
+          "objective_bound": 10000.0
+        }
+      ]
+    },
+    "direct_exactly_one_error": "RuntimeError: MCKP infeasible: 1000 bwpd capacity cannot serve all wells. Minimum required: 1500 bwpd."
+  },
+  "choke": {
+    "inputs": [
+      {
+        "well": "A",
+        "idx": 0,
+        "opts": [
+          [
+            3000,
+            500,
+            5000,
+            500
+          ],
+          [
+            null,
+            0,
+            0,
+            null
+          ]
+        ]
+      },
+      {
+        "well": "B",
+        "idx": 0,
+        "opts": [
+          [
+            3000,
+            150,
+            1000,
+            500
+          ],
+          [
+            null,
+            0,
+            0,
+            null
+          ]
+        ]
+      }
+    ],
+    "capacity": 5000,
+    "greedy": {
+      "oil": 150,
+      "water": 1000,
+      "last_slope": 0.1,
+      "states": [
+        {
+          "well": "A",
+          "idx": 1,
+          "opts": [
+            [
+              3000,
+              500,
+              5000,
+              500
+            ],
+            [
+              null,
+              0,
+              0,
+              null
+            ]
+          ]
+        },
+        {
+          "well": "B",
+          "idx": 0,
+          "opts": [
+            [
+              3000,
+              150,
+              1000,
+              500
+            ],
+            [
+              null,
+              0,
+              0,
+              null
+            ]
+          ]
+        }
+      ]
+    },
+    "oracle": {
+      "objective": 500.0,
+      "oil": 500.0,
+      "water": 5000.0,
+      "choices": {
+        "A": "12A:installed",
+        "B": "off"
+      }
+    },
+    "milp": {
+      "objective": 500.0,
+      "oil": 500.0,
+      "water": 5000.0,
+      "choices": {
+        "A": "12A:installed"
+      },
+      "feasible_original": true,
+      "reconciliation": [
+        {
+          "Well": "B",
+          "Status": "not allocated",
+          "Configs OK": 1,
+          "Configs Failed": 0,
+          "Detail": "solver left the well out under the water budget (implicit shut-in)"
+        },
+        {
+          "Well": "A",
+          "Status": "allocated",
+          "Configs OK": 1,
+          "Configs Failed": 0,
+          "Detail": ""
+        }
+      ],
+      "raw_solver_diagnostics_not_returned_by_app": [
+        {
+          "status": 0,
+          "message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+          "success": true,
+          "mip_gap": 0.0,
+          "mip_node_count": 0
+        }
+      ]
+    },
+    "floating_point_dust": {
+      "budget": 4999.9999999999,
+      "demand": 5000.0,
+      "oil": 0,
+      "water": 0.0
+    }
+  },
+  "nonconcave_shadow": {
+    "inputs": {
+      "A": [
+        {
+          "qoil_std": 1,
+          "lift_wat": 1000,
+          "form_wat": 0.0,
+          "totl_wat": 1000.0,
+          "nozzle": "12",
+          "throat": "A",
+          "pump_state": "installed",
+          "psu_solv": 500.0,
+          "sonic_status": false,
+          "mach_te": 0.5,
+          "molwr": 0.0,
+          "motwr": 0.0,
+          "error": "na",
+          "semi": true
+        },
+        {
+          "qoil_std": 101,
+          "lift_wat": 1100,
+          "form_wat": 0.0,
+          "totl_wat": 1100.0,
+          "nozzle": "12",
+          "throat": "B",
+          "pump_state": "installed",
+          "psu_solv": 500.0,
+          "sonic_status": false,
+          "mach_te": 0.5,
+          "molwr": 0.0,
+          "motwr": 0.0,
+          "error": "na",
+          "semi": true
+        }
+      ]
+    },
+    "frontier": [
+      [
+        1000.0,
+        1.0
+      ],
+      [
+        1100.0,
+        101.0
+      ]
+    ],
+    "segments": [
+      [
+        1000.0,
+        0.001
+      ],
+      [
+        100.0,
+        1.0
+      ]
+    ],
+    "capacity": 500,
+    "derived": [
+      0.001,
+      false
+    ],
+    "upper_concave_hull_shadow": 0.09181818181818181
+  },
+  "random_oracle": {
+    "seed": 20260912,
+    "cases": 120,
+    "mismatches": [],
+    "max_primary_gap": {
+      "milp": 0.0,
+      "mckp": 0.0
+    }
+  },
+  "injected_failure_reporting": {
+    "milp_solver_error_result": [],
+    "cp_unknown_result": []
+  }
+}

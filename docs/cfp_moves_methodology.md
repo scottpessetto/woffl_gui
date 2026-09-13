@@ -1,5 +1,20 @@
 # CFP "Today's Moves" — formulation, literature grounding, and algorithm
 
+**September 12 correction:** the application takes an explicitly manual
+reference discharge and optional same-condition pad PF pressures. It does not
+silently mix in asynchronous latest PF. The baseline must solve on its actual
+current pumps at P0; unavailable current options fail anchoring. Pressure below
+the sampled domain is unsupported, never clipped to the grid floor. The best
+plan is selected jointly from baseline, singles, raw bring-online/offset pairs,
+the lambda frontier, and either bounded enumeration or a bounded neighborhood.
+Required-online constraints apply to the proposed plan, independently of the
+comparison baseline. Search coverage and lack of final direct physics solves
+are explicit. The original claims below about immaterial search gaps,
+exhaustive pair boards and cancellation of arbitrary model bias are withdrawn;
+constant shared offsets can cancel, while response errors generally do not.
+See [capacity review](pad_cfp_capacity_review_2026-09-12.md) and
+[implementation](pad_cfp_capacity_delivery_2026-09-12.md).
+
 *2026-07-30. The decision engine behind the PW Pressure Optimization page's
 Configure/Results stages (`woffl/gui/cfp_moves.py`).*
 

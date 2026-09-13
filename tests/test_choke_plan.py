@@ -75,6 +75,33 @@ def _patch_grid(monkeypatch, curves, calls=None):
 CHOICES = {"A": ("12", "B"), "B": ("11", "C"), "C": ("13", "B"), "D": ("10", "A")}
 
 
+def test_discrete_choke_allocation_does_not_overshoot_required_water_reduction():
+    wells = [{"opts": [(3000., 500., 5000., None), (None, 0., 0., None)], "idx": 0},
+             {"opts": [(3000., 150., 1000., None), (None, 0., 0., None)], "idx": 0}]
+    water, oil, _ = pad_optimize._trim_to_budget(wells, 5000.)
+    assert (water, oil) == (5000., 500.)
+    assert [w["idx"] for w in wells] == [0, 1]
+
+
+def test_required_choke_well_is_kept_and_infeasible_required_set_raises(monkeypatch):
+    _patch_grid(monkeypatch, {"A": {p: (500., 5000.) for p in LEVELS},
+                              "B": {p: (150., 1000.) for p in LEVELS}})
+    rows, _ = pad_optimize.run_choke_optimization(_configs(["A", "B"]), StubPlant(5000.), 2,
+                                                 CHOICES, {}, n_levels=3, required_wells={"B"})
+    assert {r["well"]: r["action"] for r in rows}["B"] != "shut"
+    with pytest.raises(RuntimeError):
+        pad_optimize.run_choke_optimization(_configs(["A", "B"]), StubPlant(5000.), 2,
+                                            CHOICES, {}, n_levels=3, required_wells={"A", "B"})
+
+
+def test_choke_solver_failure_is_not_a_successful_all_off_plan(monkeypatch):
+    import scipy.optimize
+    from woffl.assembly.network import AllocationError
+    monkeypatch.setattr(scipy.optimize, "milp", lambda **kw: SimpleNamespace(success=False, status=4, message="fixture failure"))
+    with pytest.raises(AllocationError, match="fixture failure"):
+        pad_optimize._trim_to_budget([{"opts": [(3000., 100., 1000., None), (None, 0., 0., None)], "idx": 0}], 1000.)
+
+
 # ---------------------------------------------------------------------------
 # Decision layer
 # ---------------------------------------------------------------------------
@@ -289,7 +316,8 @@ def test_meta_carries_the_chart_contract(monkeypatch):
         assert key in meta, key
     assert meta["mode"] == "choke"
     assert meta["n_pumps"] == 3
-    assert meta["sweep"][0].keys() == {"header_psi", "total_pf_bpd", "total_machine_water_bpd", "total_oil_bopd"}
+    assert {"header_psi", "total_pf_bpd", "total_machine_water_bpd", "total_oil_bopd",
+            "feasible", "hydraulically_feasible", "operating_assumptions"} <= meta["sweep"][0].keys()
 
 
 # ---------------------------------------------------------------------------

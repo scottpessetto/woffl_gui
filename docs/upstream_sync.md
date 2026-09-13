@@ -5,11 +5,12 @@ This repo (`github.com/scottpessetto/woffl_gui`) is a **fork** of the upstream
 alone, but the four **library** packages — `woffl/pvt/`, `woffl/geometry/`,
 `woffl/flow/`, `woffl/assembly/` — are shared with upstream and published to PyPI.
 
-Current through **patch 43, 2026-09-08**. Later entries supersede earlier designs
+Current through **patch 46, 2026-09-12**. Later entries supersede earlier designs
 where noted: shared entry energy replaces the Mach adjustment, v2 updates fluid
 properties, and scoped pump candidates keep fitted losses off replacements.
 Read [the current handoff](session_learnings_2026-09-08.md) before applying an
-older entry in isolation. Latest recorded suite: 1,861 Python / 8 frontend tests.
+older entry in isolation. Current verification is recorded in
+[the capacity delivery](pad_cfp_capacity_delivery_2026-09-12.md).
 
 We carry a few **local patches inside the library** that are **not yet
 upstreamed**. When the upstream owner ships changes and we sync them in, those
@@ -1077,3 +1078,88 @@ tests. The chronological adapter preserves all **121** comparable September 11
 predictions exactly. F-73 remains unresolved. See the
 [fixed-IPR investigation](well_match_diagnostic_2026-09-12.md) for comparison
 cohorts, measured-composition effects and the remaining physics/validation work.
+
+### 46. Qualify discrete allocations, retain solver outcomes, and preserve operating choices
+
+**Files:** `woffl/assembly/network.py`, `optimization_algorithms.py`,
+`network_optimizer.py`, `pump_candidates.py`.
+
+Both GUI allocators now use one validated candidate/performance table and retain
+`optimizer.allocation_status`. `AllocationError` distinguishes infeasible,
+unsupported, unknown and failed solves from an optimal all-shut-in result.
+The status records the selected objective, objective bound/gap, original-unit
+resource use, solver and any precision refinement. Qualified MILP incumbents
+with an unfinished proof remain explicitly feasible; failed secondary oil
+tie-breaks retain the qualified primary plan. Reconciliation marks a completed
+all-shut-in solve as not allocated, and a failed solve as allocation failed.
+
+CP-SAT keeps its direct DataFrame API, all-wells-online default and optional
+shutdown rows. Diagnostics are also available in
+`df.attrs['allocation_status']`. Fractional resource coefficients use the
+original-unit MILP because per-option .01-BPD ceiling could reject an exact-fit
+well entirely. Exact hundredth coefficients use Decimal conversion, eliminating
+binary-float ceil artifacts. Returned choices are checked against the original
+BPD budget (1e-8 BPD arithmetic tolerance); MILP re-solves after excluding any
+numerically over-budget binary incumbent. Integer CP objective quantization is
+disclosed and included in its original-unit objective bound.
+
+`optimizer.required_wells` (default empty) requires one valid online option for
+each named well in both GUI adapters. Missing/invalid required wells raise
+unsupported; an unserviceable mandatory combination raises infeasible. The
+direct CP API also accepts the optional `required_wells` keyword while keeping
+its preceding signature/default behavior.
+
+Successful markers no longer admit infinite, NaN or negative oil/water rates.
+Both shadow-price helpers now pool the upper concave hull rather than buying a
+later Pareto segment before its prerequisite. The resulting lambda is a
+continuous-relaxation diagnostic, not a guarantee of discrete marginal value.
+The installed pump is always added independently of replacement grid limits,
+including an installed X throat or an out-of-grid nozzle. Its own calibration
+is retained; every replacement still uses clean reference hardware.
+
+**Guarded by:** `tests/test_allocation_qualification.py`:
+`test_exact_fit_fractional_resources_keep_both_wells`,
+`test_original_capacity_not_exceeded_near_boundary`,
+`test_capacity_float_dust_uses_the_declared_original_unit_tolerance`,
+`test_all_shutin_is_an_optimal_completed_allocation`,
+`test_required_subset_is_served_even_when_optional_well_is_more_profitable`,
+`test_infeasible_required_online_set_raises_typed_failure`,
+`test_required_unknown_or_invalid_well_is_not_silently_skipped`,
+`test_invalid_rate_rows_cannot_create_oil_or_spare_capacity`,
+`test_milp_solver_error_is_not_a_shutdown_result`,
+`test_candidate_lookup_failure_clears_previous_qualified_plan`,
+`test_cp_unknown_is_not_misreported_as_capacity_or_shutdown`,
+`test_milp_limit_preserves_qualified_incumbent_and_gap`,
+`test_failed_oil_tie_break_retains_qualified_primary_plan`,
+`test_direct_api_retains_exactly_one_default_and_dataframe_status`,
+`test_concave_hull_shadow_price_does_not_buy_later_segment_first`,
+`test_installed_pump_outside_replacement_grid_is_always_an_option`, and
+`test_small_fractional_allocations_match_exhaustive_oracle_with_required_well`.
+Existing tests also cover same-size installed/replacement identity, real
+single/batch physics parity, direct network smoke and water-stream selection.
+`tests/test_reconcile_wells.py::TestReconcileWells::test_identical_installed_and_replacement_successes_are_not_failures`
+keeps successful simulation counts independent of equivalent decision-option
+deduplication. The obsolete semi-finalist skip label is now tested as no valid
+allocation candidates, separately from economic shut-in.
+
+Verification: 190 focused tests passed across allocation, network, marginal-price,
+pump scope and the direct network physics smoke suites. The final stale-result
+guard added two cases; all 53 tests in its affected allocation suites then passed.
+The only reported warnings were the existing low-GOR oil-correlation warning and
+the local pytest-cache ACL warning. Root owns the final full-suite run.
+After the full-suite review, the capacity-dust, successful-duplicate accounting
+and obsolete skip-label corrections passed all 79 focused affected tests.
+
+**Remaining runtime limitation:** shared MILP and CP-SAT calls still have no
+wall-clock deadline. Both use one native thread and MILP capacity refinement has
+at most 20 attempts, but each primary/secondary native solve can run without a
+time bound. Fractional-resource CP requests may now take the MILP path for most
+physics-produced rates. No slow field allocation was demonstrated in the
+bounded checks; this is an existing runtime limitation, not a claim of globally
+bounded solver duration. Future deadlines should cover primary and secondary
+solves together and preserve a qualified incumbent with its explicit gap.
+
+**No physics equations, calibration persistence or model version changed.**
+The audit's frozen pre-fix `allocation_probe.py`/`allocation_results.json` remain
+historical evidence; the named tests validate the new behavior. No deployment,
+database writes or commit was performed for this patch.

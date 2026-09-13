@@ -1,0 +1,55 @@
+{
+  "scope": "Synthetic request/hydration probes only; database and well geometry construction replaced with local fakes.",
+  "existing_name_collision": {
+    "schema_accepted": true,
+    "hydrated_configs": [
+      {
+        "well_name": "EXISTING",
+        "pad": "M",
+        "source": "EXISTING"
+      },
+      {
+        "well_name": "EXISTING",
+        "pad": "M",
+        "source": "DONOR"
+      }
+    ],
+    "coverage": {
+      "EXISTING": {
+        "well": "EXISTING",
+        "pad": "M",
+        "role": "future",
+        "outcome": "not_evaluated",
+        "reason": "Donor model loaded; no operating result yet."
+      }
+    },
+    "notes": [
+      "EXISTING: future well modeled on DONOR's saved fit"
+    ]
+  },
+  "cross_pad_duplicate_accepted": [
+    {
+      "name": "NEW",
+      "match": "DONOR",
+      "pad": "B"
+    },
+    {
+      "name": "NEW",
+      "match": "DONOR",
+      "pad": "G"
+    }
+  ],
+  "new_well_supported_fields": [
+    "name",
+    "match",
+    "pad"
+  ],
+  "decision_constraints_exposed": {
+    "must_run": false,
+    "keep_online": false,
+    "allow_shut_in": false,
+    "max_changes": false,
+    "locked_choices": false,
+    "new_well_pump": false
+  }
+}

@@ -113,11 +113,23 @@ class TestReconcileWells:
         assert w2["Status"] == "above marginal WC"
         assert "2 viable config(s)" in w2["Detail"]
 
-    def test_mckp_skip_reported(self):
+    def test_mckp_no_valid_options_is_distinct_from_economic_shutin(self):
+        # Both adapters now search every valid row. A skip means there was no
+        # usable allocation candidate; the old semi-finalist label is obsolete.
         opt = _optimizer({"W1": GOOD, "W2": GOOD.copy()})
         opt.mckp_skipped = ["W2"]
         recon = reconcile_wells(opt, [_result("W1")])
-        assert recon[recon["Well"] == "W2"].iloc[0]["Status"] == "no semi-finalists"
+        row = recon[recon["Well"] == "W2"].iloc[0]
+        assert row["Status"] == "failed simulation"
+        assert row["Detail"] == "no valid allocation candidates"
+
+    def test_identical_installed_and_replacement_successes_are_not_failures(self):
+        df = _df([("10", "A", 200., "na"), ("10", "A", 200., "na")])
+        df["pump_state"] = ["installed", "replacement"]
+        opt = _optimizer({"W1": df})
+        row = reconcile_wells(opt, []).iloc[0]
+        assert row["Configs OK"] == 2
+        assert row["Configs Failed"] == 0
 
     def test_pre_optimize_view(self):
         opt = _optimizer({"W1": GOOD, "W2": ALL_FAILED})

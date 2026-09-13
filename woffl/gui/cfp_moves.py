@@ -19,15 +19,16 @@ gas-lift survey, Gunnerud & Foss piecewise-linear sampling):
   over a discharge grid. Built once with the existing NetworkOptimizer
   machinery (Stage A, cached); everything below is pure math on the tables
   (Stage B, tested).
-* **Optimization = equal-slope / Lagrangian sweep.** Price machine water at
-  λ; each well independently picks argmax(oil - λ*water); settle the pressure
-  fixed point (loop gain ≈ 0.1 → converges in a few passes); sweep λ to trace
-  the oil-vs-pressure frontier. The best frontier point's diff vs today IS
-  the action plan. Single moves and BOL+offset pairs are evaluated
-  exhaustively on top, because those are the knobs as the operator sees them.
+* **Optimization starts with an equal-slope / Lagrangian sweep.** Price water
+  at λ; each well picks argmax(oil - λ*water), then settle pressure. Retain
+  today's baseline and evaluated single/joint moves. Small discrete problems
+  are enumerated; larger ones receive a bounded neighborhood search. Required
+  wells stay online, and reported search scope distinguishes these cases.
 """
 
 from dataclasses import dataclass, field
+from itertools import combinations, product
+import math
 from typing import Iterable, Optional
 
 # Option labels that mean "not pumping": SI for an online well shut in, OFF for
@@ -94,11 +95,9 @@ class Surfaces:
         """
         out = {}
         for w, ws in self.wells.items():
-            out[w] = (
-                ws.current
-                if (ws.online and ws.current and ws.current in ws.options)
-                else ws.idle_label()
-            )
+            # Missing online hardware remains unknown. anchor() must refuse
+            # it; treating it as SI would manufacture a bring-online gain.
+            out[w] = ws.current if ws.online else ws.idle_label()
         return out
 
 
@@ -114,10 +113,12 @@ def option_at(ws: WellSurface, label: str, pressure: float) -> Optional[tuple]:
     """
     if label in (SI, OFF):
         return 0.0, 0.0
-    opt = ws.options[label]
+    opt = ws.options.get(label)
+    if opt is None:
+        return None
     oil = _interp(pressure, opt["_grid"], opt["oil"])
     water = _interp(pressure, opt["_grid"], opt["water"])
-    if oil is None or water is None:
+    if oil is None or water is None or not all(math.isfinite(v) and v >= 0 for v in (oil, water)):
         return None
     return oil, water
 
@@ -179,10 +180,16 @@ class AnchoredPlant:
     def pressure_at(self, total_water: float) -> tuple:
         """(pressure, at_trip). Above the cap the disposal re-trim holds the
         plant at the cap — further shedding buys nothing (the kink)."""
-        raw = self.p0 + self.psi_per_kbpd * (self.baseline_water - total_water) / 1000.0
+        raw = self.raw_pressure_at(total_water)
         if raw >= self.cap:
             return self.cap, True
-        return max(raw, self.p_floor), False
+        # The lower bound is a limit on model support, not a source of extra
+        # pressure. settle() reports/rejects an unsupported operating point.
+        return raw, False
+
+    def raw_pressure_at(self, total_water: float) -> float:
+        """Untrimmed anchored pressure (psi), before the upper disposal cap."""
+        return self.p0 + self.psi_per_kbpd * (self.baseline_water - total_water) / 1000.0
 
 
 def anchor(
@@ -199,11 +206,22 @@ def anchor(
     treating it as idle would make its own "bring online" read as a gain
     (review 2026-09-01, OPT-A9). The caller excludes it with a note.
     """
+    if not surfaces.p_grid or not all(math.isfinite(float(p)) for p in surfaces.p_grid):
+        raise ValueError("CFP response grid must contain finite pressures")
+    cap = float(trip_psi) - float(trip_margin_psi)
+    if not math.isfinite(cap) or not math.isfinite(trip_margin_psi) or trip_margin_psi < 0:
+        raise ValueError("CFP trip and margin must be finite, with a nonnegative margin")
+    if not math.isfinite(surfaces.p0) or not min(surfaces.p_grid) <= surfaces.p0 <= max(surfaces.p_grid):
+        raise ValueError("CFP measured anchor P0 must be inside the response grid")
+    if surfaces.p0 > cap:
+        raise ValueError(f"CFP measured anchor P0 exceeds the trip-minus-margin limit ({cap:g} psi)")
+    if not math.isfinite(psi_per_kbpd) or psi_per_kbpd <= 0:
+        raise ValueError("CFP pressure slope must be finite and positive")
     choices = surfaces.baseline_choices()
     unanchorable = sorted(
         w
         for w, ws in surfaces.wells.items()
-        if ws.online and (not ws.current or not is_available(ws, choices[w], surfaces.p0))
+        if ws.online and (not ws.current or ws.current not in ws.options or not is_available(ws, ws.current, surfaces.p0))
     )
     if unanchorable:
         raise ValueError(
@@ -247,6 +265,11 @@ def settle(choices: dict, surfaces: Surfaces, plant: AnchoredPlant,
             water += ow[1]
         return oil, water, missing
 
+    unknown = set(choices) - set(surfaces.wells)
+    omitted = set(surfaces.wells) - set(choices)
+    if unknown or omitted:
+        raise ValueError("CFP choices must name every modeled well exactly once")
+    floor, ceiling = max(plant.p_floor, min(surfaces.p_grid)), min(plant.cap, max(surfaces.p_grid))
     pressure = plant.p0
     at_trip = False
     missing: list = []
@@ -255,6 +278,11 @@ def settle(choices: dict, surfaces: Surfaces, plant: AnchoredPlant,
         if missing:
             break
         new_pressure, at_trip = plant.pressure_at(water)
+        if not floor <= new_pressure <= ceiling:
+            # Probe the boundary for a signed residual, then let the bracket
+            # search find an interior root if the demand curve permits one.
+            pressure = min(max(new_pressure, floor), ceiling)
+            break
         if abs(new_pressure - pressure) < tol_psi:
             pressure = new_pressure
             break
@@ -262,7 +290,7 @@ def settle(choices: dict, surfaces: Surfaces, plant: AnchoredPlant,
     oil, water, missing = _totals(pressure)
     expected, at_trip = plant.pressure_at(water)
     residual = expected - pressure
-    converged = not missing and abs(residual) < tol_psi
+    converged = not missing and floor <= expected <= ceiling and abs(residual) < tol_psi
     if not converged:
         # Fixed-point iteration can oscillate on steep demand. Search each
         # continuous surface interval; never bridge a missing model point.
@@ -274,7 +302,7 @@ def settle(choices: dict, surfaces: Surfaces, plant: AnchoredPlant,
                 raise ValueError("missing surface")
             return plant.pressure_at(w)[0] - p
 
-        knots = sorted(set(surfaces.p_grid + [plant.p0]))
+        knots = sorted({floor, ceiling, plant.p0} | {p for p in surfaces.p_grid if floor <= p <= ceiling})
         for lo, hi in zip(knots, knots[1:]):
             try:
                 root = brentq(residual_at, lo, hi, xtol=1e-6)
@@ -284,10 +312,20 @@ def settle(choices: dict, surfaces: Surfaces, plant: AnchoredPlant,
             oil, water, missing = _totals(pressure)
             expected, at_trip = plant.pressure_at(water)
             residual = expected - pressure
-            converged = not missing and abs(residual) < tol_psi
+            converged = not missing and floor <= expected <= ceiling and abs(residual) < tol_psi
             if converged:
                 break
     feasible = not missing and converged
+    domain_reason = None
+    if not feasible:
+        if not missing and expected < floor:
+            domain_reason = "required_pressure_below_response_grid"
+        elif not missing and expected > ceiling:
+            domain_reason = "required_pressure_above_response_grid"
+        elif missing:
+            domain_reason = "missing_pump_response"
+        else:
+            domain_reason = "pressure_balance_not_converged"
     return {
         "pressure": pressure,
         "oil": oil if feasible else float("-inf"),
@@ -297,6 +335,8 @@ def settle(choices: dict, surfaces: Surfaces, plant: AnchoredPlant,
         "feasible": feasible,
         "converged": converged,
         "pressure_residual_psi": residual,
+        "raw_pressure_psi": plant.raw_pressure_at(water) if not missing else None,
+        "domain_reason": domain_reason,
         "infeasible": sorted(missing),
     }
 
@@ -311,9 +351,21 @@ LAMBDA_GRID = (
 )
 
 
-def _best_option(ws: WellSurface, pressure: float, lam: float) -> str:
+def _required(surfaces: Surfaces, required_wells=None) -> set:
+    required = set(required_wells or ())
+    unknown = required - set(surfaces.wells)
+    if unknown:
+        raise ValueError("required CFP wells have no response model: " + ", ".join(sorted(unknown)))
+    return required
+
+
+def _admissible(state: dict, required: set) -> bool:
+    return state["feasible"] and all(state["choices"].get(w) not in (None, SI, OFF) for w in required)
+
+
+def _best_option(ws: WellSurface, pressure: float, lam: float, required: bool = False):
     """The well's equal-slope pick: argmax oil - λ*water (idle scores 0)."""
-    best_lab, best_val = ws.idle_label(), 0.0
+    best_lab, best_val = (None, float("-inf")) if required else (ws.idle_label(), 0.0)
     for lab in ws.labels():
         ow = option_at(ws, lab, pressure)
         if ow is None:  # not converged at this pressure - not a choice here
@@ -325,7 +377,8 @@ def _best_option(ws: WellSurface, pressure: float, lam: float) -> str:
     return best_lab
 
 def sweep_frontier(surfaces: Surfaces, plant: AnchoredPlant,
-                   lambdas: Iterable[float] = LAMBDA_GRID) -> list:
+                   lambdas: Iterable[float] = LAMBDA_GRID, *, required_wells=None,
+                   _evaluate=None) -> list:
     """Trace the oil-vs-pressure frontier by sweeping the water price λ.
 
     At each λ: alternate best-response choices and the pressure fixed point
@@ -334,16 +387,18 @@ def sweep_frontier(surfaces: Surfaces, plant: AnchoredPlant,
     """
     frontier = []
     seen_signatures = set()
+    required = _required(surfaces, required_wells)
+    evaluate = _evaluate or (lambda choices: settle(choices, surfaces, plant))
     for lam in lambdas:
         pressure = plant.p0
         best_state, visited = None, set()
         for _ in range(10):
             choices = {
-                w: _best_option(ws, pressure, lam) for w, ws in surfaces.wells.items()
+                w: _best_option(ws, pressure, lam, w in required) for w, ws in surfaces.wells.items()
             }
             sig = tuple(sorted(choices.items()))
-            state = settle(choices, surfaces, plant)
-            if state["feasible"] and (best_state is None or state["oil"] > best_state["oil"]):
+            state = evaluate(choices)
+            if _admissible(state, required) and (best_state is None or state["oil"] > best_state["oil"]):
                 best_state = state
             if sig in visited:
                 break
@@ -361,9 +416,11 @@ def sweep_frontier(surfaces: Surfaces, plant: AnchoredPlant,
     return frontier
 
 
-def best_plan(frontier: list, baseline: dict, surfaces: Surfaces) -> Optional[dict]:
-    """Max-oil frontier point, ties to fewest changes from today; with the
+def best_plan(frontier: list, baseline: dict, surfaces: Surfaces, *, required_wells=None) -> Optional[dict]:
+    """Max-oil admissible evaluated state, ties to fewest changes from today; with the
     action diff (what to actually go do)."""
+    required = _required(surfaces, required_wells)
+    frontier = [s for s in frontier if _admissible(s, required)]
     if not frontier:
         return None
 
@@ -377,10 +434,10 @@ def best_plan(frontier: list, baseline: dict, surfaces: Surfaces) -> Optional[di
         if lab == frm:
             continue
         ws = surfaces.wells[w]
-        # The plan state is feasible, so ``lab`` is available at its pressure;
-        # the FROM option may not be (that can be why it was changed).
+        # Compare actual before/after conditions. The old pump need not have
+        # a counterfactual solution at the proposed operating pressure.
         oil_a, wat_a = option_at(ws, lab, best["pressure"])
-        before = option_at(ws, frm, best["pressure"])
+        before = option_at(ws, frm, surfaces.p0)
         oil_b, wat_b = before if before is not None else (float("nan"), float("nan"))
         actions.append(
             {
@@ -393,7 +450,7 @@ def best_plan(frontier: list, baseline: dict, surfaces: Surfaces) -> Optional[di
                 "own_water_delta": wat_a - wat_b,
             }
         )
-    return {**best, "actions": actions, "n_changes": len(actions)}
+    return {**best, "lam": best.get("lam"), "actions": actions, "n_changes": len(actions)}
 
 
 # ── single moves and pairs — the knob board ─────────────────────────────────
@@ -408,7 +465,8 @@ def _move_type(ws: WellSurface, frm: str, to: str) -> str:
 
 
 def rank_single_moves(surfaces: Surfaces, plant: AnchoredPlant,
-                      baseline: Optional[dict] = None) -> list:
+                      baseline: Optional[dict] = None, *, required_wells=None,
+                      _evaluate=None) -> list:
     """Every one-well change from today, exactly settled, best fleet-oil first.
 
     This is the exhaustive knob board: Resize (either direction), Shut in,
@@ -416,17 +474,19 @@ def rank_single_moves(surfaces: Surfaces, plant: AnchoredPlant,
     what the pressure move does to everyone else) and the discharge delta.
     """
     baseline = baseline or surfaces.baseline_choices()
-    base = settle(baseline, surfaces, plant)
+    required = _required(surfaces, required_wells)
+    evaluate = _evaluate or (lambda choices: settle(choices, surfaces, plant))
+    base = evaluate(baseline)
     moves = []
     for w, ws in surfaces.wells.items():
         for lab in ws.choice_labels():
             if lab == baseline.get(w):
                 continue
-            state = settle({**baseline, w: lab}, surfaces, plant)
-            if not state["feasible"]:
+            state = evaluate({**baseline, w: lab})
+            if not _admissible(state, required):
                 continue  # the move lands at a pressure where a pump has no solve
-            own_after, _ = option_at(ws, lab, state["pressure"])
-            own_before, _ = option_at(ws, baseline[w], base["pressure"])
+            own_after, water_after = option_at(ws, lab, state["pressure"])
+            own_before, water_before = option_at(ws, baseline[w], base["pressure"])
             moves.append(
                 {
                     "well": w,
@@ -436,56 +496,100 @@ def rank_single_moves(surfaces: Surfaces, plant: AnchoredPlant,
                     "to": lab,
                     "fleet_oil_delta": state["oil"] - base["oil"],
                     "own_oil_delta": own_after - own_before,
+                    "own_water_delta": water_after - water_before,
                     "pressure_delta": state["pressure"] - base["pressure"],
                     "pressure_after": state["pressure"],
                     "at_trip": state["at_trip"],
+                    "pressure_residual_psi": state["pressure_residual_psi"],
                 }
             )
     moves.sort(key=lambda m: m["fleet_oil_delta"], reverse=True)
     return moves
 
 
-def pair_moves(surfaces: Surfaces, plant: AnchoredPlant,
-               single_moves: Optional[list] = None, top_n: int = 8) -> list:
-    """BOL + offset pairs: bring a well online AND raise pressure back with a
-    shut-in or downsize elsewhere — Scott's fourth knob, made explicit.
+# Bounds cover cheap surface evaluations, never additional well simulations.
+MAX_PAIR_EVALUATIONS = 2048
+MAX_EXACT_COMBINATIONS = 4096
+MAX_EXACT_WORK = 250000  # combinations * wells * pressure intervals
+MAX_NEIGHBOR_EVALUATIONS = 4096
+MAX_NEIGHBOR_PASSES = 3
 
-    Pairs the top bring-on moves with the top pressure-RAISING moves and keeps
-    combinations that beat both of their halves alone.
+
+def pair_moves(surfaces: Surfaces, plant: AnchoredPlant,
+               single_moves: Optional[list] = None, top_n: int = 8, *,
+               required_wells=None, _evaluate=None, _diagnostics=None) -> list:
+    """Jointly settle raw BOL + water-reducing actions, including halves that
+    cannot operate alone. At most MAX_PAIR_EVALUATIONS combinations are tried;
+    top_n limits displayed rows, not eligibility to enter the final plan.
     """
+    required = _required(surfaces, required_wells)
     baseline = surfaces.baseline_choices()
-    base = settle(baseline, surfaces, plant)
-    moves = single_moves or rank_single_moves(surfaces, plant, baseline)
-    bols = [m for m in moves if m["type"] == MOVE_BRING_ON][:top_n]
-    raisers = [
-        m
-        for m in moves
-        if m["type"] in (MOVE_SHUT_IN, MOVE_RESIZE) and m["pressure_delta"] > 0
-    ][:top_n]
-    pairs = []
-    for b in bols:
-        for r in raisers:
-            if r["well"] == b["well"]:
-                continue
-            state = settle(
-                {**baseline, b["well"]: b["to"], r["well"]: r["to"]}, surfaces, plant
-            )
-            if not state["feasible"]:
-                continue
-            gain = state["oil"] - base["oil"]
-            if gain > max(b["fleet_oil_delta"], r["fleet_oil_delta"]) + 1e-6:
-                pairs.append(
-                    {
-                        "bring_on": b,
-                        "offset": r,
-                        "fleet_oil_delta": gain,
-                        "pressure_after": state["pressure"],
-                        "pressure_delta": state["pressure"] - base["pressure"],
-                        "at_trip": state["at_trip"],
-                    }
-                )
+    evaluate = _evaluate or (lambda choices: settle(choices, surfaces, plant))
+    base = evaluate(baseline)
+    bols, offsets = [], []
+    for w, ws in surfaces.wells.items():
+        if baseline[w] in (SI, OFF):
+            for lab in ws.labels():
+                values = [option_at(ws, lab, p) for p in surfaces.p_grid]
+                values = [v for v in values if v is not None]
+                if values:
+                    bols.append((w, lab, max(v[0] for v in values)))
+        else:
+            old_water = option_at(ws, baseline[w], surfaces.p0)[1]
+            for lab in ws.choice_labels():
+                if lab == baseline[w] or (w in required and lab in (SI, OFF)):
+                    continue
+                reductions = []
+                for p in surfaces.p_grid:
+                    new, old = option_at(ws, lab, p), option_at(ws, baseline[w], p)
+                    if new is not None:
+                        reductions.append(old_water - new[1])
+                        if old is not None:
+                            reductions.append(old[1] - new[1])
+                if reductions and max(reductions) > 0:
+                    offsets.append((w, lab, max(reductions)))
+    bols.sort(key=lambda x: (x[0] not in required, -x[2], x[0], x[1]))
+    offsets.sort(key=lambda x: (-x[2], x[0], x[1]))
+    pairs, evaluated = [], 0
+
+    def describe(action, joint):
+        w, lab, _score = action
+        ws = surfaces.wells[w]
+        own_before, water_before = option_at(ws, baseline[w], base["pressure"])
+        own_after, water_after = option_at(ws, lab, joint["pressure"])
+        alone = evaluate({**baseline, w: lab})
+        return {"well": w, "pad": ws.pad, "type": _move_type(ws, baseline[w], lab),
+                "from": baseline[w], "to": lab,
+                "own_oil_delta": own_after-own_before, "own_water_delta": water_after-water_before,
+                "fleet_oil_delta": alone["oil"]-base["oil"] if alone["feasible"] else None,
+                "standalone_feasible": alone["feasible"], "standalone_domain_reason": alone["domain_reason"],
+                "pressure_after": joint["pressure"], "pressure_delta": joint["pressure"]-base["pressure"],
+                "at_trip": joint["at_trip"], "pressure_residual_psi": joint["pressure_residual_psi"]}
+
+    for b, r in product(bols, offsets):
+        if evaluated >= MAX_PAIR_EVALUATIONS:
+            break
+        evaluated += 1
+        state = evaluate({**baseline, b[0]: b[1], r[0]: r[1]})
+        if not _admissible(state, required):
+            continue
+        halves = [evaluate({**baseline, a[0]: a[1]}) for a in (b, r)]
+        gains = [s["oil"]-base["oil"] for s in halves if _admissible(s, required)]
+        gain = state["oil"]-base["oil"]
+        if gains and gain <= max(gains) + 1e-6:
+            continue
+        bring_on, offset = describe(b, state), describe(r, state)
+        pairs.append({"bring_on": bring_on, "offset": offset,
+                      "fleet_oil_delta": gain,
+                      "own_oil_delta": bring_on["own_oil_delta"]+offset["own_oil_delta"],
+                      "own_water_delta": bring_on["own_water_delta"]+offset["own_water_delta"],
+                      "pressure_after": state["pressure"], "pressure_delta": state["pressure"]-base["pressure"],
+                      "at_trip": state["at_trip"], "pressure_residual_psi": state["pressure_residual_psi"]})
+    if _diagnostics is not None:
+        _diagnostics.update(pair_combinations=len(bols)*len(offsets), pair_evaluated=evaluated,
+                            pair_search_complete=evaluated == len(bols)*len(offsets), pair_display_limit=top_n)
     pairs.sort(key=lambda p: p["fleet_oil_delta"], reverse=True)
-    return pairs
+    return pairs[:max(int(top_n), 0)]
 
 
 def shadow_price_today(surfaces: Surfaces, plant: AnchoredPlant,
@@ -525,14 +629,138 @@ def shadow_price_today(surfaces: Surfaces, plant: AnchoredPlant,
     return (f_hi - f_lo) / (hi - lo)
 
 
-def moves_summary(surfaces: Surfaces, plant: AnchoredPlant) -> dict:
-    """The whole decision in one call — what the Results stage renders."""
+def _bounded_neighborhood(surfaces, required, evaluate, candidates, diagnostics):
+    """Improve evaluated plans with one-well changes and bounded two-well swaps.
+
+    Feasibility seeds shed optional load and retain every required well. The
+    finite budget is reported; this is not a global optimality certificate.
+    """
     baseline = surfaces.baseline_choices()
-    base = settle(baseline, surfaces, plant)
-    singles = rank_single_moves(surfaces, plant, baseline)
-    pairs = pair_moves(surfaces, plant, singles)
-    frontier = sweep_frontier(surfaces, plant)
-    plan = best_plan(frontier, baseline, surfaces)
+
+    def best():
+        return best_plan(list(candidates.values()), baseline, surfaces, required_wells=required)
+
+    count = 0
+    for pressure in sorted(set(surfaces.p_grid + [surfaces.p0])):
+        if count >= MAX_NEIGHBOR_EVALUATIONS:
+            break
+        choices = {}
+        for w, ws in surfaces.wells.items():
+            labels = ws.labels() if w in required else [ws.idle_label()]
+            available = [(option_at(ws, lab, pressure), lab) for lab in labels]
+            available = [(value, lab) for value, lab in available if value is not None]
+            choices[w] = min(available, key=lambda x: (x[0][1], -x[0][0], x[1]))[1] if available else None
+        evaluate(choices)
+        count += 1
+    incumbent = best()
+    passes = 0
+    for _ in range(MAX_NEIGHBOR_PASSES):
+        if incumbent is None or count >= MAX_NEIGHBOR_EVALUATIONS:
+            break
+        passes += 1
+        before = incumbent["oil"]
+        origin = incumbent["choices"]
+        for w, ws in surfaces.wells.items():
+            for lab in (ws.labels() if w in required else ws.choice_labels()):
+                if lab == origin[w]:
+                    continue
+                if count >= MAX_NEIGHBOR_EVALUATIONS:
+                    break
+                evaluate({**origin, w: lab})
+                count += 1
+            if count >= MAX_NEIGHBOR_EVALUATIONS:
+                break
+        incumbent = best()
+        if incumbent["oil"] > before + 1e-6:
+            continue
+
+        # A size swap can need a compensating change to work. Keep diverse
+        # low-water/high-oil options without constructing an unbounded cross
+        # product over every catalog size on every well.
+        alternatives = {}
+        for w, ws in surfaces.wells.items():
+            rows = [(lab, option_at(ws, lab, incumbent["pressure"]))
+                    for lab in (ws.labels() if w in required else ws.choice_labels()) if lab != origin[w]]
+            rows = [(lab, value) for lab, value in rows if value is not None]
+            picks = [lab for lab, _v in sorted(rows, key=lambda x: (-x[1][0], x[1][1], x[0]))[:2]]
+            picks += [lab for lab, _v in sorted(rows, key=lambda x: (x[1][1], -x[1][0], x[0]))[:2]]
+            alternatives[w] = list(dict.fromkeys(picks))
+        for left, right in combinations(surfaces.wells, 2):
+            for a, b in product(alternatives[left], alternatives[right]):
+                if count >= MAX_NEIGHBOR_EVALUATIONS:
+                    break
+                evaluate({**origin, left: a, right: b})
+                count += 1
+            if count >= MAX_NEIGHBOR_EVALUATIONS:
+                break
+        incumbent = best()
+        if incumbent["oil"] <= before + 1e-6:
+            break
+    diagnostics.update(neighborhood_evaluated=count, neighborhood_passes=passes,
+                       neighborhood_limit=MAX_NEIGHBOR_EVALUATIONS,
+                       neighborhood_budget_exhausted=count >= MAX_NEIGHBOR_EVALUATIONS)
+
+
+def moves_summary(surfaces: Surfaces, plant: AnchoredPlant, *, required_wells=None) -> dict:
+    """A measured-baseline comparison with explicit requirements/search scope.
+
+    Every evaluated admissible state may win, including do-nothing, singles
+    and pairs. Required wells must be pumping but may change pump size. A
+    required future well still starts OFF in the comparison baseline.
+    """
+    required = _required(surfaces, required_wells)
+    baseline = surfaces.baseline_choices()
+    candidates = {}
+
+    def evaluate(choices):
+        signature = tuple(sorted(choices.items()))
+        if signature not in candidates:
+            candidates[signature] = settle(choices, surfaces, plant, tol_psi=1e-6)
+        return candidates[signature]
+
+    base = evaluate(baseline)
+    if not base["feasible"] or abs(base["pressure"]-surfaces.p0) > 1e-6:
+        raise ValueError("CFP baseline must solve at its unchanged measured anchor P0")
+    scope = {}
+    singles = rank_single_moves(surfaces, plant, baseline, required_wells=required, _evaluate=evaluate)
+    pairs = pair_moves(surfaces, plant, singles, required_wells=required, _evaluate=evaluate, _diagnostics=scope)
+    frontier = sweep_frontier(surfaces, plant, required_wells=required, _evaluate=evaluate)
+    for state in frontier:
+        candidates[tuple(sorted(state["choices"].items()))]["lam"] = state["lam"]
+    choices_by_well = {w: ws.labels() if w in required else ws.choice_labels() for w, ws in surfaces.wells.items()}
+    count = math.prod(len(labels) for labels in choices_by_well.values())
+    exact = count <= MAX_EXACT_COMBINATIONS and count * max(len(surfaces.wells), 1) * max(len(surfaces.p_grid)-1, 1) <= MAX_EXACT_WORK
+    if exact:
+        for labels in product(*choices_by_well.values()):
+            evaluate(dict(zip(choices_by_well, labels)))
+        scope.update(method="exhaustive_on_response_surfaces", neighborhood_evaluated=0)
+    else:
+        _bounded_neighborhood(surfaces, required, evaluate, candidates, scope)
+        scope["method"] = "lambda_moves_and_bounded_neighborhood"
+    plan = best_plan(list(candidates.values()), baseline, surfaces, required_wells=required)
+    # The lambda chart remains that sweep, while plan selection also admits
+    # all independently evaluated moves and refinement candidates.
+    reasons = {}
+    for state in candidates.values():
+        if state["domain_reason"]:
+            reason = state["domain_reason"]
+            reasons[reason] = reasons.get(reason, 0)+1
+    # Exhausting discrete choices is only a global statement when demand is
+    # nondecreasing with pressure: then each choice has at most one pressure
+    # root, including across failed-point gaps. Otherwise branch selection
+    # remains part of the unknown search scope.
+    monotone = True
+    for ws in surfaces.wells.values():
+        for option in ws.options.values():
+            water = [float(v) for v in option["water"] if v is not None and math.isfinite(float(v))]
+            if any(a > b + 1e-9 for a, b in zip(water, water[1:])):
+                monotone = False
+    scope.update(combinations=count, exact_combination_limit=MAX_EXACT_COMBINATIONS,
+                 exact_work_limit=MAX_EXACT_WORK, evaluated_choices=len(candidates),
+                 all_choices_evaluated=exact, unique_pressure_response=monotone,
+                 global_optimum_on_surfaces=exact and monotone, pressure_tolerance_psi=1e-6,
+                 direct_solver_validated=False,
+                 rejected_choices_by_reason=reasons)
     positive = [m for m in singles if m["fleet_oil_delta"] > 1.0]
     return {
         "today": {
@@ -553,7 +781,11 @@ def moves_summary(surfaces: Surfaces, plant: AnchoredPlant) -> dict:
             for s in frontier
         ],
         "plan": plan,
-        "plan_gain": (plan["oil"] - base["oil"]) if plan else 0.0,
+        "plan_gain": (plan["oil"] - base["oil"]) if plan else None,
+        "plan_status": "feasible" if plan else "no_feasible_plan",
+        "required_wells": sorted(required),
+        "baseline_meets_requirements": _admissible(base, required),
+        "search_scope": scope,
         "baseline": baseline,
     }
 

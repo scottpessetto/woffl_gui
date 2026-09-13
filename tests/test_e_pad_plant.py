@@ -324,14 +324,14 @@ def fake_core(monkeypatch):
     ns = SimpleNamespace(Optimizer=Optimizer, oil_at=lambda psi: 100.0)
 
     def fake_optimize(opt, method="milp", water_key=None):
-        # One well, lift water = a tenth of the budget so the plant's cap is
-        # exercised, oil shaped by the trial header.
+        # One well at half the budget, on the descending/fully deliverable
+        # branch. Low-flow pressure infeasibility has a separate regression.
         return [
             SimpleNamespace(
                 well_name="E-048",
                 recommended_nozzle="12",
                 recommended_throat="B",
-                predicted_lift_water=opt.power_fluid.total_rate * 0.1,
+                predicted_lift_water=opt.power_fluid.total_rate * 0.5,
                 predicted_oil_rate=ns.oil_at(opt.power_fluid.pressure),
             )
         ]
@@ -346,9 +346,8 @@ def fake_core(monkeypatch):
 def test_run_optimization_sweeps_the_e_pad_pressure_window(fake_core):
     import woffl.gui.pad_optimize as po
 
-    # More oil at higher header - which is the truth on this pad, because the
-    # booster has pressure to spare and the PF budget does not fall until well
-    # above the operational cap. The sweep must therefore land ON the cap.
+    # Synthetic oil rises with header and this selected flow has pressure
+    # to spare; the sweep must therefore land on the cap.
     fake_core.oil_at = lambda psi: psi / 10.0
     wells = [
         WellConfig(well_name="E-048", res_pres=1500, form_temp=70, jpump_tvd=4000)

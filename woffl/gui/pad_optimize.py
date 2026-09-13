@@ -45,18 +45,12 @@ code reads (per_pump_bpd / station_cap_bpd for fixed_curve;
 frontier_cap_bpd / suction_psi / pumps / amp_limited / min_total_flow for
 free_pressure).
 
-``run_optimization``'s ``marginal_wc`` also accepts ``None`` (AUTO-DERIVE the
-gate from the plant's own PF/water budget at each trial header, via
-``woffl.assembly.optimization_algorithms.derive_pad_marginal_wc``) alongside
-the legacy manual-float override, plus a ``parsimony_bopd`` knob (default 20,
-0 disables) that swaps a well down to a smaller/less-water config when it
-gives up no more than that much oil (``apply_parsimony`` — the field case
-this exists for: a well upsized 13C->15B for ~2 BOPD at +1,500 BPD PF). Its
-meta dict additionally carries ``marginal_wc_used`` (the gate actually
-applied at the final/winning header), ``marginal_wc_source`` ("auto
-(plant-derived)" | "manual"), ``pf_slack`` (True when the demand walk never
-exhausted the budget there), and ``parsimony_swaps`` (list of ``{well,
-from_pump, to_pump, oil_given_up, pf_saved}`` dicts).
+With no explicit water price, ``run_optimization`` maximizes oil under hard
+machine-water capacity. A manual price or legacy marginal-WC value deliberately
+prices water in the objective. The pooled-frontier price remains a diagnostic,
+separate from the objective. ``parsimony_bopd`` is accepted but retired.
+Plant feasibility and unresolved operating assumptions are reported separately
+from complete well coverage and numerical convergence.
 """
 
 from __future__ import annotations
@@ -141,6 +135,32 @@ def _history_key(plant: PadPlant) -> str:
 # 1,000-5,000 psi wide, so 12 halvings locate the crossing to under 1 psi -
 # well inside any tol_psi a caller would pass.
 _SCENARIO_BISECT_STEPS = 12
+
+
+def _plant_operating_check(plant, water, pressure, n_pumps, tol_psi=10.):
+    """Check the selected draw, not just the inverse's maximum budget.
+
+    A below-range point with valid pressure is conditional on an unmodeled
+    operating arrangement. No recycle flow or pressure support is invented.
+    """
+    flags = plant.flags(water, n_pumps)
+    frontier = plant.header_at_flow(water, n_pumps) if water > 0 else pressure
+    cap = getattr(plant, "max_header_psi", None)
+    delivered = (frontier if plant.coupling == "fixed_curve" else
+                 min(pressure, frontier) if frontier is not None else None)
+    residual = delivered - pressure if delivered is not None else None
+    hydraulic = (isfinite(float(water)) and water >= 0 and isfinite(float(pressure))
+                 and residual is not None and isfinite(float(residual))
+                 and abs(residual) <= tol_psi and not flags.get("over_capacity", False)
+                 and (cap is None or pressure <= cap + 1e-6))
+    assumptions = []
+    conditional = flags.get("recirc", False) or flags.get("in_range") is False
+    if conditional and hydraulic:
+        assumptions.append("Selected demand is below the represented operating range. Confirm booster count or a qualified recycle arrangement; recycle flow and its load are not modeled.")
+    return {**flags, "hydraulically_feasible": bool(hydraulic),
+            "feasible": bool(hydraulic and not conditional),
+            "delivered_header_psi": delivered, "coupling_residual_psi": residual,
+            "operating_assumptions": assumptions}
 
 
 def _settle_scenario_coupling(
@@ -331,8 +351,26 @@ def _settle_curve_selection(well_configs, plant, n_pumps, results, header, *, to
     edge = (min(hi_p, station_edge) if g > 0 else max(lo_p, station_edge)) if station_edge is not None else (hi_p if g > 0 else lo_p)
     other, error = evaluate(edge)
     if error:
-        current["coupling_error"] = error
-        return current
+        # A remote failed solve does not rule out a root inside the solved
+        # pressure domain. Bisect toward it from the original solved point,
+        # moving that point only while its residual remains on the same side.
+        solved, failed = current, edge
+        for _ in range(_SCENARIO_BISECT_STEPS):
+            probe = 0.5 * (solved["P"] + failed)
+            rec, probe_error = evaluate(probe)
+            if probe_error:
+                failed = probe
+                continue
+            if acceptable(rec):
+                rec["converged"] = True
+                return rec
+            if rec["coupling_residual_psi"] is not None and g * rec["coupling_residual_psi"] < 0:
+                other, edge, error = rec, probe, None
+                break
+            solved = rec
+        if error:
+            current["coupling_error"] = "Could not bracket a station intersection inside the selected pump's solved pressure domain: " + error
+            return current
     if acceptable(other):
         other["converged"] = True
         return other
@@ -380,6 +418,7 @@ def run_optimization(
     water_price: Optional[float] = None,
     setpoint_psi: Optional[float] = None,
     refine_rounds: int = 2,
+    required_wells: Optional[Iterable[str]] = None,
 ):
     """Optimize nozzle/throat across the pad, coupled to the booster plant.
 
@@ -402,9 +441,9 @@ def run_optimization(
     * ``water_price`` None and ``marginal_wc`` a float -> legacy gate mapped
       to the same price, λ = (1 − wc) / wc (compat: old callers keep their
       economics).
-    * both None -> AUTO: λ* per trial from ``derive_lambda`` (the budget's
-      own shadow price off the pooled Pareto frontier); trials are compared
-      on OIL because λ* differs by trial, and the winner reports its λ*.
+    * both None -> maximize oil under hard capacity (objective price zero).
+      The pooled-frontier price is a separate diagnostic; it never subtracts
+      oil from an already capacity-constrained solve.
 
     ``setpoint_psi`` (free-pressure plants only) pins the header instead of
     sweeping it: one trial at the clamped setpoint, no refinement. The
@@ -425,7 +464,7 @@ def run_optimization(
     ``nozzles``, ``throats``, the plant flags, the fixed-curve station extras
     or the free-pressure frontier extras, ``reconciliation``) plus the
     economics: ``lambda_used``, ``lambda_source`` ("manual" | "legacy wc" |
-    "auto (plant-derived)"), ``objective_bopd_equiv`` (oil − λ·water at the
+    "auto (maximum oil)"), ``objective_bopd_equiv`` (oil − λ·water at the
     winner), ``pf_slack``, ``marginal_wc_used`` (the equivalent water cut
     1/(1+λ), for the legacy label), ``marginal_wc_source``,
     ``parsimony_swaps`` ([]), ``solver_agreement`` (when ``method`` is
@@ -443,6 +482,7 @@ def run_optimization(
         optimize,
     )
     from woffl.assembly.parallelism import worker_ceiling
+    from woffl.assembly.network import AllocationError
 
     water_key = getattr(plant, "water_key", "lift_wat") or "lift_wat"
     result_water = "predicted_lift_water" if water_key == "lift_wat" else "predicted_total_water"
@@ -452,7 +492,10 @@ def run_optimization(
     elif marginal_wc is not None:
         lam_fixed, lam_source = marginal_wc_to_lambda(float(marginal_wc)), "legacy wc"
     else:
-        lam_fixed, lam_source = None, "auto (plant-derived)"
+        lam_fixed, lam_source = 0., "auto (maximum oil)"
+    required = set(required_wells or [])
+    if required - {w.well_name for w in well_configs}:
+        raise ValueError("Required wells are missing from this pad's model inputs")
 
     fixed_curve = plant.coupling == "fixed_curve"
     # Per-run compact results only, bounded by the number of sweep points.
@@ -462,6 +505,8 @@ def run_optimization(
         lo, hi = plant.flow_window(n_pumps)
     else:
         lo, hi = plant.pressure_window(n_pumps)
+    if not all(isfinite(float(v)) for v in (lo, hi)) or lo > hi:
+        raise ValueError("Plant search limits do not form a valid operating range")
     n_steps = max(3, int(n_steps))
     coarse = [lo + (hi - lo) * i / (n_steps - 1) for i in range(n_steps)]
     # None unless the header was actually pinned; the value is the CLAMPED
@@ -502,16 +547,20 @@ def run_optimization(
             marginal_wc if marginal_wc is not None else 1.0,
         )
         opt.run_all_batch_simulations(max_workers=worker_ceiling())
-        if lam_fixed is None:
-            lam, slack = derive_lambda(opt.batch_results, cap, water_key)
-        else:
-            _lam_auto, slack = derive_lambda(opt.batch_results, cap, water_key)
-            lam = lam_fixed
+        diagnostic_lam, slack = derive_lambda(opt.batch_results, cap, water_key)
+        lam = lam_fixed
+        opt.required_wells = required
         opt.water_price = lam
         # the legacy attribute now reports the EQUIVALENT gate 1/(1+λ)
         # (what the label shows); nothing gates on it any more
         opt.marginal_watercut = 1.0 / (1.0 + lam) if lam > 0 else 1.0
         results = optimize(opt, method=method, water_key=water_key)
+        if required - {r.well_name for r in results}:
+            raise AllocationError("Required wells were not allocated", status="infeasible")
+        if not results and opt.batch_results and not any(
+                getattr(bp, "df", None) is not None and "qoil_std" in bp.df and bp.df["qoil_std"].notna().any()
+                for bp in opt.batch_results.values()):
+            raise AllocationError("No modeled candidate solved at this header", status="unsupported")
         search_header = header
         search_objective = sum(r.predicted_oil_rate for r in results) - lam * sum(
             getattr(r, result_water, r.predicted_lift_water) for r in results)
@@ -527,6 +576,9 @@ def run_optimization(
         total_pf = sum(r.predicted_lift_water for r in results)
         total_water = sum(getattr(r, result_water, r.predicted_lift_water) for r in results)
         total_oil = sum(r.predicted_oil_rate for r in results)
+        check = _plant_operating_check(plant, total_water, header, n_pumps, tol_psi)
+        check["hydraulically_feasible"] = bool(check["hydraulically_feasible"] and total_water <= (hi if fixed_curve else cap) + 1e-6)
+        check["feasible"] = bool(check["feasible"] and check["hydraulically_feasible"])
         return {
             "x": x,
             "P": header,
@@ -536,25 +588,38 @@ def run_optimization(
             "total_oil": total_oil,
             "objective": total_oil - lam * total_water,
             "lam": lam,
-            "pf_slack": slack,
+            "diagnostic_lambda": diagnostic_lam,
+            "allocation_status": getattr(opt, "allocation_status", None),
+            "pf_slack": bool(total_water < (hi if fixed_curve else cap) - 1e-6),
+            "diagnostic_pf_slack": slack,
             "results": results,
             "opt": opt,
             "search_header_psi": search_header,
             "search_objective": search_objective,
-            "converged": coupled.get("converged", True),
+            "converged": coupled.get("converged", True) and check["hydraulically_feasible"],
             "curve_header_psi": coupled.get("curve_header_psi"),
             "coupling_residual_psi": coupled.get("coupling_residual_psi"),
-            "coupling_error": coupled.get("coupling_error"),
+            "coupling_error": coupled.get("coupling_error") or (None if check["hydraulically_feasible"] else "Selected machine-water draw cannot hold the requested header inside plant limits."),
             "history": coupled.get("history", []),
+            "plant_check": check,
         }
 
-    def _score(rec: dict) -> float:
+    def _score(rec: dict) -> tuple:
         if not rec["converged"]:
-            return float("-inf")
-        return rec["objective"] if lam_fixed is not None else rec["total_oil"]
+            return (-1, float("-inf"))
+        return (int(rec["plant_check"]["feasible"]), rec["objective"])
 
     trials: list[dict] = []
     retained = None
+    failed_trials = []
+
+    def safe_trial(x):
+        try:
+            return _trial(x)
+        except AllocationError as exc:
+            failed_trials.append({"trial": x, "status": exc.status, "error": str(exc),
+                                  "details": exc.details})
+            return None
 
     def remember(rec):
         nonlocal retained
@@ -580,14 +645,14 @@ def run_optimization(
                      rec["total_pf"] if rec else 0.0, rec["total_oil"] if rec else 0.0)
 
     for x in coarse:
-        rec = _trial(x)
+        rec = safe_trial(x)
         step += 1
         if rec is not None:
             remember(rec)
         report_progress(x, rec)
 
     if not trials:
-        raise RuntimeError(plant.infeasible_sweep_msg)
+        raise RuntimeError(plant.infeasible_sweep_msg + (" " + failed_trials[-1]["error"] if failed_trials else ""))
 
     # Refine around the best trial: halve the bracket on each side.
     for _ in range(max(0, int(refine_rounds))):
@@ -602,7 +667,7 @@ def run_optimization(
                 report_progress(xs[best_i], trials[best_i])
                 continue
             mid = 0.5 * (xs[best_i] + neighbour)
-            rec = _trial(mid)
+            rec = safe_trial(mid)
             if rec is not None:
                 remember(rec)
             report_progress(mid, rec)
@@ -641,15 +706,20 @@ def run_optimization(
         "throats": list(throats),
         # the clamped header the engineer pinned, or None when swept
         "setpoint_psi": pinned_setpoint,
-        **plant.flags(best["total_water"], n_pumps),
+        **best["plant_check"],
         "lambda_used": lam,
         "lambda_source": lam_source,
+        "diagnostic_lambda": best["diagnostic_lambda"],
+        "diagnostic_lambda_source": "pooled frontier estimate",
+        "diagnostic_pf_slack": best["diagnostic_pf_slack"],
+        "allocation_status": best["allocation_status"],
+        "failed_trials": failed_trials,
         "objective_bopd_equiv": best["objective"],
         "pf_slack": best["pf_slack"],
         "water_key": water_key,
         # legacy labels (the client still shows a water-cut gate)
         "marginal_wc_used": 1.0 / (1.0 + lam) if lam > 0 else 1.0,
-        "marginal_wc_source": "manual" if lam_source != "auto (plant-derived)" else lam_source,
+        "marginal_wc_source": "auto (maximum oil)" if lam_source == "auto (maximum oil)" else "manual",
         "parsimony_swaps": [],
         "parsimony_note": "priced by lambda; the parsimony pass is retired",
     }
@@ -672,8 +742,8 @@ def run_optimization(
         meta["pumps"] = env.get("pumps", [])
         if "amp_limited" in env:
             meta["amp_limited"] = env["amp_limited"]
-        if "feasible" in env:
-            meta["feasible"] = env["feasible"]
+        if env.get("feasible") is False:
+            meta["feasible"] = False
 
     # Cross-check: the two solvers must agree on the priced objective at the
     # winning trial (CP-SAT quantizes to 0.01, so allow that slack).
@@ -694,6 +764,10 @@ def run_optimization(
             best["opt"].optimization_results = best["results"]
         except Exception as exc:  # noqa: BLE001 - the cross-check never fails a run
             meta["solver_agreement"] = {"error": str(exc)}
+        finally:
+            best["opt"].optimization_results = best["results"]
+            if best["allocation_status"] is not None:
+                best["opt"].allocation_status = best["allocation_status"]
 
     if fixed_curve:
         # Refresh the winning grid once so reconciliation, scenario callers
@@ -706,6 +780,7 @@ def run_optimization(
             opt.run_all_batch_simulations(max_workers=worker_ceiling())
         opt.power_fluid.total_rate = hi
         opt.optimization_results = best["results"]
+        meta["diagnostic_lambda"], meta["diagnostic_pf_slack"] = derive_lambda(opt.batch_results, hi, water_key)
     meta["reconciliation"] = reconcile_wells(best["opt"], best["results"])
     return best["results"], best["opt"], meta
 
@@ -1496,42 +1571,71 @@ def _choke_frontier(
 
 
 def _trim_to_budget(wells: list[dict], budget: float) -> tuple[float, float, Optional[float]]:
-    """Equal-slope greedy walk: step the cheapest well down one option at a
-    time until total PF fits ``budget``.
+    """Maximize oil over the discrete remaining options under hard capacity.
 
-    ``wells`` entries are ``{"opts": staircase, "idx": current option}``;
-    ``idx`` is advanced in place. Returns ``(total_pf, total_oil, lam)`` —
-    ``lam`` is the slope of the LAST trim taken (the pad's marginal bbl oil
-    per bbl PF at the solution), None when no trim was needed. With concave
-    well curves the walk equalizes marginal oil per bbl PF across the pad
-    (the Kanu/Mach/Brown equal-slope optimum, at ladder resolution).
+    Mutates each state's idx and returns (machine water, oil, diagnostic
+    tradeoff). The last value is the largest average oil/water sacrifice of
+    a selected reduction, not an objective price or certified shadow price.
+    Required wells have no shut-in option in their supplied option set.
     """
-    total_pf = sum(st["opts"][st["idx"]][2] for st in wells)
-    total_oil = sum(st["opts"][st["idx"]][1] for st in wells)
-    lam: Optional[float] = None
-    while total_pf > budget:
-        best: Optional[tuple[float, dict]] = None
-        for st in wells:
-            i = st["idx"]
-            if i + 1 >= len(st["opts"]):
-                continue  # already shut in
-            _, oil_0, pf_0, _ = st["opts"][i]
-            _, oil_1, pf_1, _ = st["opts"][i + 1]
-            if pf_0 <= pf_1:
-                continue  # a test-only hold/shut pair may free no water
-            slope = (oil_0 - oil_1) / (pf_0 - pf_1)  # staircase: pf_0 > pf_1
-            if best is None or slope < best[0]:
-                best = (slope, st)
-        if best is None:
-            break  # everything already shut in
-        slope, st = best
-        _, oil_0, pf_0, _ = st["opts"][st["idx"]]
-        st["idx"] += 1
-        _, oil_1, pf_1, _ = st["opts"][st["idx"]]
-        total_pf -= pf_0 - pf_1
-        total_oil -= oil_0 - oil_1
-        lam = slope
-    return total_pf, total_oil, lam
+    import warnings
+    import numpy as np
+    from scipy.optimize import Bounds, LinearConstraint, milp
+    from scipy.sparse import csc_array
+    from woffl.assembly.network import AllocationError
+    from woffl.assembly import compute_runtime
+
+    if not isfinite(float(budget)) or budget < 0:
+        raise ValueError("Choke allocation budget must be finite and nonnegative")
+    if not wells:
+        return 0., 0., None
+    variables = []
+    starts = []
+    for wi, st in enumerate(wells):
+        start = st["idx"]
+        starts.append(start)
+        for oi in range(start, len(st["opts"])):
+            _, oil, water, _ = st["opts"][oi]
+            if not all(isfinite(float(v)) and v >= 0 for v in (oil, water)):
+                raise AllocationError("Choke option has invalid oil/water", status="unsupported")
+            variables.append((wi, oi, float(oil), float(water)))
+        if start >= len(st["opts"]):
+            raise AllocationError("Required well has no operating choke option", status="infeasible")
+    n = len(variables)
+    oil = np.array([v[2] for v in variables])
+    water = np.array([v[3] for v in variables])
+    rr, cc, vv = [], [], []
+    for col, (wi, _, _, flow) in enumerate(variables):
+        rr.extend((wi, len(wells)))
+        cc.extend((col, col))
+        vv.extend((1., flow))
+    matrix = csc_array((vv, (rr, cc)), shape=(len(wells)+1, n))
+    constraints = LinearConstraint(matrix, np.r_[np.ones(len(wells)), -np.inf],
+                                   np.r_[np.ones(len(wells)), budget])
+    with compute_runtime.cpu_slot(), compute_runtime.measure("compute.allocation"), warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Unrecognized options detected:.*threads.*", category=RuntimeWarning)
+        solved = milp(c=-oil, integrality=np.ones(n), bounds=Bounds(np.zeros(n), np.ones(n)),
+                      constraints=constraints,
+                      options={"mip_rel_gap": 0., "threads": 1, "time_limit": 5.})
+    if not solved.success:
+        raise AllocationError("Choke allocation did not prove an optimal sampled plan: " + str(solved.message),
+                              status="infeasible" if solved.status == 2 else "unknown")
+    selected = [i for i, value in enumerate(solved.x) if value > .5]
+    if (len(selected) != len(wells) or len({variables[i][0] for i in selected}) != len(wells)
+            or float(water[selected].sum()) > budget + 1e-6):
+        raise AllocationError("Choke allocation failed original-unit verification", status="error")
+    status = {"status": "optimal", "solver": "scipy.milp", "objective": float(oil[selected].sum()),
+              "gap": float(getattr(solved, "mip_gap", 0.) or 0.)}
+    sacrifices = []
+    for i in selected:
+        wi, oi, qo, qw = variables[i]
+        st = wells[wi]
+        original = st["opts"][starts[wi]]
+        if original[2] > qw + 1e-8:
+            sacrifices.append((original[1] - qo) / (original[2] - qw))
+        st["idx"] = oi
+        st["allocation_status"] = status
+    return float(water[selected].sum()), float(oil[selected].sum()), max(sacrifices, default=None)
 
 
 def _oil_vogel(wc) -> Optional[InFlow]:
@@ -1737,6 +1841,7 @@ def run_choke_optimization(
     n_levels: int = 10,
     progress: Optional[Callable] = None,
     evidence: dict[str, dict] | None = None,
+    required_wells: Optional[Iterable[str]] = None,
 ):
     """Short-term PF plan with every well HELD on its installed pump: no
     jet-pump changeouts, only per-well PF throttling (choke back) or shut-in.
@@ -1747,9 +1852,9 @@ def run_choke_optimization(
     down, pass the reduced ``n_pumps``); every well may run FULL OPEN
     (delivered = header), CHOKED to any lower ladder pressure (its wellhead
     PF throttle burns the difference, so a choked well is exactly a well at
-    a lower delivered pressure), or SHUT IN. Wells start full open and
-    ``_trim_to_budget`` walks the cheapest trims until the budget fits; the
-    header with the most total oil wins.
+    a lower delivered pressure), or SHUT IN. ``_trim_to_budget`` solves the
+    sampled discrete allocation exactly, with required wells held on.
+    Qualified headers rank ahead of conditional operating points, then by oil.
 
     One ``_model_at_forced_header`` batch pass per ladder level prices every
     well at every level; a well with no model solution at ANY level is HELD
@@ -1801,6 +1906,10 @@ def run_choke_optimization(
             "a fixed-curve station's header follows flow and is not a "
             "decision variable"
         )
+    from woffl.assembly.network import AllocationError
+    required = set(required_wells or [])
+    if required - {w.well_name for w in well_configs}:
+        raise ValueError("Required wells are missing from this choke plan's inputs")
 
     water_key = getattr(plant, "water_key", "lift_wat")
     formation_per_oil = {}
@@ -1826,6 +1935,9 @@ def run_choke_optimization(
     }
     ipr_curves = {wc.well_name: _vogel_ipr_curve(wc) for wc in well_configs}
     p_lo, p_hi = plant.pressure_window(n_pumps)
+    if not all(isfinite(float(p)) for p in (p_lo, p_hi)) or p_lo > p_hi:
+        raise ValueError("Plant pressure limits do not form a valid search range")
+    n_levels = max(2, int(n_levels))
     levels = [
         p_lo + (p_hi - p_lo) * i / (n_levels - 1) for i in range(n_levels)
     ]
@@ -1913,6 +2025,12 @@ def run_choke_optimization(
                 opts = [(None, 0.0, 0.0, None)]
                 full_raw = opts[0]
                 basis = "none"
+            if w in required:
+                if basis != "model":
+                    raise AllocationError(f"Required well {w} has no modeled operating option at this header", status="unsupported")
+                opts = [point for point in opts if point[2] > 0]
+                if not opts:
+                    raise AllocationError(f"Required well {w} cannot operate at this header", status="infeasible")
             states.append(
                 {"well": w, "opts": opts, "idx": 0, "basis": basis, "full_raw": full_raw}
             )
@@ -1921,12 +2039,20 @@ def run_choke_optimization(
     # -- sweep candidate headers, keep the most-oil one ----------------------
     best = None
     sweep = []
+    failed_trials = []
     for h, level in enumerate(levels):
         budget = plant.budget_at_pressure(level, n_pumps)
         if not budget or budget <= 0:
             continue
-        wells = _well_states(h)
-        total_pf, total_oil, lam = _trim_to_budget(wells, budget)
+        try:
+            wells = _well_states(h)
+            if not any(st["basis"] != "none" for st in wells):
+                raise AllocationError("No modeled or measured operating choices are available", status="unsupported")
+            total_pf, total_oil, lam = _trim_to_budget(wells, budget)
+        except AllocationError as exc:
+            failed_trials.append({"header_psi": level, **exc.details})
+            continue
+        check = _plant_operating_check(plant, total_pf, level, n_pumps)
         sweep.append(
             {
                 "header_psi": level,
@@ -1935,9 +2061,12 @@ def run_choke_optimization(
                 ),
                 "total_machine_water_bpd": total_pf,
                 "total_oil_bopd": total_oil,
+                **check,
             }
         )
-        if best is None or total_oil > best["total_oil"]:
+        if not check["hydraulically_feasible"]:
+            continue
+        if best is None or (check["feasible"], total_oil) > (best["plant_check"]["feasible"], best["total_oil"]):
             best = {
                 "P": level,
                 "budget": budget,
@@ -1945,10 +2074,11 @@ def run_choke_optimization(
                 "total_oil": total_oil,
                 "lam": lam,
                 "wells": wells,
+                "plant_check": check,
             }
 
     if best is None:
-        raise RuntimeError(plant.infeasible_sweep_msg)
+        raise RuntimeError(plant.infeasible_sweep_msg + (" " + failed_trials[-1]["message"] if failed_trials else " No selected demand can hold its requested header."))
 
     # -- rows at the winning header ------------------------------------------
     rows = []
@@ -2052,7 +2182,7 @@ def run_choke_optimization(
     # that makes the ALL-RUN header settle at that rung's level (demand at P
     # over frontier at P: demand rises and the frontier falls with pressure,
     # so the anchor is unique), then re-runs the same header sweep and
-    # equal-slope trim against the degraded frontier. Pure allocation over
+    # discrete allocation against the degraded frontier. Pure allocation over
     # the already-priced grid - no extra solves.
     modelable = {w: any(g.get(w) is not None for g in grid) for w in names}
     ladder = []
@@ -2084,13 +2214,19 @@ def run_choke_optimization(
             budget_h = s * (plant.budget_at_pressure(level, n_pumps) or 0.0) + 1e-6
             if budget_h <= 0:
                 continue
-            wells_h = _well_states(h)
-            _pf_h, oil_h, _lam_h = _trim_to_budget(wells_h, budget_h)
-            if best_r is None or oil_h > best_r[0]:
-                best_r = (oil_h, level, wells_h)
+            try:
+                wells_h = _well_states(h)
+                _pf_h, oil_h, _lam_h = _trim_to_budget(wells_h, budget_h)
+            except AllocationError:
+                continue
+            check_h = _plant_operating_check(plant, _pf_h / s, level, n_pumps)
+            if not check_h["hydraulically_feasible"]:
+                continue
+            if best_r is None or (check_h["feasible"], oil_h) > (best_r[3], best_r[0]):
+                best_r = (oil_h, level, wells_h, check_h["feasible"])
         if best_r is None:
             continue
-        oil_r, header_r, wells_r = best_r
+        oil_r, header_r, wells_r, feasible_r = best_r
         actions = []
         for st in wells_r:
             psi_r, oil_w, pf_w, _psu = st["opts"][st["idx"]]
@@ -2106,6 +2242,7 @@ def run_choke_optimization(
                 "plan_oil_bopd": oil_r,
                 "gain_bopd": oil_r - run_all_oil,
                 "actions": actions,
+                "feasible": feasible_r,
             }
         )
     ladder.sort(key=lambda r: r["drop_psi"])
@@ -2120,6 +2257,12 @@ def run_choke_optimization(
         "frontier_cap_bpd": best["budget"],
         "pf_slack": best["total_pf"] < best["budget"] - 1e-6,
         "lambda_bopd_per_bpd": best["lam"],
+        "lambda_used": 0.,
+        "lambda_source": "auto (maximum oil)",
+        "diagnostic_lambda": best["lam"],
+        "diagnostic_lambda_source": "largest average oil/water sacrifice among selected reductions",
+        "allocation_status": best["wells"][0].get("allocation_status") if best["wells"] else None,
+        "failed_trials": failed_trials,
         "header_today_psi": header_today,
         "projected_d_oil_bopd": projected_d,
         "suction_psi": plant.suction_psi(),
@@ -2134,6 +2277,6 @@ def run_choke_optimization(
         "history": [],
         "sweep": sweep,
         "ladder": ladder,
-        **plant.flags(best["total_pf"], n_pumps),
+        **best["plant_check"],
     }
     return rows, meta

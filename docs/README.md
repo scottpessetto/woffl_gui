@@ -1,5 +1,13 @@
 # Documentation index
 
+The [pad and CFP capacity fixes](pad_cfp_capacity_delivery_2026-09-12.md)
+implement the numerical, allocation and workflow repairs from the
+[capacity review](pad_cfp_capacity_review_2026-09-12.md). New runs maximize oil
+within capacity by default, support required-online wells, qualify pressure
+and operating limits, and show CFP bring-online/offset combinations. The
+review's frozen pre-fix probes remain historical evidence. The delivery lists
+the remaining full comparison study and field qualification work.
+
 Updated September 12, 2026. The [well-fit workflow delivery](well_fit_workflow_delivery_2026-09-12.md)
 implements fixed-IPR calibration, explicit common oil-IPR fitting, sensitivity
 parity, saved-model identity/replay and bounded I/M/E fixed-plan stress cases.
@@ -44,7 +52,7 @@ inputs and revision; later implementation notes do not retroactively rerun them.
 | [Selectable hydraulics](hydraulics_models_2026-09-11.md) | BB, Hagedorn–Brown/Griffith and Shi/Pan; scoped model selection, primary sources, limitations and same-input historical comparison; Tulsa pending |
 | [Pad optimization formulation](optimization_redesign_2026-09.md) | Water pricing, plant constraints, both allocators and hardware identity |
 | [CFP moves methodology](cfp_moves_methodology.md) | Measured-anchor deltas and response surfaces |
-| [Upstream patch register](upstream_sync.md) | Shared-library changes through patch 45 and merge regressions |
+| [Upstream patch register](upstream_sync.md) | Shared-library changes through patch 46 and merge regressions |
 
 ## September 7-8 implementation and validation records
 
