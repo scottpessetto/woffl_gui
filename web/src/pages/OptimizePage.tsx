@@ -404,9 +404,10 @@ export default function OptimizePage() {
         />
       )}
 
-      {padRun === "S" && (
-        // Fixed-speed pad only: the header follows the 60 Hz curve, so extra
-        // PF draw costs every other well oil - priced per well pump here.
+      {(padRun === "S" || padRun === "I") && (
+        // PF-only pads: S follows its 60 Hz curve, I holds a setpoint until
+        // its frontier cannot. Either way extra PF draw is priced in barrels.
+        // M/E machines also carry formation water - not modeled here yet.
         <PumpDecisionPanel pad={padRun} />
       )}
 

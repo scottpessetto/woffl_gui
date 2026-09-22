@@ -8,6 +8,7 @@ memory-gauge overlay layers have no server equivalent.
 
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Optional
@@ -17,6 +18,8 @@ import pandas as pd
 from server import config
 from server.cache import ttl_cache
 from server.services import datasources, frames
+
+log = logging.getLogger(__name__)
 
 # Lifted verbatim from the retired Streamlit app; the em dash in the
 # original SQL comment is written as "-" per the ASCII house rule.
@@ -135,6 +138,69 @@ WHERE vbdc.tag_date BETWEEN '{start_date}' AND '{end_date}'
 ORDER BY vwt_map.well_name, vbdc.tag_date
 """
 
+# --- Shut-in windows (the chart's zero-rate periods) ------------------------
+#
+# Source: the daily downtime log mpu.wells.vw_shut_in, the same log Well Sort
+# reads. There is no daily allocated-production view in mpu.wells, so a logged
+# down day is the only daily on/off signal the app has. Like the BHP pull, the
+# log is keyed by the well's vw_well_test enthid (dthid = enthid): that keeps a
+# dual-purpose well's injector-side downtime out of the producer's history.
+# Hours are summed per day across the log's rows (Well Sort's rule). Only days
+# with notable downtime come back; `_shape_shut_in` collapses them to windows,
+# so the cached value and the payload are a handful of rows, not one per day.
+_SHUT_IN_HOURS_SQL = "SUM(CAST(s.down_hours AS DOUBLE))"
+
+_SHUT_IN_QUERY = f"""\
+SELECT
+    s.dtdate,
+    {_SHUT_IN_HOURS_SQL} AS hrs,
+    MAX_BY(s.down_code, s.down_hours) AS down_code,
+    MAX_BY(s.down_reason, s.down_hours) AS down_reason
+FROM mpu.wells.vw_shut_in s
+WHERE s.dthid IN (
+    SELECT DISTINCT enthid
+    FROM mpu.wells.vw_well_test
+    WHERE well_name = '{{well_name}}'
+)
+AND s.dtdate BETWEEN '{{start_date}}' AND '{{end_date}}'
+GROUP BY s.dtdate
+HAVING {_SHUT_IN_HOURS_SQL} >= {{min_hours}}
+ORDER BY s.dtdate
+"""
+
+# Fleet form, same shape as _FLEET_BHP_QUERY's join-back (named si_map so the
+# two fleet joins stay distinguishable in logs and test fakes).
+_FLEET_SHUT_IN_QUERY = f"""\
+SELECT
+    si_map.well_name,
+    s.dtdate,
+    {_SHUT_IN_HOURS_SQL} AS hrs,
+    MAX_BY(s.down_code, s.down_hours) AS down_code,
+    MAX_BY(s.down_reason, s.down_hours) AS down_reason
+FROM mpu.wells.vw_shut_in s
+JOIN (
+    SELECT DISTINCT well_name, enthid
+    FROM mpu.wells.vw_well_test
+    WHERE well_name IN ({{well_list}})
+) si_map
+    ON s.dthid = si_map.enthid
+WHERE s.dtdate BETWEEN '{{start_date}}' AND '{{end_date}}'
+GROUP BY si_map.well_name, s.dtdate
+HAVING {_SHUT_IN_HOURS_SQL} >= {{min_hours}}
+ORDER BY si_map.well_name, s.dtdate
+"""
+
+# A day counts as SHUT IN at >= 20 logged down hours (Well Sort's "fully shut
+# in" threshold). Partial days (>= 8 h, Well Sort's notable-down threshold)
+# never start or end a window, but up to SHUT_IN_BRIDGE_DAYS of them between
+# two full-down runs are bridged: a casing-leak shutdown logged 24, 19.7, 14.6,
+# 24, 24 ... is one shut-in, not two with a phantom two-day restart.
+SHUT_IN_BRIDGE_DAYS = 3
+
+# Warehouse statements one well's history costs when warmed or opened cold
+# (tests + daily BHP + shut-in log). server.warmup counts its fallback with it.
+PER_WELL_STATEMENTS = 3
+
 
 # ---------------------------------------------------------------------------
 # Post-query shaping
@@ -197,6 +263,74 @@ def _shape_bhp(df: pd.DataFrame) -> pd.DataFrame:
     return df.dropna(subset=["tag_date", "bhp"]).sort_values("tag_date")
 
 
+_SHUT_IN_COLUMNS_OUT = ["start", "end", "days", "code", "reason"]
+
+
+def _shut_in_thresholds() -> tuple[float, float]:
+    """(full-day, partial-day) down-hour thresholds, shared with Well Sort."""
+    from woffl.assembly.well_sort_client import FULL_DAY_HOURS_THRESHOLD, NOTABLE_DOWN_HOURS
+
+    return float(FULL_DAY_HOURS_THRESHOLD), float(NOTABLE_DOWN_HOURS)
+
+
+def _shape_shut_in(df: pd.DataFrame) -> pd.DataFrame:
+    """Raw ``_SHUT_IN_QUERY`` day rows -> shut-in windows, oldest first.
+
+    A window runs from its first to its last full-down day (inclusive). Days
+    must be consecutive calendar days; any day missing from the rows (no
+    notable downtime) ends the run. Partial days bridge two full-down runs
+    only when there are at most ``SHUT_IN_BRIDGE_DAYS`` of them in a row.
+
+    Returns:
+        Frame with start/end (Timestamp, day resolution), days (calendar days
+        in the window), code/reason (the first full-down day's cause). Empty
+        (with those columns) when there is no full-down day.
+    """
+    full, partial = _shut_in_thresholds()
+    empty = pd.DataFrame(columns=_SHUT_IN_COLUMNS_OUT)
+    if df is None or df.empty or "dtdate" not in df.columns or "hrs" not in df.columns:
+        return empty
+    days = pd.DataFrame(
+        {
+            "day": pd.to_datetime(df["dtdate"], utc=True, errors="coerce")
+            .dt.tz_localize(None)
+            .dt.normalize(),
+            "hrs": pd.to_numeric(df["hrs"], errors="coerce"),
+            "code": df["down_code"] if "down_code" in df.columns else None,
+            "reason": df["down_reason"] if "down_reason" in df.columns else None,
+        }
+    )
+    days = days.dropna(subset=["day", "hrs"])
+    days = days[days["hrs"] >= partial].sort_values("day").drop_duplicates("day", keep="last")
+    if days.empty:
+        return empty
+
+    windows: list[dict[str, Any]] = []
+    current: Optional[dict[str, Any]] = None
+    pending_partial = 0  # partial days since the current window's last full day
+    prev_day: Optional[pd.Timestamp] = None
+    for row in days.itertuples(index=False):
+        contiguous = prev_day is not None and row.day - prev_day == pd.Timedelta(days=1)
+        if not contiguous:
+            current, pending_partial = None, 0
+        if row.hrs >= full:
+            if current is not None and pending_partial <= SHUT_IN_BRIDGE_DAYS:
+                current["end"] = row.day
+            else:
+                current = {"start": row.day, "end": row.day, "code": row.code, "reason": row.reason}
+                windows.append(current)
+            pending_partial = 0
+        elif current is not None:
+            pending_partial += 1
+            if pending_partial > SHUT_IN_BRIDGE_DAYS:
+                current = None
+        prev_day = row.day
+
+    out = pd.DataFrame(windows, columns=["start", "end", "code", "reason"])
+    out["days"] = ((out["end"] - out["start"]).dt.days + 1).astype(int)
+    return out[_SHUT_IN_COLUMNS_OUT].reset_index(drop=True)
+
+
 # maxsize sizing: the key carries `end` = today, so every well gets a NEW key at
 # midnight. It must therefore hold at least TWO days x the fleet, or the day's
 # fresh entries evict each other while yesterday's are still resident.
@@ -256,6 +390,35 @@ def bhp_daily(db_name: str, start: str, end: str) -> pd.DataFrame:
     )
 
 
+# Same rolling-`end` key as extended_tests - see its maxsize note.
+@ttl_cache(config.TTL_EXTENDED_TESTS, maxsize=512)
+def shut_in_windows(db_name: str, start: str, end: str) -> pd.DataFrame:
+    """Shut-in windows from the daily downtime log (vw_shut_in).
+
+    Args:
+        db_name: Databricks-format well name (e.g. "L-006").
+        start: window start, YYYY-MM-DD.
+        end: window end, YYYY-MM-DD.
+
+    Returns:
+        ``_shape_shut_in`` frame (start, end, days, code, reason). Raises on
+        query failure (failures are never cached).
+    """
+    from woffl.assembly.databricks_client import execute_query
+    from woffl.assembly.sql_guards import validate_iso_date, validate_well_name
+
+    return _shape_shut_in(
+        execute_query(
+            _SHUT_IN_QUERY.format(
+                well_name=validate_well_name(db_name),
+                start_date=validate_iso_date(start),
+                end_date=validate_iso_date(end),
+                min_hours=float(_shut_in_thresholds()[1]),
+            )
+        )
+    )
+
+
 # DataFrame column -> JSON key for the install rows (JpInstallRow contract).
 # Column names are the enriched tracker frame's (pump_identity.enrich_jp_history
 # adds Circ Direction / Raw Pump / Pump Converted on top of the tracker's
@@ -285,6 +448,16 @@ _TEST_COLUMNS: dict[str, str] = {
 }
 
 _BHP_COLUMNS: dict[str, str] = {"tag_date": "date", "bhp": "bhp"}
+
+# start/end are inclusive shut-in DAYS (YYYY-MM-DD); the chart zeroes rates
+# from the start of `start` to the end of `end`.
+_SHUT_IN_COLUMNS: dict[str, str] = {
+    "start": "start",
+    "end": "end",
+    "days": "days",
+    "code": "code",
+    "reason": "reason",
+}
 
 
 def _code_str(value: Any) -> Optional[str]:
@@ -330,12 +503,13 @@ def _installs_for(jp_hist: pd.DataFrame, well: str) -> pd.DataFrame:
 
 
 def _query_window(well: str, well_jp: pd.DataFrame) -> tuple[str, str, str]:
-    """(db_name, start, end) for this well's extended_tests / bhp_daily pulls.
+    """(db_name, start, end) for this well's extended_tests / bhp_daily /
+    shut_in_windows pulls.
 
-    THE single source of those two cache keys: ``warm_well``, ``warm_fleet``
+    THE single source of those cache keys: ``warm_well``, ``warm_fleet``
     and ``jp_history_payload`` must agree exactly or the warmup fills entries
     no request ever reads. ``end`` is today, so the keys roll over at midnight -
-    see the maxsize notes on the two fetchers.
+    see the maxsize notes on the fetchers.
     """
     from woffl.assembly.well_test_client import _denormalize_well_name
 
@@ -347,16 +521,17 @@ def _query_window(well: str, well_jp: pd.DataFrame) -> tuple[str, str, str]:
 
 
 def warm_well(well: str) -> bool:
-    """Pre-pay the two per-well Databricks pulls behind /wells/{name}/jp-history.
+    """Pre-pay the per-well Databricks pulls behind /wells/{name}/jp-history
+    (tests, daily BHP and the shut-in log - ``PER_WELL_STATEMENTS``).
 
     These are the app's only genuinely per-well warehouse queries, and they are
     why a well used to be slow on its first open and instant for the rest of the
-    day. ``server.warmup`` now covers the fleet with ``warm_fleet``'s two
+    day. ``server.warmup`` now covers the fleet with ``warm_fleet``'s
     statements and calls this only as the FALLBACK when that fails; it is also
     the on-demand path for warming a single well.
 
     Returns:
-        True when the tracker had a dated install and both fetchers were
+        True when the tracker had a dated install and every fetcher was
         touched; False when this well has nothing to query.
 
     Raises:
@@ -381,6 +556,7 @@ def warm_well(well: str) -> bool:
     # the entry cannot be deleted between two passes (server/cache.py).
     extended_tests.cache_refresh(db_name, start, end)  # type: ignore[attr-defined]
     bhp_daily.cache_refresh(db_name, start, end)  # type: ignore[attr-defined]
+    shut_in_windows.cache_refresh(db_name, start, end)  # type: ignore[attr-defined]
     return True
 
 
@@ -403,15 +579,17 @@ def _fleet_slice(
 
 
 def warm_fleet(wells: list[str]) -> dict[str, Any]:
-    """Warm every well's two per-well caches with TWO fleet statements.
+    """Warm every well's per-well caches with THREE fleet statements.
 
-    ``warm_well`` per well is 2 warehouse queries x ~90 wells = ~180 statements
+    ``warm_well`` per well is 3 warehouse queries x ~90 wells = ~270 statements
     holding the SQL warehouse awake for minutes on every pass, and the warehouse
-    bills per WAKE WINDOW rather than per statement. The two windowed pulls are
+    bills per WAKE WINDOW rather than per statement. The windowed pulls are
     the same SELECT/JOIN shape widened to an IN list, so one statement each
     answers the whole fleet; every well's slice is shaped by the SAME
-    ``_shape_tests`` / ``_shape_bhp`` the per-well fetchers use and primed under
-    the exact key ``jp_history_payload`` reads.
+    ``_shape_tests`` / ``_shape_bhp`` / ``_shape_shut_in`` the per-well fetchers
+    use and primed under the exact key ``jp_history_payload`` reads. The
+    shut-in statement alone is fail-soft: its failure primes the other two and
+    leaves the shut-in entries cold.
 
     A well with no rows in a fleet frame is primed with an EMPTY frame - that is
     precisely what its per-well query would have returned, and priming it is
@@ -466,9 +644,22 @@ def warm_fleet(wells: list[str]) -> dict[str, Any]:
     # an in-flight per-well fetch (server/cache.py clear() version guard).
     tests_version = extended_tests.cache_version()  # type: ignore[attr-defined]
     bhp_version = bhp_daily.cache_version()  # type: ignore[attr-defined]
+    shut_in_version = shut_in_windows.cache_version()  # type: ignore[attr-defined]
 
     tests_raw = execute_query(_FLEET_TEST_QUERY.format(**sql_args))
     bhp_raw = execute_query(_FLEET_BHP_QUERY.format(**sql_args))
+    # The shut-in log only decorates the chart, so its failure must not throw
+    # away the two primes above (nor push the pass onto the per-well fallback):
+    # those wells' shut-in entries stay cold and the request path fetches them
+    # on demand, fail-soft.
+    shut_in_raw: Optional[pd.DataFrame]
+    try:
+        shut_in_raw = execute_query(
+            _FLEET_SHUT_IN_QUERY.format(**sql_args, min_hours=float(_shut_in_thresholds()[1]))
+        )
+    except Exception as exc:  # noqa: BLE001 - optional decoration, see above
+        log.warning("warm: fleet shut-in log pull failed: %s", exc)
+        shut_in_raw = None
 
     primed = 0
     for db_name, start, end in windows:
@@ -488,9 +679,19 @@ def warm_fleet(wells: list[str]) -> dict[str, Any]:
         stored_bhp = bhp_daily.cache_prime(  # type: ignore[attr-defined]
             bhp_df, db_name, start, end, version=bhp_version
         )
+        if shut_in_raw is not None:
+            shut_in_windows.cache_prime(  # type: ignore[attr-defined]
+                _shape_shut_in(
+                    _fleet_slice(shut_in_raw, "well_name", "dtdate", db_name, start, end)
+                ),
+                db_name,
+                start,
+                end,
+                version=shut_in_version,
+            )
         if stored_tests and stored_bhp:
             primed += 1
-    return {"wells": primed, "skipped": skipped, "statements": 2}
+    return {"wells": primed, "skipped": skipped, "statements": PER_WELL_STATEMENTS}
 
 
 def jp_history_payload(well: str) -> dict[str, Any]:
@@ -522,6 +723,7 @@ def jp_history_payload(well: str) -> dict[str, Any]:
         "installs": [],
         "tests": [],
         "bhp_daily": [],
+        "shut_in": [],
         "current_pump": None,
         "source": source,
     }
@@ -538,13 +740,15 @@ def jp_history_payload(well: str) -> dict[str, Any]:
 
     db_name, start, end = _query_window(well, well_jp)
 
-    # Fail-soft per series - the tab warns and renders what it has. The two
+    # Fail-soft per series - the tab warns and renders what it has. The three
     # pulls are independent Databricks queries at seconds each, so they run
     # in PARALLEL (thread-local warehouse connections; ttl_cache is locked):
-    # total = max(t1, t2) instead of t1 + t2.
-    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="jp-hist") as pool:
+    # total = max(t1, t2, t3) instead of the sum. A missing shut-in log just
+    # leaves `shut_in` empty and the chart interpolates between tests as before.
+    with ThreadPoolExecutor(max_workers=PER_WELL_STATEMENTS, thread_name_prefix="jp-hist") as pool:
         tests_future = pool.submit(extended_tests, db_name, start, end)
         bhp_future = pool.submit(bhp_daily, db_name, start, end)
+        shut_in_future = pool.submit(shut_in_windows, db_name, start, end)
         try:
             payload["tests"] = frames.records(tests_future.result(), _TEST_COLUMNS)
         except Exception:
@@ -553,4 +757,9 @@ def jp_history_payload(well: str) -> dict[str, Any]:
             payload["bhp_daily"] = frames.records(bhp_future.result(), _BHP_COLUMNS)
         except Exception:
             payload["bhp_daily"] = []
+        try:
+            payload["shut_in"] = frames.records(shut_in_future.result(), _SHUT_IN_COLUMNS)
+        except Exception as exc:  # noqa: BLE001 - optional decoration
+            log.warning("shut-in log unavailable for %s: %s", well, exc)
+            payload["shut_in"] = []
     return payload

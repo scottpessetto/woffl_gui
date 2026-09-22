@@ -340,9 +340,15 @@ def run_batch(well: str, sp: schemas.SimParams) -> dict[str, Any]:
     prop_pf = factories.power_fluid(p.field_model, p.rho_pf)
 
     from woffl.assembly.pump_candidates import scoped_pumps
-    jp_list = scoped_pumps(list(sp.nozzle_batch_options), list(sp.throat_batch_options),
-        (sp.nozzle_no, sp.area_ratio) if sp.pump_state == "installed" else None,
+    installed = (sp.nozzle_no, sp.area_ratio) if sp.pump_state == "installed" else None
+    jp_list = scoped_pumps(list(sp.nozzle_batch_options), list(sp.throat_batch_options), installed,
         {"ken": p.ken, "kth": p.kth, "kdi": p.kdi, "nozzle_area_factor": sp.nozzle_area_factor})
+    # One row per size (user request 2026-09-22): the installed size is shown
+    # as the installed pump with its fitted losses, not a second time as a
+    # new ("clean", reference-loss) pump. Every other size is a new pump.
+    if installed:
+        jp_list = [jp for jp in jp_list
+                   if not (getattr(jp, "pump_state", None) == "replacement" and (jp.noz_no, jp.rat_ar) == installed)]
     batch = BatchPump(
         pwh=p.surf_pres,
         tsu=p.form_temp,

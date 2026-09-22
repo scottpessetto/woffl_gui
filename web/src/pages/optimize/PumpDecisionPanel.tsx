@@ -17,7 +17,7 @@ import { Scale } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { useOptimizeJob, useStartPumpDecision, useWells } from "../../api/hooks";
-import type { PumpDecisionCandidate, PumpDecisionResult, PumpDecisionStep, RunPad } from "../../api/types";
+import type { PumpDecisionCandidate, PumpDecisionResult, PumpDecisionStep } from "../../api/types";
 import { Badge, Card, Spinner, WarnNote } from "../../components/ui";
 import { fmtNum, fmtPct, fmtSigned } from "../../lib/format";
 import { useOptimizeStore } from "../../state/optimize";
@@ -76,10 +76,19 @@ function Results({ result, dq }: { result: PumpDecisionResult; dq: number }) {
     <div className="space-y-3">
       <div className="space-y-2 rounded-lg bg-slate-50 p-3 ring-1 ring-slate-200">
         <p className="text-sm text-slate-600">
-          Cost of PF on {result.pad}-Pad ({result.n_pumps} boosters at 60 Hz). Modeled today: header{" "}
+          Cost of PF on {result.pad}-Pad ({result.coupling === "free_pressure"
+            ? `booster held at a ${fmtNum(result.setpoint_psi ?? null)} psi setpoint until its frontier cannot carry the flow`
+            : `${result.n_pumps} boosters at 60 Hz`}). Modeled today: header{" "}
           <strong>{fmtNum(result.header_psi)} psi</strong>, {fmtNum(result.model_pf_bpd)} BPD PF, {fmtNum(result.model_oil_bopd)} BOPD
           {result.test_pf_bpd > 0 && <> (recent tests: {fmtNum(result.test_pf_bpd)} BPD PF)</>}.
         </p>
+        {result.coupling === "free_pressure" && (
+          <p className="text-sm text-slate-700">
+            {(result.free_headroom_bpd ?? 0) > 0
+              ? <>The booster holds {fmtNum(result.setpoint_psi ?? null)} psi with <strong>{fmtNum(result.free_headroom_bpd ?? null)} BPD</strong> of free headroom: extra PF inside it costs the other wells nothing. Past it the header falls along the frontier.</>
+              : <>The booster is <strong>at its frontier</strong> ({fmtNum(result.header_psi)} psi, below the {fmtNum(result.setpoint_psi ?? null)} psi setpoint), so every extra barrel of PF lowers the header for all wells.</>}
+          </p>
+        )}
         <div className="grid gap-2 md:grid-cols-2">
           <StepTile label={`+${fmtNum(dq)} BPD PF drawn by ${result.target ?? "any well"}`} step={s.add} dq={dq} padWide={result.target === null} />
           <StepTile label={`-${fmtNum(dq)} BPD PF given back by ${result.target ?? "any well"}`} step={s.remove} dq={dq} padWide={result.target === null} />
@@ -189,7 +198,7 @@ function Results({ result, dq }: { result: PumpDecisionResult; dq: number }) {
   );
 }
 
-export function PumpDecisionPanel({ pad }: { pad: RunPad }) {
+export function PumpDecisionPanel({ pad }: { pad: "S" | "I" }) {
   const wells = useWells();
   const futureByPad = useOptimizeStore((s) => s.future);
   const jobKey = `pump_decision:${pad}`;
@@ -212,6 +221,7 @@ export function PumpDecisionPanel({ pad }: { pad: RunPad }) {
   const [allWells, setAllWells] = useState(false);
   const [nPumps, setNPumps] = useState<number>(3);
   const [dq, setDq] = useState(1000);
+  const [setpoint, setSetpoint] = useState(3500);
   const chosen = options.some((o) => o.name === target) ? target : "";
 
   useEffect(() => {
@@ -221,13 +231,15 @@ export function PumpDecisionPanel({ pad }: { pad: RunPad }) {
   const running = job.data?.status === "running" || start.isPending;
   const result = job.data?.status === "done" && job.data.kind === "pump_decision"
     ? (job.data.result as PumpDecisionResult | null) : null;
-  const dqValid = Number.isFinite(dq) && dq > 0 && dq <= 10000;
+  const dqValid = Number.isFinite(dq) && dq > 0 && dq <= 10000 &&
+    (pad === "S" || (Number.isFinite(setpoint) && setpoint >= 1000 && setpoint <= 5000));
 
   const run = () => {
     if ((!chosen && !allWells) || !dqValid) return;
     start.mutate({
-      pad: "S", target: allWells ? null : chosen, offline: [...offlineSet].sort(), future,
-      n_pumps: nPumps, nozzles: NOZZLES, throats: THROATS, delta_pf_bpd: dq,
+      pad, target: allWells ? null : chosen, offline: [...offlineSet].sort(), future,
+      n_pumps: pad === "S" ? nPumps : null, nozzles: NOZZLES, throats: THROATS, delta_pf_bpd: dq,
+      setpoint_psi: pad === "S" ? null : setpoint,
     }, { onSuccess: (r) => setLastJob(jobKey, r.job_id) });
   };
 
@@ -246,14 +258,25 @@ export function PumpDecisionPanel({ pad }: { pad: RunPad }) {
             <option value="">Well to size...</option>
             {options.map((o) => <option key={o.name} value={o.name}>{o.name}{o.tag ? ` (${o.tag})` : ""}</option>)}
           </select>
-          <label className="flex items-center gap-1 text-xs text-slate-600">
-            Boosters online
-            <select aria-label="Booster pumps online" value={nPumps} onChange={(e) => setNPumps(Number(e.target.value))}
-              className="h-7 rounded border border-slate-300 bg-white text-xs">
-              <option value={3}>3</option>
-              <option value={2}>2</option>
-            </select>
-          </label>
+          {pad === "S" ? (
+            <label className="flex items-center gap-1 text-xs text-slate-600">
+              Boosters online
+              <select aria-label="Booster pumps online" value={nPumps} onChange={(e) => setNPumps(Number(e.target.value))}
+                className="h-7 rounded border border-slate-300 bg-white text-xs">
+                <option value={3}>3</option>
+                <option value={2}>2</option>
+              </select>
+            </label>
+          ) : (
+            <label className="flex items-center gap-1 text-xs text-slate-600"
+              title="The header setpoint the booster holds while its frontier allows (defaults to the 3,500 psi operational cap)">
+              Setpoint
+              <input type="number" aria-label="Header setpoint, psi" min={1000} max={5000} step={50} value={setpoint}
+                onChange={(e) => setSetpoint(Number(e.target.value))}
+                className="h-7 w-20 rounded border border-slate-300 bg-white px-1 text-xs tabular-nums" />
+              psi
+            </label>
+          )}
           <label className="flex items-center gap-1 text-xs text-slate-600">
             PF change +/-
             <input type="number" aria-label="PF change, BPD" min={100} max={10000} step={100} value={dq}
@@ -270,7 +293,10 @@ export function PumpDecisionPanel({ pad }: { pad: RunPad }) {
           <CancelJobButton jobId={jobId} running={job.data?.status === "running"} />
         </div>
         <p className="text-xs text-slate-500">
-          The boosters run at 60 Hz, so more PF draw lowers the header for every well. Shows what adding or giving back PF
+          {pad === "S"
+            ? "The boosters run at 60 Hz, so more PF draw lowers the header for every well."
+            : "The booster holds its setpoint until its frontier cannot carry the flow; past that, more PF draw lowers the header for every well."}{" "}
+          Shows what adding or giving back PF
           costs the other wells in barrels, then every pump size for the chosen well with the header resettled. Tick All
           wells to see the cost across the whole pad without sizing a pump. Offline ticks
           and future wells come from the readiness board.

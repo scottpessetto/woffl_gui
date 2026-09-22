@@ -67,6 +67,8 @@ export function pfCostOption(result: PumpDecisionResult): EChartsOption {
     tooltip: {
       ...baseTooltip,
       trigger: "axis",
+      // Pad-wide lists up to 8 wells: keep the box inside the chart.
+      confine: true,
       axisPointer: { type: "cross", lineStyle: { color: AXIS_LINE }, crossStyle: { color: AXIS_LINE }, label: { precision: 0 } },
       formatter: (raw: unknown) => {
         const list = (Array.isArray(raw) ? raw : [raw]) as { axisValue?: unknown; axisDim?: string }[];

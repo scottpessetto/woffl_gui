@@ -551,7 +551,12 @@ class PumpDecisionRequest(BaseModel):
     for ``target`` resettled on that curve. ``target`` may be an online well
     (a replacement), an offline well (a restart) or a future well."""
 
-    pad: Literal["S"] = "S"
+    pad: Literal["S", "I"] = "S"
+    # Free-pressure pads (I): the operator's header setpoint. The booster
+    # holds it until its frontier cannot carry the flow, then the header
+    # follows the frontier down. None = the plant's operational cap.
+    # Ignored on the fixed-speed S-Pad, whose header follows its curve.
+    setpoint_psi: Optional[float] = Field(None, ge=1000.0, le=5000.0)
     # None = pad-wide view: no well is sized, and the +/- PF step is extra
     # draw anywhere on the pad, costed across EVERY producing well.
     target: Optional[str] = Field(None, min_length=1, max_length=24)
@@ -1510,6 +1515,9 @@ class JpHistoryResponse(BaseModel):
     tests: list[dict[str, Any]]
     # extended window rows: date, oil_rate, fwat_rate, lift_wat, bhp, pf_press
     bhp_daily: list[dict[str, Any]]  # {date, bhp}
+    # Shut-in windows from the daily downtime log: {start, end, days, code,
+    # reason}; start/end are inclusive YYYY-MM-DD days. Empty = no log data.
+    shut_in: list[dict[str, Any]] = []
     current_pump: Optional[str] = None
     source: Literal["databricks", "excel_fallback"]
 

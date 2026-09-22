@@ -55,6 +55,18 @@ day; that version was replaced and is not in the code.
    day: header 3,048 psi, +1,000 BPD costs 21.0 BOPD across the pad,
    -1,000 BPD gives back 19.5 (marginal PFWC 97.9%).
 
+7. **I-Pad.** Free-pressure pads use the plant's own delivery rule,
+   `delivered_header(q, setpoint)`: hold the setpoint (default the 3,500 psi
+   cap) until the frontier cannot carry the flow, then follow the frontier.
+   The result reports `free_headroom_bpd`, the PF the booster adds before
+   the header must drop, and the sweep extends past it so the knee shows.
+   Live I-Pad, same day: modeled at the frontier (2,967 psi vs a 3,500 psi
+   setpoint, no headroom); +1,000 BPD costs 173 BOPD across 12 wells,
+   -1,000 gives back 166. Modeled PF is 40,800 BPD against 34,700 from tests,
+   so the modeled header may be low. M/E boosters also carry formation
+   water (`water_key = totl_wat`) and are refused until the demand is
+   modeled in machine water.
+
 PFWC = PF / (PF + oil), the stream S-Pad's boosters handle (the same basis
 Well Sort uses for S-Pad).
 

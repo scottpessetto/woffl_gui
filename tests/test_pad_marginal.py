@@ -149,3 +149,44 @@ def test_pad_wide_mode_costs_every_well_and_sizes_none(monkeypatch):
     assert sized == [] and out["candidates"] == [] and out["baseline"] is None
     assert {r["well"] for r in out["sensitivity"]["add"]["wells"]} == {"T", "A", "B"}
     assert out["sensitivity"]["add"]["others_d_oil"] < 0 and len(out["sweep"]) == 21
+
+
+def test_free_pressure_pad_holds_its_setpoint_so_extra_pf_is_free_until_the_frontier(monkeypatch):
+    """I-Pad: header = min(setpoint, frontier). Frontier 5000 - 0.05 Q; three
+    wells draw 10,000 BPD each at a 3,000 psi setpoint, so the booster holds
+    3,000 and has 10,000 BPD of free headroom before the header must drop."""
+    from server import schemas
+    from server.services import optimizer_runs, pump_decision
+
+    cfg = lambda n: SimpleNamespace(well_name=n, installed_nozzle="12", installed_throat="B")
+    monkeypatch.setattr(optimizer_runs, "_build_configs", lambda *a, **k: [cfg("T"), cfg("A"), cfg("B")])
+    monkeypatch.setattr(optimizer_runs, "_current_and_tests",
+                        lambda names: ({n: ("12", "B") for n in names}, {n: (190.0, 9500.0) for n in names}))
+    rate = lambda h: (0.05 * h + 50.0, 5.0 * h - 5000.0)
+    monkeypatch.setattr(pump_decision, "_installed_at", lambda configs, levels, rho: {
+        c.well_name: [(h, *rate(h)) for h in levels] for c in configs})
+    monkeypatch.setattr(pump_decision, "_target_at", lambda *a, **k: {})
+    plant = optimizer_runs._pad_plant("I")
+    monkeypatch.setattr(plant, "header_at_flow", lambda q, n=None: 5000.0 - 0.05 * q if q <= 90000 else None)
+    monkeypatch.setattr(plant, "budget_at_pressure", lambda p, n=None: (5000.0 - p) / 0.05)
+
+    out = pump_decision._run({}, schemas.PumpDecisionRequest(pad="I", target=None, setpoint_psi=3000.0))
+    assert out["coupling"] == "free_pressure" and out["setpoint_psi"] == 3000.0
+    assert out["header_psi"] == pytest.approx(3000.0, abs=1.0)
+    assert out["free_headroom_bpd"] == pytest.approx(10000.0, rel=1e-3)
+    add = out["sensitivity"]["add"]
+    assert add["d_header_psi"] == pytest.approx(0.0, abs=1.0) and add["others_d_oil"] == pytest.approx(0.0, abs=0.1)
+    # the chart reaches past the knee: flat inside the headroom, then the
+    # frontier takes over and the header (and oil) fall
+    sweep = out["sweep"]
+    assert max(p["d_q"] for p in sweep) > 10000.0
+    inside = [p for p in sweep if 0 < p["d_q"] <= 9000.0]
+    beyond = [p for p in sweep if p["d_q"] >= 11000.0]
+    assert inside and all(abs(p["others_d_oil"]) < 0.1 for p in inside)
+    assert beyond and all(p["d_header_psi"] < -1.0 and p["others_d_oil"] < 0 for p in beyond)
+
+
+def test_formation_water_pads_are_refused_for_now():
+    from server import schemas
+    with pytest.raises(Exception):
+        schemas.PumpDecisionRequest(pad="M", target=None)

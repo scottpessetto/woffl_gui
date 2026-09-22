@@ -42,8 +42,11 @@ def test_saved_watercut_preserves_oil_and_optimizer_acceptance():
 
 def test_batch_wear_only_applies_to_installed_size():
     row = probe.batch_wear()
-    for batch in row.values():
-        assert batch == pytest.approx({"12B:installed": 1.2, "12B:replacement": 1.0, "13B:replacement": 1.0})
+    # Wear rides only the installed size on both paths. The web batch no
+    # longer repeats the installed size as a clean replacement (user request
+    # 2026-09-22); the optimizer keeps that same-size changeout as a choice.
+    assert row["single_well_batch"] == pytest.approx({"12B:installed": 1.2, "13B:replacement": 1.0})
+    assert row["network_batch"] == pytest.approx({"12B:installed": 1.2, "12B:replacement": 1.0, "13B:replacement": 1.0})
 
 
 def test_wear_resets_after_pump_replacement():

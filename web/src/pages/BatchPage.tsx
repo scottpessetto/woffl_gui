@@ -4,11 +4,13 @@
  * fit / recommended star), recommended pump block, results table,
  * recommender table.
  *
- * Expensive: runs ONLY on explicit submit. The page snapshots the params on
- * click and hands the snapshot to useBatch (null = not requested yet).
+ * Runs automatically: on opening the page and again whenever a sidebar or
+ * grid input changes (debounced), so there is no Run button. Each distinct
+ * input set is one cached sweep; the last result stays on screen while the
+ * next computes.
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 
 import { stableStringify } from "../api/client";
 import { useBatch } from "../api/hooks";
@@ -32,6 +34,7 @@ import {
 } from "../components/ui";
 import { MultiChipSelect, RadioRow } from "../layout/ParamFields";
 import { downloadCsv } from "../lib/csv";
+import { useDebounced } from "../lib/useDebounced";
 import { fmtNum, fmtPct, pumpCode } from "../lib/format";
 import { effectiveParams, useParamsStore } from "../state/params";
 import { useSweepsStore } from "../state/sweeps";
@@ -91,7 +94,7 @@ function performanceOption(
   for (const r of rows) {
     (r.semi ? semiData : elimData).push({
       value: [r[waterKey], r.qoil_std],
-      name: `${pumpCode(r.nozzle, r.throat)} (${r.pump_state === "replacement" ? "clean" : "installed"})`,
+      name: `${pumpCode(r.nozzle, r.throat)}${r.pump_state === "installed" ? " (installed)" : ""}`,
       row: r,
     });
   }
@@ -195,11 +198,20 @@ export default function BatchPage() {
   const snapshot = useSweepsStore((s) => s.batch[well] ?? null);
   const setBatchSnapshot = useSweepsStore((s) => s.setBatchSnapshot);
 
+  // Auto-run: the current inputs, once they have been stable for 800 ms.
+  const debounced = useDebounced(effectiveParams(params), 800);
+  const hasGrid = params.nozzle_batch_options.length > 0 && params.throat_batch_options.length > 0;
+  useEffect(() => {
+    if (!hasGrid) return;
+    const current = useSweepsStore.getState().batch[well] ?? null;
+    if (current === null || stableStringify(current) !== stableStringify(debounced)) {
+      setBatchSnapshot(well, debounced);
+    }
+  }, [debounced, well, hasGrid, setBatchSnapshot]);
+
   const query = useBatch(well, snapshot);
   const data = query.data;
-
-  const stale =
-    snapshot !== null && stableStringify(effectiveParams(params)) !== stableStringify(snapshot);
+  const updating = query.isFetching;
 
   const xMode: WaterType = data?.x_mode ?? params.water_type;
   const waterLabel = xMode === "formation" ? "Formation Water" : "Total Water";
@@ -242,7 +254,7 @@ export default function BatchPage() {
   const resultColumns: Column<BatchRow>[] = [
     { key: "nozzle", label: "Nozzle" },
     { key: "throat", label: "Throat" },
-    { key: "pump_state", label: "Hardware", render: (r) => r.pump_state === "replacement" ? "Clean replacement" : "Installed" },
+    { key: "pump_state", label: "Hardware", render: (r) => r.pump_state === "installed" ? "Installed" : "New pump" },
     { key: "qoil_std", label: "Oil Rate (BOPD)", align: "right", render: (r) => fmtNum(r.qoil_std) },
     { key: "form_wat", label: "Formation Water (BWPD)", align: "right", render: (r) => fmtNum(r.form_wat) },
     { key: "lift_wat", label: "Lift Water (BWPD)", align: "right", render: (r) => fmtNum(r.lift_wat) },
@@ -256,7 +268,7 @@ export default function BatchPage() {
   const recommenderColumns: Column<RecommenderRow>[] = [
     { key: "nozzle", label: "Nozzle" },
     { key: "throat", label: "Throat" },
-    { key: "pump_state", label: "Hardware", render: (r) => r.pump_state === "replacement" ? "Clean replacement" : "Installed" },
+    { key: "pump_state", label: "Hardware", render: (r) => r.pump_state === "installed" ? "Installed" : "New pump" },
     { key: "qoil_std", label: "Oil Rate (BOPD)", align: "right", render: (r) => fmtNum(r.qoil_std) },
     { key: "water", label: `${waterLabel} (BWPD)`, align: "right", render: (r) => fmtNum(r.water) },
     { key: "ratio", label: ratioLabel, align: "right", render: (r) => fmtNum(r.ratio, 3) },
@@ -270,16 +282,7 @@ export default function BatchPage() {
     <div className="space-y-4">
       <Section
         title="Batch Pump Analysis"
-        actions={
-          <Button
-            variant="primary"
-            busy={query.isFetching}
-            disabled={combos === 0}
-            onClick={() => setBatchSnapshot(well, effectiveParams(params))}
-          >
-            Run batch sweep
-          </Button>
-        }
+        actions={updating ? <Spinner label="Updating..." /> : undefined}
       >
         <Card className="space-y-3">
           <div className="grid gap-3 lg:grid-cols-2">
@@ -327,8 +330,7 @@ export default function BatchPage() {
 
       {snapshot === null ? (
         <InfoNote>
-          Pick the nozzle and throat grid above, then run the sweep. Nothing runs until you
-          submit - this solve is expensive.
+          {hasGrid ? "Starting the sweep..." : "Pick at least one nozzle and one throat above; the sweep runs automatically."}
         </InfoNote>
       ) : query.isPending ? (
         <Spinner label="Sweeping nozzle x throat grid..." />
@@ -336,9 +338,7 @@ export default function BatchPage() {
         <ErrorNote error={query.error} />
       ) : data ? (
         <>
-          {stale && (
-            <WarnNote>Inputs changed since this sweep - re-run to refresh</WarnNote>
-          )}
+
 
           <div className="grid grid-cols-3 gap-3">
             <Metric label="Total Combinations" value={fmtNum(data.stats.total)} />
@@ -360,7 +360,7 @@ export default function BatchPage() {
           {rec && (
             <Section title="Recommended Jet Pump">
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-                <Metric label="Hardware" value={rec.pump_state === "replacement" ? "Clean replacement" : "Keep installed"} />
+                <Metric label="Hardware" value={rec.pump_state === "installed" ? "Keep installed" : "New pump"} />
                 <Metric label="Nozzle Size" value={rec.nozzle} />
                 <Metric label="Throat Ratio" value={rec.throat} />
                 <Metric label="Oil Rate" value={`${fmtNum(rec.qoil_std, 1)} BOPD`} />

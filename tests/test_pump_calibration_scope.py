@@ -328,15 +328,17 @@ def test_real_batch_installed_and_clean_predictions_match_single_solves(model):
                           nozzle_batch_options=["13"], throat_batch_options=["C"])
     rows = run_batch("Custom", sp)["rows"]
     pf_rows = _pf_point("Custom", sp.model_dump_json(), sp.ppf_surf)
-    assert len(rows) == 2 and len(pf_rows) == 2
+    # The batch shows the installed size once, as installed (user request
+    # 2026-09-22); the PF-range sweep still carries both hardware states.
+    assert [r["pump_state"] for r in rows] == ["installed"] and len(pf_rows) == 2
     for state in ("installed", "replacement"):
         params = schemas.SimParams(**{**sp.model_dump(), "pump_state": state})
         single = solve_single("Custom", params)
-        row = next(r for r in rows if r["pump_state"] == state)
         pressure_row = pf_rows[pf_rows.pump_state == state].iloc[0]
-        assert row["psu_solv"] == pytest.approx(single["psu"], abs=1e-8)
-        assert row["qoil_std"] == pytest.approx(single["qoil_std"], abs=1e-8)
         assert pressure_row.psu_solv == pytest.approx(single["psu"], abs=1e-8)
+        if state == "installed":
+            assert rows[0]["psu_solv"] == pytest.approx(single["psu"], abs=1e-8)
+            assert rows[0]["qoil_std"] == pytest.approx(single["qoil_std"], abs=1e-8)
 
 
 def test_cfp_surface_retains_clean_same_size_changeout_separately(monkeypatch):

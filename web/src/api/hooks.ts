@@ -276,6 +276,9 @@ export const useBatch = (well: string, snapshot: SimParams | null) =>
     queryKey: ["batch", well, snapshot ? stableStringify(snapshot) : "none"],
     queryFn: ({ signal }) => post<BatchResponse>("/batch", { well, params: snapshot }, signal),
     enabled: snapshot !== null,
+    // The page re-runs on every sidebar edit: keep the last sweep on screen
+    // while the new one computes instead of flashing a spinner.
+    placeholderData: keepPreviousData,
     // A snapshot-keyed sweep never goes stale (same inputs = same physics)
     // and must survive page detours - the snapshot store re-attaches to it.
     staleTime: Infinity,

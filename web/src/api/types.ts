@@ -652,7 +652,9 @@ export interface OptimizeRunStarted {
 /** POST /optimize/match-health - start a scorecard job for one pad. */
 /** POST /optimize/pump-decision - mirrors server/schemas.py PumpDecisionRequest. */
 export interface PumpDecisionRequest {
-  pad: "S";
+  pad: "S" | "I";
+  /** Free-pressure pads (I): operator header setpoint; null = the plant cap. */
+  setpoint_psi?: number | null;
   /** null = pad-wide: no well sized, the step is extra draw anywhere on the pad. */
   target: string | null;
   offline: string[];
@@ -721,6 +723,11 @@ export interface PumpDecisionResult {
   target_role: "online" | "offline" | "future" | "pad";
   physics_model: string;
   n_pumps: number | null;
+  coupling?: "fixed_curve" | "free_pressure";
+  /** Free-pressure pads: the setpoint the header is held at. */
+  setpoint_psi?: number | null;
+  /** Free-pressure pads: extra PF the booster carries before the header must drop. */
+  free_headroom_bpd?: number | null;
   header_psi: number;
   model_pf_bpd: number;
   model_oil_bopd: number;

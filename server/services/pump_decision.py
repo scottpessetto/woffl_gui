@@ -121,8 +121,11 @@ def _run(job: dict[str, Any], req: schemas.PumpDecisionRequest) -> dict[str, Any
 
     pad = req.pad
     plant = optimizer_runs._pad_plant(pad)
-    if plant.coupling != "fixed_curve":
-        raise ValueError(f"{pad}-Pad has no fixed pump curve; this cost is only defined for fixed-speed pads")
+    free = plant.coupling == "free_pressure"
+    if (getattr(plant, "water_key", "lift_wat") or "lift_wat") != "lift_wat":
+        # Machines that also carry formation water (M/E) need the demand in
+        # machine water, not PF alone - not modeled here yet.
+        raise ValueError(f"{pad}-Pad's boosters also carry formation water; its cost of PF is not modeled yet")
     target = req.target.strip() if req.target else None
     future_names = {f.name for f in req.future}
     role = ("pad" if target is None else "future" if target in future_names
@@ -138,9 +141,17 @@ def _run(job: dict[str, Any], req: schemas.PumpDecisionRequest) -> dict[str, Any
     n_pumps = req.n_pumps if req.n_pumps is not None else optimizer_runs._PAD_DEFAULTS[pad]["n_pumps"]
     lo, hi = plant.clamp_window(n_pumps)
     rho = power_fluid_density(plant)
+    # Fixed speed: the header IS the curve at the draw. Free pressure: the
+    # plant's own rule - hold the setpoint, or the frontier once it cannot.
+    setpoint = (float(req.setpoint_psi) if req.setpoint_psi is not None
+                else float(plant.max_header_psi)) if free else None
+    if setpoint is not None:
+        hi = min(hi, setpoint)
 
     def header_of_flow(q: float) -> Optional[float]:
-        return plant.header_at_flow(q, n_pumps)
+        if not free:
+            return plant.header_at_flow(q, n_pumps)
+        return plant.delivered_header(q, setpoint, n_pumps)[0]
 
     jobs.set_progress(job, "reading current pumps and tests...")
     current, test_rates = optimizer_runs._current_and_tests([c.well_name for c in configs])
@@ -170,10 +181,13 @@ def _run(job: dict[str, Any], req: schemas.PumpDecisionRequest) -> dict[str, Any
             points[w].extend(pts)
 
     # 1) coarse: the header range this curve can deliver
-    cap = plant.flow_window(n_pumps)[1]
-    top = header_of_flow(0.05 * cap) or hi
-    bottom = header_of_flow(cap) or lo
-    c_lo, c_hi = max(lo, min(bottom, top) - 200.0), min(hi, top)
+    if free:
+        c_lo, c_hi = max(lo, plant.pressure_window(n_pumps)[0]), hi
+    else:
+        cap = plant.flow_window(n_pumps)[1]
+        top = header_of_flow(0.05 * cap) or hi
+        bottom = header_of_flow(cap) or lo
+        c_lo, c_hi = max(lo, min(bottom, top) - 200.0), min(hi, top)
     coarse = [c_lo + (c_hi - c_lo) * i / (_COARSE_LEVELS - 1) for i in range(_COARSE_LEVELS)]
     model_installed(coarse, "finding today's header")
     curves = {w: pm.clean_curve(p) for w, p in points.items()}
@@ -212,10 +226,20 @@ def _run(job: dict[str, Any], req: schemas.PumpDecisionRequest) -> dict[str, Any
         notes.append(f"{target}: no catalog pump solves near {h0:,.0f} psi")
 
     sens = pm.pf_sensitivity(others, curves, header_of_flow, h0, lo, hi, req.delta_pf_bpd)
-    sweep = pm.pf_sweep(others, curves, header_of_flow, h0, lo, hi, max(5000.0, 5.0 * req.delta_pf_bpd))
     rows = pm.score_candidates(others, target_base, candidates, header_of_flow, h0, lo, hi, sens["lambda"])
 
     today = pm.well_rates(curves, h0)
+    # Free pressure: PF the booster can add before its frontier drops below
+    # the setpoint - extra draw inside it costs the other wells nothing.
+    free_headroom = None
+    if free and setpoint is not None:
+        at_setpoint = h0 >= setpoint - 1.0
+        limit = float(plant.budget_at_pressure(setpoint, n_pumps) or 0.0)
+        free_headroom = max(0.0, limit - sum(p for _o, p in today.values())) if at_setpoint else 0.0
+    # Show past the knee: a free-pressure pad's chart is flat until the
+    # headroom is used, and the cost only starts there.
+    span = max(5000.0, 5.0 * req.delta_pf_bpd, min(30000.0, 1.4 * (free_headroom or 0.0)))
+    sweep = pm.pf_sweep(others, curves, header_of_flow, h0, lo, hi, span)
     wells_today = [{"well": w, "oil": o, "pf": p,
                     "test_oil": (test_rates.get(w) or (None, None))[0],
                     "test_pf": (test_rates.get(w) or (None, None))[1]} for w, (o, p) in sorted(today.items())]
@@ -228,6 +252,9 @@ def _run(job: dict[str, Any], req: schemas.PumpDecisionRequest) -> dict[str, Any
         "target_role": role,
         "physics_model": MODEL_VERSION,
         "n_pumps": n_pumps,
+        "coupling": plant.coupling,
+        "setpoint_psi": setpoint,
+        "free_headroom_bpd": free_headroom,
         "header_psi": h0,
         "model_pf_bpd": sum(p for _o, p in today.values()),
         "model_oil_bopd": sum(o for o, _p in today.values()),

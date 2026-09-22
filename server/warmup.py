@@ -9,8 +9,8 @@ exactly the reported symptom - a well is slow once and instant afterwards.
 Two distinct causes, both handled here:
 
 1. **Nothing per-well was warmed.** ``run_pass`` fills every well's per-well
-   caches, so no user is ever the one who pays. It does that with TWO
-   fleet-wide statements (``history.warm_fleet``), not two per well: the
+   caches, so no user is ever the one who pays. It does that with THREE
+   fleet-wide statements (``history.warm_fleet``), not three per well: the
    warehouse bills per WAKE WINDOW, and ~180 serialized per-well queries held
    it up for 2-3 minutes on every pass to fetch data one wide query already
    contains. The per-well fan-out (``history.warm_well`` x fleet) survives only
@@ -293,7 +293,7 @@ def well_universe() -> list[str]:
 def warm_one_well(well: str, skip_history: bool = False) -> None:
     """Pre-pay everything a first request for ``well`` would block on.
 
-    ``history.warm_well`` covers the two per-well warehouse queries;
+    ``history.warm_well`` covers the per-well warehouse queries;
     ``datasources.survey`` covers the local deviation-survey CSV parse behind
     /wells/{name}/profile. The profile payload itself is NOT warmed - its cache
     key carries the client's jpump_tvd/field_model, so warming a guessed triple
@@ -387,8 +387,15 @@ def _run_labelled(
     return failed
 
 
+def _per_well_statements() -> int:
+    """Warehouse statements one well's history costs (tests, BHP, shut-in log)."""
+    from server.services import history as history_svc
+
+    return int(history_svc.PER_WELL_STATEMENTS)
+
+
 def warm_fleet_history(wells: list[str]) -> dict[str, Any]:
-    """The two fleet statements that replace 2 x len(wells) per-well queries.
+    """The fleet statements that replace 3 x len(wells) per-well queries.
 
     A thin seam over ``history.warm_fleet`` so the import stays local (the
     service module drags in pandas + the Databricks client) and so the pass can
@@ -401,7 +408,7 @@ def warm_fleet_history(wells: list[str]) -> dict[str, Any]:
 
 def run_pass() -> dict[str, Any]:
     """One full warm: fleet frames first (the per-well pass reads the JP-history
-    frame they fill), then the fleet's history in TWO statements, then every
+    frame they fill), then the fleet's history in THREE statements, then every
     well's local survey. Never raises; returns the new status."""
     from server.cache import set_warm_retention
 
@@ -430,13 +437,13 @@ def run_pass() -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001
             log.warning("warm: well universe unavailable: %s", exc)
         if wells:
-            # Two statements for the whole fleet's history. On failure the
+            # Three statements for the whole fleet's history. On failure the
             # per-well fan-out below still runs, so a bad fleet pull costs
             # warehouse time, never freshness.
             try:
                 summary = warm_fleet_history(wells)
                 fleet_history_ok = True
-                history_statements = int(summary.get("statements", 2))
+                history_statements = int(summary.get("statements", _per_well_statements()))
                 log.info(
                     "warm: fleet history primed %s wells (%s skipped) in %s statements",
                     summary.get("wells"),
@@ -447,10 +454,10 @@ def run_pass() -> dict[str, Any]:
                 log.warning(
                     "warm: fleet history pull failed, falling back to %d per-well "
                     "queries: %s",
-                    2 * len(wells),
+                    _per_well_statements() * len(wells),
                     exc,
                 )
-                history_statements = 2 * len(wells)
+                history_statements = _per_well_statements() * len(wells)
             with ThreadPoolExecutor(
                 max_workers=n, thread_name_prefix="warm-well"
             ) as pool:
@@ -496,7 +503,7 @@ def run_pass() -> dict[str, Any]:
         wells_ok,
         len(wells),
         statements,
-        "2 fleet" if fleet_history_ok else "per-well fallback",
+        "fleet" if fleet_history_ok else "per-well fallback",
     )
     return status()
 

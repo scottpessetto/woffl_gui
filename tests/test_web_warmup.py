@@ -160,7 +160,7 @@ def _jp_frame(well: str = "MPB-28") -> pd.DataFrame:
 
 @pytest.fixture
 def recorded_keys(monkeypatch):
-    """Record the (db_name, start, end) triples handed to the two fetchers.
+    """Record the (db_name, start, end) triples handed to the three fetchers.
 
     The stub answers BOTH entry points, because the two paths under test use
     different ones: the request path calls the fetcher, the warm path calls its
@@ -183,6 +183,7 @@ def recorded_keys(monkeypatch):
 
     monkeypatch.setattr(history_svc, "extended_tests", _Recorder("extended_tests"))
     monkeypatch.setattr(history_svc, "bhp_daily", _Recorder("bhp_daily"))
+    monkeypatch.setattr(history_svc, "shut_in_windows", _Recorder("shut_in_windows"))
     monkeypatch.setattr(
         history_svc.datasources,
         "jp_history_safe",
@@ -200,6 +201,7 @@ def test_warm_well_fills_exactly_the_keys_the_request_path_reads(recorded_keys):
     requested = sorted(recorded_keys)
 
     assert warmed == requested
+    assert {label for label, *_ in warmed} == {"extended_tests", "bhp_daily", "shut_in_windows"}
     # And the window really is earliest-install to today, in the DB name form.
     assert warmed[0][1] == "B-028"
     assert warmed[0][2] == "2024-03-04"
@@ -279,13 +281,28 @@ def _fleet_bhp_frame() -> pd.DataFrame:
     )
 
 
+def _fleet_shut_in_frame() -> pd.DataFrame:
+    """_FLEET_SHUT_IN_QUERY's shape: notable-downtime days per well."""
+    return pd.DataFrame(
+        {
+            "well_name": ["B-028", "B-028", "B-028", "S-005", "S-005"],
+            "dtdate": pd.to_datetime(
+                ["2025-01-01", "2025-01-02", "2025-01-03", "2024-06-15", "2025-04-01"]
+            ).date,
+            "hrs": [24.0, 24.0, 24.0, 24.0, 24.0],
+            "down_code": ["D62", "D62", "D62", "SI", "SI"],
+            "down_reason": ["Casing Leak", "Casing Leak", "Casing Leak", "Shut In", "Shut In"],
+        }
+    )
+
+
 def _boom(_sql):
     raise AssertionError("the warehouse must not be touched here")
 
 
 @pytest.fixture
 def fleet_queries(monkeypatch):
-    """Answer the two fleet statements from synthetic frames; record the SQL."""
+    """Answer the three fleet statements from synthetic frames; record the SQL."""
     from woffl.assembly import databricks_client
 
     state: dict = {"sql": []}
@@ -294,6 +311,10 @@ def fleet_queries(monkeypatch):
         state["sql"].append(query)
         if "vwt_map" in query:  # the fleet BHP join-back
             return _fleet_bhp_frame()
+        if "si_map" in query:  # the fleet shut-in log join-back
+            if state.get("shut_in_boom"):
+                raise RuntimeError("shut-in view unavailable")
+            return _fleet_shut_in_frame()
         return _fleet_tests_frame()
 
     state["execute"] = _execute
@@ -324,23 +345,29 @@ def test_warm_fleet_primes_what_the_per_well_query_would_have_cached(
         .drop(columns=["well_name"])
         .reset_index(drop=True)
     )
+    raw_si = _fleet_shut_in_frame()
+    b28_si = raw_si[raw_si["well_name"] == "B-028"].drop(columns=["well_name"]).reset_index(drop=True)
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(databricks_client, "execute_query", lambda _sql: b28_tests.copy())
         expect_tests = history_svc.extended_tests("B-028", "2024-03-04", today)
         mp.setattr(databricks_client, "execute_query", lambda _sql: b28_bhp.copy())
         expect_bhp = history_svc.bhp_daily("B-028", "2024-03-04", today)
+        mp.setattr(databricks_client, "execute_query", lambda _sql: b28_si.copy())
+        expect_si = history_svc.shut_in_windows("B-028", "2024-03-04", today)
     clear_all_caches()  # drop those reference entries; warm from the fleet now
 
     summary = history_svc.warm_fleet(["MPB-28", "MPS-05", "MPC-45", "MPX-99"])
 
-    assert summary == {"wells": 3, "skipped": 1, "statements": 2}
-    assert len(fleet_queries["sql"]) == 2, "two statements for the whole fleet"
+    assert summary == {"wells": 3, "skipped": 1, "statements": 3}
+    assert len(fleet_queries["sql"]) == 3, "three statements for the whole fleet"
 
     # A plain call now: served from the primed entry, never from the warehouse.
     monkeypatch.setattr(databricks_client, "execute_query", _boom)
     assert_frame_equal(history_svc.extended_tests("B-028", "2024-03-04", today), expect_tests)
     assert_frame_equal(history_svc.bhp_daily("B-028", "2024-03-04", today), expect_bhp)
+    assert_frame_equal(history_svc.shut_in_windows("B-028", "2024-03-04", today), expect_si)
+    assert len(expect_si) == 1 and expect_si.loc[0, "days"] == 3
 
 
 def test_each_well_is_sliced_to_its_own_window_not_the_fleets(fleet_queries, monkeypatch):
@@ -359,17 +386,21 @@ def test_each_well_is_sliced_to_its_own_window_not_the_fleets(fleet_queries, mon
     assert list(tests["well"]) == ["MPS-05"], "the well column is normalized as before"
     assert list(bhp["tag_date"]) == [pd.Timestamp("2025-03-01")]
     assert list(bhp.columns) == ["tag_date", "bhp"], "the join-back column is dropped"
+    si = history_svc.shut_in_windows("S-005", "2025-01-01", today)
+    assert list(si["start"]) == [pd.Timestamp("2025-04-01")], "pre-install downtime is sliced off"
 
 
 def test_the_fleet_sql_names_every_well_and_starts_at_the_earliest_install(fleet_queries):
     history_svc.warm_fleet(["MPB-28", "MPS-05", "MPC-45"])
 
-    tests_sql, bhp_sql = fleet_queries["sql"]
+    tests_sql, bhp_sql, shut_in_sql = fleet_queries["sql"]
     for quoted in ("'B-028'", "'S-005'", "'C-045'"):
         assert quoted in tests_sql, quoted
         assert quoted in bhp_sql, quoted
+        assert quoted in shut_in_sql, quoted
     # The outer window is the minimum per-well start, not each well's own.
     assert "2024-03-04" in tests_sql and "2024-03-04" in bhp_sql
+    assert "2024-03-04" in shut_in_sql and "vw_shut_in" in shut_in_sql
 
 
 def test_a_well_with_no_fleet_rows_is_primed_with_an_empty_frame(
@@ -384,10 +415,26 @@ def test_a_well_with_no_fleet_rows_is_primed_with_an_empty_frame(
 
     assert history_svc.extended_tests.cache_has("C-045", "2025-02-02", today) is True
     assert history_svc.bhp_daily.cache_has("C-045", "2025-02-02", today) is True
+    assert history_svc.shut_in_windows.cache_has("C-045", "2025-02-02", today) is True
 
     monkeypatch.setattr(databricks_client, "execute_query", _boom)
     assert history_svc.extended_tests("C-045", "2025-02-02", today).empty
     assert history_svc.bhp_daily("C-045", "2025-02-02", today).empty
+    assert history_svc.shut_in_windows("C-045", "2025-02-02", today).empty
+
+
+def test_a_failed_fleet_shut_in_pull_still_primes_tests_and_bhp(fleet_queries):
+    """The shut-in log only decorates the chart: its failure must not cost the
+    pass its two real primes or push it onto the per-well fallback."""
+    fleet_queries["shut_in_boom"] = True
+    today = _today()
+
+    summary = history_svc.warm_fleet(["MPB-28", "MPS-05"])
+
+    assert summary["wells"] == 2
+    assert history_svc.extended_tests.cache_has("B-028", "2024-03-04", today) is True
+    assert history_svc.bhp_daily.cache_has("B-028", "2024-03-04", today) is True
+    assert history_svc.shut_in_windows.cache_has("B-028", "2024-03-04", today) is False
 
 
 def test_warm_fleet_propagates_a_query_failure_and_primes_nothing(
@@ -522,14 +569,14 @@ def test_a_failed_fleet_history_pull_falls_back_to_the_per_well_queries(stub_pas
     assert st["fleet_history_ok"] is False
     assert sorted(stub_pass["well_calls"]) == sorted(stub_pass["wells"])
     assert stub_pass["skip_flags"] == [False] * len(stub_pass["wells"])
-    assert st["statements"] == 3 + 2 * len(stub_pass["wells"])
+    assert st["statements"] == 3 + history_svc.PER_WELL_STATEMENTS * len(stub_pass["wells"])
     assert st["wells_ok"] == len(stub_pass["wells"]), "freshness is never the cost"
 
 
 @pytest.fixture
 def stub_history(monkeypatch):
     """The real run_pass -> warm_fleet_history -> history seam, with only the
-    two history entry points and the survey parse stubbed."""
+    history entry points and the survey parse stubbed."""
     calls: dict = {"fleet": [], "well": [], "survey": [], "boom": False}
 
     def _fleet(wells):
@@ -569,7 +616,8 @@ def test_the_per_well_fan_out_returns_when_the_fleet_pull_fails(stub_history):
 
     assert len(stub_history["fleet"]) == 1
     assert sorted(stub_history["well"]) == ["MPB-28", "MPS-05"]
-    assert st["fleet_history_ok"] is False and st["statements"] == 4
+    assert st["fleet_history_ok"] is False
+    assert st["statements"] == history_svc.PER_WELL_STATEMENTS * 2
 
 
 def test_wells_disabled_warms_the_fleet_only(stub_pass, monkeypatch):

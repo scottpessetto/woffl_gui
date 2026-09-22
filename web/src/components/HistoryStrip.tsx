@@ -9,12 +9,17 @@
  * through the strip. Bottom grid: pumps-in-hole timeline, one colored band
  * per era (tenure = Date Set -> next Date Set; the tracker's Date Pulled
  * produces phantom gaps), same pump code = same color.
+ *
+ * Shut-ins from the downtime log (`data.shut_in`) step the rate areas down to
+ * zero and break the pressure lines; between tests the areas still
+ * interpolate. No shut-in data renders exactly as before.
  */
 
 import { useMemo } from "react";
 
 import type { JpHistoryResponse, PumpMatchResult } from "../api/types";
 import { historyTimestamp, matchAt, matchLines } from "./historyMatchSeries";
+import { breakAtShutIns, rateSeriesWithShutIns, shutInAt, shutInSpans, shutInWindowsOf } from "./shutInSeries";
 import type { EChartsOption } from "../charts/echarts";
 import { axis, baseTooltip, houseOption, nearestByX, SLATE, ttHeader, ttNote, ttRow } from "../charts/theme";
 import { ChartPanel } from "../charts/ChartPanel";
@@ -139,6 +144,7 @@ export function HistoryStrip({
       .map((t) => ({ x: ms(t.date), t }))
       .filter((r): r is { x: number; t: (typeof data.tests)[number] } => r.x !== null)
       .sort((a, b) => a.x - b.x);
+    const shutIns = shutInSpans(shutInWindowsOf(data), tests.map((r) => r.x));
     const oilPts: [number, number][] = [];
     const fwatPts: [number, number][] = [];
     const pfPts: [number, number][] = [];
@@ -159,6 +165,13 @@ export function HistoryStrip({
     bhpDailyPts.sort((a, b) => a[0] - b[0]);
     // Prefer the daily BHP series; fall back to test-date BHP (original).
     const bhpPts = bhpDailyPts.length > 0 ? bhpDailyPts : bhpTestPts;
+    // Drawn series: rates step to zero through each shut-in (one shared x
+    // sequence keeps the stack aligned); pressure lines break instead. The
+    // *Pts arrays above stay test/sample-only for the tooltip.
+    const rateLine = rateSeriesWithShutIns(
+      oilPts.map(([x, oil], i) => ({ x, oil, water: fwatPts[i][1] })), shutIns);
+    const bhpLine = breakAtShutIns(bhpPts, shutIns);
+    const pfLine = breakAtShutIns(pfPts, shutIns);
 
     /**
      * Unified tooltip, plotly x-unified style: ONE date header, then the
@@ -174,15 +187,30 @@ export function HistoryStrip({
       if (!at) return "";
       const ms0 = at.axisValue as number;
       const rows: string[] = [ttHeader(fmtDate(new Date(ms0)))];
-      const oil = nearestByX(oilPts, ms0);
-      if (oil) rows.push(ttRow(OIL_LINE, "Oil", `${fmtNum(oil[1])} BOPD`));
-      const fwat = nearestByX(fwatPts, ms0);
-      if (fwat) rows.push(ttRow(WAT_LINE, "Form Water", `${fmtNum(fwat[1])} BWPD`));
-      const bhp = nearestByX(bhpPts, ms0);
-      if (bhp) rows.push(ttRow(BHP_COLOR, "BHP", `${fmtNum(bhp[1])} psi`));
-      if (showPf) {
-        const pf = nearestByX(pfPts, ms0);
-        if (pf) rows.push(ttRow(PF_COLOR, "PF pressure", `${fmtNum(pf[1])} psi`));
+      const shutIn = shutInAt(shutIns, ms0);
+      if (shutIn) {
+        // Not a test: say so, and show only pressures recorded inside it.
+        const w = shutIn.window;
+        const inside = (p: readonly [number, number] | null) =>
+          p && p[0] >= shutIn.start && p[0] < shutIn.end && Math.abs(p[0] - ms0) <= DAY_MS ? p : null;
+        rows.push(ttRow(SLATE, "Status", "Shut in"));
+        rows.push(ttRow(OIL_LINE, "Oil", "0 BOPD (shut in)"));
+        rows.push(ttRow(WAT_LINE, "Form Water", "0 BWPD (shut in)"));
+        const bhp = inside(nearestByX(bhpPts, ms0));
+        if (bhp) rows.push(ttRow(BHP_COLOR, "BHP (shut in)", `${fmtNum(bhp[1])} psi`));
+        rows.push(ttNote(`Downtime log: shut in ${w.start} to ${w.end}${w.days ? ` (${w.days} days)` : ""}${
+          w.reason ? `, ${w.reason}` : ""}${w.code ? ` [${w.code}]` : ""}.`));
+      } else {
+        const oil = nearestByX(oilPts, ms0);
+        if (oil) rows.push(ttRow(OIL_LINE, "Oil", `${fmtNum(oil[1])} BOPD`));
+        const fwat = nearestByX(fwatPts, ms0);
+        if (fwat) rows.push(ttRow(WAT_LINE, "Form Water", `${fmtNum(fwat[1])} BWPD`));
+        const bhp = nearestByX(bhpPts, ms0);
+        if (bhp) rows.push(ttRow(BHP_COLOR, "BHP", `${fmtNum(bhp[1])} psi`));
+        if (showPf) {
+          const pf = nearestByX(pfPts, ms0);
+          if (pf) rows.push(ttRow(PF_COLOR, "PF pressure", `${fmtNum(pf[1])} psi`));
+        }
       }
       const modeled = matchAt(matchRows, ms0);
       if (modeled && ["replay", "fit", "prediction"].includes(modeled.status)) {
@@ -267,7 +295,7 @@ export function HistoryStrip({
         xAxisIndex: 0,
         yAxisIndex: 0,
         stack: "production",
-        data: oilPts,
+        data: rateLine.oil,
         showSymbol: false,
         lineStyle: { color: OIL_LINE, width: 1.5 },
         itemStyle: { color: OIL_LINE },
@@ -279,7 +307,7 @@ export function HistoryStrip({
         xAxisIndex: 0,
         yAxisIndex: 0,
         stack: "production",
-        data: fwatPts,
+        data: rateLine.water,
         showSymbol: false,
         lineStyle: { color: WAT_LINE, width: 1.5 },
         itemStyle: { color: WAT_LINE },
@@ -290,7 +318,8 @@ export function HistoryStrip({
         type: "line",
         xAxisIndex: 0,
         yAxisIndex: 1,
-        data: bhpPts,
+        data: bhpLine,
+        connectNulls: false,
         ...(bhpPts === bhpDailyPts
           ? { showSymbol: false, lineStyle: { color: BHP_COLOR, width: 1.5 } }
           : { symbolSize: 4, lineStyle: { color: BHP_COLOR, width: 2 } }),
@@ -338,7 +367,8 @@ export function HistoryStrip({
         type: "line",
         xAxisIndex: 0,
         yAxisIndex: 1,
-        data: pfPts,
+        data: pfLine,
+        connectNulls: false,
         symbolSize: 3,
         lineStyle: { color: PF_COLOR, width: 1, type: "dotted" },
         itemStyle: { color: PF_COLOR },
@@ -365,7 +395,8 @@ export function HistoryStrip({
       detailPanels.forEach((quantity, i) => {
         const xAxisIndex = i + 1, yAxisIndex = i + 2;
         const color = quantity === "oil" ? OIL_LINE : PF_COLOR;
-        const actual = quantity === "oil" ? oilPts : tests.map(({ x, t }) => [x, num(t.lift_wat)]);
+        const actual = quantity === "oil" ? breakAtShutIns(oilPts, shutIns)
+          : breakAtShutIns(tests.map(({ x, t }) => [x, num(t.lift_wat)] as const), shutIns);
         series.push({ name: quantity === "oil" ? "Oil (BOPD)" : "Actual PF rate", type: "line",
           xAxisIndex, yAxisIndex, data: actual, showSymbol: true, symbolSize: 4,
           lineStyle: { color, width: 1.4 }, itemStyle: { color }, connectNulls: false });
