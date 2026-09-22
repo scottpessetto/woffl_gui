@@ -552,7 +552,9 @@ class PumpDecisionRequest(BaseModel):
     (a replacement), an offline well (a restart) or a future well."""
 
     pad: Literal["S"] = "S"
-    target: str = Field(..., min_length=1, max_length=24)
+    # None = pad-wide view: no well is sized, and the +/- PF step is extra
+    # draw anywhere on the pad, costed across EVERY producing well.
+    target: Optional[str] = Field(None, min_length=1, max_length=24)
     offline: list[str] = []
     future: list[FutureWellSpec] = []
     n_pumps: Optional[int] = Field(None, ge=1, le=3)

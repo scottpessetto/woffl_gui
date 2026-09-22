@@ -123,15 +123,16 @@ def _run(job: dict[str, Any], req: schemas.PumpDecisionRequest) -> dict[str, Any
     plant = optimizer_runs._pad_plant(pad)
     if plant.coupling != "fixed_curve":
         raise ValueError(f"{pad}-Pad has no fixed pump curve; this cost is only defined for fixed-speed pads")
-    target = req.target.strip()
+    target = req.target.strip() if req.target else None
     future_names = {f.name for f in req.future}
-    role = "future" if target in future_names else "offline" if target in set(req.offline) else "online"
+    role = ("pad" if target is None else "future" if target in future_names
+            else "offline" if target in set(req.offline) else "online")
 
     notes: list[str] = []
     prov: dict[str, dict[str, Any]] = {}
     configs = optimizer_runs._build_configs([pad], set(req.offline) - {target}, req.future, notes, prov)
     by_name = {c.well_name: c for c in configs}
-    if target not in by_name:
+    if target is not None and target not in by_name:
         raise ValueError(f"{target} has no usable well model on {pad}-Pad; save its fit (or its donor's) first")
 
     n_pumps = req.n_pumps if req.n_pumps is not None else optimizer_runs._PAD_DEFAULTS[pad]["n_pumps"]
@@ -154,7 +155,7 @@ def _run(job: dict[str, Any], req: schemas.PumpDecisionRequest) -> dict[str, Any
             notes.append(f"{c.well_name}: installed pump unknown - its PF draw is missing from the curve")
         else:
             producing.append(ident)
-    target_cfg = by_name[target]
+    target_cfg = by_name.get(target) if target is not None else None
     target_installed = _with_identity(target_cfg, current) if role == "online" else None
     if role == "online" and target_installed is None:
         notes.append(f"{target}: installed pump unknown - candidates are compared with an empty slot")
@@ -190,9 +191,11 @@ def _run(job: dict[str, Any], req: schemas.PumpDecisionRequest) -> dict[str, Any
     h0 = pm.settle(curves, 0.0, header_of_flow, lo, hi) or h0
 
     jobs.check_cancelled(job)
-    jobs.set_progress(job, f"sizing {target}: every pump at {len(fine)} headers")
-    sized = target_installed if target_installed is not None else target_cfg
-    t_points = _target_at(sized, fine, req.nozzles, req.throats, rho)
+    t_points: dict = {}
+    if target_cfg is not None:
+        jobs.set_progress(job, f"sizing {target}: every pump at {len(fine)} headers")
+        sized = target_installed if target_installed is not None else target_cfg
+        t_points = _target_at(sized, fine, req.nozzles, req.throats, rho)
 
     others = {w: c for w, c in curves.items() if w != target}
     target_base = curves.get(target) if target_installed is not None else None
@@ -205,7 +208,7 @@ def _run(job: dict[str, Any], req: schemas.PumpDecisionRequest) -> dict[str, Any
             curve = target_base  # the same saved-fit pump, with the coarse points too
         if len(curve) >= 2:
             candidates.append({"pump": pump, "pump_state": state, "curve": curve})
-    if not candidates:
+    if target_cfg is not None and not candidates:
         notes.append(f"{target}: no catalog pump solves near {h0:,.0f} psi")
 
     sens = pm.pf_sensitivity(others, curves, header_of_flow, h0, lo, hi, req.delta_pf_bpd)
@@ -216,7 +219,7 @@ def _run(job: dict[str, Any], req: schemas.PumpDecisionRequest) -> dict[str, Any
     wells_today = [{"well": w, "oil": o, "pf": p,
                     "test_oil": (test_rates.get(w) or (None, None))[0],
                     "test_pf": (test_rates.get(w) or (None, None))[1]} for w, (o, p) in sorted(today.items())]
-    tr = test_rates.get(target)
+    tr = test_rates.get(target) if target is not None else None
     base_t = pm.at_header(target_base, h0) if target_base else None
 
     return optimizer_runs._plain({
@@ -235,9 +238,9 @@ def _run(job: dict[str, Any], req: schemas.PumpDecisionRequest) -> dict[str, Any
         "baseline": ({"pump": installed_key[0], "oil": base_t[0], "pf": base_t[1],
                       "test_oil": tr[0] if tr else None, "test_pf": tr[1] if tr else None}
                      if installed_key and base_t else None),
-        "current_pump": "".join(current[target]) if target in current else None,
+        "current_pump": "".join(current[target]) if target is not None and target in current else None,
         "candidates": rows,
         "wells_today": wells_today,
-        "provenance": prov.get(target),
+        "provenance": prov.get(target) if target is not None else None,
         "notes": notes,
     })

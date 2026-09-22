@@ -124,3 +124,28 @@ def test_pump_decision_job_with_fakes(monkeypatch):
     assert top["pump"] == "13B" and top["net_oil"] > 0 and top["others_d_oil"] < 0
     assert out["baseline"]["pump"] == "12B"
     assert len(out["sweep"]) == 21 and out["sweep"][10]["d_q"] == 0.0
+
+
+def test_pad_wide_mode_costs_every_well_and_sizes_none(monkeypatch):
+    """No target: the +/- step is extra draw anywhere on the pad, charged to
+    every producing well, and no pump is sized."""
+    from server import schemas
+    from server.services import optimizer_runs, pump_decision
+
+    cfg = lambda n: SimpleNamespace(well_name=n, installed_nozzle="12", installed_throat="B")
+    monkeypatch.setattr(optimizer_runs, "_build_configs", lambda *a, **k: [cfg("T"), cfg("A"), cfg("B")])
+    monkeypatch.setattr(optimizer_runs, "_current_and_tests",
+                        lambda names: ({n: ("12", "B") for n in names}, {n: (190.0, 9500.0) for n in names}))
+    rate = lambda h: (0.05 * h + 50.0, 5.0 * h - 5000.0)
+    monkeypatch.setattr(pump_decision, "_installed_at", lambda configs, levels, rho: {
+        c.well_name: [(h, *rate(h)) for h in levels] for c in configs})
+    sized = []
+    monkeypatch.setattr(pump_decision, "_target_at", lambda *a, **k: sized.append(a) or {})
+    plant = optimizer_runs._pad_plant("S")
+    monkeypatch.setattr(plant, "header_at_flow", lambda q, n=None: 5000.0 - 0.05 * q)
+
+    out = pump_decision._run({}, schemas.PumpDecisionRequest(target=None))
+    assert out["target"] is None and out["target_role"] == "pad"
+    assert sized == [] and out["candidates"] == [] and out["baseline"] is None
+    assert {r["well"] for r in out["sensitivity"]["add"]["wells"]} == {"T", "A", "B"}
+    assert out["sensitivity"]["add"]["others_d_oil"] < 0 and len(out["sweep"]) == 21

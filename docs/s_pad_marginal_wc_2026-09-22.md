@@ -49,6 +49,12 @@ day; that version was replaced and is not in the code.
    and the wells that respond. ECharts now registers `MarkPointComponent` and
    the `LabelLayout` feature for it.
 
+6. **All wells.** With no target (`PumpDecisionRequest.target = None`, the
+   panel's All wells box), the step is extra draw anywhere on the pad and
+   is charged to every producing well; no pump is sized. Live S-Pad, same
+   day: header 3,048 psi, +1,000 BPD costs 21.0 BOPD across the pad,
+   -1,000 BPD gives back 19.5 (marginal PFWC 97.9%).
+
 PFWC = PF / (PF + oil), the stream S-Pad's boosters handle (the same basis
 Well Sort uses for S-Pad).
 

@@ -653,7 +653,8 @@ export interface OptimizeRunStarted {
 /** POST /optimize/pump-decision - mirrors server/schemas.py PumpDecisionRequest. */
 export interface PumpDecisionRequest {
   pad: "S";
-  target: string;
+  /** null = pad-wide: no well sized, the step is extra draw anywhere on the pad. */
+  target: string | null;
   offline: string[];
   future: OptimizeRunRequest["future"];
   n_pumps: number | null;
@@ -716,8 +717,8 @@ export interface PumpDecisionCandidate {
 
 export interface PumpDecisionResult {
   pad: string;
-  target: string;
-  target_role: "online" | "offline" | "future";
+  target: string | null;
+  target_role: "online" | "offline" | "future" | "pad";
   physics_model: string;
   n_pumps: number | null;
   header_psi: number;

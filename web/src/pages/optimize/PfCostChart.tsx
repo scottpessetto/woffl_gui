@@ -55,12 +55,15 @@ export function pfCostOption(result: PumpDecisionResult): EChartsOption {
       // candidate labels, which sit to the right of their own markers
       label: p.d_q < 0 ? { position: "top", offset: [-40, -6] } : { position: "bottom", offset: [-50, 10] },
     }));
-  const lineName = "Other wells (extra PF on the curve)";
-  const candName = `Pump sizes for ${result.target}`;
+  const padWide = result.target === null;
+  const lineName = padWide ? "All wells (extra PF on the curve)" : "Other wells (extra PF on the curve)";
+  const candName = padWide ? "" : `Pump sizes for ${result.target}`;
+  const who = padWide ? "the pad" : result.target;
 
   return houseOption({
     grid: { ...baseGrid, top: 44, left: 64, right: 32, bottom: 52 },
-    legend: { top: 4, left: 8, itemWidth: 14, textStyle: { color: TEXT, fontSize: 12 }, data: [lineName, candName] },
+    // One series in pad-wide mode: the title names it, so no legend box.
+    legend: padWide ? { show: false } : { top: 4, left: 8, itemWidth: 14, textStyle: { color: TEXT, fontSize: 12 }, data: [lineName, candName] },
     tooltip: {
       ...baseTooltip,
       trigger: "axis",
@@ -74,12 +77,12 @@ export function pfCostOption(result: PumpDecisionResult): EChartsOption {
         if (pt) {
           const p = byQ.get(pt[0]);
           out.push(ttHeader(`${fmtSigned(pt[0])} BPD PF ${pt[0] >= 0 ? "drawn" : "given back"}`));
-          out.push(ttRow(ACCENT, "Other wells' oil", `${fmtSigned(pt[1], 1)} BOPD`));
+          out.push(ttRow(ACCENT, padWide ? "Pad oil" : "Other wells' oil", `${fmtSigned(pt[1], 1)} BOPD`));
           out.push(ttRow(AXIS_LINE, "Header", `${fmtNum(pt[2])} psi (${fmtSigned(pt[3])})`));
           const top = Object.entries(p?.wells ?? {})
             .filter(([, v]) => Math.abs(v) >= 0.05)
             .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
-            .slice(0, 4);
+            .slice(0, padWide ? 8 : 4);
           for (const [w, v] of top) out.push(ttRow(SLATE, `  ${w}`, `${fmtSigned(v, 1)} BOPD`));
           if (pt[4]) out.push(ttNote("Header beyond the modeled range: rates held at the nearest modeled point."));
         }
@@ -90,8 +93,8 @@ export function pfCostOption(result: PumpDecisionResult): EChartsOption {
         return out.join("");
       },
     },
-    xAxis: { ...axis(`Extra PF drawn by ${result.target}, BPD (negative = given back)`, { min: -span, max: span }), type: "value" },
-    yAxis: { ...axis("Oil change at the other wells, BOPD"), type: "value", nameGap: 44 },
+    xAxis: { ...axis(`Extra PF drawn by ${who}, BPD (negative = given back)`, { min: -span, max: span }), type: "value" },
+    yAxis: { ...axis(padWide ? "Oil change across all wells, BOPD" : "Oil change at the other wells, BOPD"), type: "value", nameGap: 44 },
     series: [
       {
         name: lineName,

@@ -40,7 +40,7 @@ function Verdict({ row }: { row: PumpDecisionCandidate }) {
     : <Badge tone="fair" title="This pump's extra PF costs the other wells more oil than it adds">above marginal</Badge>;
 }
 
-function StepTile({ label, step, dq }: { label: string; step: PumpDecisionStep | null; dq: number }) {
+function StepTile({ label, step, dq, padWide = false }: { label: string; step: PumpDecisionStep | null; dq: number; padWide?: boolean }) {
   if (!step) return <div className="rounded-md bg-white p-2 ring-1 ring-slate-200 text-sm text-slate-500">{label}: curve has no solution</div>;
   const adding = label.startsWith("+");
   return (
@@ -50,7 +50,7 @@ function StepTile({ label, step, dq }: { label: string; step: PumpDecisionStep |
         {fmtSigned(step.others_d_oil, 1)} BOPD
       </p>
       <p className="text-xs text-slate-600">
-        to the other wells; header {fmtSigned(step.d_header_psi, 0)} psi. Their PF moves {fmtSigned(step.others_d_pf, 0)} BPD,
+        {padWide ? "across all wells" : "to the other wells"}; header {fmtSigned(step.d_header_psi, 0)} psi. Their PF moves {fmtSigned(step.others_d_pf, 0)} BPD,
         so the station flow changes {fmtSigned((adding ? dq : -dq) + step.others_d_pf, 0)} BPD.
       </p>
     </div>
@@ -81,19 +81,19 @@ function Results({ result, dq }: { result: PumpDecisionResult; dq: number }) {
           {result.test_pf_bpd > 0 && <> (recent tests: {fmtNum(result.test_pf_bpd)} BPD PF)</>}.
         </p>
         <div className="grid gap-2 md:grid-cols-2">
-          <StepTile label={`+${fmtNum(dq)} BPD PF drawn by ${result.target}`} step={s.add} dq={dq} />
-          <StepTile label={`-${fmtNum(dq)} BPD PF given back by ${result.target}`} step={s.remove} dq={dq} />
+          <StepTile label={`+${fmtNum(dq)} BPD PF drawn by ${result.target ?? "any well"}`} step={s.add} dq={dq} padWide={result.target === null} />
+          <StepTile label={`-${fmtNum(dq)} BPD PF given back by ${result.target ?? "any well"}`} step={s.remove} dq={dq} padWide={result.target === null} />
         </div>
         <PfCostChart result={result} />
         {s.pfwc !== null && (
           <p className="text-sm text-slate-700">
-            Marginal PF water cut <strong>{fmtPct(s.pfwc, 1)}</strong>: extra oil from a pump in {result.target} must come at a PF
+            Marginal PF water cut <strong>{fmtPct(s.pfwc, 1)}</strong>: extra oil from a pump in {result.target ?? "any well"} must come at a PF
             water cut below {fmtPct(s.pfwc, 1)}, i.e. more than <strong>{fmtNum((s.lambda ?? 0) * 1000, 1)} BOPD per 1,000 BPD</strong> of
             extra PF, or the pad loses oil overall.
           </p>
         )}
         <button type="button" onClick={() => setShowWells((v) => !v)} className="text-xs text-blue-700 hover:underline">
-          {showWells ? "Hide" : "Show"} the impact on each other well ({impact.length})
+          {showWells ? "Hide" : "Show"} the impact on each {result.target === null ? "" : "other "}well ({impact.length})
         </button>
         {showWells && (
           <div className="overflow-x-auto">
@@ -123,6 +123,7 @@ function Results({ result, dq }: { result: PumpDecisionResult; dq: number }) {
         )}
       </div>
 
+      {result.target !== null && (<>
       {best && (
         <p className="text-sm text-slate-700">
           Best modeled choice for {result.target}: <strong>{best.pump}</strong>
@@ -172,6 +173,8 @@ function Results({ result, dq }: { result: PumpDecisionResult; dq: number }) {
         </table>
       </div>
 
+      </>)}
+
       {result.notes.length > 0 && (
         <ul className="space-y-0.5 text-xs text-slate-500">
           {result.notes.map((n) => <li key={n}>{n}</li>)}
@@ -205,6 +208,8 @@ export function PumpDecisionPanel({ pad }: { pad: RunPad }) {
   }, [wells.data, pad, offlineSet, future]);
 
   const [target, setTarget] = useState("");
+  // Pad-wide: no well is sized; the step is extra draw anywhere on the pad.
+  const [allWells, setAllWells] = useState(false);
   const [nPumps, setNPumps] = useState<number>(3);
   const [dq, setDq] = useState(1000);
   const chosen = options.some((o) => o.name === target) ? target : "";
@@ -219,9 +224,9 @@ export function PumpDecisionPanel({ pad }: { pad: RunPad }) {
   const dqValid = Number.isFinite(dq) && dq > 0 && dq <= 10000;
 
   const run = () => {
-    if (!chosen || !dqValid) return;
+    if ((!chosen && !allWells) || !dqValid) return;
     start.mutate({
-      pad: "S", target: chosen, offline: [...offlineSet].sort(), future,
+      pad: "S", target: allWells ? null : chosen, offline: [...offlineSet].sort(), future,
       n_pumps: nPumps, nozzles: NOZZLES, throats: THROATS, delta_pf_bpd: dq,
     }, { onSuccess: (r) => setLastJob(jobKey, r.job_id) });
   };
@@ -231,8 +236,13 @@ export function PumpDecisionPanel({ pad }: { pad: RunPad }) {
       <h2 className="text-sm font-semibold tracking-tight text-slate-700">{pad}-Pad cost of PF and pump decision</h2>
       <Card className="space-y-3">
         <div className="flex flex-wrap items-center gap-3">
-          <select aria-label="Well to size" value={chosen} onChange={(e) => setTarget(e.target.value)}
-            className="h-8 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-800">
+          <label className="flex items-center gap-1.5 text-xs text-slate-600"
+            title="Show the cost of adding or giving back PF across every well on the pad, without sizing a pump">
+            <input type="checkbox" checked={allWells} onChange={(e) => setAllWells(e.target.checked)} className="h-4 w-4 accent-blue-600" />
+            All wells
+          </label>
+          <select aria-label="Well to size" value={chosen} onChange={(e) => setTarget(e.target.value)} disabled={allWells}
+            className="h-8 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-800 disabled:opacity-50">
             <option value="">Well to size...</option>
             {options.map((o) => <option key={o.name} value={o.name}>{o.name}{o.tag ? ` (${o.tag})` : ""}</option>)}
           </select>
@@ -251,17 +261,18 @@ export function PumpDecisionPanel({ pad }: { pad: RunPad }) {
               className="h-7 w-20 rounded border border-slate-300 bg-white px-1 text-xs tabular-nums" />
             BPD
           </label>
-          <button type="button" disabled={running || !chosen || !dqValid || (!offlineReady && !offlineFailed)} onClick={run}
+          <button type="button" disabled={running || (!chosen && !allWells) || !dqValid || (!offlineReady && !offlineFailed)} onClick={run}
             title={!offlineReady && !offlineFailed ? "Loading the downtime log so shut-in wells are excluded" : undefined}
             className="flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
             <Scale className="h-3.5 w-3.5" />
-            {running ? "Pricing..." : "Price PF and pump sizes"}
+            {running ? "Pricing..." : allWells ? "Price PF across the pad" : "Price PF and pump sizes"}
           </button>
           <CancelJobButton jobId={jobId} running={job.data?.status === "running"} />
         </div>
         <p className="text-xs text-slate-500">
           The boosters run at 60 Hz, so more PF draw lowers the header for every well. Shows what adding or giving back PF
-          costs the other wells in barrels, then every pump size for the chosen well with the header resettled. Offline ticks
+          costs the other wells in barrels, then every pump size for the chosen well with the header resettled. Tick All
+          wells to see the cost across the whole pad without sizing a pump. Offline ticks
           and future wells come from the readiness board.
         </p>
         {running && job.data?.progress && <p className="text-xs text-slate-500">{job.data.progress} ({fmtNum(job.data.seconds)}s)</p>}
