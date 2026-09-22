@@ -56,10 +56,19 @@ function FitStatus({ row }: { row: PadFitWell }) {
   );
 }
 
-/** Why the downtime log says this well is down. Long-term shut-in reads as a
- *  fact (it also pre-ticks the well offline); an ordinary shut-in is advisory
- *  - the log can lag a restart by a day, so the engineer decides. */
+/** Why this well is offline by default, or why the downtime log says it is
+ *  down. LTSI and current SI-coded shut-ins pre-tick the Offline box, as do
+ *  the named recycle wells (offline.ts DEFAULT_OFFLINE); other down codes are
+ *  advisory. An untick always wins and persists. */
 function ShutBadge({ info }: { info: ShutInfo }) {
+  if (info.note) {
+    return (
+      <span title={`Offline by default (${info.note}). Untick to include it in a run.`}
+        className="mt-0.5 block text-[11px] font-medium text-slate-500">
+        {info.note}
+      </span>
+    );
+  }
   const parts = [info.code, info.reason].filter(Boolean).join(" ");
   const since = info.since ? `shut in ${info.since.slice(0, 10)}` : "shut in";
   return (
@@ -67,7 +76,9 @@ function ShutBadge({ info }: { info: ShutInfo }) {
       title={`${since}${parts ? ` - ${parts}` : ""}. ${
         info.ltsi
           ? "Long-term shut-in, so it is excluded from the run by default."
-          : "Short-term: not excluded unless you tick it."
+          : info.auto
+            ? "Shut in under SI today, so it is excluded by default. Untick it once it is back online."
+            : "Not excluded unless you tick it."
       }`}
       className={clsx(
         "mt-0.5 block text-[11px] font-medium",

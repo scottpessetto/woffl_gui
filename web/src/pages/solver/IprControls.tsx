@@ -1,7 +1,7 @@
 /**
  * IPR anchor + comparison-test controls: the anchor selector and the
- * synced/decoupled comparison picker. "Apply IPR to inputs" lays the fit
- * seeds over the sidebar params.
+ * synced/decoupled comparison picker. Choosing an anchor applies its fit to
+ * the sidebar automatically (SolverPage); there is no separate Apply step.
  *
  * Saving lives in the always-visible SaveWellInputs bar above the workbench.
  * Anchor clearing stays beside the selector and explains read-only access.
@@ -141,19 +141,11 @@ export function IprControls({
         )}
         {pin?.status === "stale" && <Badge tone="fair">Saved anchor outside current window</Badge>}
 
-        <Button
-          variant="secondary"
-          disabled={!fit}
-          title="Lay the fitted qwf / pwf / ResP / WC / GOR seeds over the sidebar inputs"
-          onClick={() => {
-            // `release`: an explicit click hands the seeded fields back to the
-            // fit, so this button still does what it says even after a
-            // permutation or a hand edit claimed them.
-            if (fit) useParamsStore.getState().applyIprSeeds(fit.seeds, true);
-          }}
-        >
-          Apply IPR to inputs
-        </Button>
+        <p className="text-[11px] text-slate-500">
+          {anchorMode === "manual"
+            ? "The sidebar's rate and BHP are the anchor. Save well inputs saves them as a manual point."
+            : "Changing the anchor applies its IPR fit (rate, BHP, ResP, WC, GOR) to the sidebar. Save well inputs saves it, pinned to this test."}
+        </p>
 
         <label className="flex cursor-pointer items-center gap-2">
           <input

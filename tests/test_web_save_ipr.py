@@ -324,14 +324,12 @@ def test_manual_point_save_clears_the_pin_instead_of_setting_one(client, recorde
     assert len(pin_rows) == 1
     # The cleared marker, never a real wt_uid and never a negative sentinel.
     assert pin_rows[0]["value"] == ipr_anchor.PIN_CLEARED_VALUE
-    # Cleared FIRST, so the values carry the later stamp and win
-    # ipr_anchor.saved_wins - otherwise the curve would read as test-anchored.
-    # Stamps are strictly increasing per process (next_entry_datetime, pinned
-    # by test_prop_hist_client), so push ORDER is the observable contract:
-    # clear_ipr_pin lets push_prop allocate its own stamp, which is why the
-    # recorder sees entry_datetime=None on that row.
-    assert pushes[0]["prop_id"] == "ipr_wt_uid"
-    assert len({p["entry_datetime"] for p in pushes if p["prop_id"] != "ipr_wt_uid"}) == 1
+    # The cleared marker rides in the values' single statement with the SAME
+    # stamp (review 2026-09-22): an equal stamp lets the values win
+    # ipr_anchor.saved_wins, and a failed write can no longer leave the
+    # un-pin landed without the values it belongs to.
+    assert len({p["entry_datetime"] for p in pushes}) == 1
+    assert pin_rows[0]["entry_datetime"] is not None
 
 
 def test_unpin_and_a_pin_request_cannot_both_happen(client, recorder, gate_on):
@@ -609,3 +607,31 @@ def test_save_survives_enthid_lookup_failure(client, recorder, gate_on, monkeypa
 
     db_svc._prop_history(_ENTHID)
     assert len(queries) == 2  # fallback cleared the whole cache
+
+
+def test_pin_and_values_are_one_statement_so_a_failure_lands_nothing(client, recorder, gate_on, monkeypatch):
+    """Review 2026-09-22: the pin used to be its own INSERT ahead of the
+    values. If the values then failed, the newer pin silently replaced the
+    engineer's previous save with the test fit. Now both ride one statement."""
+    statements = []
+
+    def one_statement(well_name, values, entry_user, entry_datetime=None):
+        statements.append(dict(values))
+        return len(values)
+
+    monkeypatch.setattr(ipr_anchor, "push_props", one_statement)
+    r = client.post(f"/api/wells/{WELL}/save-ipr", json=PAYLOAD, headers=HEADERS)
+    body = r.json()
+    assert r.status_code == 200 and body["pinned"] is True
+    assert len(statements) == 1 and statements[0]["ipr_wt_uid"] == PAYLOAD["pin_wt_uid"]
+    assert body["n_values"] == len(statements[0]) - 1  # the pin row is not a value
+    pushes, _ = recorder
+    assert pushes == []  # no separate push_prop for the pin
+
+    def failing(*a, **kw):
+        raise RuntimeError("warehouse down")
+
+    monkeypatch.setattr(ipr_anchor, "push_props", failing)
+    body = client.post(f"/api/wells/{WELL}/save-ipr", json=PAYLOAD, headers=HEADERS).json()
+    assert body["pinned"] is False and body["n_values"] == 0
+    assert pushes == []

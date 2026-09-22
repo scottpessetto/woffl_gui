@@ -60,7 +60,7 @@ def start_match_health(req: schemas.MatchHealthRequest) -> Any:
     modeled at its CURRENT pump vs its recent tests, plus fit provenance,
     field-evidence floors/betas and friction-rail flags, one verdict chip
     per well. Read-only compute; poll GET /optimize/run/{job_id}."""
-    return {"job_id": match_health.start_match_health(req.pad)}
+    return {"job_id": match_health.start_match_health(req.pad, req.offline)}
 
 
 @router.post("/event-calibration", response_model=schemas.OptimizeRunStarted)
@@ -95,6 +95,17 @@ def run_status(job_id: str) -> Any:
             detail={"error": "invalid", "message": f"unknown or expired job {job_id}"},
         )
     return job
+
+
+@router.delete("/run/{job_id}")
+def cancel_run(job_id: str) -> Any:
+    """Stop a pad/CFP run, match-health scorecard, event calibration or pump
+    decision at its next progress step, freeing the job slot for others."""
+    from server import jobs
+    kinds = ("pad", "cfp", "match_health", "event_cal", pump_decision.KIND)
+    if not jobs.cancel(job_id, kinds):
+        raise HTTPException(status_code=404, detail={"error": "invalid", "message": f"unknown or expired job {job_id}"})
+    return {"cancel_requested": True}
 
 
 @router.post("/robustness", response_model=schemas.OptimizeRunStarted)

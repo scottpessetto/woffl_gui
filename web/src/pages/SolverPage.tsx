@@ -22,6 +22,7 @@ import { useDebounced } from "../lib/useDebounced";
 import { vogelQmax } from "../lib/vogel";
 import { gaugeMonths, useGaugeStore } from "../state/gauge";
 import { effectiveParams, useParamsStore } from "../state/params";
+import { useExcludedKeys, useExcludedTests } from "../state/excludedTests";
 import { useSensitivityStore } from "../state/sensitivity";
 
 import { PumpScope } from "./solver/PumpScope";
@@ -82,6 +83,10 @@ function Workbench({ well }: { well: string }) {
   // is not a test at all, so the selector opens on Manual point and the
   // test-derived fit never runs against it.
   const pinSeeded = useRef(false);
+  // Set when the ENGINEER changes the anchor (never by the pin seeding
+  // below): the next fit for the new anchor is laid over the sidebar
+  // automatically, replacing the old "Apply IPR to inputs" click.
+  const anchorPicked = useRef(false);
   useEffect(() => {
     if (commonIprIntent) { setAnchorMode("manual"); setAnchorDate(null); pinSeeded.current = true; }
   }, [commonIprIntent]);
@@ -100,7 +105,10 @@ function Workbench({ well }: { well: string }) {
     }
   }, [pinQ.data, context, commonIprIntent]);
 
-  const sortedTests = useMemo<WellTestRow[]>(() => {
+  const excludedKeys = useExcludedKeys(well);
+  const setExcluded = useExcludedTests((s) => s.setExcluded);
+  // Every test in the window, newest first - the table shows all of them.
+  const allTests = useMemo<WellTestRow[]>(() => {
     const rows = testsQ.data?.tests ?? [];
     const sorted = [...rows].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
     if (!gauge) return sorted;
@@ -112,6 +120,15 @@ function Workbench({ well }: { well: string }) {
       return bhp === undefined ? t : { ...t, bhp };
     });
   }, [testsQ.data, gauge]);
+  // What the anchor, comparison, fit and chart use: excluded tests removed.
+  const sortedTests = useMemo<WellTestRow[]>(
+    () => (excludedKeys.length ? allTests.filter((t) => !excludedKeys.includes(testKey(t))) : allTests),
+    [allTests, excludedKeys],
+  );
+  const excludedUids = useMemo(
+    () => allTests.filter((t) => t.wt_uid !== null && excludedKeys.includes(testKey(t))).map((t) => t.wt_uid as number),
+    [allTests, excludedKeys],
+  );
 
   // A manual anchor IS the sidebar's qwf/pwf, so there is nothing to fit: the
   // test-derived curve would only compete with the point the engineer chose.
@@ -131,6 +148,7 @@ function Workbench({ well }: { well: string }) {
       months: effectiveMonths,
       cap,
       bhp_overrides: gauge ? gauge.meta.daily : null,
+      exclude_wt_uids: excludedUids,
     },
     fitEnabled,
   );
@@ -189,6 +207,20 @@ function Workbench({ well }: { well: string }) {
     if (savedWins) return;
     useParamsStore.getState().applyIprSeeds(f.seeds);
   }, [iprFitQ.data, pinSettled, ctxSeeded, fitApplied, savedWins, well]);
+
+  // Anchor changed by the engineer -> apply that anchor's fit as soon as it
+  // lands. `release`: choosing an anchor is choosing its curve, so it
+  // replaces hand edits and applied permutations of the seeded fields (the
+  // old Apply button did the same). Field locks still hold (applyIprSeeds).
+  // The query key carries the anchor and there is no placeholder data, so
+  // this data is the NEW anchor's fit.
+  useEffect(() => {
+    const f = iprFitQ.data;
+    if (!anchorPicked.current || !f || iprFitQ.isFetching) return;
+    anchorPicked.current = false;
+    useParamsStore.getState().applyIprSeeds(f.seeds, true);
+    useParamsStore.getState().markFitApplied(well);
+  }, [iprFitQ.data, iprFitQ.isFetching, well]);
 
   // First-load settle gate for the IPR chart: hold it greyed until every
   // input series has arrived ONCE (tests, installs/pump labels, pin, the
@@ -322,6 +354,7 @@ function Workbench({ well }: { well: string }) {
             anchorDate={anchorDate}
             onAnchorChange={(mode, date) => {
               useParamsStore.getState().setCommonIprIntent(false);
+              anchorPicked.current = mode !== "manual";
               setAnchorMode(mode);
               setAnchorDate(date);
             }}
@@ -382,7 +415,9 @@ function Workbench({ well }: { well: string }) {
       )}
 
       <TestsTable
-        tests={sortedTests}
+        tests={allTests}
+        excludedKeys={excludedKeys}
+        onExclude={(key, excluded) => setExcluded(well, key, excluded)}
         selectedKey={compareTest ? testKey(compareTest) : null}
         onSelect={(key) => {
           setCompareKey(key);

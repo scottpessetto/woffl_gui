@@ -36,6 +36,7 @@ import { fmtNum } from "../../lib/format";
 import { DEFAULT_POPS_PADS } from "../../state/wellSort";
 import { useOptimizeStore } from "../../state/optimize";
 
+import { CancelJobButton, CancelledNote } from "./CancelJob";
 import { CfpResultCharts } from "./CfpCharts";
 import { ChokeDumbbell, IprLandingTable } from "./ChokeCharts";
 import { usePadOffline } from "./offline";
@@ -926,9 +927,9 @@ export function RunPanel({
   }, [wells.data]);
 
   const runPads = kind === "cfp" ? cfpPads : [pad ?? "S"];
-  // Manual ticks plus long-term shut-in wells the downtime log knows about,
+  // Manual ticks plus default-offline wells (LTSI, SI shut-ins, recycle),
   // minus anything the engineer explicitly kept online.
-  const { offline: offlineSet, autoCount } = usePadOffline(runPads);
+  const { offline: offlineSet, autoCount, ready: offlineReady, failed: offlineFailed } = usePadOffline(runPads);
   const offline = useMemo(() => [...offlineSet].sort(), [offlineSet]);
   const future = useMemo(
     () => runPads.flatMap((p) => (futureByPad[p] ?? []).map((fw) => ({ ...fw, pad: p }))),
@@ -1211,18 +1212,20 @@ export function RunPanel({
         <div className="flex items-center gap-3 border-t border-slate-100 pt-2.5">
           <button
             type="button"
-            disabled={running || (!chokeMode && (nozzles.length === 0 || throats.length === 0)) || (kind === "cfp" && cfpPads.length === 0)}
+            disabled={running || (!offlineReady && !offlineFailed) || (!chokeMode && (nozzles.length === 0 || throats.length === 0)) || (kind === "cfp" && cfpPads.length === 0)}
+            title={!offlineReady && !offlineFailed ? "Loading the downtime log so shut-in wells are excluded" : undefined}
             onClick={run}
             className="flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
             <Play className="h-3.5 w-3.5" />
             {running ? "Running..." : `Run ${runKey} optimization`}
           </button>
+          <CancelJobButton jobId={jobId} running={job.data?.status === "running"} />
           <span className="text-xs text-slate-500">
             {activeCount} active well{activeCount === 1 ? "" : "s"}
             {offline.length > 0 &&
               ` - ${offline.length} offline` +
-                (autoCount > 0 ? ` (${autoCount} long-term shut-in)` : "")}
+                (autoCount > 0 ? ` (${autoCount} by default: shut in or recycle)` : "")}
             {future.length > 0 && ` - ${future.length} future`}
             {" - models from saved fits (set them on the Single Well solver)"}
           </span>
@@ -1233,6 +1236,8 @@ export function RunPanel({
           </p>
         )}
         {job.data?.status === "error" && <WarnNote>Run failed: {job.data.error}</WarnNote>}
+        <CancelledNote job={job.data} />
+        {offlineFailed && <WarnNote>The downtime log did not load, so shut-in wells are not excluded automatically. Tick them offline on the readiness board before running.</WarnNote>}
         {start.isError && <WarnNote>Could not start the run: {start.error.message}</WarnNote>}
       </Card>
 

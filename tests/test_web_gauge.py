@@ -180,3 +180,24 @@ def test_fit_median_liq_anchors_on_median_liquid_test(monkeypatch):
     assert out_bhp["coeffs"]["pwf"] == 800.0
     assert out_bhp["coeffs"]["anchor_date"] == "2026-06-02"
     assert "median-BHP" in out_bhp["coeffs"]["anchor_label"]
+
+
+def test_fit_drops_excluded_tests_so_no_anchor_mode_can_pick_them(monkeypatch):
+    """A bad test the engineer excluded (by wt_uid) never anchors the fit."""
+    frame = pd.DataFrame(
+        {
+            "well": ["MPX-01"] * 3,
+            "wt_uid": [1.0, 2.0, 3.0],
+            "WtDate": pd.to_datetime(["2026-06-01", "2026-06-02", "2026-06-04"]),
+            "WtTotalFluid": [1500.0, 1400.0, 5000.0],  # the newest test is bad
+            "BHP": [950.0, 900.0, 300.0],
+            "form_wc": [0.8, 0.8, 0.8],
+            "fgor": [300.0, 300.0, 300.0],
+            "whp": [200.0, 200.0, 200.0],
+        }
+    )
+    monkeypatch.setattr(ipr_svc.tests, "tests_for_well", lambda well, months, cap: frame)
+    kept = ipr_svc.fit(schemas.IprFitRequest(well="MPX-01", anchor_mode="recent"))
+    dropped = ipr_svc.fit(schemas.IprFitRequest(well="MPX-01", anchor_mode="recent", exclude_wt_uids=[3.0]))
+    assert kept["coeffs"]["qwf"] == 5000.0
+    assert dropped["coeffs"]["qwf"] == 1400.0 and dropped["coeffs"]["pwf"] == 900.0

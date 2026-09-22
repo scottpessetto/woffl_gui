@@ -1,5 +1,9 @@
 # Documentation index
 
+The [September 22 save and optimization fixes](review_fixes_2026-09-22.md) make
+Match test fits reload with the well, save pin and values atomically, add job
+cancel and default-offline shut-ins, and record the measured run timings.
+
 The [S-Pad cost of power fluid](s_pad_marginal_wc_2026-09-22.md) shows what
 +/-1,000 BPD of PF costs the other wells as the 60 Hz curve moves the header,
 the equivalent marginal PF water cut, and every pump size for one well

@@ -9,6 +9,9 @@ import json
 import logging
 import math
 import re
+import threading
+import time
+import uuid
 
 import pandas as pd
 
@@ -181,3 +184,115 @@ def save_fit(well, job_id):
     snapshot.cache_clear()
     ipr._invalidate_after_write(well)
     return {"message": f"Saved calibration for installed {nozzle}{throat} ({stamp[:10]}). New optimization runs will use it for this installation only."}
+
+
+# ---------------------------------------------------------------------------
+# Gaugeless test-match fits (POST /match-test) as installed-pump calibrations
+# ---------------------------------------------------------------------------
+#
+# A Match test fits kth/kdi (ken held) together with the IPR anchor it infers.
+# Save well inputs persists the anchor but, by the installation-scoped pump
+# contract, never loose coefficients - so a reopened well lost the match and
+# looked reset (user report 2026-09-22). The fit is kept HERE, server-side,
+# for an hour under a token: what gets saved is the server's own result, never
+# a client claim, exactly like save_fit's job result.
+
+_MATCH_TTL_S = 3600.0
+_MATCH_FITS: dict[str, dict] = {}
+_MATCH_LOCK = threading.Lock()
+# Context seeds that are not well-model inputs: pump hardware and losses.
+_NOT_MODEL_INPUTS = {"nozzle_no", "area_ratio", "ken", "kth", "kdi", "nozzle_area_factor", "mach_crit",
+                     "ppf_surf", "hydraulics_model"}
+
+
+def remember_match_fit(well: str, params: dict, result: dict) -> str | None:
+    """Keep a successful match for a later explicit save; returns its token.
+    ``params`` are the sidebar inputs the match ran on; the matched anchor
+    (qwf, pwf, WC) is laid over them the way "Apply to inputs" does."""
+    # A failed match, or a closest point whose PF was unreachable (BHP not
+    # identified), is not a calibration and gets no save token.
+    if result.get("match_quality") == "failed" or result.get("pwf") is None or result.get("pf_reachable") is False:
+        return None
+    inputs = {k: v for k, v in params.items() if k not in _NOT_MODEL_INPUTS}
+    inputs.update(qwf=round(float(result["qwf_liq"])), pwf=round(float(result["pwf"])),
+                  form_wc=float(f"{float(result['form_wc']):.3f}"))
+    record = {
+        "well": well, "at": time.monotonic(), "inputs": inputs,
+        "pump": f"{params.get('nozzle_no')}{params.get('area_ratio')}",
+        "hydraulics_model": params.get("hydraulics_model", "beggs"),
+        "coefs": [float(result["ken"]), float(result["kth"]), float(result["kdi"]),
+                  float(params.get("nozzle_area_factor", 1.0))],
+        "quality": {k: v for k, v in {
+            "n": 1, "provisional": True, "src": "match",
+            "pf": abs(round(result["pf_error_pct"], 1)) if result.get("pf_error_pct") is not None else None,
+            "oil_pct": abs(round(result["oil_error_pct"], 1)) if result.get("oil_error_pct") is not None else None,
+            "mq": result.get("match_quality"),
+        }.items() if v is not None},
+    }
+    token = uuid.uuid4().hex
+    with _MATCH_LOCK:
+        now = time.monotonic()
+        for key in [k for k, v in _MATCH_FITS.items() if now - v["at"] > _MATCH_TTL_S]:
+            del _MATCH_FITS[key]
+        _MATCH_FITS[token] = record
+    return token
+
+
+def save_match_fit(well: str, token: str) -> dict:
+    """Save a remembered Match test fit as this installation's calibration.
+
+    Same record and checks as save_fit: a fresh tracker read must show the
+    pump the match ran on, and the FRESH saved well inputs must equal the
+    inputs the match ran on (so save the matched well inputs first). The fit
+    is one test, so it is always marked provisional.
+    """
+    from server.services import datasources, ipr, well_model, wells
+    from woffl.assembly.jp_history import get_current_pump
+
+    with _MATCH_LOCK:
+        rec = _MATCH_FITS.get(token)
+    if rec is None or rec["well"] != well or time.monotonic() - rec["at"] > _MATCH_TTL_S:
+        raise ValueError("This match expired or belongs to another well. Match the test again.")
+    try:
+        df = datasources.jp_history_fresh()
+    except Exception as exc:
+        raise ValueError("Could not verify the current tracker installation; nothing was saved.") from exc
+    pump = get_current_pump(df, well) if df is not None else None
+    if pump is None:
+        raise ValueError("A current tracker installation is required to save a pump calibration.")
+    nozzle, throat = str(pump.get("nozzle_no")), str(pump.get("throat_ratio"))
+    stamp = installation(pump.get("date_set"))
+    if not stamp or f"{nozzle}{throat}" != rec["pump"]:
+        raise ValueError(f"The match ran on {rec['pump']} but the tracker shows {nozzle}{throat} installed; nothing was saved.")
+    selected = validate_model(rec["hydraulics_model"])
+    try:
+        ctx = wells.well_context(well, 6, 0, fresh=True, tracker=df)
+        saved = well_model.from_context(ctx, selected)
+        overlay = {k: v for k, v in rec["inputs"].items() if k in ctx["seeds"]}
+        matched = well_model.from_context({**ctx, "seeds": {**ctx["seeds"], **overlay}}, selected)
+    except Exception as exc:
+        raise ValueError("Could not verify fresh well inputs; nothing was saved. Try again when well data is available.") from exc
+    if saved["fingerprint"] != matched["fingerprint"]:
+        diff = [k for k in matched["inputs"] if matched["inputs"][k] != saved["inputs"].get(k)]
+        raise ValueError("Save the matched well inputs first: the saved " + ", ".join(diff or ["well model"]) +
+                         " differ from what this match used. Nothing was saved.")
+    record = {"v": 2, "n": nozzle, "t": throat, "i": stamp, "u": saved["fingerprint"],
+              "m": physics_model(selected), "h": selected, "k": rec["coefs"], "q": rec["quality"]}
+    text = json.dumps(record, separators=(",", ":"), allow_nan=False)
+    try:
+        decode(text)
+    except ValueError as exc:
+        raise ValueError(f"The matched coefficients are outside the saveable range ({exc}); nothing was saved.") from exc
+    if len(text) > 500:
+        raise ValueError("Calibration record exceeds the storage limit; nothing was saved.")
+    saved_at = history.next_entry_datetime()
+    who = history.resolve_entry_user()
+    history.push_eng_comment(well, saved_at, who, text, context=CONTEXT)
+    snapshot.cache_clear()
+    ipr._invalidate_after_write(well)
+    with _MATCH_LOCK:
+        _MATCH_FITS.pop(token, None)
+    k = rec["coefs"]
+    return {"message": f"Saved the matched pump fit for installed {nozzle}{throat} ({stamp[:10]}): kth {k[1]:.3f}, "
+                       f"kdi {k[2]:.3f}, ken {k[0]:.3f}. It reloads with this well and is used by new optimization runs "
+                       "for this installation only (one test, so marked provisional)."}

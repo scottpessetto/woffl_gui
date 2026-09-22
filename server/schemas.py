@@ -539,6 +539,9 @@ class MatchHealthRequest(BaseModel):
     """Start a match-health scorecard job for one pad's active wells."""
 
     pad: Literal["S", "I", "M", "E"]
+    # The readiness board's offline set (manual ticks + long-term shut-ins),
+    # so the scorecard covers the same wells a run would.
+    offline: list[str] = []
 
 
 class PumpDecisionRequest(BaseModel):
@@ -571,7 +574,7 @@ class OptimizeJobStatus(BaseModel):
 
     job_id: str
     kind: Literal["pad", "cfp", "match_health", "event_cal", "pump_decision"]
-    status: Literal["running", "done", "error"]
+    status: Literal["running", "done", "error", "cancelled"]
     progress: Optional[str] = None
     result: Optional[dict[str, Any]] = None
     error: Optional[str] = None
@@ -956,6 +959,10 @@ class MatchTestResponse(BaseModel):
     # what the fit ran at
     pwh_used: float
     ppf_surf_used: float
+    # Present for a saveable match: POST /wells/{well}/match-calibration with
+    # it saves this fit as the installed pump's calibration (after the
+    # matched well inputs are saved). The fit itself stays server-side.
+    save_token: Optional[str] = None
     seed_pwf: Optional[float] = None
     scan: list[MatchTestScanPoint] = []
     iterations: int
@@ -1224,6 +1231,9 @@ class IprFitRequest(BaseModel):
     # memory_gauge.apply_to_well_tests) - gauge wins wherever it has
     # coverage, including tests with no Databricks BHP at all.
     bhp_overrides: Optional[list[GaugeDay]] = None
+    # Tests the engineer excluded as bad data (by wt_uid): dropped before the
+    # fit, so no anchor mode can pick them.
+    exclude_wt_uids: list[float] = Field(default_factory=list, max_length=500)
 
 
 class GaugeFileMeta(BaseModel):
@@ -1280,6 +1290,10 @@ class IprPinResponse(BaseModel):
     date_token: Optional[str] = None
     entry_user: Optional[str] = None
     entry_datetime: Optional[str] = None
+
+
+class SaveMatchCalibrationRequest(BaseModel):
+    token: str = Field(..., min_length=32, max_length=32, pattern=r"^[0-9a-f]{32}$")
 
 
 class SaveIprRequest(BaseModel):

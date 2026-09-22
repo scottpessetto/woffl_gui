@@ -155,7 +155,7 @@ def _single_point_fallback(
     """
     from woffl.gui import fric_calibration
 
-    job["progress"] = "young era - matching latest test BHP instead..."
+    jobs.set_progress(job, "young era - matching latest test BHP instead...")
     test = _latest_test_target(well, era_start, getattr(config, "jpump_direction", None))
     if test is None:
         return None
@@ -277,6 +277,8 @@ def _fit_multipoint(
         try:
             fut = pool.submit(_multipoint_worker, config, nozzle, throat, built, path)
             if fut is not None:
+                # Plain writes while the worker runs: a pool fit cannot be
+                # interrupted, so a cancel lands at the next safe point after it.
                 job["progress"] = f"fitting {len((built or {}).get('points') or []) if isinstance(built, dict) else len(built or [])} points (pool worker)..."
                 last: Optional[str] = None
                 while True:
@@ -310,10 +312,11 @@ def _run_event_calibration_job(job: dict[str, Any], well: str, hydraulics_model:
     pad = pad_from_mp_name(well)
     notes: list[str] = []
     prov: dict[str, dict[str, Any]] = {}
-    configs = optimizer_runs._build_configs([pad], set(), [], notes, prov)
+    configs = optimizer_runs._build_configs([pad], set(), [], notes, prov, only={well})
     config = next((c for c in configs if c.well_name == well), None)
     if config is None:
-        raise ValueError(f"no usable saved fit for {well}")
+        why = "; ".join(n for n in notes if n.startswith(f"{well}:")) or "its saved well inputs could not be loaded"
+        raise ValueError(f"no usable saved fit for {well}: {why}")
     selected = validate_model(hydraulics_model or getattr(config, "hydraulics_model", "beggs"))
     if selected != getattr(config, "hydraulics_model", "beggs"):
         # A different return model needs its own fitted pump coefficients.
@@ -325,7 +328,7 @@ def _run_event_calibration_job(job: dict[str, Any], well: str, hydraulics_model:
     current, _rates = optimizer_runs._current_and_tests([well])
     nozzle, throat = current.get(well, (None, None))
 
-    job["progress"] = "building calibration points..."
+    jobs.set_progress(job, "building calibration points...")
     res_pres = _num(getattr(config, "res_pres", None))
     surf_pres = _num(getattr(config, "surf_pres", None))
     built = calibration_points.pad_points(
@@ -354,7 +357,7 @@ def _run_event_calibration_job(job: dict[str, Any], well: str, hydraulics_model:
         refusal = "no current pump installed"
     else:
         n_points = len(built.get("points") or [])
-        job["progress"] = f"fitting {n_points} points..."
+        jobs.set_progress(job, f"fitting {n_points} points...")
 
         # The fit is up to four Nelder-Mead passes of ~100 iterations, each
         # solving every point ~170 times - 25-62 s PER PASS at 24 points
@@ -362,7 +365,7 @@ def _run_event_calibration_job(job: dict[str, Any], well: str, hydraulics_model:
         # pass/evaluation line into the envelope so the poller shows
         # movement instead of one frozen string for minutes.
         def _progress(msg: str) -> None:
-            job["progress"] = msg
+            jobs.set_progress(job, msg)
 
         result = _fit_multipoint(job, config, str(nozzle), str(throat), built, _progress)
         if result.refusal:
@@ -398,7 +401,7 @@ def _run_event_calibration_job(job: dict[str, Any], well: str, hydraulics_model:
     mined_beta_source: Optional[str] = None
     # A Databricks round trip (or stall) here used to hide behind the last
     # fitter line; label it so a slow warehouse reads as what it is.
-    job["progress"] = "fit done - checking the measured suction response (field evidence)..."
+    jobs.set_progress(job, "fit done - checking the measured suction response (field evidence)...")
     try:
         ev = evidence_svc.pad_evidence(
             [well], {well: res_pres} if res_pres is not None else None

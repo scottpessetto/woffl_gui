@@ -126,9 +126,12 @@ def post_match_test(req: schemas.MatchTestRequest) -> schemas.MatchTestResponse:
     and fit kth/kdi so the installed pump reproduces the test's oil and PF
     (read-only compute; the client applies the result, an explicit save
     keeps it)."""
+    from server.services import pump_calibration
     try:
         with pool.cpu_slot():
-            return schemas.MatchTestResponse(**solve.match_test(req))
+            body = solve.match_test(req)
+        body["save_token"] = pump_calibration.remember_match_fit(req.well, req.params.model_dump(), body)
+        return schemas.MatchTestResponse(**body)
     except solve.SolveFailure as exc:
         raise _solver_error(exc) from exc
     except ValueError as exc:
@@ -271,6 +274,19 @@ def post_prop_lock(name: str, req: schemas.PropLockRequest, request: Request) ->
     _writes_gate()
     bind_entry_user(request)
     return schemas.PropLockResponse(**ipr.set_lock(name, req))
+
+
+@router.post("/wells/{name}/match-calibration")
+def post_match_calibration(name: str, req: schemas.SaveMatchCalibrationRequest, request: Request):
+    """Save a gaugeless Match test fit (kth/kdi, ken held) as the installed
+    pump's calibration, once the matched well inputs are saved."""
+    _writes_gate()
+    bind_entry_user(request)
+    from server.services import pump_calibration
+    try:
+        return pump_calibration.save_match_fit(name, req.token)
+    except ValueError as exc:
+        raise _invalid(exc) from exc
 
 
 @router.post("/wells/{name}/pump-calibration")

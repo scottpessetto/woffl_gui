@@ -22,6 +22,7 @@ import { Badge, Card, Spinner, WarnNote } from "../../components/ui";
 import { fmtNum, fmtPct, fmtSigned } from "../../lib/format";
 import { useOptimizeStore } from "../../state/optimize";
 import { usePadOffline } from "./offline";
+import { CancelJobButton, CancelledNote } from "./CancelJob";
 import { PfCostChart } from "./PfCostChart";
 
 const TH_CLS = "px-2 py-1.5 text-left font-semibold";
@@ -195,7 +196,7 @@ export function PumpDecisionPanel({ pad }: { pad: RunPad }) {
   const job = useOptimizeJob(jobId);
 
   const padList = useMemo(() => [pad], [pad]);
-  const { offline: offlineSet } = usePadOffline(padList);
+  const { offline: offlineSet, ready: offlineReady, failed: offlineFailed } = usePadOffline(padList);
   const future = useMemo(() => (futureByPad[pad] ?? []).map((f) => ({ ...f, pad })), [futureByPad, pad]);
   const options = useMemo(() => {
     const names = (wells.data?.wells ?? []).filter((w) => w.pad === pad).map((w) => w.name).sort();
@@ -250,11 +251,13 @@ export function PumpDecisionPanel({ pad }: { pad: RunPad }) {
               className="h-7 w-20 rounded border border-slate-300 bg-white px-1 text-xs tabular-nums" />
             BPD
           </label>
-          <button type="button" disabled={running || !chosen || !dqValid} onClick={run}
+          <button type="button" disabled={running || !chosen || !dqValid || (!offlineReady && !offlineFailed)} onClick={run}
+            title={!offlineReady && !offlineFailed ? "Loading the downtime log so shut-in wells are excluded" : undefined}
             className="flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
             <Scale className="h-3.5 w-3.5" />
             {running ? "Pricing..." : "Price PF and pump sizes"}
           </button>
+          <CancelJobButton jobId={jobId} running={job.data?.status === "running"} />
         </div>
         <p className="text-xs text-slate-500">
           The boosters run at 60 Hz, so more PF draw lowers the header for every well. Shows what adding or giving back PF
@@ -264,6 +267,8 @@ export function PumpDecisionPanel({ pad }: { pad: RunPad }) {
         {running && job.data?.progress && <p className="text-xs text-slate-500">{job.data.progress} ({fmtNum(job.data.seconds)}s)</p>}
         {running && !job.data?.progress && <Spinner label="Starting" />}
         {job.data?.status === "error" && <WarnNote>Pricing failed: {job.data.error}</WarnNote>}
+        <CancelledNote job={job.data} />
+        {offlineFailed && <WarnNote>The downtime log did not load, so shut-in wells are not excluded automatically. Tick them offline on the readiness board first.</WarnNote>}
         {start.isError && <WarnNote>Could not start: {start.error.message}</WarnNote>}
         {result !== null && <Results result={result} dq={result.sensitivity.d_q} />}
       </Card>

@@ -104,10 +104,11 @@ def test_pump_decision_job_with_fakes(monkeypatch):
     monkeypatch.setattr(optimizer_runs, "_current_and_tests",
                         lambda names: ({n: ("12", "B") for n in names}, {n: (190.0, 9500.0) for n in names}))
     rate = lambda h: (0.05 * h + 50.0, 5.0 * h - 5000.0)
-    monkeypatch.setattr(pump_decision, "_installed_at", lambda configs, h, rho: {c.well_name: rate(h) for c in configs})
-    monkeypatch.setattr(pump_decision, "_target_at", lambda c, h, nz, th, rho: {
-        ("12B", "installed"): rate(h),
-        ("13B", "replacement"): (0.05 * h + 150.0, 5.0 * h - 4000.0)})
+    monkeypatch.setattr(pump_decision, "_installed_at", lambda configs, levels, rho: {
+        c.well_name: [(h, *rate(h)) for h in levels] for c in configs})
+    monkeypatch.setattr(pump_decision, "_target_at", lambda c, levels, nz, th, rho: {
+        ("12B", "installed"): [(h, *rate(h)) for h in levels],
+        ("13B", "replacement"): [(h, 0.05 * h + 150.0, 5.0 * h - 4000.0) for h in levels]})
     plant = optimizer_runs._pad_plant("S")
     # three wells share header = 5000 - 0.05 Q: 5000 - 0.05 (15H - 15000) = H
     monkeypatch.setattr(plant, "header_at_flow", lambda q, n=None: 5000.0 - 0.05 * q)

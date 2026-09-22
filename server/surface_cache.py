@@ -39,7 +39,7 @@ def start():
     _MODEL = digest.hexdigest()
     clear()
     from woffl.assembly import compute_runtime
-    compute_runtime.configure(batches=run_batches, slot=pool.cpu_slot, timing=performance.measure)
+    compute_runtime.configure(batches=run_batches, jobs=run_jobs, slot=pool.cpu_slot, timing=performance.measure)
 
 
 def stop():
@@ -129,28 +129,39 @@ def status():
                     hits=_HITS, misses=_MISSES, model=_MODEL[:12])
 
 
-def run_batches(wells, pressure, nozzles, throats, progress=None):
+def run_jobs(jobs, progress=None):
+    """Simulate ``[(well, pressure, nozzles, throats), ...]`` in one pooled
+    submit; results in job order. Each job is cached exactly like a batch
+    entry, so mixed wells, headers and pump grids reuse the same nodes."""
     from woffl.assembly.network_optimizer import _simulate_single_well
 
+    jobs = list(jobs)
     with _BATCH_LOCK, performance.measure("physics.batch"):
-        out, pending, keys = {}, [], []
-        for well in wells:
+        out = [None] * len(jobs)
+        pending, slots, keys = [], [], []
+        for i, (well, pressure, nozzles, throats) in enumerate(jobs):
             key = _key(well, pressure, nozzles, throats)
             cached = _get(key)
             if cached is None:
                 keys.append(key)
+                slots.append(i)
                 pending.append((well, pressure, nozzles, throats))
             else:
-                out[well.well_name] = cached
+                out[i] = cached
         if progress:
-            progress(len(out), len(wells), "cached response nodes")
+            progress(len(jobs) - len(pending), len(jobs), "cached response nodes")
         values = pool.submit_all(_simulate_single_well, pending)
         if values is None:
             with pool.cpu_slot():
                 values = [_simulate_single_well(*args) for args in pending]
-        for key, args, value in zip(keys, pending, values):
+        for key, i, value in zip(keys, slots, values):
             _put(key, value)
-            out[args[0].well_name] = value
+            out[i] = value
         if progress:
-            progress(len(wells), len(wells), "Complete")
-        return {well.well_name: out[well.well_name] for well in wells}
+            progress(len(jobs), len(jobs), "Complete")
+        return out
+
+
+def run_batches(wells, pressure, nozzles, throats, progress=None):
+    values = run_jobs([(well, pressure, nozzles, throats) for well in wells], progress)
+    return {well.well_name: value for well, value in zip(wells, values)}

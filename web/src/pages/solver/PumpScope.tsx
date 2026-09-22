@@ -5,8 +5,8 @@ import { CLEAN_PUMP, useParamsStore } from "../../state/params";
 import { HYDRAULICS_LABELS } from "../../api/types";
 
 export function PumpScope() {
-  const { well, params, context, months, cap, set, useInstalledPump } = useParamsStore();
-  const live = useWellContext(well, months, cap);
+  const { well, params, context, set, useInstalledPump } = useParamsStore();
+  const live = useWellContext(well);
   const refresh = useParamsStore((s) => s.refreshPumpContext);
   useEffect(() => { if (live.data) refresh(live.data); }, [live.data, refresh]);
   const scope = live.data?.pump_calibration ?? context?.pump_calibration;

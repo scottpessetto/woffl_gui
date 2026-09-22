@@ -133,13 +133,14 @@ class FakeOptimizer:
     batch_dfs: dict = {}
     instances: list = []
 
-    def __init__(self, well_configs, pf, nozzles, throats, marginal_watercut=0.6):
+    def __init__(self, well_configs, pf, nozzles, throats, marginal_watercut=0.6, well_grids=None):
         self.well_configs = well_configs
         self.wells = well_configs
         self.power_fluid = pf
         self.nozzles = nozzles
         self.throats = throats
         self.marginal_watercut = marginal_watercut
+        self.well_grids = dict(well_grids or {})
         self.batch_results = {
             w: SimpleNamespace(df=df) for w, df in self.batch_dfs.items()
         }

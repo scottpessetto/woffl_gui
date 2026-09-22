@@ -45,49 +45,60 @@ def start(req: schemas.PumpDecisionRequest) -> str:
     return jobs.start(KIND, lambda job: _run(job, req), progress="building well models from saved fits...")
 
 
-def _optimizer(configs: list[Any], header: float, nozzles: list[str], throats: list[str], rho_pf: Any):
-    from woffl.assembly.network_optimizer import NetworkOptimizer, PowerFluidConstraint
+def _views(requests: list[tuple[Any, float, list[str], list[str]]], rho_pf: Any) -> list[Any]:
+    """Simulate ``(config, header, nozzles, throats)`` requests in ONE pooled
+    submit - every well and header together, so both workers stay busy -
+    and return one optimizer view per request for ``get_pump_performance``."""
+    from woffl.assembly.network_optimizer import NetworkOptimizer, PowerFluidConstraint, simulate_jobs
     from woffl.assembly.parallelism import worker_ceiling
     from woffl.gui.pad_optimize import _EVAL_CAP_FALLBACK_BPD
 
-    clones = []
-    for cfg in configs:
+    views, jobs = [], []
+    for cfg, header, nozzles, throats in requests:
         clone = copy(cfg)
         clone.ppf_surf_well = header
-        clones.append(clone)
-    opt = NetworkOptimizer(clones, PowerFluidConstraint(total_rate=_EVAL_CAP_FALLBACK_BPD, pressure=header, rho_pf=rho_pf),
-                           nozzles, throats, marginal_watercut=1.0)
-    opt.run_all_batch_simulations(max_workers=worker_ceiling())
-    return opt
+        view = NetworkOptimizer([clone], PowerFluidConstraint(total_rate=_EVAL_CAP_FALLBACK_BPD, pressure=header, rho_pf=rho_pf),
+                                nozzles, throats, marginal_watercut=1.0)
+        views.append(view)
+        jobs.append((view.wells[0], header, nozzles, throats))
+    for view, result in zip(views, simulate_jobs(jobs, max_workers=worker_ceiling())):
+        view.batch_results = {view.wells[0].well_name: result}
+    return views
 
 
-def _installed_at(configs: list[Any], header: float, rho_pf: Any) -> dict[str, Optional[tuple[float, float]]]:
-    """Every well's INSTALLED pump (saved fit) at one forced header. The
-    empty catalog lists keep the batch to that one pump per well."""
-    opt = _optimizer(configs, header, [], [], rho_pf)
-    out: dict[str, Optional[tuple[float, float]]] = {}
-    for cfg in configs:
-        perf = opt.get_pump_performance(cfg.well_name, cfg.installed_nozzle, cfg.installed_throat, pump_state="installed")
-        out[cfg.well_name] = (perf["oil_rate"], perf["lift_water"]) if perf else None
+def _installed_at(configs: list[Any], levels: list[float], rho_pf: Any) -> dict[str, list[tuple[float, float, float]]]:
+    """Every well's INSTALLED pump (saved fit) at every forced header, one
+    pooled submit. Empty catalog lists keep each job to that one pump.
+    Returns well -> [(header, oil, PF)] for the headers that solve."""
+    requests = [(cfg, level, [], []) for level in levels for cfg in configs]
+    out: dict[str, list[tuple[float, float, float]]] = {cfg.well_name: [] for cfg in configs}
+    for (cfg, level, _n, _t), view in zip(requests, _views(requests, rho_pf)):
+        perf = view.get_pump_performance(cfg.well_name, cfg.installed_nozzle, cfg.installed_throat, pump_state="installed")
+        if perf is not None:
+            out[cfg.well_name].append((level, perf["oil_rate"], perf["lift_water"]))
     return out
 
 
-def _target_at(cfg: Any, header: float, nozzles: list[str], throats: list[str], rho_pf: Any) -> dict[tuple[str, str], tuple[float, float]]:
+def _target_at(cfg: Any, levels: list[float], nozzles: list[str], throats: list[str], rho_pf: Any) -> dict[tuple[str, str], list[tuple[float, float, float]]]:
     """The target at every catalog size (clean reference) plus its installed
-    pump (saved fit) at one header: (pump, state) -> (oil, PF)."""
-    opt = _optimizer([cfg], header, nozzles, throats, rho_pf)
-    df = getattr(opt.batch_results.get(cfg.well_name), "df", None)
-    out: dict[tuple[str, str], tuple[float, float]] = {}
-    if df is None or df.empty:
-        return out
-    for rec in df.to_dict("records"):
-        state = rec.get("pump_state") or "replacement"
-        pump = f"{rec.get('nozzle')}{rec.get('throat')}"
-        if (pump, state) in out:
+    pump (saved fit) at every header, one pooled submit:
+    (pump, state) -> [(header, oil, PF)]."""
+    requests = [(cfg, level, nozzles, throats) for level in levels]
+    out: dict[tuple[str, str], list[tuple[float, float, float]]] = {}
+    for level, view in zip(levels, _views(requests, rho_pf)):
+        df = getattr(view.batch_results.get(cfg.well_name), "df", None)
+        if df is None or df.empty:
             continue
-        perf = opt.get_pump_performance(cfg.well_name, str(rec.get("nozzle")), str(rec.get("throat")), pump_state=state)
-        if perf is not None and perf["oil_rate"] > 0 and perf["lift_water"] > 0:
-            out[(pump, state)] = (perf["oil_rate"], perf["lift_water"])
+        seen: set[tuple[str, str]] = set()
+        for rec in df.to_dict("records"):
+            state = rec.get("pump_state") or "replacement"
+            key = (f"{rec.get('nozzle')}{rec.get('throat')}", state)
+            if key in seen:
+                continue
+            seen.add(key)
+            perf = view.get_pump_performance(cfg.well_name, str(rec.get("nozzle")), str(rec.get("throat")), pump_state=state)
+            if perf is not None and perf["oil_rate"] > 0 and perf["lift_water"] > 0:
+                out.setdefault(key, []).append((level, perf["oil_rate"], perf["lift_water"]))
     return out
 
 
@@ -130,7 +141,7 @@ def _run(job: dict[str, Any], req: schemas.PumpDecisionRequest) -> dict[str, Any
     def header_of_flow(q: float) -> Optional[float]:
         return plant.header_at_flow(q, n_pumps)
 
-    job["progress"] = "reading current pumps and tests..."
+    jobs.set_progress(job, "reading current pumps and tests...")
     current, test_rates = optimizer_runs._current_and_tests([c.well_name for c in configs])
     # The other producing wells: existing and online. Planned future wells
     # other than the target are not producing today.
@@ -152,12 +163,10 @@ def _run(job: dict[str, Any], req: schemas.PumpDecisionRequest) -> dict[str, Any
     points: dict[str, list[pm.Point]] = {c.well_name: [] for c in base_wells}
 
     def model_installed(levels: list[float], stage: str) -> None:
-        for k, level in enumerate(levels):
-            jobs.check_cancelled(job)
-            job["progress"] = f"{stage} {k + 1}/{len(levels)}: {len(base_wells)} installed pumps at {level:,.0f} psi"
-            for w, v in _installed_at(base_wells, level, rho).items():
-                if v is not None:
-                    points[w].append((level, v[0], v[1]))
+        jobs.check_cancelled(job)
+        jobs.set_progress(job, f"{stage}: {len(base_wells)} installed pumps at {len(levels)} headers")
+        for w, pts in _installed_at(base_wells, levels, rho).items():
+            points[w].extend(pts)
 
     # 1) coarse: the header range this curve can deliver
     cap = plant.flow_window(n_pumps)[1]
@@ -180,13 +189,10 @@ def _run(job: dict[str, Any], req: schemas.PumpDecisionRequest) -> dict[str, Any
         curves.pop(w)
     h0 = pm.settle(curves, 0.0, header_of_flow, lo, hi) or h0
 
-    t_points: dict[tuple[str, str], list[pm.Point]] = {}
+    jobs.check_cancelled(job)
+    jobs.set_progress(job, f"sizing {target}: every pump at {len(fine)} headers")
     sized = target_installed if target_installed is not None else target_cfg
-    for k, level in enumerate(fine):
-        jobs.check_cancelled(job)
-        job["progress"] = f"sizing {target} {k + 1}/{len(fine)} at {level:,.0f} psi"
-        for key, (oil, pf) in _target_at(sized, level, req.nozzles, req.throats, rho).items():
-            t_points.setdefault(key, []).append((level, oil, pf))
+    t_points = _target_at(sized, fine, req.nozzles, req.throats, rho)
 
     others = {w: c for w, c in curves.items() if w != target}
     target_base = curves.get(target) if target_installed is not None else None

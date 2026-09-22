@@ -110,19 +110,23 @@ export const useWells = () =>
   });
 
 /**
- * The well's seeding context. Keyed on the WELL ONLY: the lookback window
- * and cap are read at first fetch and deliberately not part of the key -
- * `setWindow` keeps `seededFor`, so a window change never re-applies the
- * context, and re-fetching the heaviest per-well endpoint just to discard
- * the result was pure waste (review 2026-09-01, WEB-6). The tests query
- * and the IPR fit are what a window change refreshes.
+ * The well's seeding context, always at the CANONICAL test window (6 months,
+ * no cap) - the window the server's calibration, pump-fit save and history
+ * replay use. It is the database baseline the save bar and the pump-fit
+ * identity compare against, so it must not depend on the sidebar lookback:
+ * fetching it with the current window made that baseline change with
+ * whichever lookback happened to be set at (re)fetch time (review
+ * 2026-09-22). Keyed on the well only (review 2026-09-01, WEB-6); the tests
+ * query and the IPR fit are what a window change refreshes, and the fit is
+ * applied over these seeds.
  */
-export const useWellContext = (well: string, months: number, cap: number) =>
+export const CONTEXT_MONTHS = 6;
+export const useWellContext = (well: string) =>
   useQuery({
     queryKey: ["well-context", well],
     queryFn: ({ signal }) =>
       get<WellContext>(
-        `/wells/${encodeURIComponent(well)}/context?months=${months}&cap=${cap}`,
+        `/wells/${encodeURIComponent(well)}/context?months=${CONTEXT_MONTHS}&cap=0`,
         signal,
       ),
     enabled: well !== "Custom",
@@ -186,13 +190,20 @@ export const useIprPin = (well: string) =>
     retry: false,
   });
 
-/** Queries that reflect prop_hist state - refetched after any save/clear. */
-const invalidateSavedIpr = (qc: QueryClient, well: string) => {
-  void qc.invalidateQueries({ queryKey: ["ipr-pin", well] });
-  void qc.invalidateQueries({ queryKey: ["well-context", well] });
+/** Queries that reflect prop_hist state - refetched after any save/clear.
+ * Returns once the pin and context (the save bar's baseline) have refetched:
+ * returned from onSuccess, it keeps the mutation pending until then, so the
+ * Save button cannot re-enable against the pre-save baseline and append a
+ * duplicate write (review 2026-09-22). The audit and board views refresh in
+ * the background. */
+const invalidateSavedIpr = (qc: QueryClient, well: string): Promise<unknown> => {
   void qc.invalidateQueries({ queryKey: ["prop-history", well] });
   void qc.invalidateQueries({ queryKey: ["well-database"] });
   void qc.invalidateQueries({ queryKey: ["pad-fit"] });
+  return Promise.all([
+    qc.invalidateQueries({ queryKey: ["ipr-pin", well] }),
+    qc.invalidateQueries({ queryKey: ["well-context", well] }),
+  ]);
 };
 
 /** Keep value saves and pin changes mutually exclusive across the two controls. */
@@ -205,15 +216,26 @@ export const useSaveIpr = (well: string) => {
     mutationKey: ["well-input-write", well],
     mutationFn: (req: SaveIprRequest) =>
       post<SaveIprResponse>(`/wells/${encodeURIComponent(well)}/save-ipr`, req),
-    onSuccess: (r) => {
-      if (r.n_values > 0 || r.pinned || r.pin_message) invalidateSavedIpr(qc, well);
-    },
+    onSuccess: (r) => (r.n_values > 0 || r.pinned || r.pin_message ? invalidateSavedIpr(qc, well) : undefined),
+  });
+};
+
+/** Save a Match test fit (kth/kdi) as the installed pump's calibration.
+ * Shares the pump-calibration write key so it cannot race that save. */
+export const useSaveMatchCalibration = (well: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: ["pump-calibration-write", well],
+    mutationFn: (token: string) =>
+      post<{ message: string }>(`/wells/${encodeURIComponent(well)}/match-calibration`, { token }),
+    onSuccess: () => invalidateSavedIpr(qc, well),
   });
 };
 
 export const useSavePumpCalibration = (well: string) => {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: ["pump-calibration-write", well],
     mutationFn: (job_id: string) =>
       post<{ message: string }>(`/wells/${encodeURIComponent(well)}/pump-calibration`, { job_id }),
     onSuccess: () => invalidateSavedIpr(qc, well),
@@ -236,11 +258,12 @@ export const useClearIprPin = (well: string) => {
 export const usePropLock = (well: string) => {
   const qc = useQueryClient();
   return useMutation({
+    // Shares the well-input write key: a lock writes prop_hist rows too, so
+    // it must not race a Save or pin change on the same well.
+    mutationKey: ["well-input-write", well],
     mutationFn: (req: PropLockRequest) =>
       post<PropLockResponse>(`/wells/${encodeURIComponent(well)}/prop-lock`, req),
-    onSuccess: (r) => {
-      if (r.ok) invalidateSavedIpr(qc, well);
-    },
+    onSuccess: (r) => (r.ok ? invalidateSavedIpr(qc, well) : undefined),
   });
 };
 
@@ -486,6 +509,13 @@ export const useStartEventCalibration = () =>
   useMutation({
     mutationFn: (req: EventCalibrationRequest) =>
       post<OptimizeRunStarted>("/optimize/event-calibration", req),
+  });
+
+/** Ask the server to stop an optimize-tab job (pad/CFP run, match health,
+ * event calibration, pump decision) at its next progress step. */
+export const useCancelOptimizeJob = () =>
+  useMutation({
+    mutationFn: (jobId: string) => api<{ cancel_requested: boolean }>(`/optimize/run/${jobId}`, { method: "DELETE" }),
   });
 
 /** Poll one run job every 2.5 s while it's running; stops when settled.

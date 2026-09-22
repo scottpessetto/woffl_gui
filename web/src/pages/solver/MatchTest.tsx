@@ -20,11 +20,141 @@
 import { Crosshair } from "lucide-react";
 import { useState } from "react";
 
-import { useMatchTest } from "../../api/hooks";
-import type { MatchTestResponse, WellTestRow } from "../../api/types";
+import { useMatchTest, useMeta, useSaveIpr, useSaveMatchCalibration, useWellInputWritePending } from "../../api/hooks";
+import type { MatchTestResponse, SimParams, WellTestRow } from "../../api/types";
 import { Button } from "../../components/ui";
 import { fmtDate, fmtNum } from "../../lib/format";
+import { changedWellInputs, wellInputProblem, wellInputValues } from "../../lib/wellInputs";
 import { useParamsStore } from "../../state/params";
+
+/** The sidebar values "Apply to inputs" lays down, in sidebar units. */
+function matchedValues(result: MatchTestResponse): Partial<SimParams> {
+  return {
+    qwf: Math.round(result.qwf_liq),
+    pwf: Math.round(result.pwf ?? 0),
+    form_wc: Number(result.form_wc.toFixed(3)),
+    kth: result.kth,
+    kdi: result.kdi,
+  };
+}
+
+const CHANGE_ROWS: { key: keyof SimParams; label: string; fmt: (v: number) => string; saved: string }[] = [
+  { key: "qwf", label: "IPR anchor rate", fmt: (v) => `${fmtNum(v)} BLPD`, saved: "well inputs" },
+  { key: "pwf", label: "Anchor BHP (inferred)", fmt: (v) => `${fmtNum(v)} psi`, saved: "well inputs" },
+  { key: "form_wc", label: "Water cut", fmt: (v) => `${fmtNum(v * 100, 1)}%`, saved: "well inputs" },
+  { key: "kth", label: "Throat loss kth", fmt: (v) => v.toFixed(3), saved: "pump fit" },
+  { key: "kdi", label: "Diffuser loss kdi", fmt: (v) => v.toFixed(3), saved: "pump fit" },
+];
+
+/** Before -> after for every value the match sets, and where each is saved. */
+function ChangeTable({ result }: { result: MatchTestResponse }) {
+  const params = useParamsStore((s) => s.params);
+  const after = matchedValues(result);
+  return (
+    <table className="mt-1 w-full max-w-lg border-collapse text-xs">
+      <thead>
+        <tr className="text-left opacity-80">
+          <th className="py-0.5 pr-2 font-semibold">Value</th>
+          <th className="py-0.5 pr-2 font-semibold">Sidebar now</th>
+          <th className="py-0.5 pr-2 font-semibold">Match</th>
+          <th className="py-0.5 font-semibold">Saved as</th>
+        </tr>
+      </thead>
+      <tbody>
+        {CHANGE_ROWS.map(({ key, label, fmt, saved }) => {
+          const now = params[key] as number;
+          const next = after[key] as number;
+          const changed = Math.abs(now - next) > 1e-9;
+          return (
+            <tr key={key} className={changed ? "font-medium" : "opacity-70"}>
+              <td className="py-0.5 pr-2">{label}</td>
+              <td className="py-0.5 pr-2 tabular-nums">{fmt(now)}</td>
+              <td className="py-0.5 pr-2 tabular-nums">{fmt(next)}{changed ? "" : " (same)"}</td>
+              <td className="py-0.5">{saved}</td>
+            </tr>
+          );
+        })}
+        <tr className="opacity-70">
+          <td className="py-0.5 pr-2">Entrance loss ken</td>
+          <td className="py-0.5 pr-2 tabular-nums" colSpan={2}>held at {result.ken.toFixed(3)}</td>
+          <td className="py-0.5">pump fit</td>
+        </tr>
+      </tbody>
+    </table>
+  );
+}
+
+/**
+ * Save the applied match so the well reopens with it: the IPR anchor through
+ * the same well-input save as the save bar (pinned to the matched test), then
+ * kth/kdi as the INSTALLED pump's calibration. Save well inputs alone never
+ * kept the coefficients, so a reopened well used reference losses against the
+ * matched BHP and looked reset (user report 2026-09-22).
+ */
+function SaveMatch({ well, result, test, note }: { well: string; result: MatchTestResponse; test: WellTestRow; note: string }) {
+  const meta = useMeta();
+  const saveInputs = useSaveIpr(well);
+  const saveFit = useSaveMatchCalibration(well);
+  const writePending = useWellInputWritePending(well);
+  const params = useParamsStore((s) => s.params);
+  const context = useParamsStore((s) => s.context);
+  const [status, setStatus] = useState<{ ok: boolean; text: string }[]>([]);
+  const token = result.save_token;
+  const after = matchedValues(result);
+  const applied = (Object.keys(after) as (keyof SimParams)[])
+    .every((k) => Math.abs((params[k] as number) - (after[k] as number)) < 1e-9);
+  const others = changedWellInputs(params, context?.seeds).filter((k) => !["qwf", "pwf", "form_wc"].includes(k));
+  const busy = saveInputs.isPending || saveFit.isPending;
+  const blocked = !token ? "This result is not saveable as a pump fit (the BHP was not identified)."
+    : !meta.data?.writes_enabled ? "This app is read-only, so the match cannot be saved."
+    : !applied ? "Apply the match to the inputs first, so what you save is what you see."
+    : wellInputProblem(params);
+
+  const onSave = () => {
+    if (blocked || !token || busy || writePending) return;
+    const { params: current, context: baseline } = useParamsStore.getState();
+    setStatus([]);
+    saveInputs.mutate({
+      ...wellInputValues(current, baseline?.seeds),
+      comment: note,
+      pin_wt_uid: test.wt_uid ?? null,
+      pin_date: test.date ?? null,
+      unpin: test.wt_uid == null,
+    }, {
+      onSuccess: (r) => {
+        if (r.n_values <= 0) { setStatus([{ ok: false, text: r.values_message }]); return; }
+        const first = { ok: true, text: "Well inputs saved (IPR anchor, BHP, WC)." };
+        setStatus([first]);
+        saveFit.mutate(token, {
+          onSuccess: (f) => setStatus([first, { ok: true, text: f.message }]),
+          onError: (e) => setStatus([first, { ok: false, text: `Pump fit not saved: ${e.message}` }]),
+        });
+      },
+      onError: (e) => setStatus([{ ok: false, text: e.message }]),
+    });
+  };
+
+  return (
+    <div className="space-y-1 pt-1">
+      <Button size="sm" variant="primary" disabled={!!blocked || busy || writePending} busy={busy}
+        title={blocked ?? "Save the matched well inputs and the fitted throat/diffuser losses so this well reopens with the match"}
+        onClick={onSave}>
+        Save this match
+      </Button>
+      <p className="text-xs opacity-90">
+        {blocked ?? "Saves the IPR anchor, inferred BHP and WC as the well inputs (pinned to this test), then kth/kdi as the installed pump's fit. The well reopens with both, and new optimization runs use them."}
+      </p>
+      {!blocked && others.length > 0 && (
+        <p className="text-xs text-amber-800">
+          Your other unsaved edits ({others.join(", ")}) will be saved with it.
+        </p>
+      )}
+      {status.map((s) => (
+        <p key={s.text} role="status" className={`text-xs ${s.ok ? "text-emerald-700" : "text-red-700"}`}>{s.text}</p>
+      ))}
+    </div>
+  );
+}
 
 const QUALITY_TONE: Record<MatchTestResponse["match_quality"], string> = {
   good: "border-emerald-200 bg-emerald-50 text-emerald-800",
@@ -33,7 +163,7 @@ const QUALITY_TONE: Record<MatchTestResponse["match_quality"], string> = {
   failed: "border-red-200 bg-red-50 text-red-800",
 };
 
-function ResultBlock({ result, test }: { result: MatchTestResponse; test: WellTestRow }) {
+function ResultBlock({ well, result, test }: { well: string; result: MatchTestResponse; test: WellTestRow }) {
   const setMany = useParamsStore((s) => s.setMany);
   const setMatchNote = useParamsStore((s) => s.setMatchNote);
   const failed = result.match_quality === "failed" || result.pwf === null;
@@ -76,6 +206,7 @@ function ResultBlock({ result, test }: { result: MatchTestResponse; test: WellTe
           at {result.ken.toFixed(3)}.
         </p>
       )}
+      {!failed && <ChangeTable result={result} />}
       {!failed && (
         <Button
           variant="secondary"
@@ -83,23 +214,18 @@ function ResultBlock({ result, test }: { result: MatchTestResponse; test: WellTe
           title={
             "Lay the inferred anchor over the sidebar inputs: IPR anchor rate (total liquid) and BHP, " +
             "the test's water cut, and the fitted throat / diffuser coefficients. Nothing is written - " +
-            "the save comment is prefilled with where this BHP came from, and Save as well default in " +
-            "the IPR block is what keeps it."
+            "the save comment is prefilled with where this BHP came from. Save this match (below) keeps " +
+            "both the inputs and the fitted losses."
           }
           onClick={() => {
-            setMany({
-              qwf: Math.round(result.qwf_liq),
-              pwf: Math.round(result.pwf!),
-              form_wc: Number(result.form_wc.toFixed(3)),
-              kth: result.kth,
-              kdi: result.kdi,
-            });
+            setMany(matchedValues(result));
             setMatchNote(note);
           }}
         >
           {unreachable ? "Apply the closest point anyway" : "Apply to inputs"}
         </Button>
       )}
+      {!failed && <SaveMatch well={well} result={result} test={test} note={note} />}
     </div>
   );
 }
@@ -159,7 +285,7 @@ export function MatchTest({ well, compareTest }: { well: string; compareTest: We
       {mut.isError && (
         <span className="basis-full text-xs text-amber-700">Could not match: {mut.error.message}</span>
       )}
-      {shown && <ResultBlock result={shown.body} test={shown.test} />}
+      {shown && <ResultBlock well={well} result={shown.body} test={shown.test} />}
     </>
   );
 }

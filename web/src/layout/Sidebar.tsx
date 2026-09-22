@@ -95,6 +95,19 @@ function PropLockToggle({ field }: { field: keyof PropLocks }) {
   const toggle = () => {
     setErr(null);
     const next = !lock.locked;
+    if (next) {
+      // Locking WRITES the current sidebar value to the saved well inputs in
+      // the same click. When that value is an unsaved edit, say so first
+      // (review 2026-09-22): it is a save without a note, and a WC/ResP
+      // change also changes the oil IPR the saved pump fit was made against.
+      const state = useParamsStore.getState();
+      const current = state.params[paramKey];
+      const saved = state.context?.seeds?.[paramKey];
+      if (typeof current === "number" && typeof saved === "number" && Math.abs(current - saved) > 1e-9) {
+        const refit = field === "form_gor" ? "" : " It also changes the oil IPR, so a saved pump calibration will need refitting.";
+        if (!window.confirm(`Lock ${label} at ${current} (saved value ${saved})? This saves ${current} as the well's ${label} now.${refit}`)) return;
+      }
+    }
     mut.mutate(
       { field, locked: next, value: next ? useParamsStore.getState().params[paramKey] : null },
       {

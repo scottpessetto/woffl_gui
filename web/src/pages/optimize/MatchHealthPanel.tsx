@@ -11,13 +11,15 @@ import { isMissingJob } from "../../api/client";
  */
 
 import { HeartPulse } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 
 import { useOptimizeJob, useStartMatchHealth } from "../../api/hooks";
 import type { MatchHealthResult, MatchHealthRow, MatchHealthVerdict, RunPad } from "../../api/types";
 import { Badge, Card, Spinner, WarnNote } from "../../components/ui";
 import { fmtNum } from "../../lib/format";
 import { useOptimizeStore } from "../../state/optimize";
+import { CancelJobButton, CancelledNote } from "./CancelJob";
+import { usePadOffline } from "./offline";
 
 const TH_CLS = "px-2 py-1.5 text-left font-semibold";
 const TD_CLS = "px-2 py-1 tabular-nums";
@@ -136,6 +138,8 @@ export function MatchHealthPanel({ pad }: { pad: RunPad }) {
   const setJobId = (id: string | null) => setLastJob(jobKey, id);
   const start = useStartMatchHealth();
   const job = useOptimizeJob(jobId);
+  const padList = useMemo(() => [pad], [pad]);
+  const { offline, ready: offlineReady, failed: offlineFailed } = usePadOffline(padList);
 
   // Expired job (server restart): drop the stale id quietly.
   useEffect(() => {
@@ -157,15 +161,17 @@ export function MatchHealthPanel({ pad }: { pad: RunPad }) {
         <div className="flex items-center gap-3">
           <button
             type="button"
-            disabled={running}
+            disabled={running || (!offlineReady && !offlineFailed)}
+            title={!offlineReady && !offlineFailed ? "Loading the downtime log so offline wells are left out" : undefined}
             onClick={() =>
-              start.mutate({ pad }, { onSuccess: (r) => setJobId(r.job_id) })
+              start.mutate({ pad, offline: [...offline].sort() }, { onSuccess: (r) => setJobId(r.job_id) })
             }
             className="flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
             <HeartPulse className="h-3.5 w-3.5" />
             {running ? "Checking..." : `Check ${pad}-Pad match health`}
           </button>
+          <CancelJobButton jobId={jobId} running={job.data?.status === "running"} />
           <span className="text-xs text-slate-500">
             Every active well at its current pump: model vs tests, measured floors and
             response slopes, calibration rails - the matches to fix before trusting a run.
@@ -179,6 +185,12 @@ export function MatchHealthPanel({ pad }: { pad: RunPad }) {
         {running && !job.data?.progress && <Spinner label="Starting scorecard" />}
         {job.data?.status === "error" && (
           <WarnNote>Scorecard failed: {job.data.error}</WarnNote>
+        )}
+        <CancelledNote job={job.data} />
+        {offline.size > 0 && (
+          <p className="text-xs text-slate-500">
+            Leaves out {offline.size} offline well{offline.size === 1 ? "" : "s"} from the readiness board, as a run would.
+          </p>
         )}
         {start.isError && (
           <WarnNote>Could not start the scorecard: {start.error.message}</WarnNote>

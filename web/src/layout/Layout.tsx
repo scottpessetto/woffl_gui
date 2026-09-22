@@ -28,13 +28,11 @@ export function Layout() {
   const sidebar = useSidebarPref(hasSidebar);
 
   const well = useParamsStore((s) => s.well);
-  const months = useParamsStore((s) => s.months);
-  const cap = useParamsStore((s) => s.cap);
   const applyContext = useParamsStore((s) => s.applyContext);
   const refreshContext = useParamsStore((s) => s.refreshPumpContext);
   const seededFor = useParamsStore((s) => s.seededFor);
 
-  const ctx = useWellContext(well, months, cap);
+  const ctx = useWellContext(well);
   const [warnDismissed, setWarnDismissed] = useState(false);
 
   // Seed the store once per (well, context fetch). applyContext itself

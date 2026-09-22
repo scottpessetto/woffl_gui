@@ -110,7 +110,7 @@ def client(monkeypatch) -> TestClient:
     import woffl.gui.fric_calibration as fc
 
     monkeypatch.setattr(
-        runs, "_build_configs", lambda pads, offline, future, note, prov=None: [_cfg()]
+        runs, "_build_configs", lambda pads, offline, future, note, prov=None, **kw: [_cfg()]
     )
     monkeypatch.setattr(
         runs, "_current_and_tests", lambda wells: ({WELL: ("12", "B")}, {})
@@ -424,7 +424,7 @@ def test_fallback_crash_keeps_event_refusal(client, monkeypatch):
 
 def test_missing_well_errors(client, monkeypatch):
     monkeypatch.setattr(
-        runs, "_build_configs", lambda pads, offline, future, note, prov=None: []
+        runs, "_build_configs", lambda pads, offline, future, note, prov=None, **kw: []
     )
     body = _wait_done(client, _start(client))
     assert body["status"] == "error"

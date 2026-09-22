@@ -60,6 +60,13 @@ def check_cancelled(job: dict[str, Any]) -> None:
         raise JobCancelled()
 
 
+def set_progress(job: dict[str, Any], text: str) -> None:
+    """Publish a progress line, first honouring a pending cancel: every
+    progress update is a safe point to stop a long job."""
+    check_cancelled(job)
+    job["progress"] = text
+
+
 def cancel(job_id: str, kinds: tuple[str, ...]) -> bool:
     """Request cancellation only in the caller's job namespace."""
     with _JOBS_LOCK:

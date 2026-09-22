@@ -300,35 +300,41 @@ def _settle_curve_selection(well_configs, plant, n_pumps, results, header, *, to
 
     def evaluate(p):
         rows = []
-        for (nozzle, throat), wells in groups.items():
-            configs = [copy(wc) for wc in wells]
-            for wc in configs:
-                wc.ppf_surf_well = p
-            opt = NetworkOptimizer(configs,
-                PowerFluidConstraint(total_rate=cap, pressure=p, rho_pf=power_fluid_density(plant)),
-                [nozzle], [throat], marginal_watercut=_SCENARIO_MARGINAL_WC)
-            opt.run_all_batch_simulations(max_workers=worker_ceiling())
-            for wc in configs:
-                original = selected[wc.well_name]
-                state = getattr(original, "pump_state", None)
-                choice = (nozzle, throat) + ((state,) if state is not None else ())
-                perf = _pump_perf(opt, wc.well_name, choice)
-                if perf is None:
-                    return None, f"{wc.well_name} selected pump does not solve at {p:.1f} psi"
-                if any(not isfinite(float(perf[k])) for k in
-                       ("oil_rate", "lift_water", "formation_water", "suction_pressure")):
-                    return None, f"{wc.well_name} selected pump returned non-finite performance"
-                if perf["lift_water"] <= 0 or perf["oil_rate"] < 0 or perf["formation_water"] < 0:
-                    return None, f"{wc.well_name} selected pump returned invalid rates"
-                r = OptimizationResult(
-                    well_name=wc.well_name, recommended_nozzle=nozzle, recommended_throat=throat,
-                    predicted_oil_rate=perf["oil_rate"], allocated_power_fluid=perf["lift_water"],
-                    predicted_lift_water=perf["lift_water"], predicted_formation_water=perf["formation_water"],
-                    suction_pressure=perf["suction_pressure"], sonic_status=perf["sonic_status"],
-                    mach_te=perf["mach_te"], pump_state=state,
-                    marginal_oil_rate=perf.get(
-                        "marginal_oil_lift_water" if water_key == "lift_wat" else "marginal_oil_total_water", 0.0))
-                rows.append(r)
+        # Every selected size at this header runs as ONE pooled batch (per-well
+        # grids): a size group is usually 1-2 wells, and a batch per group
+        # left workers idle.
+        configs = [copy(wc) for wells in groups.values() for wc in wells]
+        for wc in configs:
+            wc.ppf_surf_well = p
+        sizes = {wc.well_name: size for size, wells in groups.items() for wc in wells}
+        opt = NetworkOptimizer(configs,
+            PowerFluidConstraint(total_rate=cap, pressure=p, rho_pf=power_fluid_density(plant)),
+            sorted({n for n, _t in sizes.values()}), sorted({t for _n, t in sizes.values()}),
+            marginal_watercut=_SCENARIO_MARGINAL_WC,
+            well_grids={w: ([n], [t]) for w, (n, t) in sizes.items()})
+        opt.run_all_batch_simulations(max_workers=worker_ceiling())
+        for wc in configs:
+            nozzle, throat = sizes[wc.well_name]
+            original = selected[wc.well_name]
+            state = getattr(original, "pump_state", None)
+            choice = (nozzle, throat) + ((state,) if state is not None else ())
+            perf = _pump_perf(opt, wc.well_name, choice)
+            if perf is None:
+                return None, f"{wc.well_name} selected pump does not solve at {p:.1f} psi"
+            if any(not isfinite(float(perf[k])) for k in
+                   ("oil_rate", "lift_water", "formation_water", "suction_pressure")):
+                return None, f"{wc.well_name} selected pump returned non-finite performance"
+            if perf["lift_water"] <= 0 or perf["oil_rate"] < 0 or perf["formation_water"] < 0:
+                return None, f"{wc.well_name} selected pump returned invalid rates"
+            r = OptimizationResult(
+                well_name=wc.well_name, recommended_nozzle=nozzle, recommended_throat=throat,
+                predicted_oil_rate=perf["oil_rate"], allocated_power_fluid=perf["lift_water"],
+                predicted_lift_water=perf["lift_water"], predicted_formation_water=perf["formation_water"],
+                suction_pressure=perf["suction_pressure"], sonic_status=perf["sonic_status"],
+                mach_te=perf["mach_te"], pump_state=state,
+                marginal_oil_rate=perf.get(
+                    "marginal_oil_lift_water" if water_key == "lift_wat" else "marginal_oil_total_water", 0.0))
+            rows.append(r)
         return record(p, rows), None
 
     current = record(header, results)

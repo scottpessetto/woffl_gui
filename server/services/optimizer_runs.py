@@ -193,6 +193,7 @@ def _build_configs(
     prov: Optional[dict[str, dict[str, Any]]] = None,
     include_offline: bool = False,
     coverage: Optional[dict[str, dict[str, Any]]] = None,
+    only: Optional[set[str]] = None,
 ) -> list[Any]:
     """WellConfigs for every ACTIVE well on ``pads`` + the future wells.
 
@@ -214,6 +215,9 @@ def _build_configs(
     if collisions:
         raise ValueError("Future names already identify existing wells: " + ", ".join(collisions))
     by_pad = [w["name"] for w in universe if w.get("pad") in pads]
+    if only is not None:
+        # One-well callers (event calibration) need no hydration of the pad.
+        by_pad = [name for name in by_pad if name in only]
     donors = {fw.match for fw in future}
     if coverage is not None:
         for row in universe:
@@ -504,11 +508,11 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
                 **({"plan": []} if req.strategy == "choke" else
                    {"rows": [_unmodeled_pad_row(r) for r in ledger.values() if r["role"] != "offline"]})}
 
-    job["progress"] = f"simulating {len(configs)} wells..."
+    jobs.set_progress(job, f"simulating {len(configs)} wells...")
 
     def cb(step: int, total: int, header: float | None, pf: float, oil: float) -> None:
         header_text = f"header {header:,.0f} psi" if header is not None else "header unavailable"
-        job["progress"] = (
+        jobs.set_progress(job,
             f"trial {step}/{total} - {header_text}"
             + (f", oil {oil:,.0f} BOPD" if oil else "")
         )
@@ -517,14 +521,14 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         # Short-term plan: HOLD every installed pump (no JPCO), choke back /
         # shut in wells to fit the (possibly reduced) bank's PF budget. Rows
         # come sorted action-first; provenance rides along like pad rows.
-        job["progress"] = "reading current pumps + tests..."
+        jobs.set_progress(job, "reading current pumps + tests...")
         current, test_rates = _current_and_tests([c.well_name for c in configs])
         current.update({f.name: (f.nozzle, f.throat) for f in req.future if f.nozzle is not None})
         # Field-measured suction response (floor/psu_ref/beta per well) -
         # corrects the model's cavitation floor where the gauges contradict
         # it. Strictly fail-soft: an unreachable warehouse degrades to the
         # uncorrected (model-only) run, never to a failed job.
-        job["progress"] = "reading pressure history..."
+        jobs.set_progress(job, "reading pressure history...")
         names = [c.well_name for c in configs]
         res_pres_map = {
             c.well_name: float(c.res_pres)
@@ -536,7 +540,7 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         except Exception as exc:
             ev = None
             notes.append(f"suction evidence unavailable ({exc}); model-only run")
-        job["progress"] = f"pricing {len(configs)} wells at ladder pressures..."
+        jobs.set_progress(job, f"pricing {len(configs)} wells at ladder pressures...")
         plan, meta = run_choke_optimization(
             configs,
             _pad_plant_for_run(pad, req),
@@ -604,10 +608,10 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         **({"required_wells": required} if required else {}),
     )
 
-    job["progress"] = "assembling results..."
+    jobs.set_progress(job, "assembling results...")
     names = [c.well_name for c in configs]
     current, test_rates = _current_and_tests(names)
-    job["progress"] = "checking installed pumps at the plan header..."
+    jobs.set_progress(job, "checking installed pumps at the plan header...")
     try:
         current_model = _modeled_current(configs, current, meta.get("header_psi"), _optimizer)
     except Exception as exc:
@@ -786,7 +790,7 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         raise ValueError(f"no wells with a consistent saved fit on pads {', '.join(run_pads)}")
 
     names = [c.well_name for c in configs]
-    job["progress"] = "reading current pumps + tests..."
+    jobs.set_progress(job, "reading current pumps + tests...")
     # Donors may be on a pad outside this run; fetch their tracked pumps as
     # well so future wells can enter the bring-online response surfaces.
     donor_names = [fw.match for fw in req.future]
@@ -829,7 +833,7 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
     grid = sorted({float(p) for p in np.linspace(max(p0 - 300.0, 1800.0), 2880.0, 7)} | {float(p0)})
 
     def cb(step: int, total: int, pressure: float) -> None:
-        job["progress"] = f"response surfaces {step}/{total} - discharge {pressure:,.0f} psi"
+        jobs.set_progress(job, f"response surfaces {step}/{total} - discharge {pressure:,.0f} psi")
 
     included = {c.well_name for ws in pad_configs.values() for c in ws}
     surfaces = build_response_surfaces(
@@ -846,7 +850,7 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         progress=cb,
     )
 
-    job["progress"] = "pricing moves..."
+    jobs.set_progress(job, "pricing moves...")
     plant = anchor(surfaces, psi_per_kbpd=req.psi_per_kbpd)
     summary = moves_summary(surfaces, plant, **({"required_wells": required} if required else {}))
     if required and not summary.get("plan"):

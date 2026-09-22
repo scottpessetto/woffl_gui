@@ -50,11 +50,13 @@ def get_job(job_id: str) -> Optional[dict[str, Any]]:
     return jobs.get(job_id, (_KIND,))
 
 
-def start_match_health(pad: str) -> str:
-    """Spawn the scorecard thread for one pad; returns the job id."""
+def start_match_health(pad: str, offline: Optional[list[str]] = None) -> str:
+    """Spawn the scorecard thread for one pad; returns the job id.
+    ``offline`` wells are left out, as a run would leave them out."""
+    skip = set(offline or [])
     return jobs.start(
         _KIND,
-        lambda job: _run_match_health_job(job, pad),
+        lambda job: _run_match_health_job(job, pad, skip),
         progress="building well models from saved fits...",
     )
 
@@ -244,21 +246,21 @@ def _last_test_dates(wells: list[str]) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _run_match_health_job(job: dict[str, Any], pad: str) -> dict[str, Any]:
+def _run_match_health_job(job: dict[str, Any], pad: str, offline: Optional[set[str]] = None) -> dict[str, Any]:
     from woffl.gui.pad_optimize import match_check
 
     notes: list[str] = []
     prov: dict[str, dict[str, Any]] = {}
-    configs = optimizer_runs._build_configs([pad], set(), [], notes, prov)
+    configs = optimizer_runs._build_configs([pad], set(offline or ()), [], notes, prov)
     if len(configs) == 0:
         raise ValueError(f"no active wells with usable saved fits on {pad}-Pad")
 
     names = [c.well_name for c in configs]
-    job["progress"] = "reading current pumps + tests..."
+    jobs.set_progress(job, "reading current pumps + tests...")
     current, test_rates = optimizer_runs._current_and_tests(names)
     last_test = _last_test_dates(names)
 
-    job["progress"] = f"modeling {len(configs)} wells at current pumps..."
+    jobs.set_progress(job, f"modeling {len(configs)} wells at current pumps...")
     n_pumps = optimizer_runs._PAD_DEFAULTS[pad]["n_pumps"]
     check_rows, header = match_check(
         configs, optimizer_runs._pad_plant(pad), n_pumps, current, test_rates
@@ -266,7 +268,7 @@ def _run_match_health_job(job: dict[str, Any], pad: str) -> dict[str, Any]:
 
     # Field-evidence suction rows: strictly fail-soft. A dead warehouse
     # leaves the evidence columns None; the scorecard still builds.
-    job["progress"] = "reading pressure history..."
+    jobs.set_progress(job, "reading pressure history...")
     res_pres_map = {
         c.well_name: float(c.res_pres)
         for c in configs
@@ -281,7 +283,7 @@ def _run_match_health_job(job: dict[str, Any], pad: str) -> dict[str, Any]:
             f"suction evidence unavailable ({exc}); scorecard is model-vs-test only"
         )
 
-    job["progress"] = "assembling scorecard..."
+    jobs.set_progress(job, "assembling scorecard...")
     rows = assemble_rows(check_rows, prov, evidence, configs, last_test)
     return optimizer_runs._plain(
         {

@@ -630,7 +630,7 @@ export interface CfpRunResult {
 export interface OptimizeJobStatus {
   job_id: string;
   kind: "pad" | "cfp" | "match_health" | "event_cal" | "pump_decision";
-  status: "running" | "done" | "error";
+  status: "running" | "done" | "error" | "cancelled";
   progress: string | null;
   result:
     | PadRunResult
@@ -737,6 +737,8 @@ export interface PumpDecisionResult {
 
 export interface MatchHealthRequest {
   pad: RunPad;
+  /** The readiness board's offline set, so the scorecard covers the run's wells. */
+  offline?: string[];
 }
 
 export type MatchHealthVerdict = "contradicted" | "railed-cal" | "weak-fit" | "poor-match" | "unknown" | "ok";
@@ -807,6 +809,9 @@ export interface MatchTestScanPoint {
 
 /** Mirror of server.schemas.MatchTestResponse. */
 export interface MatchTestResponse {
+  /** Present when the match can be saved as the installed pump's fit
+   * (POST /wells/{well}/match-calibration); the fit itself stays server-side. */
+  save_token?: string | null;
   match_quality: "good" | "fair" | "poor" | "failed";
   converged: boolean;
   bounded: boolean;
@@ -1373,6 +1378,8 @@ export interface GaugeParseResponse {
 }
 
 export interface IprFitRequest {
+  /** Tests excluded as bad data (server.schemas.IprFitRequest.exclude_wt_uids). */
+  exclude_wt_uids?: number[];
   well: string;
   anchor_mode: AnchorMode;
   anchor_date: string | null;

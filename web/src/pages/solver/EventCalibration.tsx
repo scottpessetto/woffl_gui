@@ -47,8 +47,12 @@ function SaveFit({ result, jobId }: { result: EventCalibrationResult; jobId: str
   const hasFit = !result.refusal && (result.fit || (result.single && !["pinned", "failed"].includes(result.single.match_quality)));
   if (!hasFit) return null;
   return <div className="basis-full space-y-1 text-xs text-slate-500">
-    <Button size="sm" variant="secondary" disabled={!valid || !meta.data?.writes_enabled || save.isPending}
-      busy={save.isPending} onClick={() => save.mutate(jobId)}>Save installed-pump calibration</Button>
+    {/* One save per fit: a second click only appended another ledger record. */}
+    <Button size="sm" variant="secondary"
+      disabled={!valid || !meta.data?.writes_enabled || save.isPending || (save.isSuccess && save.variables === jobId)}
+      busy={save.isPending} onClick={() => save.mutate(jobId)}>
+      {save.isSuccess && save.variables === jobId ? "Installed-pump calibration saved" : "Save installed-pump calibration"}
+    </Button>
     <p>Calibration holds one saved oil IPR fixed and uses each test's WC/GOR. Save changed well inputs before refitting.</p>
     <p>{HYDRAULICS_LABELS[result.hydraulics_model ?? "beggs"]}. Saves this fit for {result.pump}, installed {result.era_start?.slice(0, 10)}. Save well inputs using the bar at the top of this page.</p>
     {!valid && <p className="text-amber-700">{inputBlocker ?? "The saved well model, installation or hydraulics differs from this fit. Calibrate again using the current saved model and intended hydraulics."}</p>}
@@ -273,7 +277,7 @@ export function EventCalibration({ well }: { well: string }) {
       <Button
         variant="primary"
         size="sm"
-        disabled={running || unsaved}
+        disabled={running || unsaved || inputBlocker !== null}
         busy={running}
         title={
           "Fits the pump model to this pump era's daily field history; " +
@@ -290,7 +294,7 @@ export function EventCalibration({ well }: { well: string }) {
           {running ? "Calibrating..." : "Calibrate to field data"}
         </span>
       </Button>
-      {unsaved && <p className="basis-full text-xs text-amber-700">{inputBlocker}</p>}
+      {inputBlocker && <p className="basis-full text-xs text-amber-700">{inputBlocker}</p>}
       {running && (
         <span className="text-xs text-slate-500">
           {job.data?.progress ?? "Starting calibration..."}

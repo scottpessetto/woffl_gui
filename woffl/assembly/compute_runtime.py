@@ -8,12 +8,17 @@ from contextlib import nullcontext
 
 # [LIBRARY change -> upstream PR to kwellis/woffl]
 batch_runner = None
+# jobs -> results: [(well, pressure, nozzles, throats), ...] -> [BatchPump, ...]
+# in job order. Lets one call mix wells, headers and pump grids so they share
+# the host pool in a single submit instead of one small batch each.
+job_runner = None
 cpu_slot = nullcontext
 measure = lambda name: nullcontext()
 
 
-def configure(*, batches=None, slot=nullcontext, timing=None):
-    global batch_runner, cpu_slot, measure
+def configure(*, batches=None, jobs=None, slot=nullcontext, timing=None):
+    global batch_runner, job_runner, cpu_slot, measure
     batch_runner = batches
+    job_runner = jobs
     cpu_slot = slot
     measure = timing or (lambda name: nullcontext())

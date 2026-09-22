@@ -811,8 +811,16 @@ def save_ipr_values(
     bubble_point: float | None = None,
     form_temp: float | None = None,
     comment: str | None = None,
+    pin_value: float | None = None,
 ) -> tuple[int, str]:
     """Push the sidebar's CURRENT IPR + fluid values as the well's saved curve.
+
+    ``pin_value`` (an anchor test's ``wt_uid``, or :data:`PIN_CLEARED_VALUE`
+    to un-pin) rides in the SAME single INSERT as the values. Written as a
+    separate statement first, a pin that landed while the values failed made
+    the pin newer than the old values, so the test fit silently replaced the
+    engineer's previous save everywhere (review 2026-09-22). One statement
+    shares one stamp, and an equal stamp lets the values win (saved_wins).
 
     ``qwf_liq`` is the TOTAL LIQUID rate at ``pwf`` (BLPD — formation oil plus
     formation water) and lands in ``ipr_qwf_liq`` VERBATIM. It used to be the
@@ -859,6 +867,7 @@ def save_ipr_values(
             # friction coefficients follow below.
             "resvr_bubb": float(bubble_point) if bubble_point is not None else None,
             "resvr_temp": float(form_temp) if form_temp is not None else None,
+            _IPR_PIN_PROP_ID: float(pin_value) if pin_value is not None else None,
         }
         # Friction rides along only when it carries information: skip when it
         # matches the stored latest (no history noise from an unchanged save)

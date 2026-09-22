@@ -39,7 +39,9 @@ Curve = Sequence[Point]
 HeaderOfFlow = Callable[[float], Optional[float]]
 
 # Offsets around the operating point where each well's response is modeled.
-FINE_OFFSETS_PSI = (-400.0, -200.0, -100.0, 0.0, 100.0, 200.0)
+# Deep enough that a large upsize (which pulls the header down several
+# hundred psi) is priced on modeled points, not rates held flat.
+FINE_OFFSETS_PSI = (-800.0, -600.0, -400.0, -200.0, -100.0, 0.0, 100.0, 200.0)
 SENSITIVITY_BPD = 1000.0
 
 

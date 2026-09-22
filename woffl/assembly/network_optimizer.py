@@ -280,6 +280,7 @@ class NetworkOptimizer:
         throat_options: list[str],
         marginal_watercut: float = 0.94,
         water_price: Optional[float] = None,
+        well_grids: Optional[dict[str, tuple[list[str], list[str]]]] = None,
     ):
         """Initialize network optimizer
 
@@ -309,6 +310,10 @@ class NetworkOptimizer:
         # (docs/upstream_sync.md #36)
         self.water_price = water_price
         self.lambda_used: Optional[float] = None  # set by the solvers
+        # [LIBRARY change -> upstream PR to kwellis/woffl] well name ->
+        # (nozzles, throats) overriding the shared grid for that well, so
+        # wells holding different pump sizes run in ONE pooled batch.
+        self.well_grids = dict(well_grids or {})
 
         # Results storage
         self.batch_results: dict[str, BatchPump] = {}
@@ -411,6 +416,16 @@ class NetworkOptimizer:
         self.batch_results = {}
         total_wells = len(self.wells)
         workers = max(1, int(max_workers))
+
+        if self.well_grids:
+            jobs = [(well, self.power_fluid.pressure,
+                     *self.well_grids.get(well.well_name, (self.nozzle_options, self.throat_options)))
+                    for well in self.wells]
+            for well, result in zip(self.wells, simulate_jobs(jobs, max_workers=workers)):
+                self.batch_results[well.well_name] = result
+            if progress_callback:
+                progress_callback(total_wells, total_wells, "Complete")
+            return self.batch_results
 
         # [LIBRARY change -> upstream PR to kwellis/woffl] The web host owns
         # one reusable pool/cache. No server dependency or nested child pools.
@@ -654,6 +669,31 @@ class NetworkOptimizer:
             )
 
         return pd.DataFrame(data)
+
+
+def simulate_jobs(jobs: list[tuple], max_workers: int = 1) -> list[BatchPump]:
+    """Run ``(well, pressure, nozzles, throats)`` jobs together, results in
+    job order. Unlike ``run_all_batch_simulations`` the jobs may mix wells,
+    headers and pump grids, so a caller evaluating several small groups
+    fills every worker in one submit instead of one short batch each.
+    """
+    # [LIBRARY change -> upstream PR to kwellis/woffl]
+    from woffl.assembly import compute_runtime
+
+    jobs = list(jobs)
+    if compute_runtime.job_runner is not None:
+        return compute_runtime.job_runner(jobs)
+    workers = max(1, int(max_workers))
+    if workers == 1 or len(jobs) <= 1:
+        return [_simulate_single_well(*job) for job in jobs]
+    from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
+
+    try:
+        with ProcessPoolExecutor(max_workers=min(workers, len(jobs))) as pool:
+            return list(pool.map(_simulate_single_well, *zip(*jobs)))
+    except BrokenProcessPool:
+        return [_simulate_single_well(*job) for job in jobs]
 
 
 def _simulate_single_well(

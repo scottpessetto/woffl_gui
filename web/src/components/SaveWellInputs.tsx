@@ -23,6 +23,16 @@ export function SaveWellInputs({ well, anchor }: {
   const changes = changedWellInputs(params, context?.seeds);
   const sessionOnly = ready ? sessionOnlyWellModelEdits(params, context) : [];
   const problem = wellInputProblem(params);
+  // What the IPR anchor part of this save does, in words.
+  const anchorTest = anchor?.test ?? null;
+  const anchorSaved = anchor?.pin?.status === "applied" && anchorTest?.wt_uid != null && anchor.pin.wt_uid === anchorTest.wt_uid;
+  const anchorText = commonIprIntent ? "a common oil curve (clears the pinned test)"
+    : anchor?.mode === "manual" ? "a manual point, not tied to a test"
+    : anchorTest ? `the ${anchorTest.date.slice(0, 10)} test${anchorSaved ? " (already the saved anchor)" : ""}`
+    : null;
+  const anchorChanged = !!anchor && !commonIprIntent && (anchor.mode === "manual"
+    ? anchor.pin?.status === "applied"
+    : anchorTest?.wt_uid != null && !anchorSaved);
   const blocked = !ready ? "Select a well and wait for its saved inputs to load." :
     meta.isPending ? "Checking whether saving is available..." :
     meta.isError ? "Save access could not be checked. Refresh the app to try again." :
@@ -54,12 +64,20 @@ export function SaveWellInputs({ well, anchor }: {
     <div className="flex flex-wrap items-center justify-between gap-2">
       <div>
         <p className="text-sm font-semibold text-slate-700">Well inputs · {well}</p>
-        {ready && <p className={`text-xs ${changes.length ? "text-amber-700" : "text-slate-500"}`}>
-          {changes.length ? `${changes.length} well ${changes.length === 1 ? "input differs" : "inputs differ"} from the database. Edits are only in this session until saved.` : sessionOnly.length ? "Supported save values match the loaded database; session-only model settings differ." : "Well inputs match the loaded database values."}
+        {ready && <p className={`text-xs ${changes.length || anchorChanged ? "text-amber-700" : "text-slate-500"}`}>
+          {changes.length || anchorChanged
+            ? `${[changes.length ? `${changes.length} well ${changes.length === 1 ? "input differs" : "inputs differ"}` : "",
+                anchorChanged ? "the IPR anchor differs" : ""].filter(Boolean).join(" and ")} from the database. Edits are only in this session until saved.`
+            : sessionOnly.length ? "Supported save values match the loaded database; session-only model settings differ." : "Well inputs match the loaded database values."}
+        </p>}
+        {ready && <p className="text-xs text-slate-600">
+          Saves the IPR{anchorText ? ` anchored on ${anchorText}` : ""} (rate {fmtNum(params.qwf)} BLPD at {fmtNum(params.pwf)} psi,
+          ResP {fmtNum(params.pres)} psi) plus WC, GOR and WHP, and any changed temperature or bubble point.
+          {changes.length ? ` Changed now: ${changes.join(", ")}.` : ""}
         </p>}
       </div>
       <Button variant="primary" disabled={!!blocked || writePending} busy={save.isPending}
-        title={blocked ?? `Save ${well}'s displayed IPR and supported fluid inputs for future optimization runs`}
+        title={blocked ?? `Save ${well}'s IPR anchor and curve, and the fluid inputs, for reopening and for future optimization runs`}
         onClick={onSave}>Save well inputs</Button>
     </div>
     {blocked && <p className="text-xs text-slate-500">{blocked}</p>}

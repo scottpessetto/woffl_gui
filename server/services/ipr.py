@@ -104,6 +104,9 @@ def fit(req: schemas.IprFitRequest) -> dict[str, Any]:
     df = tests.tests_for_well(req.well, req.months, req.cap)
     if df is None or df.empty:
         raise ValueError(_FIT_ERROR)
+    if req.exclude_wt_uids and "wt_uid" in df.columns:
+        drop = {float(u) for u in req.exclude_wt_uids}
+        df = df[~pd.to_numeric(df["wt_uid"], errors="coerce").isin(drop)]
     if req.bhp_overrides:
         df = _apply_bhp_overrides(df, req.bhp_overrides)
     usable = df.dropna(subset=["BHP", "WtTotalFluid"])
@@ -361,27 +364,29 @@ def _invalidate_after_write(well: str, *, characterization: bool = False) -> Non
 
 
 def save(well: str, req: schemas.SaveIprRequest) -> dict[str, Any]:
-    """Pin the anchor test (when given) and save the sidebar values.
+    """Save the sidebar values, with the anchor pin (or un-pin) when given.
 
-    Mirrors the Streamlit click exactly: pin first, values second, same
-    latest-timestamp precedence. Returns SaveIprResponse shape; per-part
-    failures ride in the messages (the Streamlit toast/warning contract)
-    rather than failing the whole request.
+    Pin and values go out as ONE append-only INSERT with one stamp, so the
+    values win the latest-timestamp precedence and a failed write changes
+    nothing (review 2026-09-22; it used to be two statements, pin first).
+    Returns SaveIprResponse shape; failures ride in the messages rather than
+    failing the whole request.
     """
-    pinned = False
     pin_skipped = False
-    unpinned = False
     pin_message: Any = None
+    # The pin (or the un-pin marker) rides in the values' single INSERT, so a
+    # save can never land half: see ipr_anchor.save_ipr_values(pin_value=).
+    pin_value: Optional[float] = None
     if req.unpin:
-        # Manual point: the values are about to say "this is the curve", and a
-        # surviving pin would make the next open read them as test-anchored.
-        # Cleared BEFORE the values so the values carry the later stamp and
-        # win the precedence (ipr_anchor.saved_wins).
-        unpinned, pin_message = ipr_anchor.clear_ipr_pin(well)
+        # Manual point: the values say "this is the curve"; a surviving pin
+        # would make the next open read them as test-anchored.
+        pin_value = ipr_anchor.PIN_CLEARED_VALUE
     elif req.pin_wt_uid is not None:
         anchor_row = {"wt_uid": req.pin_wt_uid, "WtDate": req.pin_date}
-        pinned, pin_message = ipr_anchor.pin_ipr_anchor(well, anchor_row)
-        pin_skipped = not pinned and str(pin_message).startswith(ipr_anchor.PIN_SKIP_PREFIX)
+        pin_value = ipr_anchor._anchor_row_wt_uid(anchor_row)
+        if pin_value is None:
+            pin_skipped = True
+            pin_message = f"{ipr_anchor.PIN_SKIP_PREFIX} this anchor is a manual/provisional test (no measured well-test ID)."
 
     n_values, values_message = ipr_anchor.save_ipr_values(
         well,
@@ -394,7 +399,19 @@ def save(well: str, req: schemas.SaveIprRequest) -> dict[str, Any]:
         bubble_point=req.bubble_point,
         form_temp=req.form_temp,
         comment=req.comment,
+        pin_value=pin_value,
     )
+    landed = n_values > 0
+    pinned = landed and pin_value is not None and not req.unpin
+    unpinned = landed and bool(req.unpin)
+    if pin_value is not None:
+        n_values = max(0, n_values - 1) if landed else 0
+        if pinned:
+            pin_message = f"📌 IPR saved to Databricks — test {ipr_anchor._anchor_date_label({'WtDate': req.pin_date})}"
+        elif unpinned:
+            pin_message = "Saved IPR pin cleared with the values"
+        elif not landed:
+            pin_message = values_message  # nothing landed, pin included
 
     # Invalidate ONLY when something landed: a failed write changed nothing,
     # and evicting on failure would cold-start reads for no gain. Partial
