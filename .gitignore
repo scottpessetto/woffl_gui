@@ -143,3 +143,13 @@ node_modules/
 !web/src/lib/
 build/webapp_stage/
 *.tsbuildinfo
+
+# PROSPER / GAP / OpenServer work (Petex IPM). Licensed for internal
+# comparison only - never upload: the driver, the runbook, the plan and any
+# models or case cards. Models themselves live outside the repo in
+# C:\dev\woffl_gui\petex\.
+/tools/petex/
+/docs/petex_*.md
+/petex/
+*.Out
+*.gap

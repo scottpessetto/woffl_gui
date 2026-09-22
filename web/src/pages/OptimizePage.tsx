@@ -385,6 +385,16 @@ export default function OptimizePage() {
         ))}
       </div>
 
+      {(padRun === "S" || padRun === "I") && (
+        // PF-only pads: S follows its 60 Hz curve, I holds a setpoint until
+        // its frontier cannot. Either way extra PF draw is priced in barrels.
+        // M/E machines also carry formation water - not modeled here yet.
+        // Above the full pad optimization: it prices the whole pad on its
+        // own when the tab opens, so it is the first thing the tab shows.
+        // Keyed by pad so S and I keep separate panel state.
+        <PumpDecisionPanel key={padRun} pad={padRun} />
+      )}
+
       {isRun && (
         <RunPanel
           kind={padRun === null ? "cfp" : "pad"}
@@ -402,13 +412,6 @@ export default function OptimizePage() {
             )
           }
         />
-      )}
-
-      {(padRun === "S" || padRun === "I") && (
-        // PF-only pads: S follows its 60 Hz curve, I holds a setpoint until
-        // its frontier cannot. Either way extra PF draw is priced in barrels.
-        // M/E machines also carry formation water - not modeled here yet.
-        <PumpDecisionPanel pad={padRun} />
       )}
 
       {padRun !== null && (

@@ -1,4 +1,3 @@
-import { isMissingJob } from "../../api/client";
 /**
  * Cost of power fluid on S-Pad, and a single-well pump decision.
  *
@@ -10,23 +9,32 @@ import { isMissingJob } from "../../api/client";
  * one well - a JP replacement, a restart or a new well - with the header
  * resettled on the curve. Compute: server/services/pump_decision.py over
  * woffl/gui/pad_marginal.py. Read-only; nothing is saved.
+ *
+ * The pad-wide (All wells) pricing runs by itself once the downtime log has
+ * settled the offline set, and again (debounced) when a pad-wide input
+ * changes; see pumpDecisionAuto.ts. Single-well sizing stays on the button.
  */
 
 import clsx from "clsx";
 import { Scale } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
+import { isMissingJob, stableStringify } from "../../api/client";
 import { useOptimizeJob, useStartPumpDecision, useWells } from "../../api/hooks";
-import type { PumpDecisionCandidate, PumpDecisionResult, PumpDecisionStep } from "../../api/types";
+import type { PumpDecisionCandidate, PumpDecisionRequest, PumpDecisionResult, PumpDecisionStep } from "../../api/types";
 import { Badge, Card, Spinner, WarnNote } from "../../components/ui";
 import { fmtNum, fmtPct, fmtSigned } from "../../lib/format";
+import { useDebounced } from "../../lib/useDebounced";
 import { useOptimizeStore } from "../../state/optimize";
 import { usePadOffline } from "./offline";
 import { CancelJobButton, CancelledNote } from "./CancelJob";
 import { PfCostChart } from "./PfCostChart";
+import { shouldAutoRun } from "./pumpDecisionAuto";
 
 const TH_CLS = "px-2 py-1.5 text-left font-semibold";
 const TD_CLS = "px-2 py-1 tabular-nums";
+// Pad-wide inputs settle for this long before an automatic re-price.
+const AUTO_RUN_DEBOUNCE_MS = 800;
 // Mirrors server/schemas.py PumpDecisionRequest (and the pad run defaults).
 const NOZZLES = ["9", "10", "11", "12", "13", "14", "15"];
 const THROATS = ["A", "B", "C", "D"];
@@ -203,6 +211,7 @@ export function PumpDecisionPanel({ pad }: { pad: "S" | "I" }) {
   const futureByPad = useOptimizeStore((s) => s.future);
   const jobKey = `pump_decision:${pad}`;
   const jobId = useOptimizeStore((s) => s.lastJob[jobKey] ?? null);
+  const lastKey = useOptimizeStore((s) => s.lastJobKey[jobKey] ?? null);
   const setLastJob = useOptimizeStore((s) => s.setLastJob);
   const start = useStartPumpDecision();
   const job = useOptimizeJob(jobId);
@@ -218,30 +227,59 @@ export function PumpDecisionPanel({ pad }: { pad: "S" | "I" }) {
 
   const [target, setTarget] = useState("");
   // Pad-wide: no well is sized; the step is extra draw anywhere on the pad.
-  const [allWells, setAllWells] = useState(false);
+  const [allWells, setAllWells] = useState(true);
   const [nPumps, setNPumps] = useState<number>(3);
   const [dq, setDq] = useState(1000);
   const [setpoint, setSetpoint] = useState(3500);
   const chosen = options.some((o) => o.name === target) ? target : "";
 
+  // Key of the last automatic attempt: a start the server refuses (e.g. busy
+  // with a pad run) is not retried in a loop; the button still works.
+  const attemptedRef = useRef<string | null>(null);
+
   useEffect(() => {
-    if (jobId && isMissingJob(job.error)) setLastJob(jobKey, null);
+    if (jobId && isMissingJob(job.error)) {
+      // Expired after a server restart: forget it so the auto-run prices again.
+      attemptedRef.current = null;
+      setLastJob(jobKey, null);
+    }
   }, [jobId, job.error, jobKey, setLastJob]);
 
   const running = job.data?.status === "running" || start.isPending;
+  // A stored job whose status has not come back yet may still be running.
+  const statusUnknown = jobId !== null && job.data === undefined && !job.isError;
   const result = job.data?.status === "done" && job.data.kind === "pump_decision"
     ? (job.data.result as PumpDecisionResult | null) : null;
   const dqValid = Number.isFinite(dq) && dq > 0 && dq <= 10000 &&
     (pad === "S" || (Number.isFinite(setpoint) && setpoint >= 1000 && setpoint <= 5000));
+  const offlineSettled = offlineReady || offlineFailed;
+
+  const request = useMemo<PumpDecisionRequest>(() => ({
+    pad, target: allWells ? null : chosen, offline: [...offlineSet].sort(), future,
+    n_pumps: pad === "S" ? nPumps : null, nozzles: NOZZLES, throats: THROATS, delta_pf_bpd: dq,
+    setpoint_psi: pad === "S" ? null : setpoint,
+  }), [pad, allWells, chosen, offlineSet, future, nPumps, dq, setpoint]);
+  const requestKey = useMemo(() => stableStringify(request), [request]);
+  const debouncedKey = useDebounced(requestKey, AUTO_RUN_DEBOUNCE_MS);
+
+  const send = (req: PumpDecisionRequest, key: string) => {
+    start.mutate(req, { onSuccess: (r) => setLastJob(jobKey, r.job_id, key) });
+  };
 
   const run = () => {
     if ((!chosen && !allWells) || !dqValid) return;
-    start.mutate({
-      pad, target: allWells ? null : chosen, offline: [...offlineSet].sort(), future,
-      n_pumps: pad === "S" ? nPumps : null, nozzles: NOZZLES, throats: THROATS, delta_pf_bpd: dq,
-      setpoint_psi: pad === "S" ? null : setpoint,
-    }, { onSuccess: (r) => setLastJob(jobKey, r.job_id) });
+    send(request, requestKey);
   };
+
+  useEffect(() => {
+    if (!shouldAutoRun({
+      allWells, offlineSettled, inputsValid: dqValid, busy: running || statusUnknown,
+      requestKey, debouncedKey, lastKey, attemptedKey: attemptedRef.current,
+    })) return;
+    attemptedRef.current = requestKey;
+    send(request, requestKey);
+    // send/start are recreated each render; the keys above carry the intent.
+  }, [allWells, offlineSettled, dqValid, running, statusUnknown, requestKey, debouncedKey, lastKey, request]);
 
   return (
     <div className="space-y-2">
@@ -296,10 +334,11 @@ export function PumpDecisionPanel({ pad }: { pad: "S" | "I" }) {
           {pad === "S"
             ? "The boosters run at 60 Hz, so more PF draw lowers the header for every well."
             : "The booster holds its setpoint until its frontier cannot carry the flow; past that, more PF draw lowers the header for every well."}{" "}
-          Shows what adding or giving back PF
-          costs the other wells in barrels, then every pump size for the chosen well with the header resettled. Tick All
-          wells to see the cost across the whole pad without sizing a pump. Offline ticks
-          and future wells come from the readiness board.
+          With All wells ticked it prices
+          what adding or giving back PF costs the pad in barrels, automatically for every online well, and re-prices when
+          an input here or on the readiness board changes. Untick All wells and pick a well to size one well on demand:
+          the button then prices every pump size for it with the header resettled. Offline ticks and future wells come
+          from the readiness board.
         </p>
         {running && job.data?.progress && <p className="text-xs text-slate-500">{job.data.progress} ({fmtNum(job.data.seconds)}s)</p>}
         {running && !job.data?.progress && <Spinner label="Starting" />}

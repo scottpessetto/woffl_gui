@@ -28,11 +28,9 @@ export function ComparisonCard({
 }) {
   if (!solve) {
     return (
-      <Section title="Modeled vs Actual">
-        <Card>
-          <InfoNote>No solve yet - results appear once the solver converges.</InfoNote>
-        </Card>
-      </Section>
+      <Card>
+        <InfoNote>No solve yet - results appear once the solver converges.</InfoNote>
+      </Card>
     );
   }
 
@@ -68,72 +66,70 @@ export function ComparisonCard({
   });
 
   return (
-    <Section title="Modeled vs Actual">
-      <Card>
-        <table className="w-full border-collapse text-[13px]">
-          <thead>
-            <tr className="border-b border-slate-200 text-slate-600">
-              <th className="px-2 py-1.5 text-left font-semibold"></th>
-              <th className="px-2 py-1.5 text-right font-semibold">Modeled</th>
-              <th className="px-2 py-1.5 text-right font-semibold">Actual</th>
-              <th className="px-2 py-1.5 text-right font-semibold">Delta</th>
-              <th className="px-2 py-1.5 text-right font-semibold">Off by</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => {
-              const na = row.grade.grade === "na";
-              return (
-                <tr key={row.label} className="border-b border-slate-100 last:border-b-0">
-                  <td className="px-2 py-1.5 text-left text-slate-600">
-                    {row.label} ({row.unit})
-                  </td>
-                  <td className="px-2 py-1.5 text-right tabular-nums text-slate-700">
-                    {fmtNum(row.modeled, row.dp)}
-                  </td>
-                  <td
-                    className={clsx(
-                      "px-2 py-1.5 text-right tabular-nums",
-                      na ? "text-slate-400" : "text-slate-700",
-                    )}
-                  >
-                    {row.actual !== null ? fmtNum(row.actual, row.dp) : "-"}
-                  </td>
-                  <td
-                    className={clsx(
-                      "px-2 py-1.5 text-right tabular-nums",
-                      na ? "text-slate-400" : "text-slate-700",
-                    )}
-                  >
-                    {row.delta !== null ? fmtSigned(row.delta, row.dp) : "-"}
-                  </td>
-                  <td
-                    className="px-2 py-1.5 text-right font-semibold tabular-nums"
-                    style={{ color: GRADE_COLORS[row.grade.grade] }}
-                  >
-                    {row.grade.errPct !== null ? `${fmtNum(row.grade.errPct, 1)}%` : "-"}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        <p className="mt-2 text-xs text-slate-500">
-          Throat-entry Mach {fmtNum(solve.mach_te, 3)} ({solve.sonic_status ? "sonic" : "subsonic"})
+    <Card>
+      <table className="w-full border-collapse text-[13px]">
+        <thead>
+          <tr className="border-b border-slate-200 text-slate-600">
+            <th className="px-2 py-1.5 text-left font-semibold"></th>
+            <th className="px-2 py-1.5 text-right font-semibold">Modeled</th>
+            <th className="px-2 py-1.5 text-right font-semibold">Actual</th>
+            <th className="px-2 py-1.5 text-right font-semibold">Delta</th>
+            <th className="px-2 py-1.5 text-right font-semibold">Off by</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const na = row.grade.grade === "na";
+            return (
+              <tr key={row.label} className="border-b border-slate-100 last:border-b-0">
+                <td className="px-2 py-1.5 text-left text-slate-600">
+                  {row.label} ({row.unit})
+                </td>
+                <td className="px-2 py-1.5 text-right tabular-nums text-slate-700">
+                  {fmtNum(row.modeled, row.dp)}
+                </td>
+                <td
+                  className={clsx(
+                    "px-2 py-1.5 text-right tabular-nums",
+                    na ? "text-slate-400" : "text-slate-700",
+                  )}
+                >
+                  {row.actual !== null ? fmtNum(row.actual, row.dp) : "-"}
+                </td>
+                <td
+                  className={clsx(
+                    "px-2 py-1.5 text-right tabular-nums",
+                    na ? "text-slate-400" : "text-slate-700",
+                  )}
+                >
+                  {row.delta !== null ? fmtSigned(row.delta, row.dp) : "-"}
+                </td>
+                <td
+                  className="px-2 py-1.5 text-right font-semibold tabular-nums"
+                  style={{ color: GRADE_COLORS[row.grade.grade] }}
+                >
+                  {row.grade.errPct !== null ? `${fmtNum(row.grade.errPct, 1)}%` : "-"}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="mt-2 text-xs text-slate-500">
+        Throat-entry Mach {fmtNum(solve.mach_te, 3)} ({solve.sonic_status ? "sonic" : "subsonic"})
+      </p>
+      {solve.sonic_status && (
+        <p
+          className="mt-1 text-xs text-amber-700"
+          title="jetpump_solver returns psu_minimize(tsu, ken, ate, IPR, suction fluid) directly on the choked branch - power-fluid pressure is not one of its arguments. Only the throat-entry area, the entrance loss, the IPR and the free gas at suction can move it."
+        >
+          Suction is pinned at the choked-flow floor. Power-fluid pressure, kth, kdi and
+          wellhead pressure cannot move this BHP - only throat area, ken, the IPR and the
+          free gas at suction can.
         </p>
-        {solve.sonic_status && (
-          <p
-            className="mt-1 text-xs text-amber-700"
-            title="jetpump_solver returns psu_minimize(tsu, ken, ate, IPR, suction fluid) directly on the choked branch - power-fluid pressure is not one of its arguments. Only the throat-entry area, the entrance loss, the IPR and the free gas at suction can move it."
-          >
-            Suction is pinned at the choked-flow floor. Power-fluid pressure, kth, kdi and
-            wellhead pressure cannot move this BHP - only throat area, ken, the IPR and the
-            free gas at suction can.
-          </p>
-        )}
-        {washout && <WarnNote className="mt-2">{washout.reason}</WarnNote>}
-        {footer}
-      </Card>
-    </Section>
+      )}
+      {washout && <WarnNote className="mt-2">{washout.reason}</WarnNote>}
+      {footer}
+    </Card>
   );
 }

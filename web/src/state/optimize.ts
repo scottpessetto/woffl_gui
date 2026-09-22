@@ -33,6 +33,11 @@ interface Persisted {
   /** Run-tab key ("S"|"I"|"M"|"CFP") -> last job id, to re-attach after tab
    * switches/reloads. Server jobs expire after ~1 h; a 404 clears it. */
   lastJob: Record<string, string | null>;
+  /** Run-tab key -> stable key of the request behind ``lastJob`` (null =
+   * unknown). Lets an auto-running panel tell "already priced this" from
+   * "inputs changed" across tab switches and reloads. Absent in older
+   * saved states, which restore as {}. */
+  lastJobKey: Record<string, string | null>;
 }
 
 function restore(): Persisted {
@@ -48,12 +53,13 @@ function restore(): Persisted {
         requiredOnline: p.requiredOnline && typeof p.requiredOnline === "object" ? p.requiredOnline : {},
         future: p.future && typeof p.future === "object" ? p.future : {},
         lastJob: p.lastJob && typeof p.lastJob === "object" ? p.lastJob : {},
+        lastJobKey: p.lastJobKey && typeof p.lastJobKey === "object" ? p.lastJobKey : {},
       };
     }
   } catch {
     // storage unavailable - defaults still work in-memory
   }
-  return { pad: null, offline: {}, keepOnline: {}, requiredOnline: {}, future: {}, lastJob: {} };
+  return { pad: null, offline: {}, keepOnline: {}, requiredOnline: {}, future: {}, lastJob: {}, lastJobKey: {} };
 }
 
 function persist(state: OptimizeState): void {
@@ -67,6 +73,7 @@ function persist(state: OptimizeState): void {
         requiredOnline: state.requiredOnline,
         future: state.future,
         lastJob: state.lastJob,
+        lastJobKey: state.lastJobKey,
       }),
     );
   } catch {
@@ -84,7 +91,9 @@ interface OptimizeState extends Persisted {
   removeFuture: (pad: string, name: string) => void;
   updateFuture: (pad: string, name: string, patch: Partial<FutureWell>) => void;
   setRequiredOnline: (pad: string, well: string, required: boolean) => void;
-  setLastJob: (runKey: string, jobId: string | null) => void;
+  /** Store a tab's job id; ``requestKey`` records the request behind it
+   * (cleared with the id, and null when the caller does not track one). */
+  setLastJob: (runKey: string, jobId: string | null, requestKey?: string | null) => void;
 }
 
 const initial = restore();
@@ -142,8 +151,11 @@ export const useOptimizeStore = create<OptimizeState>((set, get) => ({
     persist(get());
   },
 
-  setLastJob: (runKey, jobId) => {
-    set((s) => ({ lastJob: { ...s.lastJob, [runKey]: jobId } }));
+  setLastJob: (runKey, jobId, requestKey = null) => {
+    set((s) => ({
+      lastJob: { ...s.lastJob, [runKey]: jobId },
+      lastJobKey: { ...s.lastJobKey, [runKey]: jobId === null ? null : requestKey },
+    }));
     persist(get());
   },
 }));
