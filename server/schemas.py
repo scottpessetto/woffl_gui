@@ -541,6 +541,23 @@ class MatchHealthRequest(BaseModel):
     pad: Literal["S", "I", "M", "E"]
 
 
+class PumpDecisionRequest(BaseModel):
+    """Cost of PF on a fixed-speed (60 Hz) pad and one well's pump decision
+    (woffl/gui/pad_marginal.py): what +/-``delta_pf_bpd`` of extra PF draw
+    costs the other wells as the header walks the curve, and every pump size
+    for ``target`` resettled on that curve. ``target`` may be an online well
+    (a replacement), an offline well (a restart) or a future well."""
+
+    pad: Literal["S"] = "S"
+    target: str = Field(..., min_length=1, max_length=24)
+    offline: list[str] = []
+    future: list[FutureWellSpec] = []
+    n_pumps: Optional[int] = Field(None, ge=1, le=3)
+    nozzles: list[str] = ["9", "10", "11", "12", "13", "14", "15"]
+    throats: list[str] = ["A", "B", "C", "D"]
+    delta_pf_bpd: float = Field(1000.0, gt=0.0, le=10000.0)
+
+
 class EventCalibrationRequest(BaseModel):
     """Start a multi-point event-calibration job for one well."""
 
@@ -553,7 +570,7 @@ class OptimizeJobStatus(BaseModel):
     meta from pad_optimize; cfp: the moves_summary), JSON-flattened."""
 
     job_id: str
-    kind: Literal["pad", "cfp", "match_health", "event_cal"]
+    kind: Literal["pad", "cfp", "match_health", "event_cal", "pump_decision"]
     status: Literal["running", "done", "error"]
     progress: Optional[str] = None
     result: Optional[dict[str, Any]] = None
@@ -1871,7 +1888,7 @@ class PadWatercutResponse(BaseModel):
 
 
 class SepLossPeriod(BaseModel):
-    """One look-back roll-up. Barrels are a band, never a single number."""
+    """One look-back roll-up with capped scenarios and uncorrected indication."""
 
     label: str
     days: int
@@ -1879,9 +1896,11 @@ class SepLossPeriod(BaseModel):
     downtime_hours: float
     flow_avg: float  # BPD, time-weighted
     wc_avg: float  # %, time-weighted
-    base_avg: float  # %, the analyzer's own film-corrected plateau
-    bbl_upper: float  # meter as read, film-corrected, capped at field oil
-    bbl_lower: float  # oil fraction of the leg capped at max_oil_frac
+    base_avg: float  # %, the assumed rolling excursion reference
+    bbl_upper: float  # reference-relative excursion capped at field oil
+    bbl_lower: float  # additionally capped at max_oil_frac of liquid flow
+    bbl_raw: float = 0.0  # uncorrected indicated volume, not a proven loss
+    bbl_reference_removed: float = 0.0  # volume removed by the plateau assumption
     bopd_upper: float
     bopd_lower: float
     pct_field_upper: Optional[float] = None
@@ -1899,6 +1918,8 @@ class SepLossDay(BaseModel):
     covered_hours: float  # how much of the day the window spans
     bbl_upper: float
     bbl_lower: float
+    bbl_raw: float = 0.0
+    bbl_reference_removed: float = 0.0
     pct_field_upper: Optional[float] = None
     pct_field_lower: Optional[float] = None
     upset_hours: float
@@ -1919,9 +1940,8 @@ class SepLossEvent(BaseModel):
     level_avg: Optional[float] = None
     level_sp_avg: Optional[float] = None  # that loop's setpoint, %
     level_dev_avg: Optional[float] = None  # level - setpoint, points
-    # "at setpoint" is the interesting one: level held where it was asked and
-    # the water leg ran oil anyway, so separation failed, not level control.
-    kind: Literal["level loss", "off setpoint", "at setpoint"]
+    # Level signatures describe indications, without establishing root cause.
+    kind: Literal["level loss", "off setpoint", "at setpoint", "unknown"]
 
 
 class SepOilLossResponse(BaseModel):
@@ -1956,21 +1976,39 @@ class SepOilLossDayResponse(BaseModel):
 
 
 class OiwSampleDay(BaseModel):
-    """One Alaska calendar day of operator grab samples at one location.
-
-    ``bbl`` equals ``bopd_mean``: a daily rate held for one day is that many
-    barrels. Both are the time-UNWEIGHTED mean of the day's per-sample rates -
-    irregular manual grabs carry no duty cycle to weight with.
-    """
+    """Sample-day means; grabs do not establish daily barrel totals."""
 
     date: str  # YYYY-MM-DD, Alaska calendar
     samples: int
     ppm_mean: float  # ppm oil in water
     ppm_min: float
     ppm_max: float
-    bopd_mean: float  # ppm x water_rate_bpd / 1e6, BOPD
-    bbl: float  # bbl over the day
+    bopd_mean: Optional[float] = None  # sample-implied rate on the declared basis
+    bbl: Optional[float] = None  # withheld: grab samples do not establish daily volumes
     location: str
+
+
+class OiwSampleComparison(BaseModel):
+    source_row: int
+    date: str
+    timestamp: Optional[str] = None
+    location: str
+    concentration: float
+    oil_pct: Optional[float] = None
+    sampler: str = ""
+    method: str = ""
+    notes: str = ""
+    status: str
+    comparison_time: Optional[str] = None
+    wc_age_minutes: Optional[float] = None
+    flow_age_minutes: Optional[float] = None
+    meter_wc_pct: Optional[float] = None
+    meter_oil_pct: Optional[float] = None
+    flow_bpd: Optional[float] = None
+    sample_oil_bopd: Optional[float] = None
+    meter_oil_bopd: Optional[float] = None
+    error_pts: Optional[float] = None
+    wc_range_pts: Optional[float] = None
 
 
 class OiwSamplesResponse(BaseModel):
@@ -1986,6 +2024,15 @@ class OiwSamplesResponse(BaseModel):
     sheet: str
     location: str
     water_rate_bpd: float  # BPD basis the ppm was converted on
+    units: Literal["unknown", "ppmv", "mg/L"] = "unknown"
+    oil_density_kgm3: Optional[float] = None
+    rate_basis: Literal["liquid", "water"] = "liquid"
+    comparison_days: Optional[int] = None
+    lag_minutes: float = 0.0
+    samples: list[OiwSampleComparison] = Field(default_factory=list)
+    paired_count: int = 0
+    stable_pair_count: int = 0
+    median_error_pts: Optional[float] = None
     locations_available: list[str] = Field(default_factory=list)
     first_date: Optional[str] = None  # YYYY-MM-DD
     last_date: Optional[str] = None

@@ -12,12 +12,14 @@ import {
   LegendComponent,
   MarkAreaComponent,
   MarkLineComponent,
+  MarkPointComponent,
   TitleComponent,
   ToolboxComponent,
   TooltipComponent,
   VisualMapComponent,
 } from "echarts/components";
 import * as echarts from "echarts/core";
+import { LabelLayout } from "echarts/features";
 import { SVGRenderer } from "echarts/renderers";
 
 echarts.use([
@@ -30,12 +32,14 @@ echarts.use([
   LegendComponent,
   VisualMapComponent,
   MarkLineComponent,
+  MarkPointComponent,
   MarkAreaComponent,
   GraphicComponent,
   DataZoomComponent,
   ToolboxComponent,
   TitleComponent,
   SVGRenderer,
+  LabelLayout,
 ]);
 
 export { echarts };

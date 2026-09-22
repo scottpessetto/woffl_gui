@@ -22,6 +22,7 @@ from server.services import (
     optimizer_runs,
     pad_curves,
     plan_robustness,
+    pump_decision,
 )
 
 router = APIRouter(prefix="/optimize", tags=["optimize"])
@@ -71,6 +72,14 @@ def start_event_calibration(req: schemas.EventCalibrationRequest) -> Any:
     return {"job_id": event_calibration.start_event_calibration(req.well, req.hydraulics_model)}
 
 
+@router.post("/pump-decision", response_model=schemas.OptimizeRunStarted)
+def start_pump_decision(req: schemas.PumpDecisionRequest) -> Any:
+    """Price every pump size for one well against the pad's marginal PF
+    water cut, with the fixed-curve station at its max flow. Read-only
+    compute; poll GET /optimize/run/{job_id}."""
+    return {"job_id": pump_decision.start(req)}
+
+
 @router.get("/run/{job_id}", response_model=schemas.OptimizeJobStatus)
 def run_status(job_id: str) -> Any:
     """Job status; `result` populates when status becomes done."""
@@ -78,6 +87,7 @@ def run_status(job_id: str) -> Any:
         optimizer_runs.get_job(job_id)
         or match_health.get_job(job_id)
         or event_calibration.get_job(job_id)
+        or pump_decision.get_job(job_id)
     )
     if job is None:
         raise HTTPException(

@@ -629,7 +629,7 @@ export interface CfpRunResult {
 
 export interface OptimizeJobStatus {
   job_id: string;
-  kind: "pad" | "cfp" | "match_health" | "event_cal";
+  kind: "pad" | "cfp" | "match_health" | "event_cal" | "pump_decision";
   status: "running" | "done" | "error";
   progress: string | null;
   result:
@@ -638,6 +638,7 @@ export interface OptimizeJobStatus {
     | CfpRunResult
     | MatchHealthResult
     | EventCalibrationResult
+    | PumpDecisionResult
     | null;
   error: string | null;
   started_at: string;
@@ -649,6 +650,91 @@ export interface OptimizeRunStarted {
 }
 
 /** POST /optimize/match-health - start a scorecard job for one pad. */
+/** POST /optimize/pump-decision - mirrors server/schemas.py PumpDecisionRequest. */
+export interface PumpDecisionRequest {
+  pad: "S";
+  target: string;
+  offline: string[];
+  future: OptimizeRunRequest["future"];
+  n_pumps: number | null;
+  nozzles: string[];
+  throats: string[];
+  delta_pf_bpd: number;
+}
+
+export interface PumpDecisionWellImpact {
+  well: string;
+  d_oil: number;
+  d_pf: number;
+}
+
+export interface PumpDecisionStep {
+  header_psi: number;
+  d_header_psi: number;
+  others_d_oil: number;
+  others_d_pf: number;
+  lambda: number; // BOPD per BPD of the extra draw (lost when adding, gained when removing)
+  wells: PumpDecisionWellImpact[];
+}
+
+export interface PumpDecisionSensitivity {
+  d_q: number;
+  add: PumpDecisionStep | null;
+  remove: PumpDecisionStep | null;
+  lambda: number | null;
+  pfwc: number | null; // 1 / (1 + lambda) for the added draw
+  remove_lambda: number | null;
+  remove_pfwc: number | null;
+}
+
+export interface PumpDecisionSweepPoint {
+  d_q: number;
+  header_psi: number;
+  d_header_psi: number;
+  others_d_oil: number;
+  others_d_pf: number;
+  wells: Record<string, number>; // well -> oil change, BOPD
+  extrapolated: boolean;
+}
+
+export interface PumpDecisionCandidate {
+  pump: string;
+  pump_state: "installed" | "replacement";
+  oil: number;
+  pf: number;
+  header_psi: number | null;
+  d_header_psi: number;
+  d_oil: number;
+  d_pf: number;
+  inc_pfwc: number | null;
+  oil_per_mbpd: number | null;
+  others_d_oil: number;
+  net_oil: number | null;
+  beats_marginal: boolean | null;
+  extrapolated: boolean;
+}
+
+export interface PumpDecisionResult {
+  pad: string;
+  target: string;
+  target_role: "online" | "offline" | "future";
+  physics_model: string;
+  n_pumps: number | null;
+  header_psi: number;
+  model_pf_bpd: number;
+  model_oil_bopd: number;
+  test_pf_bpd: number;
+  levels_psi: number[];
+  sensitivity: PumpDecisionSensitivity;
+  /** Extra draw -span..+span, each resettled on the curve (the chart). */
+  sweep: PumpDecisionSweepPoint[];
+  baseline: { pump: string; oil: number; pf: number; test_oil: number | null; test_pf: number | null } | null;
+  current_pump: string | null;
+  candidates: PumpDecisionCandidate[];
+  wells_today: { well: string; oil: number; pf: number; test_oil: number | null; test_pf: number | null }[];
+  notes: string[];
+}
+
 export interface MatchHealthRequest {
   pad: RunPad;
 }
@@ -1908,7 +1994,7 @@ export interface PadWatercutResponse {
 }
 
 // Separator Oil Loss - mirrors schemas.SepLossPeriod / SepLossEvent /
-// SepOilLossResponse. Every barrel figure is a band (lower, upper).
+// SepOilLossResponse. Raw indication and two capped excursion scenarios.
 
 /** One look-back roll-up. Barrels are a band, never a single number. */
 export interface SepLossPeriod {
@@ -1918,9 +2004,11 @@ export interface SepLossPeriod {
   downtime_hours: number;
   flow_avg: number; // BPD, time-weighted
   wc_avg: number; // %, time-weighted
-  base_avg: number; // %, the analyzer's own film-corrected plateau
-  bbl_upper: number; // meter as read, film-corrected, capped at field oil
-  bbl_lower: number; // oil fraction of the leg capped at max_oil_frac
+  base_avg: number; // %, the assumed rolling excursion reference
+  bbl_upper: number; // reference-relative excursion capped at field oil
+  bbl_lower: number; // additionally capped at max_oil_frac of liquid flow
+  bbl_raw: number;
+  bbl_reference_removed: number;
   bopd_upper: number;
   bopd_lower: number;
   pct_field_upper: number | null; // % of field oil production
@@ -1936,6 +2024,8 @@ export interface SepLossDay {
   covered_hours: number; // how much of the day the window spans
   bbl_upper: number;
   bbl_lower: number;
+  bbl_raw: number;
+  bbl_reference_removed: number;
   pct_field_upper: number | null; // blank on a day that barely ran
   pct_field_lower: number | null;
   upset_hours: number;
@@ -1957,9 +2047,8 @@ export interface SepLossEvent {
   level_avg: number | null; // %
   level_sp_avg: number | null; // that loop's setpoint, %
   level_dev_avg: number | null; // level - setpoint, points
-  // "at setpoint" is the interesting one: level held where it was asked and
-  // the water leg ran oil anyway, so separation failed, not level control.
-  kind: "level loss" | "off setpoint" | "at setpoint";
+  // Level signatures describe indications, without establishing root cause.
+  kind: "level loss" | "off setpoint" | "at setpoint" | "unknown";
   // DataTable rows carry an index signature (same as WellTestRow, EquivalentRow).
   [key: string]: unknown;
 }
@@ -2007,8 +2096,8 @@ export interface OiwSampleDay {
   ppm_mean: number; // ppm oil in water
   ppm_min: number;
   ppm_max: number;
-  bopd_mean: number; // ppm x water_rate_bpd / 1e6, BOPD
-  bbl: number; // bbl over the day
+  bopd_mean: number | null;
+  bbl: number | null;
   location: string;
 }
 
@@ -2020,12 +2109,45 @@ export interface OiwSamplesResponse {
   sheet: string;
   location: string;
   water_rate_bpd: number; // BPD basis the ppm was converted on
+  units: "unknown" | "ppmv" | "mg/L";
+  oil_density_kgm3: number | null;
+  rate_basis: "liquid" | "water";
+  comparison_days: number | null;
+  lag_minutes: number;
+  samples: OiwSampleComparison[];
+  paired_count: number;
+  stable_pair_count: number;
+  median_error_pts: number | null;
   locations_available: string[];
   first_date: string | null; // YYYY-MM-DD
   last_date: string | null;
   sample_count: number; // samples at `location`, not rows in the sheet
   daily: OiwSampleDay[];
   notes: string[];
+}
+
+export interface OiwSampleComparison {
+  source_row: number;
+  date: string;
+  timestamp: string | null;
+  location: string;
+  concentration: number;
+  oil_pct: number | null;
+  sampler: string;
+  method: string;
+  notes: string;
+  status: string;
+  comparison_time: string | null;
+  wc_age_minutes: number | null;
+  flow_age_minutes: number | null;
+  meter_wc_pct: number | null;
+  meter_oil_pct: number | null;
+  flow_bpd: number | null;
+  sample_oil_bopd: number | null;
+  meter_oil_bopd: number | null;
+  error_pts: number | null;
+  wc_range_pts: number | null;
+  [key: string]: unknown;
 }
 
 /** Every tool job shares one envelope. `result` shape is per-tool. */

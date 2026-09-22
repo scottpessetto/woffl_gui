@@ -37,6 +37,7 @@ import type {
   PropHistoryResponse,
   PropLockRequest,
   PropLockResponse,
+  PumpDecisionRequest,
   PumpCurveResponse,
   ResponseHistoryResponse,
   SaveIprRequest,
@@ -464,6 +465,14 @@ export const useStartMatchHealth = () =>
       post<OptimizeRunStarted>("/optimize/match-health", req),
   });
 
+/** Start a single-well pump-decision job against the pad's marginal PF
+ * water cut (background job server-side); poll it with useOptimizeJob. */
+export const useStartPumpDecision = () =>
+  useMutation({
+    mutationFn: (req: PumpDecisionRequest) =>
+      post<OptimizeRunStarted>("/optimize/pump-decision", req),
+  });
+
 /** Gaugeless test match (synchronous compute, a few seconds): infer the
  * anchor BHP from the test's PF rate and fit kth/kdi. Nothing persisted. */
 export const useMatchTest = () =>
@@ -730,6 +739,11 @@ export interface OiwSamplesArgs {
   location: string;
   waterRateBpd: number;
   sheet: string;
+  units: "unknown" | "ppmv" | "mg/L";
+  oilDensityKgm3?: number;
+  rateBasis: "liquid" | "water";
+  days: number;
+  lagMinutes: number;
 }
 
 /** Parse an operator OIW grab-sample workbook into daily sampled rates.
@@ -743,7 +757,12 @@ export const useOiwSamples = () =>
         location: args.location,
         water_rate_bpd: String(args.waterRateBpd),
         sheet: args.sheet,
+        units: args.units,
+        rate_basis: args.rateBasis,
+        days: String(args.days),
+        lag_minutes: String(args.lagMinutes),
       });
+      if (args.oilDensityKgm3 !== undefined) query.set("oil_density_kgm3", String(args.oilDensityKgm3));
       return upload<OiwSamplesResponse>(
         `/tools/sep-oil-loss/samples?${query.toString()}`,
         form,

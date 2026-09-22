@@ -1,2 +1,5 @@
 Well,tubing_out_dia,tubing_inn_dia,tubing_absruff,casing_out_dia,casing_inn_dia,casing_absruff,jpump_md,jpfric_nozzle,jpfric_throat,jpfric_diffuser,jpfric_entry,form_oil_api,form_gas_sg,form_wat_sg,resvr_bubb,resvr_press,resvr_temp
 MPS-67,4.5,3.958,0.0006,7,6.276,0.0006,7796,0.2,0.2,0.2,0.2,21,0.85,1.02,1850,1500,75
+MPS-69,4.5,3.958,0.0006,7,6.276,0.0006,7449,0.2,0.2,0.2,0.2,21,0.65,1.0,1600,1800,82
+MPS-70,3.5,2.992,0.0006,9.625,8.835,0.0006,7032,0.2,0.2,0.2,0.2,21,0.65,1.0,1600,1800,82
+MPE-43,3.5,2.992,0.0006,9.625,8.835,0.0006,8072,0.2,0.2,0.2,0.2,17.5,0.65,1.0,1620,1800,87

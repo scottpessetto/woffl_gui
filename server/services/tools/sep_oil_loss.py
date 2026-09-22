@@ -1,57 +1,23 @@
-"""Separator Oil Loss - oil leaving with the first-stage water leg.
+"""First-stage water-leg carryover scenarios from four historian tags.
 
-Four SCADA tags carry the whole question:
+MPU_FI_5365 is assumed to be total liquid BPD on the water outlet;
+MPU_AI_5317 supplies volume water cut (%). MPU_LIC_5365CV1 and
+MPU_LC5365SP1 are the controlled level indication and its setpoint.
 
-* ``MPU_FI_5365`` - flow off the first-stage separator water leg, BPD. Its
-  30-day average (~71,000 BPD) matches total field water production
-  (~73,000 BWPD), so this leg is essentially all of the field's produced
-  water.
-* ``MPU_AI_5317`` - Red Eye water-cut analyzer on that same stream, percent.
-* ``MPU_LIC_5365CV1`` - the CONTROLLED level indication, percent: the level
-  the loop is acting on, on whichever measurement method is selected. This is
-  the level channel, NOT ``MPU_LI_5365A``. Over 35 days the LIC sits a mean
-  3.98 points from its setpoint and correlates 0.71 with it, against 14.53 and
-  0.35 for LI_5365A, which the loop is not using. The difference is not
-  cosmetic: on LI_5365A two thirds of upsets looked like lost level, and on
-  the channel actually in control only 5.5 h of 718 sit below 20%.
-* ``MPU_LC5365SP1`` - that loop's level setpoint, percent. Carried so an
-  event can be told apart as lost inventory, held-but-under-setpoint, or -
-  the interesting case - level exactly where it was asked to be while the
-  water leg still ran oil.
+The raw integral is Q * (1 - WC/100). The excursion integral references
+WC to a causal trailing 24-hour p95 on a fixed minute clock (80-100%).
+Its subtraction may remove instrument bias OR sustained real carryover;
+the meter alone cannot distinguish them. Always expose the raw volume and
+reference subtraction. The two capped scenarios are sensitivity cases,
+not confidence bounds or physical bounds during inventory transients.
 
-Oil leaving with the water is ``flow x (1 - wc)``, integrated in time. Three
-things make the naive integral wrong, and this module exists to handle them.
+Use every tag transition and split intervals at Alaska midnight. Exclude
+invalid WC/flow, flow <=1,000 BPD and flow report ages >=15 minutes. Hold
+exception-reported WC; without instrument quality tags this cannot establish
+meter health. Event level labels describe indications, not root causes.
 
-**1. The analyzer films over.** A coated Red Eye stops reaching 100% and sits
-flat a few points low, so a straight ``100 - wc`` bills the film as oil
-forever. The fix is to reference every reading against the meter's OWN recent
-clean plateau: a trailing 24 h high quantile of water cut (``_film_baseline``).
-Only departures BELOW that plateau are charged. Over the validation window the
-film accounted for 27,333 bbl of a 138,807 bbl raw integral - 20% of it.
-
-**2. The plant goes down.** When the separator is off, flow reads negative
-(meter zero drift) and the analyzer reads a hard 0%. Gating on FLOW - never on
-the water-cut value - throws those hours out without ever second-guessing a
-low reading that is real. Deep water-cut drops ARE real here: the analyzer
-sweeps continuously through 90 -> 60 -> 30 -> 5 -> 0 and back over minutes,
-which is an interface oscillation at the water outlet, not a railed
-instrument.
-
-**3. The meter-implied rate can exceed the field.** During a bad excursion the
-integral implies 70,000-87,000 BOPD out the water leg, which is more oil than
-Milne Point produces (50,000-65,000 BOPD sold). All of the incoming oil
-short-circuiting the vessel is the absolute physical ceiling, so the answer is
-reported as a BAND, never a single number:
-
-* ``bbl_upper`` - meter as read, film-corrected, with the instantaneous oil
-  rate capped at the field oil rate.
-* ``bbl_lower`` - the same integral with the oil FRACTION of the water leg
-  capped at ``max_oil_frac``.
-
-Both are reported against field production so an implausible number announces
-itself instead of being quoted.
-
-Read-only. One historian query per (days) window, TTL-cached.
+Reads are TTL-cached. No production writes. See
+docs/separator_sample_workflow_2026-09-14.md for validation and limitations.
 """
 
 from __future__ import annotations
@@ -124,16 +90,10 @@ def _raw(days: int) -> pd.DataFrame:
 
 
 def _grid(raw: pd.DataFrame) -> pd.DataFrame:
-    """Step-hold the analyzer, level and setpoint onto the flow meter's clock.
+    """Step-hold every tag onto the union clock, retaining missing coverage.
 
-    The flow tag is the fastest and most regular of the four, so it sets the
-    integration clock. The others hold their last reported value, which is
-    what an exception-reported historian means.
-
-    Returns:
-        df (DataFrame): ``t`` (Alaska tz), ``flow`` (BPD), ``wc`` (%),
-            ``level`` (%), ``level_sp`` (%), ``dt_h`` (hours this row
-            represents, 0 when the separator is down), ``valid`` (bool).
+    Returns a frame of local timestamps, flow (BPD), WC/level/setpoint (%),
+    valid flags and forward integration durations (hours).
     """
     columns = ["t", "flow", "wc", "level", "level_sp", "dt_h", "valid"]
     if raw.empty:
@@ -145,9 +105,19 @@ def _grid(raw: pd.DataFrame) -> pd.DataFrame:
         sub["t"] = pd.to_datetime(sub["t"], utc=True).dt.tz_convert(FIELD_TZ)
         return sub
 
-    grid = one(FLOW_TAG, "flow")
-    if grid.empty:
+    flow = one(FLOW_TAG, "flow")
+    if flow.empty:
         return pd.DataFrame(columns=columns)
+    # Integrate on every reported change, including a WC excursion entirely
+    # between two flow reports. Split at field midnight for exact daily totals.
+    lo, hi = flow["t"].min(), flow["t"].max()
+    times = pd.DatetimeIndex(pd.to_datetime(raw["t"], utc=True)).tz_convert(FIELD_TZ)
+    midnights = pd.date_range(lo.normalize(), hi.normalize() + pd.DateOffset(days=1), freq="D")
+    expires = pd.DatetimeIndex(flow["t"] + pd.Timedelta(hours=MAX_SAMPLE_HOURS))
+    times = times.union(midnights).union(expires).unique().sort_values()
+    grid = pd.DataFrame({"t": times[(times >= lo) & (times <= hi)]})
+    flow["flow_reported"] = flow["t"]
+    grid = pd.merge_asof(grid, flow, on="t", direction="backward")
     for tag, name in ((WC_TAG, "wc"), (LEVEL_TAG, "level"), (LEVEL_SP_TAG, "level_sp")):
         other = one(tag, name)
         if other.empty:
@@ -155,37 +125,38 @@ def _grid(raw: pd.DataFrame) -> pd.DataFrame:
         else:
             grid = pd.merge_asof(grid, other, on="t", direction="backward")
 
-    grid = grid.dropna(subset=["wc"]).reset_index(drop=True)
-    if grid.empty:
-        return grid.assign(dt_h=[], valid=[])
-
     span = grid["t"].diff().dt.total_seconds().div(3600.0).shift(-1)
     grid["dt_h"] = span.fillna(0.0).clip(0.0, MAX_SAMPLE_HOURS)
-    grid["valid"] = grid["flow"] > FLOW_MIN_BPD
+    flow_age = (grid["t"] - grid["flow_reported"]).dt.total_seconds() / 3600.0
+    grid["valid"] = (
+        np.isfinite(grid["flow"]) & (grid["flow"] > FLOW_MIN_BPD)
+        & np.isfinite(grid["wc"]) & grid["wc"].between(0.0, 100.0)
+        & (flow_age < MAX_SAMPLE_HOURS)
+    )
+    for name in ("level", "level_sp"):
+        grid[name] = grid[name].where(grid[name].between(0.0, 100.0))
     grid.loc[~grid["valid"], "dt_h"] = 0.0
     return grid
 
 
 def _film_baseline(grid: pd.DataFrame) -> np.ndarray:
-    """The analyzer's own recent clean reading, percent water.
-
-    A trailing high quantile over valid samples only. Filmed periods pull it
-    down to the plateau the meter can actually reach, which is exactly the
-    datum an excursion should be measured against.
-    """
+    """Causal rolling excursion reference (%); an oil-free plateau is unproven."""
     if grid.empty:
         return np.zeros(0)
     indexed = grid.set_index("t")
-    valid_wc = indexed["wc"].where(indexed["valid"])
+    # Fixed minute support keeps exception-report frequency from weighting
+    # the reference. Only prior observations contribute; never backfill it
+    # from future clean readings. This is an excursion reference, not proof
+    # that the plateau is oil-free or that a change was caused by filming.
+    clock = pd.date_range(indexed.index[0], indexed.index[-1], freq="1min")
+    sampled = indexed.reindex(clock, method="ffill")
+    valid_wc = sampled["wc"].where(sampled["valid"])
     rolled = (
-        valid_wc.rolling(BASELINE_WINDOW, min_periods=20)
+        valid_wc.rolling(BASELINE_WINDOW, min_periods=1)
         .quantile(BASELINE_QUANTILE)
         .clip(BASELINE_FLOOR, BASELINE_CEIL)
     )
-    # bfill covers the lead-in before the first full window; a well with no
-    # valid samples at all falls back to a perfect meter, which charges the
-    # most conservative (largest) loss rather than silently zeroing it.
-    return rolled.bfill().fillna(BASELINE_CEIL).to_numpy()
+    return rolled.reindex(indexed.index, method="ffill").fillna(BASELINE_CEIL).to_numpy()
 
 
 # ---------------------------------------------------------------------------
@@ -196,19 +167,24 @@ def _film_baseline(grid: pd.DataFrame) -> np.ndarray:
 def _oil_rates(
     grid: pd.DataFrame, field_oil_bopd: float, max_oil_frac: float
 ) -> pd.DataFrame:
-    """Add the film baseline and both bounds of the oil-in-water rate, BOPD."""
+    """Add raw indication, reference subtraction and ordered scenarios (BOPD)."""
     out = grid.copy()
     out["base"] = _film_baseline(out)
-    # Oil fraction the analyzer implies, referenced to its own clean plateau.
+    # Excursion fraction relative to the assumed reference.
     deficit = ((out["base"] - out["wc"]) / 100.0).clip(lower=0.0)
     out["oil_upper"] = (out["flow"] * deficit).clip(upper=field_oil_bopd)
     out["oil_lower"] = out["flow"] * deficit.clip(upper=max_oil_frac)
-    out.loc[~out["valid"], ["oil_upper", "oil_lower"]] = 0.0
+    out["oil_lower"] = np.minimum(out["oil_lower"], out["oil_upper"])
+    out["oil_raw"] = out["flow"] * (1.0 - out["wc"] / 100.0)
+    out["oil_reference_removed"] = out["oil_raw"] - out["flow"] * deficit
+    out.loc[~out["valid"], ["oil_upper", "oil_lower", "oil_raw", "oil_reference_removed"]] = 0.0
     return out
 
 
 def _tw_mean(values: pd.Series, weights: pd.Series) -> Optional[float]:
     """Time-weighted mean, or None when the window carries no valid time."""
+    keep = np.isfinite(values) & np.isfinite(weights) & (weights > 0)
+    values, weights = values[keep], weights[keep]
     total = float(weights.sum())
     if total <= 0:
         return None
@@ -235,7 +211,7 @@ def _events(frame: pd.DataFrame) -> list[dict[str, Any]]:
     * ``off setpoint`` - the loop is holding well under what it is calling
       for, so it is losing the level without losing the vessel.
     * ``at setpoint`` - level held where the operator asked and the stream
-      STILL went oil. Not a level-control problem; separation itself failed.
+      STILL went oil. This signature alone does not establish the cause.
     """
     if frame.empty:
         return []
@@ -270,7 +246,9 @@ def _events(frame: pd.DataFrame) -> list[dict[str, Any]]:
 
         if level_min is not None and level_min < LEVEL_LOSS_PCT:
             kind = "level loss"
-        elif deviation is not None and deviation < -LEVEL_SP_BAND_PTS:
+        elif deviation is None or block[["level", "level_sp"]].isna().any().any():
+            kind = "unknown"
+        elif abs(deviation) > LEVEL_SP_BAND_PTS:
             kind = "off setpoint"
         else:
             kind = "at setpoint"
@@ -278,7 +256,7 @@ def _events(frame: pd.DataFrame) -> list[dict[str, Any]]:
         events.append(
             {
                 "start": block["t"].iloc[0].isoformat(),
-                "end": block["t"].iloc[-1].isoformat(),
+                "end": (block["t"].iloc[-1] + pd.Timedelta(hours=block["dt_h"].iloc[-1])).isoformat(),
                 "hours": round(hours, 3),
                 "wc_min": round(float(block["wc"].min()), 2),
                 "wc_avg": round(float(_tw_mean(block["wc"], weights) or 0.0), 2),
@@ -296,6 +274,15 @@ def _events(frame: pd.DataFrame) -> list[dict[str, Any]]:
     return events
 
 
+def _clip_intervals(frame: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    """Intersect integration intervals with a requested half-open window."""
+    out = frame.copy()
+    left = out["t"].clip(lower=start)
+    right = (out["t"] + pd.to_timedelta(out["dt_h"], unit="h")).clip(upper=end)
+    out["dt_h"] = ((right - left).dt.total_seconds() / 3600.0).clip(lower=0.0)
+    return out[out["dt_h"] > 0].copy()
+
+
 def _period_rows(
     frame: pd.DataFrame, events: list[dict[str, Any]], field_oil_bopd: float, window_days: int
 ) -> list[dict[str, Any]]:
@@ -310,7 +297,7 @@ def _period_rows(
         if days > window_days:
             continue
         cut = end - pd.Timedelta(days=days)
-        block = frame[frame["t"] > cut]
+        block = _clip_intervals(frame, cut, end)
         hours = float(block["dt_h"].sum())
         if hours <= 0:
             continue
@@ -329,6 +316,8 @@ def _period_rows(
                 "base_avg": round(float(_tw_mean(block["base"], block["dt_h"]) or 0.0), 2),
                 "bbl_upper": round(upper, 1),
                 "bbl_lower": round(lower, 1),
+                "bbl_raw": round(_barrels(block["oil_raw"], block["dt_h"]), 1),
+                "bbl_reference_removed": round(_barrels(block["oil_reference_removed"], block["dt_h"]), 1),
                 "bopd_upper": round(upper / (hours / 24.0), 1),
                 "bopd_lower": round(lower / (hours / 24.0), 1),
                 "pct_field_upper": round(100.0 * upper / field_bbl, 2) if field_bbl > 0 else None,
@@ -351,7 +340,7 @@ def _daily_rows(
 
     ``covered_hours`` is how much of the day the window actually spans, so a
     clipped first or last day is not read as a quiet one. ``hours`` is the
-    running time inside that; the difference is separator downtime.
+    running time inside that; the difference includes downtime and missing/invalid data.
 
     Args:
         frame (DataFrame): The rate-annotated grid.
@@ -396,6 +385,8 @@ def _daily_rows(
                 "covered_hours": round(covered, 2),
                 "bbl_upper": round(upper, 1),
                 "bbl_lower": round(lower, 1),
+                "bbl_raw": round(_barrels(block["oil_raw"], block["dt_h"]), 1),
+                "bbl_reference_removed": round(_barrels(block["oil_reference_removed"], block["dt_h"]), 1),
                 "pct_field_upper": round(100.0 * upper / field_bbl, 2) if field_bbl > 0 else None,
                 "pct_field_lower": round(100.0 * lower / field_bbl, 2) if field_bbl > 0 else None,
                 "upset_hours": round(float(block.loc[upset.loc[block.index], "dt_h"].sum()), 2),
@@ -429,7 +420,7 @@ def _series(frame: pd.DataFrame) -> dict[str, list]:
         work = work.iloc[keep]
 
     def col(name: str, dp: int) -> list[Optional[float]]:
-        return [None if pd.isna(v) else round(float(v), dp) for v in work[name]]
+        return [None if not np.isfinite(v) else round(float(v), dp) for v in work[name]]
 
     return {
         "t": [ts.isoformat() for ts in work["t"]],
@@ -531,15 +522,14 @@ def sep_oil_loss(
 
     Args:
         days (int): Trailing window, 1-90.
-        field_oil_bopd (float): Field oil production used as the physical
-            ceiling on the water leg and as the denominator for the
+        field_oil_bopd (float): Field oil production used as the scenario
+            cap on the water leg and as the denominator for the
             percent-of-field columns. Milne sells 50,000-65,000 BOPD; the
             default takes the top of that range, which raises the rate cap
             (a larger upper bound) and lowers every percent-of-field share.
         max_oil_frac (float): Ceiling on the oil FRACTION of the water leg for
             the conservative bound, 0-1. Defaults to 0.10 - a leg running more
-            than a tenth oil is already an upset, so a looser cap stops being a
-            floor and just tracks the as-read meter.
+            than a tenth oil is already an upset, so a looser cap approaches the field-capped scenario. Neither is a proven bound.
 
     Returns:
         payload (dict): Matching schemas.SepOilLossResponse.

@@ -1,40 +1,16 @@
-"""Operator grab-sample OIW - the CFP sample log, rolled up to field days.
+"""Stateless CSV/XLSX OIW log parsing and upstream sample comparisons.
 
-The operators keep a spreadsheet of manual oil-in-water grab samples off the
-CFP water system: one row per sample, a date, a clock time, a sample point,
-a lab ppm and the sampler's name. This module turns one uploaded copy of that
-workbook into a daily sampled oil rate so it can be drawn beside the
-calculated first-stage loss band (services/tools/sep_oil_loss.py).
+Preserve sample time, point, lab method, sampler and notes. Units must be
+declared: ppmv is volume/volume; mg/L requires oil density. Unknown units
+retain concentration but withhold oil fractions and rates. Point grabs do
+not establish daily volumes. Daily concentration/rate means describe only
+the collected samples; the entered flow is an explicit hypothetical basis.
 
-**The math.** A grab sample is a concentration, so the rate it implies is
-
-    oil_bopd = ppm * water_rate_bpd / 1e6
-
-``water_rate_bpd`` is a CALLER input, echoed back in the response, because
-the workbook's own ``(BOPD)`` column is a hardcoded 95,000 BWPD basis that
-nobody maintains - it is blank on most recent rows and wrong whenever the
-plant is not at 95,000. Nothing here reads that column.
-
-**The roll-up.** Samples are irregular manual grabs, a handful a day at best,
-so the day's rate is the plain unweighted mean of its samples' rates. Time
-weighting a set of grabs would invent a duty cycle the log does not carry.
-Days are Alaska calendar days, the same day definition the loss tool uses;
-the workbook's Date column already IS the operator's local calendar date, so
-no zone conversion is applied to it.
-
-**The caveat, which is the whole reason to be careful with this number.**
-The only location still being sampled, ``P-5417C``, sits DOWNSTREAM of the
-deoilers (V-5419 / V-5421 / V-5422 / V-5425). The calculated band is the
-first-stage water leg UPSTREAM of them, off ``MPU_AI_5317``. A baseline of
-1,000-2,500 ppm at 71,000 BPD is about 106 BOPD, far below the calculated
-lower bound - and that difference is mostly deoiler RECOVERY, not
-measurement error. ``V-5317`` is the one location that samples the same
-stream the calculated band describes. Every response carries that caveat in
-``notes`` and the page renders it, so the two series are never presented as
-directly comparable.
-
-Read-only and stateless: the upload is parsed in memory and returned. Nothing
-is written to Databricks or to disk.
+V-5317 is the documented first-stage stream; P-5417C is downstream of the
+deoilers. Other sample locations remain unverified. Comparison uses only
+same-stream samples with confirmed units and recent backward historian
+pairs. No calibration or process settings are changed, and uploads are not
+stored server-side. See docs/separator_sample_workflow_2026-09-14.md.
 """
 
 from __future__ import annotations
@@ -44,6 +20,8 @@ import logging
 from typing import Any, Optional
 
 import pandas as pd
+
+from server.services.tools.oiw_validation import oil_fraction, sample_timestamp, compare_samples
 
 log = logging.getLogger("woffl.web.tools.oiw_samples")
 
@@ -64,7 +42,7 @@ HEADER_ROW = 1
 # out as a sentence, so every lookup goes through the normalized map.
 DATE_KEYS = ("date", "date ", "sample date")
 LOCATION_KEYS = ("location", "sample point")
-PPM_KEYS = ("ppm", "oiw ppm")
+PPM_KEYS = ("ppm", "oiw ppm", "concentration", "result", "mg/l")
 
 # Junk guards. The log has blank rows, text typed into numeric cells and at
 # least one 2107 date, and none of it may raise or reach the client.
@@ -126,7 +104,7 @@ def _clean(raw: pd.DataFrame, today: pd.Timestamp) -> tuple[pd.DataFrame, int]:
     """Date / location / ppm rows that survive every junk filter.
 
     A row is kept only when its date parses into a plausible window AND its
-    ppm is a finite positive number below pure oil. Everything else - blank
+    concentration is a finite nonnegative number below pure oil. Everything else - blank
     spacer rows, text in a numeric cell, the stray 2107 date - is counted and
     dropped.
 
@@ -167,12 +145,21 @@ def _clean(raw: pd.DataFrame, today: pd.Timestamp) -> tuple[pd.DataFrame, int]:
     )
     total = len(out)
     out["day"] = out["day"].dt.normalize()
+    time_col = _column(raw, ("time", "sample time"))
+    out["timestamp"] = [
+        sample_timestamp(day, raw.loc[idx, time_col]) if time_col is not None and pd.notna(day) else None
+        for idx, day in out["day"].items()
+    ]
+    out["source_row"] = out.index + HEADER_ROW + 2
+    for name, keys in (("sampler", ("sampler", "operator")), ("method", ("method", "lab method")), ("notes", ("notes", "comment"))):
+        column = _column(raw, keys)
+        out[name] = raw[column].fillna("").astype(str) if column is not None else ""
     keep = (
         out["day"].notna()
         & (out["day"] >= EARLIEST_DATE)
         & (out["day"] <= today)
         & out["ppm"].notna()
-        & (out["ppm"] > 0.0)
+        & (out["ppm"] >= 0.0)
         & (out["ppm"] < PPM_CEIL)
         & (out["location"] != "")
         & (out["location"].str.lower() != "nan")
@@ -186,30 +173,17 @@ def _clean(raw: pd.DataFrame, today: pd.Timestamp) -> tuple[pd.DataFrame, int]:
 # ---------------------------------------------------------------------------
 
 
-def _daily(frame: pd.DataFrame, water_rate_bpd: float, location: str) -> list[dict[str, Any]]:
-    """One row per Alaska calendar day the samples touch.
+def _daily(frame: pd.DataFrame, water_rate_bpd: float, location: str, units: str = "unknown", oil_density: float | None = None, rate_basis: str = "liquid") -> list[dict[str, Any]]:
+    """Unweighted sample-day means; never extrapolate grabs into daily barrels.
 
-    ``bopd_mean`` and ``bbl`` are the same number: a daily rate held for one
-    day is that many barrels. Both are the time-UNWEIGHTED mean of the day's
-    per-sample rates, because a handful of manual grabs carries no duty cycle
-    to weight with.
-
-    Args:
-        frame (DataFrame): Cleaned rows for one location, columns ``day``,
-            ``location``, ``ppm`` (ppm).
-        water_rate_bpd (float): Water rate the concentrations act on, BPD.
-        location (str): Sample point, echoed onto every row.
-
-    Returns:
-        rows (list): Chronological dicts with ``date`` (str, YYYY-MM-DD),
-            ``samples`` (int), ``ppm_mean`` / ``ppm_min`` / ``ppm_max``
-            (float, ppm), ``bopd_mean`` (float, BOPD), ``bbl`` (float, bbl)
-            and ``location`` (str).
+    Fraction is oil volume / total liquid volume. For a liquid flow use Q*f;
+    for a water-only flow use Qw*f/(1-f). Units must be confirmed first.
     """
     if frame.empty:
         return []
 
-    rates = frame["ppm"] * water_rate_bpd / 1.0e6
+    fractions = frame["ppm"].map(lambda v: oil_fraction(v, units, oil_density)).astype(float)
+    rates = water_rate_bpd * fractions if rate_basis == "liquid" else water_rate_bpd * fractions / (1.0 - fractions)
     grouped = (
         frame.assign(bopd=rates)
         .groupby("day", sort=True)
@@ -228,8 +202,8 @@ def _daily(frame: pd.DataFrame, water_rate_bpd: float, location: str) -> list[di
             "ppm_mean": round(float(row.ppm_mean), 1),
             "ppm_min": round(float(row.ppm_min), 1),
             "ppm_max": round(float(row.ppm_max), 1),
-            "bopd_mean": round(float(row.bopd_mean), 2),
-            "bbl": round(float(row.bopd_mean), 2),
+            "bopd_mean": None if pd.isna(row.bopd_mean) else round(float(row.bopd_mean), 2),
+            "bbl": None,  # Point grabs do not establish a daily volume.
             "location": location,
         }
         for day, row in zip(grouped.index, grouped.itertuples(index=False))
@@ -247,6 +221,11 @@ def oiw_samples(
     location: str = DEFAULT_LOCATION,
     water_rate_bpd: float = DEFAULT_WATER_RATE_BPD,
     sheet: str = DEFAULT_SHEET,
+    units: str = "unknown",
+    oil_density_kgm3: float | None = None,
+    rate_basis: str = "liquid",
+    days: int | None = None,
+    lag_minutes: float = 0.0,
 ) -> dict[str, Any]:
     """Parse one grab-sample workbook into a daily sampled oil rate.
 
@@ -279,23 +258,41 @@ def oiw_samples(
         raise ValueError(
             f"water rate must be {WATER_RATE_MIN:,.0f} - {WATER_RATE_MAX:,.0f} BPD"
         )
+    oil_fraction(0, units, oil_density_kgm3)
+    if rate_basis not in ("liquid", "water"):
+        raise ValueError("flow basis must be liquid or water")
+    if days is not None and not 1 <= days <= 90:
+        raise ValueError("comparison days must be 1-90")
+    if not 0 <= lag_minutes <= 120:
+        raise ValueError("sample transport delay must be 0-120 minutes")
 
-    try:
-        book = pd.ExcelFile(io.BytesIO(blob))
-    except Exception as exc:  # openpyxl raises a zoo of its own types
-        raise ValueError(f"could not open {filename} as an XLSX workbook: {exc}") from exc
-
-    resolved = _resolve_sheet(list(book.sheet_names), sheet)
-    try:
-        raw = pd.read_excel(book, sheet_name=resolved, header=HEADER_ROW)
-    except Exception as exc:
-        raise ValueError(f"could not read sheet {resolved!r}: {exc}") from exc
+    if filename.lower().endswith(".csv"):
+        resolved = "CSV"
+        first_data_row = 2
+        try:
+            raw = pd.read_csv(io.BytesIO(blob), encoding="utf-8-sig")
+        except Exception as exc:
+            raise ValueError("could not read sample CSV; use the downloadable template") from exc
+    else:
+        try:
+            book = pd.ExcelFile(io.BytesIO(blob))
+        except Exception as exc:
+            raise ValueError(f"could not open {filename} as an XLSX workbook") from exc
+        with book:
+            resolved = _resolve_sheet(list(book.sheet_names), sheet)
+            raw = pd.read_excel(book, sheet_name=resolved, header=HEADER_ROW)
+            first_data_row = 3
+            # New logs can use an ordinary first-row header, as in the CSV.
+            if _column(raw, DATE_KEYS) is None:
+                raw = pd.read_excel(book, sheet_name=resolved, header=0)
+                first_data_row = 2
     if raw.empty:
         raise ValueError(f"sheet {resolved!r} has no rows below its header")
 
     today = pd.Timestamp.now(tz=FIELD_TZ).tz_localize(None).normalize()
     try:
         frame, dropped = _clean(raw, today)
+        frame["source_row"] += first_data_row - 3
     except ValueError:
         raise
     except Exception as exc:
@@ -306,7 +303,7 @@ def oiw_samples(
     if frame.empty:
         raise ValueError(
             f"sheet {resolved!r} has no rows with both a parseable date and a "
-            f"positive ppm ({dropped} rows dropped)"
+            f"nonnegative concentration ({dropped} rows dropped)"
         )
 
     # Case is not a sample point: the log carries "P-5417C" and "p-5417C" for
@@ -324,13 +321,17 @@ def oiw_samples(
     at_location = frame.loc[frame["location"].str.lower() == wanted]
 
     resolved_location = picked if picked is not None else location.strip()
-    daily = _daily(at_location, water_rate_bpd, resolved_location)
+    daily = _daily(at_location, water_rate_bpd, resolved_location, units, oil_density_kgm3, rate_basis)
 
     notes = [
-        f"Sampled rate is ppm x {water_rate_bpd:,.0f} BPD / 1e6, one unweighted mean "
-        "per Alaska calendar day. The workbook's own (BOPD) column assumes a fixed "
-        "95,000 BWPD and is not used."
+        f"Sample rates use the entered {water_rate_bpd:,.0f} BPD {rate_basis} basis. "
+        "Daily means describe only the collected grabs; daily barrels are withheld. "
+        "The workbook's own (BOPD) column is not used."
     ]
+    if units == "unknown":
+        notes.append("Confirm whether the lab reports ppm by volume or mg/L before calculating rates. Mass ppm (mg/kg) is a different basis and needs a lab conversion.")
+    if units == "mg/L":
+        notes.append(f"Oil volume fraction = mg/L / ({oil_density_kgm3:g} kg/m3 x 1,000). Confirm density at the sample basis and that the lab method represents the oil measured by Red Eye.")
     if picked is None:
         notes.append(
             f"No samples at {location.strip()!r} on sheet {resolved!r}. "
@@ -341,13 +342,40 @@ def oiw_samples(
             f"{dropped} of {len(raw)} rows on sheet {resolved!r} were dropped as "
             "unparseable (blank, non-numeric ppm, or an out-of-range date)."
         )
-    if resolved_location.upper() != UPSTREAM_LOCATION:
+    if resolved_location.upper() == DEFAULT_LOCATION:
         notes.append(
             f"{resolved_location} is sampled DOWNSTREAM of the deoilers, while the "
-            "calculated band is the first-stage water leg upstream of them. The gap "
-            f"between the two is deoiler recovery, not error. Only {UPSTREAM_LOCATION} "
+            "calculated scenarios are upstream. Differences can include recovery, "
+            f"timing and measurement error. Only {UPSTREAM_LOCATION} "
             "samples the same stream as the calculated band."
         )
+    elif resolved_location.upper() != UPSTREAM_LOCATION:
+        notes.append("This sample point's process location is unverified; it cannot validate Red Eye.")
+
+    records = []
+    for row in at_location.itertuples():
+        fraction = oil_fraction(row.ppm, units, oil_density_kgm3)
+        records.append({
+            "source_row": int(row.source_row), "date": row.day.strftime("%Y-%m-%d"),
+            "timestamp": row.timestamp, "location": row.location, "concentration": float(row.ppm),
+            "oil_pct": None if fraction is None else fraction * 100.0,
+            "sampler": row.sampler, "method": row.method, "notes": row.notes,
+            "status": "comparison not requested",
+        })
+    comparison = {"paired_count": 0, "stable_pair_count": 0, "median_error_pts": None}
+    if days is not None:
+        from server.services.tools import sep_oil_loss as loss
+
+        raw_history = pd.DataFrame(columns=["tag", "t", "value"])
+        if resolved_location.upper() == UPSTREAM_LOCATION and units != "unknown" and any(r["timestamp"] is not None for r in records):
+            try:
+                raw_history = loss._raw(days)
+            except Exception:
+                log.exception("OIW sample historian comparison unavailable")
+                notes.append("Historian comparison unavailable. Samples parsed successfully; retry the comparison when historian access returns.")
+        comparison = compare_samples(records, raw_history, lag_minutes)
+        notes.append("Pairs use V-5317 only and the last flow/WC reports within 15 minutes before sample time minus transport delay. Old reports remain unpaired even when a quiet exception-reported signal may still be valid.")
+        notes.append("Positive meter-minus-sample oil error means the meter reads more oil. The median excludes pairs with a preceding 2-minute WC range above 5 points. It is a bias diagnostic, not a saved calibration or an independent accuracy test.")
 
     log.info(
         "oiw samples: %s sheet=%r location=%r rows=%d dropped=%d days=%d",
@@ -363,6 +391,13 @@ def oiw_samples(
         "sheet": resolved,
         "location": resolved_location,
         "water_rate_bpd": float(water_rate_bpd),
+        "units": units,
+        "oil_density_kgm3": oil_density_kgm3,
+        "rate_basis": rate_basis,
+        "comparison_days": days,
+        "lag_minutes": lag_minutes,
+        "samples": records,
+        **comparison,
         "locations_available": locations,
         "first_date": daily[0]["date"] if daily else None,
         "last_date": daily[-1]["date"] if daily else None,

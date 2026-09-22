@@ -133,7 +133,7 @@ def test_separator_coverage_uses_local_day_length(day, hours):
     start = pd.Timestamp(day, tz="America/Anchorage")
     stamps = pd.date_range(start - pd.Timedelta(hours=1), start + pd.DateOffset(days=1, hours=1), freq="min")
     frame = pd.DataFrame({"t": stamps, "dt_h": 1/60., "wc": 96., "base": 97.,
-                          "oil_upper": 240., "oil_lower": 120.})
+                          "oil_upper": 240., "oil_lower": 120., "oil_raw": 960., "oil_reference_removed": 720.})
     row = next(r for r in svc._daily_rows(frame, [], 1000.) if r["date"] == day)
     assert row["hours"] == row["covered_hours"] == hours
     assert row["partial"] is False

@@ -25,6 +25,7 @@ import { useParamsStore } from "../state/params";
 import { EPadBoosterPanel } from "./optimize/EPadBoosterPanel";
 import { MatchHealthPanel } from "./optimize/MatchHealthPanel";
 import { usePadOffline, type ShutInfo } from "./optimize/offline";
+import { PumpDecisionPanel } from "./optimize/PumpDecisionPanel";
 import { RunPanel } from "./optimize/RunPanel";
 
 const INPUT_CLS =
@@ -390,6 +391,12 @@ export default function OptimizePage() {
             )
           }
         />
+      )}
+
+      {padRun === "S" && (
+        // Fixed-speed pad only: the header follows the 60 Hz curve, so extra
+        // PF draw costs every other well oil - priced per well pump here.
+        <PumpDecisionPanel pad={padRun} />
       )}
 
       {padRun !== null && (

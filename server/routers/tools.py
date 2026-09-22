@@ -98,11 +98,12 @@ def sep_oil_loss(
     field_oil_bopd: float = Query(65000.0, ge=1000, le=200000),
     max_oil_frac: float = Query(0.10, gt=0, le=1),
 ) -> Any:
-    """Oil leaving with the first-stage separator water leg, as a band.
+    """Raw water-leg indication and two reference-relative carryover scenarios.
 
-    ``field_oil_bopd`` is both the physical ceiling on the water leg and the
+    ``field_oil_bopd`` is both the scenario rate cap on the water leg and the
     denominator for the percent-of-field columns; ``max_oil_frac`` sets the
-    conservative bound. See services/tools/sep_oil_loss.py for the method.
+    fraction-capped scenario. Neither is a proven loss bound.
+    See services/tools/sep_oil_loss.py for the method.
     """
     try:
         return sep_loss_svc.sep_oil_loss(days, field_oil_bopd, max_oil_frac)
@@ -139,6 +140,11 @@ def sep_oil_loss_samples(
     location: str = Query(oiw_svc.DEFAULT_LOCATION, description="Sample point"),
     water_rate_bpd: float = Query(oiw_svc.DEFAULT_WATER_RATE_BPD, ge=1000, le=300000),
     sheet: str = Query(oiw_svc.DEFAULT_SHEET, description="Worksheet to read"),
+    units: str = Query("unknown", pattern="^(unknown|ppmv|mg/L)$"),
+    oil_density_kgm3: float | None = Query(None, ge=500, le=1200),
+    rate_basis: str = Query("liquid", pattern="^(liquid|water)$"),
+    days: int | None = Query(None, ge=1, le=90),
+    lag_minutes: float = Query(0.0, ge=0, le=120),
 ) -> Any:
     """Parse an operator OIW grab-sample workbook into daily sampled rates.
 
@@ -149,8 +155,8 @@ def sep_oil_loss_samples(
     fixed 95,000 BWPD and is never read.
     """
     name = file.filename or "samples.xlsx"
-    if not name.lower().endswith(".xlsx"):
-        raise _invalid(ValueError(f"{name}: expected an .xlsx workbook"))
+    if not name.lower().endswith((".xlsx", ".csv")):
+        raise _invalid(ValueError(f"{name}: expected an .xlsx workbook or .csv log"))
     blob = file.file.read(_MAX_SAMPLES_BYTES + 1)
     if len(blob) > _MAX_SAMPLES_BYTES:
         raise _invalid(
@@ -160,7 +166,10 @@ def sep_oil_loss_samples(
         from server import pool
 
         with pool.cpu_slot():
-            return oiw_svc.oiw_samples(blob, name, location, water_rate_bpd, sheet)
+            return oiw_svc.oiw_samples(
+                blob, name, location, water_rate_bpd, sheet, units,
+                oil_density_kgm3, rate_basis, days, lag_minutes,
+            )
     except ValueError as exc:
         raise _invalid(exc) from None
 

@@ -66,7 +66,7 @@ def test_daily_rollup_is_the_unweighted_mean_of_the_days_samples(client):
             ["2026-08-18", "09:00", "P-5417C", 2000, "Jared"],
         ]
     )
-    body = _post(client, blob).json()
+    body = _post(client, blob, params={"units": "ppmv"}).json()
 
     assert body["location"] == "P-5417C"
     assert body["sheet"] == "OIW Daily"
@@ -81,17 +81,17 @@ def test_daily_rollup_is_the_unweighted_mean_of_the_days_samples(client):
     assert day["ppm_mean"] == 2000.0
     assert day["ppm_min"] == 1000.0
     assert day["ppm_max"] == 3000.0
-    # (1000 + 3000) / 2 ppm on 95,000 BPD = 190 BOPD, and a daily rate held
-    # for one day is that many barrels.
+    # (1000 + 3000) / 2 ppmv on 95,000 BPD liquid = 190 BOPD.
+    # Two grabs provide no duration over which to integrate that rate.
     assert day["bopd_mean"] == 190.0
-    assert day["bbl"] == 190.0
+    assert day["bbl"] is None  # No duty cycle is established by two grabs.
     assert day["location"] == "P-5417C"
 
 
 def test_water_rate_is_the_caller_basis_and_is_echoed_back(client):
     """The sheet's own (BOPD) column assumes 95,000 BWPD and is not read."""
     blob = _workbook([["2026-08-17", "08:00", "P-5417C", 2000, "Jim"]])
-    body = _post(client, blob, params={"water_rate_bpd": 71000}).json()
+    body = _post(client, blob, params={"water_rate_bpd": 71000, "units": "ppmv"}).json()
 
     assert body["water_rate_bpd"] == 71000.0
     assert body["daily"][0]["bopd_mean"] == 142.0
@@ -207,7 +207,7 @@ def test_missing_sheet_names_the_ones_the_workbook_has(client):
 def test_non_xlsx_upload_and_garbage_bytes_are_rejected(client):
     csv = _post(client, b"date,ppm\n2026-08-17,900\n", name="samples.csv")
     assert csv.status_code == 422
-    assert csv.json()["detail"]["message"] == "samples.csv: expected an .xlsx workbook"
+    assert "no Location" in csv.json()["detail"]["message"]
 
     garbage = _post(client, b"this is not a workbook", name="samples.xlsx")
     assert garbage.status_code == 422
@@ -221,7 +221,7 @@ def test_the_v_5317_sheet_is_read_with_the_same_parser(client):
         [["2023-05-29", "08:00", "V-5317", 227, "Jim"]],
         sheet="V-5317",
     )
-    body = _post(client, blob, params={"sheet": "V-5317", "location": "V-5317"}).json()
+    body = _post(client, blob, params={"sheet": "V-5317", "location": "V-5317", "units": "ppmv"}).json()
 
     assert body["sheet"] == "V-5317"
     assert body["sample_count"] == 1

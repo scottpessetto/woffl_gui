@@ -1,41 +1,9 @@
-/**
- * Separator Oil Loss - oil leaving with the first-stage separator water leg.
- *
- * Two SCADA tags carry the whole question: MPU_FI_5365 (water-leg flow, BPD,
- * essentially all of the field's produced water) and MPU_AI_5317 (the Red Eye
- * water-cut analyzer on that same stream). Oil out the water leg is
- * flow x (1 - wc) integrated in time; the server applies the three
- * corrections that make that integral honest - the analyzer's own trailing
- * plateau instead of a hard 100%, gating on FLOW so a real deep water-cut
- * excursion is never thrown away as an artifact, and the field oil rate as a
- * physical ceiling.
- *
- * The page exists to make the BAND unavoidable. Every barrel figure reads
- * "lower - upper" with its percent of field production beside it, so an
- * implausible as-read number announces itself instead of being quoted.
- *
- * The method itself sits behind two HOVER explainers rather than a standing
- * paragraph: what the band means, and how the upper and lower bound are
- * found, step by step. Both open on the same point, because it is the one
- * every reader assumes wrongly: the number is NOT flow x (1 - wc) off the Red
- * Eye. The method popover names the five corrections that separate the two
- * and closes with a worked day whose arithmetic is recomputed from the live
- * knobs (`workedExample`), so the prose can never drift from the payload.
- *
- * An operator OIW grab-sample workbook can be uploaded to overlay the SAMPLED
- * loss on the daily chart (POST /tools/sep-oil-loss/samples - parsed and
- * returned, held in page state, never stored). It is a different stream at
- * every sample point but V-5317: P-5417C sits downstream of the deoilers, so
- * the gap to the calculated band is deoiler recovery, not error, and the page
- * says so under the chart rather than letting the marks read as a check.
- */
+/** Separator carryover scenarios and field-sample validation. */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
-import { useOiwSamples, useSepOilLoss, useSepOilLossDay } from "../../api/hooks";
+import { useSepOilLoss, useSepOilLossDay } from "../../api/hooks";
 import type {
-  OiwSampleDay,
-  OiwSamplesResponse,
   SepLossDay,
   SepLossEvent,
   SepLossPeriod,
@@ -74,6 +42,8 @@ import { downloadCsv } from "../../lib/csv";
 import { fmtNum, fmtPct, fmtSigned } from "../../lib/format";
 import { useDebounced } from "../../lib/useDebounced";
 
+import { OiwSampleWorkflow } from "./OiwSampleWorkflow";
+
 import { NumField } from "./ToolRun";
 
 const WINDOWS = [7, 14, 30, 60, 90] as const;
@@ -87,51 +57,12 @@ const OIL_PCT_MAX = 100;
 /** Above this share of field oil the as-read number is not quotable. */
 const PLAUSIBLE_PCT = 10;
 
-/**
- * One typical day, used in the method explainer to show what the film
- * correction actually costs: a Red Eye plateaued at EX_PLATEAU on a
- * steady EX_FLOW leg, with one EX_MINUTES carry-under to EX_DIP.
- * Numbers match services/tools/sep_oil_loss.py `_oil_rates` / `_barrels`.
- */
-const EX_FLOW = 70_000;
-const EX_PLATEAU = 96;
-const EX_DIP = 60;
-const EX_MINUTES = 30;
-
-/** Naive `flow x (1 - wc)` against both bounds for that day, recomputed from
- *  the live knobs so the arithmetic on screen is the arithmetic being run. */
-function workedExample(
-  fieldOil: number,
-  oilPct: number,
-): { naive: number; film: number; upper: number; lower: number; rate: number; capped: number } {
-  const dipH = EX_MINUTES / 60;
-  const film = EX_FLOW * ((100 - EX_PLATEAU) / 100) * ((24 - dipH) / 24);
-  const naive = film + EX_FLOW * ((100 - EX_DIP) / 100) * (dipH / 24);
-  const deficit = (EX_PLATEAU - EX_DIP) / 100;
-  const rate = Math.min(EX_FLOW * deficit, fieldOil);
-  const capped = EX_FLOW * Math.min(deficit, oilPct / 100);
-  return { naive, film, upper: rate * (dipH / 24), lower: capped * (dipH / 24), rate, capped };
-}
-
 /** The leg flow is context behind the reading, not the reading: SLATE, faded. */
 const FLOW_LINE = "rgba(100,116,139,0.45)";
 /** ACCENT at 10% - the band between the two bounds. */
 const BAND_FILL = "rgba(37,99,235,0.10)";
 /** Same hue at 30% - the day the top chart is currently showing. */
 const BAND_FOCUS = "rgba(37,99,235,0.30)";
-
-/** Operator grab-sample defaults, matching services/tools/oiw_samples.py. */
-const SAMPLE_SHEET = "OIW Daily";
-const SAMPLE_LOCATION = "P-5417C";
-/** The ONE sample point on the same stream as the calculated band. Every
- *  other tap is downstream of the deoilers, so the two are not comparable. */
-const UPSTREAM_LOCATION = "V-5317";
-const WATER_RATE_MIN = 1_000;
-const WATER_RATE_MAX = 300_000;
-
-const SELECT_CLS =
-  "mt-1 block h-8 rounded-md border border-slate-300 bg-white px-2 text-sm " +
-  "text-slate-800 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200";
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
@@ -201,20 +132,12 @@ interface Traces {
   flow: Pt[];
   cumLower: Pt[];
   cumUpper: Pt[];
-  /** Stacked band carriers: lower bound, then the span up to the upper. */
+  /** Stacked band carriers: fraction-capped scenario, then the span up to the upper. */
   bandBase: [number, number][];
   bandSpan: [number, number][];
   /** Minutes east of UTC on the server's stamps; ticks label field days. */
   offsetMinutes: number;
   n: number;
-}
-
-/** The uploaded grab samples, indexed for the daily chart. `location` is the
- *  workbook's own spelling of the sample point, so the series label and the
- *  caveat always name the tap the marks actually came from. */
-interface SampleOverlay {
-  location: string;
-  byDate: Record<string, OiwSampleDay | undefined>;
 }
 
 /** The `t` column of the loose series map. */
@@ -464,8 +387,8 @@ function wcOption(tr: Traces): EChartsOption {
  */
 function cumOption(tr: Traces): EChartsOption {
   const units: Record<string, UnitSpec> = {
-    "Lower bound": { unit: "bbl", dp: 0 },
-    "Upper bound": { unit: "bbl", dp: 0 },
+    "Fraction-capped": { unit: "bbl", dp: 0 },
+    "Field-capped": { unit: "bbl", dp: 0 },
   };
   return houseOption({
     tooltip: { ...baseTooltip, trigger: "axis", formatter: timeTip(units, tr.stamps) },
@@ -474,7 +397,7 @@ function cumOption(tr: Traces): EChartsOption {
       right: 8,
       itemWidth: 18,
       textStyle: { fontSize: 12 },
-      data: ["Lower bound", "Upper bound"],
+      data: ["Fraction-capped", "Field-capped"],
     },
     grid: { ...baseGrid, top: 52, left: 76, bottom: 28 },
     xAxis: { type: "time", ...axis(""), nameGap: 0, ...timeTicks(tr) },
@@ -503,7 +426,7 @@ function cumOption(tr: Traces): EChartsOption {
         z: 1,
       },
       {
-        name: "Lower bound",
+        name: "Fraction-capped",
         type: "line",
         data: tr.cumLower,
         showSymbol: false,
@@ -512,7 +435,7 @@ function cumOption(tr: Traces): EChartsOption {
         z: 5,
       },
       {
-        name: "Upper bound",
+        name: "Field-capped",
         type: "line",
         data: tr.cumUpper,
         showSymbol: false,
@@ -533,15 +456,10 @@ function cumOption(tr: Traces): EChartsOption {
  * Clicking a bar drills the top chart into that day; the focused bar fills
  * solid so it is obvious which day the trace above belongs to.
  *
- * `samples` overlays the operators' grab-sample rate for the days it covers,
- * on the same barrels axis. It is a DIFFERENT stream at every location but
- * V-5317 - downstream of the deoilers - which is why the caption under the
- * chart says so rather than letting the marks read as a check on the band.
  */
 function dailyOption(
   days: SepLossDay[],
   focus: string | null,
-  samples: SampleOverlay | null,
 ): EChartsOption {
   const labels = days.map((d) => d.date);
   const base = days.map((d) => d.bbl_lower);
@@ -555,7 +473,6 @@ function dailyOption(
     },
   }));
   const lower = days.map((d) => d.bbl_lower);
-  const sampleName = samples === null ? null : `Sampled (${samples.location})`;
 
   const series: Record<string, unknown>[] = [
     {
@@ -574,7 +491,7 @@ function dailyOption(
       z: 2,
     },
     {
-      // The lower bound as a tick on top of the transparent base, so the
+      // The fraction-capped scenario as a tick on top of the transparent base, so the
       // number to quote is a mark and not just where the shading starts.
       type: "scatter",
       data: lower,
@@ -585,22 +502,6 @@ function dailyOption(
       z: 5,
     },
   ];
-  if (samples !== null && sampleName !== null) {
-    // Hoisted: narrowing of a parameter does not survive into the callback.
-    const byDate = samples.byDate;
-    series.push({
-      name: sampleName,
-      type: "scatter",
-      // Nulls on days with no grab sample: the marks are the sample record,
-      // not a curve to interpolate across a day nobody walked out to.
-      data: labels.map((d) => byDate[d]?.bbl ?? null),
-      symbol: "diamond",
-      symbolSize: 9,
-      itemStyle: { color: GOLD },
-      z: 6,
-    });
-  }
-
   return houseOption({
     tooltip: {
       ...baseTooltip,
@@ -612,8 +513,10 @@ function dailyOption(
         const day = typeof idx === "number" ? days[idx] : undefined;
         if (day === undefined) return "";
         const rows = [
-          ttRow(ACCENT, "Lower bound", `${fmtNum(day.bbl_lower)} bbl`),
-          ttRow(CRIMSON, "Upper bound", `${fmtNum(day.bbl_upper)} bbl`),
+          ttRow(ACCENT, "Fraction-capped", `${fmtNum(day.bbl_lower)} bbl`),
+          ttRow(CRIMSON, "Field-capped", `${fmtNum(day.bbl_upper)} bbl`),
+          ttRow(SLATE, "Raw indicated", `${fmtNum(day.bbl_raw)} bbl`),
+          ttRow(SLATE, "Reference subtraction", `${fmtNum(day.bbl_reference_removed)} bbl`),
           ttRow(SLATE, "Upset", `${fmtNum(day.upset_hours, 1)} h, ${day.events} events`),
           ttRow(SLATE, "Running", `${fmtNum(day.hours, 1)} of ${fmtNum(day.covered_hours, 1)} h`),
         ];
@@ -626,33 +529,11 @@ function dailyOption(
             ),
           );
         }
-        const hit = samples === null ? undefined : samples.byDate[day.date];
-        if (hit !== undefined && sampleName !== null) {
-          rows.push(
-            ttRow(
-              GOLD,
-              sampleName,
-              `${fmtNum(hit.bbl)} bbl at ${fmtNum(hit.ppm_mean)} ppm, ` +
-                `${hit.samples} ${hit.samples === 1 ? "sample" : "samples"}`,
-            ),
-          );
-        }
         return ttHeader(day.date) + rows.join("");
       },
     },
-    // No legend without the overlay: the band's two carriers are unnamed, so
-    // there would be nothing to list.
-    legend:
-      sampleName === null
-        ? { show: false }
-        : {
-            top: 4,
-            right: 8,
-            itemWidth: 18,
-            textStyle: { fontSize: 12 },
-            data: [sampleName],
-          },
-    grid: { ...baseGrid, top: sampleName === null ? 24 : 44, left: 76, bottom: 28 },
+    legend: { show: false },
+    grid: { ...baseGrid, top: 24, left: 76, bottom: 28 },
     xAxis: {
       type: "category",
       data: labels,
@@ -676,12 +557,14 @@ const KIND_TONE: Record<SepLossEvent["kind"], "poor" | "fair" | "info"> = {
   "level loss": "poor",
   "off setpoint": "fair",
   "at setpoint": "info",
+  "unknown": "info",
 };
 
 const KIND_HELP: Record<SepLossEvent["kind"], string> = {
-  "level loss": "Vessel lost its water inventory during the upset.",
-  "off setpoint": "Loop held well under the level it was calling for.",
-  "at setpoint": "Level was held as asked and the water leg still ran oil.",
+  "level loss": "Indicated level fell below 20%; verify the actual interface.",
+  "off setpoint": "Average indicated level differs from setpoint by more than 10 points.",
+  "at setpoint": "Average indicated level was near setpoint; this does not establish the cause.",
+  "unknown": "Level or setpoint evidence is incomplete.",
 };
 
 const EVENT_COLUMNS: Column<SepLossEvent>[] = [
@@ -691,7 +574,7 @@ const EVENT_COLUMNS: Column<SepLossEvent>[] = [
     key: "wc_min",
     label: "WC min (%)",
     align: "right",
-    help: "Deepest analyzer reading in the excursion. A real oil sweep, not a dropout.",
+    help: "Deepest analyzer reading. Check paired samples and instrument condition.",
     render: (r) => fmtNum(r.wc_min, 1),
   },
   { key: "wc_avg", label: "WC avg (%)", align: "right", render: (r) => fmtNum(r.wc_avg, 1) },
@@ -703,16 +586,16 @@ const EVENT_COLUMNS: Column<SepLossEvent>[] = [
   },
   {
     key: "bbl_lower",
-    label: "Lower (bbl)",
+    label: "Fraction cap (bbl)",
     align: "right",
     help: "Oil fraction of the leg capped at the oil-fraction cap.",
     render: (r) => fmtNum(r.bbl_lower, 0),
   },
   {
     key: "bbl_upper",
-    label: "Upper (bbl)",
+    label: "Field cap (bbl)",
     align: "right",
-    help: "Analyzer as read, film-corrected, capped at the field oil rate.",
+    help: "Reference-relative excursion rate capped at the field oil scenario.",
     render: (r) => fmtNum(r.bbl_upper, 0),
   },
   {
@@ -741,8 +624,8 @@ const EVENT_COLUMNS: Column<SepLossEvent>[] = [
     label: "Level",
     help:
       "Level loss: the vessel dropped below 20%. Off setpoint: held more than " +
-      "10 points under what the loop called for. At setpoint: level was where " +
-      "it was asked and the leg ran oil anyway - separation, not level control.",
+      "10 points from the requested level. At setpoint: average indication near setpoint. " +
+      "Unknown: incomplete level evidence. These are signatures, not diagnoses.",
     render: (r) => (
       <Badge tone={KIND_TONE[r.kind]} title={KIND_HELP[r.kind]}>
         {r.kind}
@@ -773,10 +656,14 @@ function PeriodCard({ p }: { p: SepLossPeriod }) {
         <dd className="text-right tabular-nums text-slate-700">{fmtNum(p.upset_hours, 1)}</dd>
         <dt className="text-slate-500">Valid hours</dt>
         <dd className="text-right tabular-nums text-slate-700">{fmtNum(p.hours, 1)}</dd>
-        <dt className="text-slate-500">Separator down (h)</dt>
+        <dt className="text-slate-500">Uncovered / excluded (h)</dt>
         <dd className="text-right tabular-nums text-slate-700">
           {fmtNum(p.downtime_hours, 1)}
         </dd>
+        <dt className="text-slate-500">Raw indicated (bbl)</dt>
+        <dd className="text-right tabular-nums text-slate-700">{fmtNum(p.bbl_raw)}</dd>
+        <dt className="text-slate-500">Reference subtraction (bbl)</dt>
+        <dd className="text-right tabular-nums text-slate-700">{fmtNum(p.bbl_reference_removed)}</dd>
         <dt className="text-slate-500">Leg WC / plateau</dt>
         <dd className="text-right tabular-nums text-slate-700">
           {fmtNum(p.wc_avg, 1)} / {fmtNum(p.base_avg, 1)}%
@@ -784,8 +671,8 @@ function PeriodCard({ p }: { p: SepLossPeriod }) {
       </dl>
       {implausible && (
         <WarnNote className="mt-3">
-          The analyzer as read puts {fmtNum(p.pct_field_upper, 1)}% of field oil production out
-          the water leg, more than a plausible share. Quote the lower bound.
+          The field-capped excursion scenario is {fmtNum(p.pct_field_upper, 1)}% of field oil
+          production, a large share. Check samples, flow basis and meter condition before using either scenario.
         </WarnNote>
       )}
     </Card>
@@ -808,56 +695,10 @@ export default function SepOilLossPage() {
   const fieldOil = clamp(fieldOilTyped, FIELD_OIL_MIN, FIELD_OIL_MAX);
   const oilPct = clamp(oilPctTyped, OIL_PCT_MIN, OIL_PCT_MAX);
   const outOfRange = fieldOilTyped !== fieldOil || oilPctTyped !== oilPct;
-  // The method explainer's arithmetic, on the knobs currently in force.
-  const example = useMemo(() => workedExample(fieldOil, oilPct), [fieldOil, oilPct]);
-
   const query = useSepOilLoss(days, fieldOil, oilPct / 100);
   const data = query.data ?? null;
   const dayQuery = useSepOilLossDay(focusDay, days, fieldOil, oilPct / 100);
   const dayData = dayQuery.data && dayQuery.data.date === focusDay ? dayQuery.data : null;
-
-  // The uploaded workbook lives in page state and nowhere else: the endpoint
-  // parses and returns, exactly like the gauge tool, so a reload dropping the
-  // overlay is the correct behaviour and not lost work.
-  const [sampleFile, setSampleFile] = useState<File | null>(null);
-  const [samples, setSamples] = useState<OiwSamplesResponse | null>(null);
-  const [sampleLoc, setSampleLoc] = useState(SAMPLE_LOCATION);
-  const [waterRateIn, setWaterRateIn] = useState(95_000);
-  const waterRate = clamp(useDebounced(waterRateIn, 500), WATER_RATE_MIN, WATER_RATE_MAX);
-  const { mutate: parseSamples, isPending: parsing, error: parseError, reset: resetParse } =
-    useOiwSamples();
-
-  // One trigger for every input: picking a file, switching sample point and
-  // changing the water-rate basis all re-parse the same File, because the
-  // server kept nothing to re-roll and the basis is part of the answer.
-  useEffect(() => {
-    if (sampleFile === null) return;
-    parseSamples(
-      { file: sampleFile, location: sampleLoc, waterRateBpd: waterRate, sheet: SAMPLE_SHEET },
-      {
-        onSuccess: (parsed) => {
-          setSamples(parsed);
-          // The workbook's own spelling of the tap wins, so the picker and
-          // the chart label read the way the log does.
-          if (parsed.location !== sampleLoc) setSampleLoc(parsed.location);
-        },
-      },
-    );
-  }, [sampleFile, sampleLoc, waterRate, parseSamples]);
-
-  const clearSamples = useCallback(() => {
-    setSampleFile(null);
-    setSamples(null);
-    resetParse();
-  }, [resetParse]);
-
-  const overlay = useMemo<SampleOverlay | null>(() => {
-    if (samples === null || samples.daily.length === 0) return null;
-    const byDate: Record<string, OiwSampleDay | undefined> = {};
-    for (const day of samples.daily) byDate[day.date] = day;
-    return { location: samples.location, byDate };
-  }, [samples]);
-  const downstream = overlay !== null && overlay.location.toUpperCase() !== UPSTREAM_LOCATION;
 
   // Clicking a bar swaps the top chart's source; everything else is shared,
   // so the same builder draws both and the axes cannot drift apart.
@@ -870,8 +711,8 @@ export default function SepOilLossPage() {
   );
   const cumOpt = useMemo(() => (tr && tr.n > 0 ? cumOption(tr) : null), [tr]);
   const dailyOpt = useMemo(
-    () => (data && data.daily.length > 0 ? dailyOption(data.daily, focusDay, overlay) : null),
-    [data, focusDay, overlay],
+    () => (data && data.daily.length > 0 ? dailyOption(data.daily, focusDay) : null),
+    [data, focusDay],
   );
 
   const pickDay = useCallback((date: string) => {
@@ -928,55 +769,7 @@ export default function SepOilLossPage() {
             max={OIL_PCT_MAX}
             step={5}
           />
-          <div>
-            <span className="text-xs text-slate-500">OIW samples (.xlsx)</span>
-            <input
-              type="file"
-              accept=".xlsx"
-              aria-label="OIW samples (.xlsx)"
-              onChange={(e) => {
-                const picked = e.target.files;
-                if (picked && picked.length > 0) setSampleFile(picked[0]);
-                e.target.value = ""; // same file re-pickable after a Clear
-              }}
-              className={
-                "mt-1 block h-8 w-56 text-xs text-slate-600 file:mr-2 file:h-8 " +
-                "file:rounded-md file:border file:border-slate-300 file:bg-white " +
-                "file:px-2 file:text-xs file:font-medium file:text-slate-700 " +
-                "hover:file:bg-slate-50"
-              }
-            />
-          </div>
-          {samples !== null && samples.locations_available.length > 0 && (
-            <label className="block">
-              <span className="text-xs text-slate-500">Sample point</span>
-              <select
-                value={sampleLoc}
-                onChange={(e) => setSampleLoc(e.target.value)}
-                className={SELECT_CLS}
-              >
-                {samples.locations_available.map((loc) => (
-                  <option key={loc} value={loc}>
-                    {loc}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          <NumField
-            label="Sample water rate (BPD)"
-            value={waterRateIn}
-            onChange={setWaterRateIn}
-            min={WATER_RATE_MIN}
-            max={WATER_RATE_MAX}
-            step={5000}
-            width="w-32"
-          />
-          {sampleFile !== null && (
-            <Button size="sm" variant="ghost" onClick={clearSamples}>
-              Clear samples
-            </Button>
-          )}
+
         </div>
 
         {outOfRange && (
@@ -987,122 +780,32 @@ export default function SepOilLossPage() {
           </WarnNote>
         )}
 
-        {parsing && <Spinner label="Parsing OIW samples" />}
-        {parseError !== null && <ErrorNote error={parseError} className="mt-3" />}
-        {samples !== null && samples.sample_count > 0 && (
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-            <Badge
-              tone="info"
-              title={`${samples.filename}, sheet ${samples.sheet}. Held in this page only - a reload clears it.`}
-            >
-              {fmtNum(samples.sample_count)} samples at {samples.location}
-              {samples.first_date !== null && samples.last_date !== null
-                ? `, ${samples.first_date} to ${samples.last_date}`
-                : ""}
-            </Badge>
-            <span>
-              Sampled rate is ppm x {fmtNum(samples.water_rate_bpd)} BPD / 1e6, one unweighted
-              mean per Alaska day
-            </span>
-          </div>
-        )}
-        {samples !== null && samples.sample_count === 0 && (
-          <WarnNote className="mt-3">
-            No samples at {samples.location} on sheet {samples.sheet}. Pick another sample point
-            from the list.
-          </WarnNote>
-        )}
       </Section>
 
-      {/* The method is a hover away rather than a standing paragraph: it is
-          read once and then only gets between the engineer and the charts. */}
-      <div className="flex flex-wrap items-center gap-2">
-        <HelpPopover label="What the band means" title="Quote the band, never one end">
-          <p>
-            Neither end is the raw meter arithmetic. Flow x (1 - wc) off the Red Eye is NOT the
-            answer: it bills the analyzer&apos;s film as oil around the clock, counts every hour
-            the separator is down as 100% oil, and can imply more oil out the water leg than the
-            field produces. Hover &quot;How the bounds are found&quot; for the five corrections.
-          </p>
-          <p className="mt-2">
-            What you get instead is a band. Every barrel figure reads lower - upper with its
-            share of field oil beside it. The UPPER bound is the analyzer as read AFTER the film
-            correction and the flow gate, with the instantaneous oil rate held to{" "}
-            {fmtNum(fieldOil)} BOPD - all of the field&apos;s oil short-circuiting the vessel is
-            the absolute physical ceiling. The LOWER bound is the same integral with the oil
-            fraction of the leg capped at {fmtNum(oilPct)}%.
-          </p>
-          <p className="mt-2">
-            The two ends can differ several-fold during a bad excursion, because the meter can
-            imply 70,000-87,000 BOPD out the water leg, which is more oil than the field makes.
-            Quoting the upper end alone invents barrels; quoting the lower end alone buries the
-            problem.
-          </p>
-        </HelpPopover>
-        <HelpPopover
-          label="How the bounds are found"
-          title="Upper and lower bound, step by step"
-          width="w-[34rem]"
-        >
-          <p className="mb-2">
-            Start from flow x (1 - wc) and understand why it is wrong. On a filmed meter it
-            charges oil that is not there, on a down separator it charges the whole leg, and on a
-            deep excursion it charges more oil than the field makes. Five corrections, in order:
-          </p>
-          <ol className="list-decimal space-y-1.5 pl-4">
-            <li>
-              <span className="font-medium text-slate-700">Clock.</span> The water-leg flow meter
-              is the fastest and most regular tag, so it sets the integration clock; water cut,
-              level and setpoint step-hold onto it, which is what an exception-reported historian
-              means. No single sample stands for more than 15 minutes, so one dropout cannot
-              smear a stale value across hours.
-            </li>
-            <li>
-              <span className="font-medium text-slate-700">Gate.</span> Samples at or below the
-              flow gate are dropped outright - the separator is down or the meter is drifting
-              around zero. The gate is on FLOW only, never on the water-cut value: the deep
-              90 - 60 - 30 - 5 sweeps are real carry-under, and screening on the analyzer would
-              delete the events this page exists to find.
-            </li>
-            <li>
-              <span className="font-medium text-slate-700">Datum.</span> Each reading is
-              referenced to the analyzer&apos;s OWN trailing 24 h p95 water cut, clipped to
-              80-100%. A filmed Red Eye stops reaching 100%, so a straight 100 - wc bills the
-              film as oil forever; only departures below the meter&apos;s own plateau are
-              charged.
-            </li>
-            <li>
-              <span className="font-medium text-slate-700">Rate.</span> Implied oil fraction is
-              plateau minus reading, never negative. UPPER rate is leg flow x that fraction,
-              clipped at {fmtNum(fieldOil)} BOPD. LOWER rate is leg flow x the same fraction with
-              the FRACTION capped at {fmtNum(oilPct)}%, so the cap bites only on the excursions
-              that imply more oil in the leg than it could plausibly carry.
-            </li>
-            <li>
-              <span className="font-medium text-slate-700">Barrels.</span> Rate x hours / 24,
-              summed over the valid samples in the look-back. Percent of field divides that by{" "}
-              {fmtNum(fieldOil)} BOPD over the same valid hours, so downtime never inflates the
-              share.
-            </li>
-          </ol>
-          <p className="mt-2">
-            <span className="font-medium text-slate-700">Worked example.</span> A meter plateaued
-            at {EX_PLATEAU}% on a steady {fmtNum(EX_FLOW)} BPD leg, with one {EX_MINUTES} minute
-            carry-under to {EX_DIP}%. Flow x (1 - wc) charges {fmtNum(example.naive)} bbl that
-            day, {fmtNum(example.film)} bbl of it film the meter can no longer read off. This
-            page charges NOTHING while the reading sits on its own plateau, then{" "}
-            {fmtNum(example.upper)} bbl upper and {fmtNum(example.lower)} bbl lower for the dip -
-            {" "}{fmtNum(example.rate)} BOPD as read against {fmtNum(example.capped)} BOPD at
-            the {fmtNum(oilPct)}% cap.
-          </p>
-          <p className="mt-2">
-            Both knobs are yours: field oil {fmtNum(FIELD_OIL_MIN)} - {fmtNum(FIELD_OIL_MAX)}{" "}
-            BOPD, oil cap {OIL_PCT_MIN} - {OIL_PCT_MAX}%. Raising field oil loosens the ceiling
-            and lowers every percent-of-field share; tightening the cap pulls the lower bound
-            down. Above {PLAUSIBLE_PCT}% of field oil the as-read end is not quotable.
-          </p>
-        </HelpPopover>
-      </div>
+      <InfoNote>
+        These are carryover scenarios relative to a rolling meter reference, not measured
+        total loss or statistical bounds. A low plateau can reflect meter bias or sustained
+        oil carryover. Raw indicated barrels and the reference subtraction are shown separately.
+        Oil in this first-stage water leg may still be recovered downstream.
+      </InfoNote>
+      <HelpPopover label="Calculation method" title="Assumptions behind the scenarios">
+        <p>All tag changes are step-held on a common timeline. Intervals are split at Alaska
+          midnight; invalid readings, low flow and flow-report gaps over 15 minutes are excluded.
+          Valid zero-percent water cut remains in the calculation. Without instrument quality
+          flags, a held analyzer value cannot prove that the analyzer is healthy.</p>
+        <p className="mt-2">Raw indicated oil = liquid flow x (1 - water cut / 100).
+          The excursion calculation replaces 100 with a trailing 24-hour p95 reference sampled
+          on a one-minute clock, clipped to 80-100%. The removed volume is an assumption,
+          not measured film. Sustained carryover can disappear from the excursion scenarios.</p>
+        <p className="mt-2">Both scenarios cap rate at the entered field oil basis. The smaller
+          also caps oil fraction. These user-selected caps do not establish physical bounds
+          during vessel inventory changes. Integrals are rate x hours / 24 on valid intervals.</p>
+        <p className="mt-2">Confirm that the flow tag represents total liquid volume and is
+          comparable to the analyzer volume basis. Sample-derived rates use the same assumption;
+          reference-condition differences need a separate correction.</p>
+      </HelpPopover>
+
+      <OiwSampleWorkflow days={days} />
 
       {query.isError && <ErrorNote error={query.error} />}
       {query.isLoading && <Spinner label="Reading the separator historian" />}
@@ -1153,7 +856,7 @@ export default function SepOilLossPage() {
               <Metric
                 label="Valid hours"
                 value={fmtNum(data.valid_hours, 1)}
-                sub={`${fmtNum(data.excluded_hours, 1)} h excluded below the flow gate`}
+                sub={`${fmtNum(data.excluded_hours, 1)} h excluded by flow, invalid readings or missing coverage`}
               />
               <Metric
                 label="Field oil basis"
@@ -1164,7 +867,7 @@ export default function SepOilLossPage() {
               <Metric
                 label="Oil-fraction cap"
                 value={fmtPct(data.max_oil_frac, 0)}
-                sub="sets the lower bound"
+                sub="sets the fraction-capped scenario"
               />
             </div>
           </Card>
@@ -1203,8 +906,7 @@ export default function SepOilLossPage() {
               <p className="mt-2 px-1 text-xs text-slate-500">
                 {dayMon(dayData.date)}: {band(dayData.summary.bbl_lower, dayData.summary.bbl_upper)}{" "}
                 bbl over {fmtNum(dayData.summary.upset_hours, 1)} upset hours in{" "}
-                {dayData.events.length} events. One point per minute here, against roughly one
-                per quarter hour on the full window.
+                {dayData.events.length} events. The chart is downsampled; event integrals use all valid intervals.
               </p>
             )}
           </Card>
@@ -1212,7 +914,7 @@ export default function SepOilLossPage() {
       )}
 
       {dailyOpt && (
-        <Section title="Oil to the water leg by field day">
+        <Section title="Carryover scenarios by field day">
           <Card>
             <ChartPanel
               option={dailyOpt}
@@ -1222,34 +924,16 @@ export default function SepOilLossPage() {
             />
             <p className="mt-2 px-1 text-xs text-slate-500">
               Click a bar to drill the chart above into that day; click it again to come back.
-              Bar spans the lower to upper bound. Dashed outline marks a day the window only
-              clips or the separator spent partly down, so it is not comparable bar for bar.
+              Bar spans the two scenarios. Dashed outline marks a day with incomplete coverage or excluded intervals, so it is not comparable bar for bar.
               Days are Alaska local and cover the whole window, so they will not sum to a
               rolling look-back card.
             </p>
-            {overlay !== null && samples !== null && (
-              <p className="mt-1 px-1 text-xs text-slate-500">
-                Gold diamonds are the operators&apos; grab samples at {overlay.location}: the
-                day&apos;s unweighted mean of ppm x {fmtNum(samples.water_rate_bpd)} BPD / 1e6,
-                on the days somebody pulled a sample. Held in this page only.
-              </p>
-            )}
-            {downstream && overlay !== null && (
-              <WarnNote className="mt-2">
-                Sampled OIW at {overlay.location} is taken DOWNSTREAM of the deoilers
-                (V-5419 / V-5421 / V-5422 / V-5425), while the calculated band is the
-                first-stage water leg UPSTREAM of them. The gap between the diamonds and the
-                bars is deoiler recovery, not measurement error - the two are not measuring
-                the same stream. Only {UPSTREAM_LOCATION} samples the stream the band
-                describes.
-              </WarnNote>
-            )}
           </Card>
         </Section>
       )}
 
       {cumOpt && (
-        <Section title="Cumulative oil to the water leg">
+        <Section title="Cumulative carryover scenarios">
           <Card>
             <ChartPanel option={cumOpt} height={360} zoom={{ xAxisIndex: [0], yAxisIndex: [0] }} />
           </Card>
@@ -1258,7 +942,7 @@ export default function SepOilLossPage() {
 
       {data && data.events.length > 0 && (
         <Section
-          title={`Carry-under events (${data.events.length}, worst first)`}
+          title={`Meter excursions (${data.events.length}, worst first)`}
           actions={
             <Button size="sm" variant="ghost" onClick={exportCsv}>
               Download CSV
@@ -1271,7 +955,7 @@ export default function SepOilLossPage() {
             rowKey={(r) => r.start}
             maxHeight="30rem"
             sortable
-            emptyLabel="No carry-under events in this window"
+            emptyLabel="No meter excursions in this window"
           />
         </Section>
       )}

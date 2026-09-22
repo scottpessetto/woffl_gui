@@ -77,8 +77,8 @@ mirrored by `web/src/api/types.ts`.
 | GET /meta/warmup | fleet cache warmup progress (passes, per-well counts, failures) |
 | GET /meta/performance | bounded local timing/SQL/queue/cache diagnostics; no warehouse query |
 | POST /gauge/parse | memory-gauge XLSX parse + multi-file combine (stateless; client holds gauge state per session, math in woffl.gui.memory_gauge) |
-| GET /tools/sep-oil-loss | Separator Oil Loss: oil leaving with the first-stage water leg, as a bounded band (see below) |
-| POST /tools/sep-oil-loss/samples | operator OIW grab-sample XLSX parse -> daily sampled loss overlay (stateless; page holds it, see below) |
+| GET /tools/sep-oil-loss | Separator raw indication and two reference-relative carryover scenarios (see below) |
+| POST /tools/sep-oil-loss/samples | CSV/XLSX sample log, declared-unit conversion and optional timestamped upstream comparison (stateless) |
 
 Server caching mirrors the old `@st.cache_data` TTLs (`server/config.py`):
 tests 24 h, chars/PF/profiles 1 h, saved IPR / prop history / historian 5 min.
@@ -152,73 +152,46 @@ updating while the engineer alt-tabs.
 
 ### Separator Oil Loss (Scott's Tools)
 
-`GET /api/tools/sep-oil-loss` reads three SCADA tags off the first-stage
-separator through `woffl/assembly/historian_client.py` and integrates the oil
-leaving with the water leg. The engine and the full derivation live in
-`server/services/tools/sep_oil_loss.py`; the parts you will otherwise get
-wrong:
+The [September 14 implementation and recovery](separator_sample_workflow_2026-09-14.md)
+defines the current method and supersedes the earlier film-correction and
+sampled-daily-loss interpretation.
 
-- `reporting.historian.vw_mpu_measurements` is **exception reported**, not
-  fixed interval. Every average must be time weighted and every cross-tag
-  merge must be an as-of step-hold. A plain `mean()` over-weights whichever
-  tag was moving fastest.
-- The Red Eye analyzer (`MPU_AI_5317`) **films over** and stops reaching 100%.
-  Readings are therefore referenced against the analyzer's own trailing 24 h
-  p95 plateau, and only departures below that plateau are charged. On the
-  validation window the film was 27,333 bbl of a 138,807 bbl raw integral.
-- Validity gates on **flow** (`MPU_FI_5365` > 1,000 BPD), never on the water
-  cut. A deep water-cut drop is real oil carry-under: the analyzer sweeps
-  continuously through 90/60/30/5/0 over minutes. Filtering on the analyzer
-  value would delete exactly the events the tool exists to find.
-- The level channel is `MPU_LIC_5365CV1`, the **controlled** indication the
-  loop acts on, with `MPU_LC5365SP1` as its setpoint. It is NOT `MPU_LI_5365A`
-  - that transmitter sits a mean 14.53 points from setpoint (corr 0.35) while
-  the LIC sits 3.98 (corr 0.71). The choice decides the diagnosis: on
-  LI_5365A two thirds of upsets looked like lost level, and on the controlled
-  channel 63% of the barrels go out with the level held AT setpoint, which
-  makes them a separation problem rather than a level-control one.
-- The meter-implied rate can exceed total field oil (Milne sells
-  50,000-65,000 BOPD), so the answer is always a **band**: `bbl_upper` is the
-  analyzer as read with the instantaneous rate capped at field production,
-  `bbl_lower` caps the oil fraction of the leg at `max_oil_frac`, which
-  defaults to 0.10 - a leg running more than a tenth oil is already an upset,
-  and a looser cap stops being a floor and just tracks the as-read meter. Both
-  carry a percent-of-field column so an implausible number announces itself.
-  Never quote one end of the band alone.
-- `periods` are ROLLING look-backs from the last sample; `daily` is one row
-  per **Alaska calendar** day the window touches, so night-shift upsets land
-  on the day the crew would name. The two do not sum to each other and are
-  not meant to: the daily bars cover clipped end days the rolling cut drops.
-  A day flagged `partial` is clipped by the window or cut by downtime, and
-  `pct_field_*` is withheld below 1 h of runtime because the denominator goes
-  to zero and turns a handful of barrels into a headline percentage.
+`GET /api/tools/sep-oil-loss` reads four tags: water-outlet flow
+`MPU_FI_5365`, water cut `MPU_AI_5317`, controlled level `MPU_LIC_5365CV1`
+and setpoint `MPU_LC5365SP1`. The service step-holds on their union timeline,
+splits at Alaska midnight and integrates valid intervals. Flow must exceed
+1,000 BPD, its report must be less than 15 minutes old, and WC must be finite
+and within 0-100%. A valid 0% WC reading is retained. Held WC has no age gate
+in this integral; instrument quality is not available to establish health.
 
-`POST /api/tools/sep-oil-loss/samples` takes an upload of the operators' CFP
-grab-sample workbook and returns the SAMPLED loss per Alaska calendar day, to
-overlay on those same daily bars (`server/services/tools/oiw_samples.py`).
-Stateless, exactly like `POST /gauge/parse`: it parses and returns, the page
-holds the result, nothing is stored on disk or in Databricks. What matters
-here:
+Raw indicated oil is `Q * (1 - WC/100)`, assuming total-liquid flow and a
+compatible volume basis. The excursion scenarios use a trailing 24-hour p95
+WC reference on a one-minute clock, clipped to 80-100%. That reference can
+subtract sustained real carryover as well as meter bias. Both the raw volume
+and reference subtraction are exposed. The two scenario caps are field oil
+rate and, additionally, an oil fraction of liquid flow. They are not proven
+physical or statistical bounds. Level event labels describe indications,
+without establishing a cause.
 
-- `oil_bopd = ppm x water_rate_bpd / 1e6`, with `water_rate_bpd` a REQUEST
-  parameter echoed in the response. The workbook's own `(BOPD)` column is a
-  hardcoded 95,000 BWPD basis, blank on most recent rows, and is never read.
-- A day is the plain UNWEIGHTED mean of its samples' rates. These are a
-  handful of irregular manual grabs; time weighting them would invent a duty
-  cycle the log does not carry.
-- The log is hand kept: blank rows, text in numeric cells and a stray year
-  2107 date all live in it. A row survives only with a parseable, plausible
-  date AND a finite positive ppm; the count dropped comes back in `notes`.
-  Case variants of a tap ("P-5417C" / "p-5417c") are one location; anything
-  further apart is left alone.
-- **The two series are not the same stream.** `P-5417C`, the only tap still
-  being sampled, sits DOWNSTREAM of the deoilers (V-5419 / V-5421 / V-5422 /
-  V-5425) while the calculated band is the first-stage water leg upstream of
-  them. Its 1,000-2,500 ppm baseline on 71,000 BPD is ~106 BOPD, far below the
-  band's lower bound, and that gap is deoiler RECOVERY, not measurement error.
-  `V-5317` is the one location that samples the band's own stream. Every
-  response carries that caveat in `notes` and the page renders it under the
-  chart; do not present the sampled marks as a check on the band.
+Rolling periods end at the last flow report; daily rows follow Alaska calendar
+boundaries, including DST. Partial days disclose incomplete coverage or excluded
+intervals. Shares are withheld below one valid hour per calendar day. Charts are
+downsampled; integrations use the complete grid.
+
+`POST /api/tools/sep-oil-loss/samples` accepts CSV or XLSX and preserves date,
+time, location, concentration, sampler, method and notes. The UI also supports
+manual entry and CSV downloads. Units default to unknown, withholding volume
+conversion. `ppmv` converts by dividing by one million; `mg/L` requires an oil
+density. Daily means describe the collected grabs, and daily barrels are withheld.
+The workbook's own BOPD column is ignored.
+
+Only V-5317 samples with known units and unambiguous Alaska times are compared
+with the meter. The last WC and flow reports within 15 minutes before sample
+time minus transport delay are paired. P-5417C is downstream; other sample points
+are unverified and remain unpaired. The median meter-minus-sample oil difference
+excludes pairs whose preceding two-minute WC range exceeds five points. This is
+a diagnostic, not an automatic calibration. Uploads and manual logs stay in page
+memory; download the log before navigating away. No production writes occur.
 
 ## Write safety
 

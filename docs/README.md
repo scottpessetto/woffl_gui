@@ -1,5 +1,14 @@
 # Documentation index
 
+The [S-Pad cost of power fluid](s_pad_marginal_wc_2026-09-22.md) shows what
++/-1,000 BPD of PF costs the other wells as the 60 Hz curve moves the header,
+the equivalent marginal PF water cut, and every pump size for one well
+(replacement, restart or new well) resettled on the curve, on the S-Pad tab.
+
+The [September 14 separator recovery](separator_sample_workflow_2026-09-14.md)
+records the recovered oil-in-water sample workflow, raw meter indication,
+carryover scenarios, local verification and remaining field checks.
+
 The [pad and CFP capacity fixes](pad_cfp_capacity_delivery_2026-09-12.md)
 implement the numerical, allocation and workflow repairs from the
 [capacity review](pad_cfp_capacity_review_2026-09-12.md). New runs maximize oil
@@ -39,6 +48,7 @@ inputs and revision; later implementation notes do not retroactively rerun them.
 
 | Guide | Use it for |
 |---|---|
+| [Separator samples and carryover](separator_sample_workflow_2026-09-14.md) | Timestamped grab comparisons, units, meter-reference assumptions and shutdown recovery |
 | [Well-fit workflow delivery](well_fit_workflow_delivery_2026-09-12.md) | Current workflow, integrated checks, saved-model identity and remaining qualification work |
 | [Sensitivities and common oil IPR](sensitivity_common_ipr_2026-09-12.md) | Scenario/Apply consistency and explicit chronological common-curve fitting |
 | [Pad accounting and stress cases](pad_decision_accounting_2026-09-12.md) | Complete modeled coverage, hardware counterfactual and bounded I/M/E plan comparisons |
