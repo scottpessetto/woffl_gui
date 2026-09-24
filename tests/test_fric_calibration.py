@@ -7,7 +7,7 @@ machinery runs:
 - SUBSONIC: psu responds to (ken, kth, kdi), so the optimizer fits them
   exactly as today (quality graded by _classify_match, coefs from the
   optimizer, no message).
-- SONIC: psu is pinned on the cavitation floor regardless of coefficients
+- SONIC: psu is pinned on the entry-choke floor regardless of coefficients
   (kth/kdi have zero psu gradient; ken would only move the floor), so the
   single-point match is degenerate - the result must carry the SEED
   coefficients, match_quality "pinned" and an explanatory message, never
@@ -35,7 +35,7 @@ class _FakePump:
 
 
 def _sonic_solver(*, jpump, **kwargs):
-    """Cavitation-floor well: psu never moves off FLOOR, always sonic."""
+    """Entry-choke-floor well: psu never moves off FLOOR, always sonic."""
     return FLOOR, True, 180.0, 40.0, 2600.0, 1.0
 
 
@@ -81,7 +81,7 @@ def test_sonic_pinned_returns_seeds(monkeypatch):
     # bounded is computed on the RETURNED (seed) coefs, which sit mid-range.
     assert r.bounded is False
     assert r.message is not None
-    assert "cavitation floor" in r.message
+    assert "entry-choke floor" in r.message
     assert "+300 psi" in r.message  # floor gap = modeled - target
 
 
@@ -122,7 +122,7 @@ def test_subsonic_behavior_unchanged(monkeypatch):
 # and offset separate). A shared u^2 term in psu for kth AND kdi turned out
 # nearly collinear over the ppf window - the fitter matched RMS to ~3 psi on
 # a kth/kdi trade-off, which is exactly the degeneracy real spread avoids.
-# mach_crit lowers a cavitation FLOOR the responsive psu gets clipped to
+# mach_crit lowers an entry-choke FLOOR the responsive psu gets clipped to
 # (psu = max(resp, floor)); with mach_crit = 1.0 and the classic ppf window
 # (ppf < 3500 so u > 0) the floor never binds, keeping the legacy 4-param
 # cases byte-identical. High-ppf points (u < 0) drop resp below the
@@ -138,7 +138,7 @@ RES_PRES = 1500.0
 
 
 def _gen_floor(ken, mach_crit):
-    """Cavitation floor: falls as the fitted critical Mach rises."""
+    """Entry-choke floor: falls as the fitted critical Mach rises."""
     return 200.0 + 3000.0 * ken - 250.0 * (mach_crit - 1.0)
 
 
@@ -573,3 +573,24 @@ def test_multipoint_without_progress_callback_is_unchanged(monkeypatch):
     assert (quiet.best_ken, quiet.best_kth, quiet.best_kdi, quiet.best_fnz,
             quiet.best_mach_crit) == (loud.best_ken, loud.best_kth, loud.best_kdi,
                                       loud.best_fnz, loud.best_mach_crit)
+
+
+def test_multipoint_solves_share_one_entry_path_scope(monkeypatch):
+    """Every trial solve of one fit sees the same entry-path cache, so the
+    fluid's throat-entry PVT path is built once per fit rather than once per
+    solve (live MPE-35, 2026-09-23: 93.0 s -> 78.9 s, identical result).
+    The scope ends with the fit."""
+    from woffl.flow import entry_energy
+
+    _patch_mp(monkeypatch)
+    scopes = set()
+
+    def recording(**kwargs):
+        scope = entry_energy._PATHS.get()
+        scopes.add(id(scope) if scope is not None else None)
+        return _mp_solver(**kwargs)
+
+    monkeypatch.setattr(fc, "jetpump_solver", recording)
+    fc.calibrate_multipoint(_mp_config(), "12", "B", _mp_points(PPFS, **TRUE))
+    assert len(scopes) == 1 and None not in scopes
+    assert entry_energy._PATHS.get() is None

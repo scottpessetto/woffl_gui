@@ -44,7 +44,7 @@ import numpy as np
 import pandas as pd
 
 from server import jobs, schemas
-from server.services import datasources, evidence as evidence_svc, tests as tests_svc, wells as wells_svc
+from server.services import datasources, evidence as evidence_svc, ipr as ipr_svc, tests as tests_svc, wells as wells_svc
 
 # ---------------------------------------------------------------------------
 # Job registry
@@ -232,6 +232,12 @@ def _build_configs(
         for fw in future:
             coverage[fw.name] = {"well": fw.name, "pad": fw.pad or pads[0],
                 "role": "future", "outcome": "missing_inputs", "reason": "Donor inputs unavailable."}
+
+    # One fleet-wide saved-IPR read before the per-well loop. well_context
+    # reads the woffl memo, which only this snapshot fills in bulk; without
+    # it a cold pad paid one prop_hist round trip per well (live S-Pad,
+    # 2026-09-23: 19 reads, 17.1 of 17.6 s). TTL-cached, so warm runs are free.
+    ipr_svc.prime_saved_ipr()
 
     seeds_by_well: dict[str, dict[str, Any]] = {}
     for name in sorted(set(by_pad) | donors):
@@ -525,7 +531,7 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         current, test_rates = _current_and_tests([c.well_name for c in configs])
         current.update({f.name: (f.nozzle, f.throat) for f in req.future if f.nozzle is not None})
         # Field-measured suction response (floor/psu_ref/beta per well) -
-        # corrects the model's cavitation floor where the gauges contradict
+        # corrects the model's entry-choke floor where the gauges contradict
         # it. Strictly fail-soft: an unreachable warehouse degrades to the
         # uncorrected (model-only) run, never to a failed job.
         jobs.set_progress(job, "reading pressure history...")

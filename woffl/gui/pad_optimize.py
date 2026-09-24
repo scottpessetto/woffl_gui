@@ -1368,8 +1368,8 @@ def _model_at_forced_header(well_configs, header_psi: float, current_choices: di
     do these wells do at pressure X" directly. Returns
     ``{well: (oil_bopd, pf_bpd, psu_psig, sonic) | None}`` (None = pump
     missing or unsolvable at this header; psu/sonic are None when the batch
-    row lacks them). ``sonic`` True means the solver returned the cavitation
-    floor: throat entry at sonic velocity, so psu and oil are pinned there
+    row lacks them). ``sonic`` True means the solver returned the entry-choke
+    floor: throat entry choked by the gas-liquid mixture, so psu and oil are pinned there
     and only PF responds to the delivered pressure.
     """
     from woffl.assembly.network_optimizer import NetworkOptimizer, PowerFluidConstraint
@@ -1688,13 +1688,13 @@ def _vogel_ipr_curve(wc) -> Optional[list[list[float]]]:
     ]
 
 
-# Evidence gate: a model cavitation floor is only "contradicted" when it sits
+# Evidence gate: a model entry-choke floor is only "contradicted" when it sits
 # more than this far ABOVE the measured flowing-BHP floor (below that the
 # field data CONFIRMS the model and the suction response is left alone).
 _EVIDENCE_VIOLATION_MIN_PSI = 25.0
 
 # A well-measured response slope (beta = -dBHP/dPpf) this steep falsifies a
-# cavitation-pinned (zero-response) model even when the floor itself is
+# choke-pinned (zero-response) model even when the floor itself is
 # confirmed. Field separation on M-Pad: insensitive wells measure
 # beta <= 0.022, responsive wells >= 0.04, so 0.03 splits the groups cleanly.
 _EVIDENCE_BETA_MIN = 0.03
@@ -1708,11 +1708,11 @@ def _apply_suction_evidence(
     configs_by_name: dict,
 ) -> dict[str, dict]:
     """Overwrite the priced grid's suction response with field evidence on
-    wells where measurement contradicts the model's cavitation floor.
+    wells where measurement contradicts the model's entry-choke floor.
 
     Per well with an evidence row (plain dict: floor/psu_ref/beta/
     beta_source/...): find the top solvable ladder level k*; if the model is
-    cavitation-pinned there (sonic True), the evidence falsifies it - the
+    choke-pinned there (sonic True), the evidence falsifies it - the
     model's suction floor sits more than ``_EVIDENCE_VIOLATION_MIN_PSI``
     above the measured floor, OR a well-measured beta of at least
     ``_EVIDENCE_BETA_MIN`` demonstrates a suction response the pinned model
@@ -1723,7 +1723,7 @@ def _apply_suction_evidence(
         oil_e = 0 if psu_e >= res_pres else oil_model[k] * q(psu_e) / q(psu_model[k])
 
     PF stays the model's (validated hydraulics); the sonic flag is cleared
-    (corrected points are not cavitation-pinned). The fixed (ppf_ref, psu_ref)
+    (corrected points are not choke-pinned). The fixed (ppf_ref, psu_ref)
     comes from paired observations; missing references are not inferred from
     the sweep ceiling. Oil correction uses each point's own model BHP.
     A psu_ref at or above the fit's res_pres is unusable -> skip.
@@ -1889,7 +1889,7 @@ def run_choke_optimization(
         deltas vs full-open plus ``projected_oil`` (measured test oil x the
         model ratio chosen/today - model bias cancels, same anchoring as
         ``pf_what_if_rows``). When ``evidence`` falsifies a well's
-        cavitation-pinned model suction - the model floor is violated or a
+        choke-pinned model suction - the model floor is violated or a
         well-measured response beta shows sensitivity the model denies -
         its suction response is replaced by the field data
         (``_apply_suction_evidence``) and the row says so via
@@ -1950,7 +1950,7 @@ def run_choke_optimization(
 
     # -- price the grid: every well at its installed pump at every level ----
     # sonic flag per (well, ladder level): the row assembly reports whether
-    # the chosen and full-open points sit at the cavitation floor
+    # the chosen and full-open points sit at the entry-choke floor
     sonic_at: dict[tuple, bool] = {}
     grid: list[dict] = []
     for k, level in enumerate(levels):
@@ -1962,7 +1962,7 @@ def run_choke_optimization(
             progress(k + 1, n_levels + 1, level, 0.0, 0.0)
 
     # -- evidence-corrected suction response: overwrite the grid where field
-    #    data contradicts the model's cavitation floor (PF stays model). The
+    #    data contradicts the model's entry-choke floor (PF stays model). The
     #    frontier/trim/ladder/charts all inherit the corrected grid.
     corrected: dict[str, dict] = {}
     if evidence:
@@ -1971,7 +1971,7 @@ def run_choke_optimization(
             grid, levels, names, evidence, configs_by_name
         )
         for w in corrected:
-            # corrected points are not cavitation-pinned
+            # corrected points are not choke-pinned
             for level in levels:
                 sonic_at.pop((w, level), None)
 
@@ -2150,7 +2150,7 @@ def run_choke_optimization(
                 # settings, plus reservoir pressure for drawdown
                 "psu": psu,
                 "psu_full": psu_f,
-                # cavitation-floor flags at the chosen / full-open points
+                # entry-choke-floor flags at the chosen / full-open points
                 # (None for held/shut/test-basis points off the ladder)
                 "sonic": sonic_at.get((w, psi)),
                 "sonic_full": sonic_at.get((w, psi_f)),

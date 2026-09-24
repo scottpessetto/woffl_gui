@@ -306,11 +306,13 @@ def predict_chunk(tasks):
     return out
 
 
-def run(job, well, request):
-    from concurrent.futures.process import BrokenProcessPool
+def load_history(well, request):
+    """Saved well inputs, tracker rows and tests for one well's replay/fit.
 
-    jobs.check_cancelled(job)
-    job["progress"] = "loading saved well inputs and historical tests"
+    Returns ``(cfg, tracker, test_frame, source, context, as_of)``. Pump
+    losses in ``cfg`` are clean reference; the IPR is the saved one unless
+    the request previews edits or a chronological mode replaces it.
+    """
     context = wells.well_context(well, 6, 0)
     seeds = dict(context["seeds"])
     if context.get("jpump_md") is not None:
@@ -335,6 +337,15 @@ def run(job, well, request):
         raise ValueError("No recorded well tests are available in this history window.")
     test_frame = fleet_tests[fleet_tests["well"] == well].copy()
     as_of = datetime.now(timezone.utc).isoformat()
+    return cfg, tracker, test_frame, source, context, as_of
+
+
+def run(job, well, request):
+    from concurrent.futures.process import BrokenProcessPool
+
+    jobs.check_cancelled(job)
+    job["progress"] = "loading saved well inputs and historical tests"
+    cfg, tracker, test_frame, source, context, as_of = load_history(well, request)
     jobs.check_cancelled(job)
     calibration = context.get("pump_calibration") if source == "databricks" else None
     eras, rows, work, notes = assemble(cfg, tracker, test_frame, request, as_of, calibration)

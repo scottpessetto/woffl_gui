@@ -897,7 +897,7 @@ class CalibrateRequest(BaseModel):
 
 class CalibrateResponse(BaseModel):
     converged: bool
-    # "pinned": the final solve was sonic (target BHP on the cavitation
+    # "pinned": the final solve was sonic (target BHP on the entry-choke
     # floor) - a single BHP point cannot identify friction there, so the
     # coefficients come back at their SEEDS and `message` explains why.
     match_quality: Literal["good", "fair", "poor", "failed", "pinned"]
@@ -1558,6 +1558,31 @@ class PumpMatchRequest(BaseModel):
         if self.edited_inputs is not None and self.mode != "all_tests":
             raise ValueError("Edited-input preview requires the every-test comparison.")
         return self
+
+
+class InstallationFitRequest(BaseModel):
+    """Fit one well across all its pump installations (read-only).
+
+    ``refit_ipr`` refits the scale of the ONE oil IPR (explicit; the saved
+    curve is held by default). ``exclude_wt_uids`` carries the Solver's
+    per-well excluded tests so the fit and the chart agree.
+    """
+    hydraulics_model: HydraulicsModel = "beggs"
+    months: Literal[24, 60] = 24
+    refit_ipr: bool = False
+    include_m3: bool = True
+    exclude_wt_uids: list[str] = Field(default_factory=list, max_length=2000)
+
+
+class InstallationFitJob(BaseModel):
+    job_id: str
+    kind: Literal["installation-fit"]
+    status: Literal["running", "done", "error", "cancelled"]
+    progress: str
+    result: Optional[dict[str, Any]] = None
+    error: Optional[str] = None
+    started_at: str
+    seconds: float
 
 
 class PumpMatchScores(BaseModel):

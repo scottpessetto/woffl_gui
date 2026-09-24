@@ -1,6 +1,6 @@
 """Field-evidence suction response mined from daily pressure history.
 
-The M-Pad choke model's PF hydraulics are validated, but its cavitation
+The M-Pad choke model's PF hydraulics are validated, but its entry-choke
 floor is contradicted by measured BHPs on roughly half the pad: the model
 freezes psu at a floor 50-145 psi ABOVE where the gauges actually flow, and
 field PF cuts move BHP (~+35 psi per -400 psi PF) where the model says it
@@ -15,7 +15,7 @@ Per well the evidence is a PLAIN DICT (woffl/gui never imports server code):
      "window": [str, str]}    # ISO dates, provenance
 
 - floor:   min(p5 of flowing daily BHP, min well-test BHP) - the measured
-           cavitation floor.
+           entry-choke floor.
 - psu_ref / ppf_ref: paired mean BHP / PF over the last PSU_REF_DAYS flowing days - today's
            operating suction anchor.
 - beta:    -median(dBHP/dPpf) over qualifying flowing-day pairs (Theil-Sen

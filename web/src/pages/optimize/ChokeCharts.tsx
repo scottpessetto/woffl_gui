@@ -266,7 +266,7 @@ export function IprLandingTable({ plan }: { plan: ChokePlanRow[] }) {
       <p className="px-2 pb-1 text-[11px] text-slate-500">
         Suction pressure is the flowing BHP at the pump; drawdown = reservoir P minus suction.
         Choking backs the well up its IPR: suction rises, drawdown and oil drop. An asterisk
-        marks a suction pinned at the cavitation floor (sonic throat entry) - there the choke
+        marks a suction pinned at the entry-choke floor (gas-choked throat entry) - there the choke
         only sheds power fluid, and suction and oil hold until the well leaves sonic.
         Wells marked field use measured suction response mined from PF-pressure history -
         their modeled floors were contradicted by measured BHPs.
@@ -326,7 +326,7 @@ export function IprLandingTable({ plan }: { plan: ChokePlanRow[] }) {
                     fieldBasis
                       ? fieldTitle
                       : r.sonic_full
-                        ? "Pinned at the cavitation floor (sonic throat entry)"
+                        ? "Pinned at the entry-choke floor (gas-choked throat entry)"
                         : undefined
                   }
                 >
@@ -353,7 +353,7 @@ export function IprLandingTable({ plan }: { plan: ChokePlanRow[] }) {
                         fieldBasis
                           ? fieldTitle
                           : r.sonic
-                            ? "Pinned at the cavitation floor (sonic throat entry)"
+                            ? "Pinned at the entry-choke floor (gas-choked throat entry)"
                             : undefined
                       }
                     >

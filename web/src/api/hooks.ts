@@ -22,6 +22,8 @@ import type {
   JpHistoryResponse,
   PumpMatchRequest,
   PumpMatchJob,
+  InstallationFitRequest,
+  InstallationFitJob,
   KnobBounds,
   MarginalWcResponse,
   MatchHealthRequest,
@@ -85,6 +87,28 @@ export const useCancelPumpMatch = () => useMutation({
 export const usePumpMatchJob = (jobId: string | null) => useQuery({
   queryKey: ["pump-match-job", jobId],
   queryFn: ({ signal }) => get<PumpMatchJob>(`/pump-match/${jobId}`, signal),
+  enabled: jobId !== null,
+  refetchInterval: (query) => isMissingJob(query.state.error) ? false :
+    (!query.state.data || query.state.data.status === "running" ? 1500 : false),
+  refetchIntervalInBackground: true,
+  staleTime: Infinity,
+  gcTime: HOUR_1,
+  retry: retryJobPoll,
+  retryDelay: jobPollDelay,
+});
+
+export const useStartInstallationFit = () => useMutation({
+  mutationFn: ({ well, request }: { well: string; request: InstallationFitRequest }) =>
+    post<OptimizeRunStarted>(`/wells/${encodeURIComponent(well)}/installation-fit`, request),
+});
+
+export const useCancelInstallationFit = () => useMutation({
+  mutationFn: (jobId: string) => api<{ cancel_requested: boolean }>(`/installation-fit/${jobId}`, { method: "DELETE" }),
+});
+
+export const useInstallationFitJob = (jobId: string | null) => useQuery({
+  queryKey: ["installation-fit-job", jobId],
+  queryFn: ({ signal }) => get<InstallationFitJob>(`/installation-fit/${jobId}`, signal),
   enabled: jobId !== null,
   refetchInterval: (query) => isMissingJob(query.state.error) ? false :
     (!query.state.data || query.state.data.status === "running" ? 1500 : false),

@@ -2,12 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { stableStringify, isMissingJob } from "../api/client";
 import { useCancelPumpMatch, usePumpMatchJob, useStartPumpMatch } from "../api/hooks";
-import { HYDRAULICS_LABELS, type JpHistoryResponse, type PumpMatchRequest } from "../api/types";
+import { HYDRAULICS_LABELS, type JpHistoryResponse, type PumpMatchRequest, type PumpMatchResult } from "../api/types";
 import { fmtDate, fmtNum } from "../lib/format";
 import { changedWellInputs, wellInputProblem, wellInputValues } from "../lib/wellInputs";
 import { useParamsStore } from "../state/params";
 import { HistoryStrip } from "./HistoryStrip";
 import { CommonOilIprFit } from "./CommonOilIprFit";
+import { InstallationFit } from "./InstallationFit";
 import { Button, ErrorNote } from "./ui";
 
 const CHECKBOX = "h-4 w-4 rounded border-slate-300 accent-blue-600";
@@ -39,6 +40,9 @@ export function ProductionHistory(props: {
   const [selectedEra, setSelectedEra] = useState<string | null>(null);
   const [testId, setTestId] = useState<string | null>(null);
   const [handle, setHandle] = useState<{ id: string; key: string } | null>(null);
+  // "Fit across installations" has its own job and panel; it only borrows the chart.
+  const [fitMode, setFitMode] = useState(false);
+  const [fitMatch, setFitMatch] = useState<PumpMatchResult | null>(null);
   const start = useStartPumpMatch();
   const cancel = useCancelPumpMatch();
   const cancelJob = cancel.mutate;
@@ -51,7 +55,7 @@ export function ProductionHistory(props: {
   latestKey.current = key;
   const currentId = handle?.key === key ? handle.id : null;
   const query = usePumpMatchJob(currentId);
-  const result = show && handle?.key === key && query.data?.status === "done" &&
+  const result = show && !fitMode && handle?.key === key && query.data?.status === "done" &&
     query.data.result?.well === data.well && stableStringify(query.data.result.request) === stableStringify(request)
     ? query.data.result : null;
   const running = !!currentId && (!query.data || query.data.status === "running") && !isMissingJob(query.error);
@@ -99,13 +103,18 @@ export function ProductionHistory(props: {
         <input className={CHECKBOX} type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />
         Show model match
       </label>
-      {show && <>
-        <label>Compare <select aria-label="History comparison" className={`${SELECT} ml-1`} value={mode}
-          onChange={(e) => setMode(e.target.value as PumpMatchRequest["mode"])}>
+      {show && <label>Compare <select aria-label="History comparison" className={`${SELECT} ml-1`} value={fitMode ? "installations" : mode}
+          onChange={(e) => {
+            const value = e.target.value;
+            setFitMode(value === "installations");
+            if (value !== "installations") setMode(value as PumpMatchRequest["mode"]);
+          }}>
           <option value="all_tests">Every test (well fit)</option>
           <option value="same_pump">Refit earlier tests: same pump</option>
           <option value="previous_pump">Refit earlier tests: next pump</option>
-        </select></label>
+          <option value="installations">Fit across installations</option>
+        </select></label>}
+      {show && !fitMode && <>
         {allTests && <label>Well inputs <select aria-label="History well inputs" className={`${SELECT} ml-1`}
           value={useEdits ? "edited" : "saved"} onChange={(e) => setUseEdits(e.target.value === "edited")}>
           <option value="saved">Saved in database</option>
@@ -130,7 +139,8 @@ export function ProductionHistory(props: {
         {running && <Button size="sm" variant="secondary" disabled={cancel.isPending} onClick={() => currentId && cancelJob(currentId)}>Cancel</Button>}
       </>}
     </div>
-    {show && <div className="space-y-1 text-xs text-slate-500" aria-live="polite">
+    {show && fitMode && <InstallationFit well={data.well} contextReady={contextReady} onMatch={setFitMatch} />}
+    {show && !fitMode && <div className="space-y-1 text-xs text-slate-500" aria-live="polite">
       <p>{HYDRAULICS_LABELS[model]}. {allTests
         ? `Holds one ${preview ? "edited" : "saved"} oil IPR across every test and pump, using each test's measured WC, GOR and PF/WHP pressures.`
         : mode === "previous_pump"
@@ -166,13 +176,15 @@ export function ProductionHistory(props: {
         </p>}
       </details>}
     </div>}
-    {result && <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600">
+    {(result || (show && fitMode && fitMatch)) && <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600">
       <label className="flex items-center gap-2"><input className={CHECKBOX} type="checkbox" checked={oilDetail} onChange={(e) => setOilDetail(e.target.checked)} />Oil detail</label>
       <label className="flex items-center gap-2"><input className={CHECKBOX} type="checkbox" checked={pfDetail} onChange={(e) => setPfDetail(e.target.checked)} />PF rate detail</label>
-      <span>{allTests ? "Open circles: actual tests. Dashed lines/filled circles: model predictions." : "Dots: actual tests. Diamonds/dotted: fitted history. Circles/dashed: held-out predictions."}</span>
-      {selectedEra && <button className="text-blue-700 underline" onClick={() => { setSelectedEra(null); setTestId(null); }}>Show all installations</button>}
+      <span>{fitMode ? "Open circles: actual tests. Diamonds/dotted: fitted history. Circles/dashed: held-out predictions."
+        : allTests ? "Open circles: actual tests. Dashed lines/filled circles: model predictions." : "Dots: actual tests. Diamonds/dotted: fitted history. Circles/dashed: held-out predictions."}</span>
+      {!fitMode && selectedEra && <button className="text-blue-700 underline" onClick={() => { setSelectedEra(null); setTestId(null); }}>Show all installations</button>}
     </div>}
-    <HistoryStrip {...props} match={result} selectedEra={selectedEra} oilDetail={oilDetail} pfDetail={pfDetail} onSelectTest={setTestId} />
+    <HistoryStrip {...props} match={fitMode ? (show ? fitMatch : null) : result} selectedEra={fitMode ? null : selectedEra}
+      oilDetail={oilDetail} pfDetail={pfDetail} onSelectTest={setTestId} />
     {result && <>
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">

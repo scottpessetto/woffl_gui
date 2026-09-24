@@ -62,6 +62,7 @@ inputs and revision; later implementation notes do not retroactively rerun them.
 | [Pump calibration scope](pump_calibration_scope_2026-09-08.md) | Installation/model identity, persistence, clean replacements and tests |
 | [WC uncertainty GUI](wc_uncertainty_gui_2026-09-08.md) | Sensitivity assumptions, failures, stale-result behavior and browser QA |
 | [Model trust and calibration](model_trust_2026-08-10.md) | Evidence layer and fitting; current amendments supersede August Mach assumptions |
+| [Fit across installations](installation_fit_delivery_2026-09-23.md) | Built 2026-09-23 (local): one-IPR well fit pooled across pump installations, held-out model selection, 29-well benchmark; [plan](installation_fit_plan_2026-09-23.md) holds the design rationale |
 | [Model improvement plan](jp_model_improvement_plan_2026-09-11.md) | BHP diagnosis beyond friction, possible physics errors, multiple pump installations/wells, hydraulic alternatives and Pump Match Over Time |
 | [Selectable hydraulics](hydraulics_models_2026-09-11.md) | BB, Hagedorn–Brown/Griffith and Shi/Pan; scoped model selection, primary sources, limitations and same-input historical comparison; Tulsa pending |
 | [Pad optimization formulation](optimization_redesign_2026-09.md) | Water pricing, plant constraints, both allocators and hardware identity |

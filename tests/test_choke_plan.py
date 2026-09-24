@@ -415,12 +415,12 @@ def test_unusable_anchor_yields_none_curve_without_raising(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# cavitation-floor (sonic) flags
+# entry-choke-floor (sonic) flags
 # ---------------------------------------------------------------------------
 
 
 def test_sonic_flags_ride_through_to_the_rows(monkeypatch):
-    # 4-tuple grid entries carry the cavitation-floor flag; the row reports
+    # 4-tuple grid entries carry the entry-choke-floor flag; the row reports
     # it INDEPENDENTLY at the chosen and full-open points. A's oil is flat
     # (sonic) so the frontier collapses its options to the knee at 2000 -
     # the free choke - while B's rising oil pulls the winning header to
@@ -562,7 +562,7 @@ def _ev_row(**over):
     return row
 
 
-# A is cavitation-pinned in the model: flat oil, frozen psu, sonic True at
+# A is choke-pinned in the model: flat oil, frozen psu, sonic True at
 # every level. B rises normally (pulls the winning header to 3000) and has
 # no evidence.
 GRID_SONIC_FLAT = {
@@ -620,7 +620,7 @@ def test_evidence_correction_declines_the_staircase_and_charges_chokes(monkeypat
     # PF hydraulics untouched (validated model)
     assert a["pf"] == pytest.approx(900.0)
     assert a["pf_full"] == pytest.approx(1000.0)
-    # corrected points are not cavitation-pinned
+    # corrected points are not choke-pinned
     assert a["sonic"] is None and a["sonic_full"] is None
     # provenance
     assert a["suction_basis"] == "evidence"

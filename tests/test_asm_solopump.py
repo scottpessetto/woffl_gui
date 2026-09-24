@@ -622,7 +622,7 @@ class TestMachCritAndNozzleAreaFactor:
 
     mach_crit=1.0 must reproduce the historic solve bit-identically (the
     threshold generalization is default-inert); mach_crit > 1 frees the
-    cavitation floor, so psu_minimize drops monotonically; a nozzle area
+    entry-choke floor, so psu_minimize drops monotonically; a nozzle area
     factor above one (washout, dnz_eff = dnz_catalog * sqrt(fnz)) raises the
     modeled PF rate at fixed conditions; BatchPump forwards mach_crit to
     every jetpump_solver call in its core loop.

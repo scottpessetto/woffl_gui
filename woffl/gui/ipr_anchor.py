@@ -755,11 +755,15 @@ def warm_saved_ipr_cache(force: bool = False) -> int:
         from woffl.assembly.well_test_client import _normalize_well_name
 
         ids = ",".join(f"'{p}'" for p in _saved_ipr_prop_ids())
+        # LEFT JOIN from the header so a well with no saved rows still comes
+        # back (as one all-NULL row) and is cached as None. An inner join
+        # dropped it, and each such well paid its own per-well read.
         df = execute_query(
             f"""
             SELECT h.well_name, p.prop_id, p.prop_value,
                    p.entry_datetime, p.entry_user
-            FROM (
+            FROM mpu.wells.vw_well_header h
+            LEFT JOIN (
                 SELECT enthid, prop_id, prop_value, entry_datetime, entry_user,
                        ROW_NUMBER() OVER (
                            PARTITION BY enthid, prop_id
@@ -767,9 +771,7 @@ def warm_saved_ipr_cache(force: bool = False) -> int:
                        ) AS rn
                 FROM mpu.wells.prop_hist
                 WHERE prop_id IN ({ids})
-            ) p
-            JOIN mpu.wells.vw_well_header h ON p.enthid = h.enthid
-            WHERE p.rn = 1
+            ) p ON p.enthid = h.enthid AND p.rn = 1
             """
         )
         # Stamp only on success, so a failed warm-up retries next render
@@ -779,8 +781,12 @@ def warm_saved_ipr_cache(force: bool = False) -> int:
 
         by_well: dict = {}
         for _, r in df.iterrows():
+            if pd.isna(r.get("well_name")):
+                continue
             well = _normalize_well_name(str(r["well_name"]).strip())
-            by_well.setdefault(well, {})[str(r["prop_id"])] = r
+            latest = by_well.setdefault(well, {})
+            if not pd.isna(r.get("prop_id")):
+                latest[str(r["prop_id"])] = r
 
         warmed = 0
         for well, latest in by_well.items():

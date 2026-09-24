@@ -7,7 +7,7 @@ all into one row per well an engineer can read across:
 
   fit provenance -> is the inflow curve trusted?
   model / test ratios -> does the model reproduce the latest tests?
-  model floor vs measured floor -> is the cavitation claim contradicted?
+  model floor vs measured floor -> is the entry-choke claim contradicted?
   measured beta -> does the field say the well responds to PF?
   friction rails -> did calibration degenerate to the bound box corner?
 
@@ -80,7 +80,7 @@ def friction_rails(
     """Which loss coefficients sit on the degenerate-fit corner of the
     calibration bound box (ken at its ceiling, kth/kdi on their floors) -
     the Nelder-Mead signature of a sonic-pinned well where the optimizer
-    wrote the calibration-day gauge BHP into the cavitation floor."""
+    wrote the calibration-day gauge BHP into the entry-choke floor."""
     from woffl.gui.fric_calibration import KDI_BOUNDS, KEN_BOUNDS, KTH_BOUNDS
 
     ken_railed = ken is not None and abs(ken - KEN_BOUNDS[1]) < KEN_RAIL_TOL
@@ -123,7 +123,7 @@ def _verdict(row: dict[str, Any]) -> str:
         and row.get("floor_source", "era") != "prior_era"
     ):
         # The floor gate only falsifies a model that CLAIMS the well sits on
-        # its cavitation floor: a subsonic well whose modeled psu today is
+        # its entry-choke floor: a subsonic well whose modeled psu today is
         # above the lowest BHP it reached in the last year is not
         # contradicted, it is just not at its floor today. Same rule as
         # pad_optimize._apply_suction_evidence (review 2026-09-01, EVID-F3).
@@ -134,7 +134,7 @@ def _verdict(row: dict[str, Any]) -> str:
         and _num(row["beta"]) >= BETA_RESPONSIVE
         and row.get("sonic") is True
     ):
-        # The model claims the well is pinned at the cavitation floor
+        # The model claims the well is pinned at the entry-choke floor
         # (zero suction response) while the well's own measured event
         # pairs show it responding to PF cuts.
         return "contradicted"

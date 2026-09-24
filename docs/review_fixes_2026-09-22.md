@@ -89,10 +89,23 @@ committed-code runs that also differed.
 Cold S-Pad hydration is 6.4 s (18 one-per-well saved-IPR queries); warm is
 0.2 s. The PF cost panel takes 29 s.
 
+## Follow-up (2026-09-23): cold hydration
+
+`_build_configs` now primes the fleet saved-IPR snapshot
+(`ipr.prime_saved_ipr`) once before its per-well loop, so every pad run,
+match health, pump decision, CFP and event-calibration hydration reads
+saved IPRs from memory. The warm-up query LEFT JOINs from `vw_well_header`
+so wells with no saved rows are cached as `None` too; an inner join dropped
+them and each paid its own read. Live S-Pad, read-only, same script, cold
+chars/tests/tracker already warm: before 21 queries, 17.6 s (19 per-well
+saved-IPR reads, 17.1 s); after 2 queries, 1.4 s (fleet saved IPR 0.31 s,
+fleet PF 0.61 s); warm 0.34 s either way. The first after-run hit a waking
+warehouse (9.9 s); two repeats gave 1.4 s. MPS-90 still fails seeding on a
+pump MD/TVD conflict (data, not this change).
+
 ## Not done
 
-- Sharing one hydration across panels, and replacing the per-well saved-IPR
-  query with one fleet query.
+- Sharing one hydration across panels.
 - Stale-result warnings when offline/fit/pump settings change after a run.
 - Making "today" consistent between the pad run, match health and the PF
   panel.

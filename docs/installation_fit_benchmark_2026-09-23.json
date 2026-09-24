@@ -1,0 +1,6021 @@
+{
+ "generated": "2026-09-23",
+ "scope": "Read-only live benchmark of server/services/installation_fit.run on the 29 multi-pump candidate wells from pump_lifetime_preflight_v2_2026-09-11.json; 24-month window, Beggs-Brill, 2 pool workers, local laptop.",
+ "modes": {
+  "held": [
+   {
+    "well": "MPM-28",
+    "ok": true,
+    "wall": 8.401534600066952,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 5.751860065934877,
+     "reason": "M0 is the simplest model whose held-out loss (5.21) is within one standard error of the best (M0: 5.21 + 0.54)."
+    },
+    "gate": {
+     "count": 30,
+     "median_abs": 0.36018721744123083,
+     "median_signed": -0.36018721744123083,
+     "passes": false
+    },
+    "losses": null,
+    "skipped": [
+     "M1",
+     "M2",
+     "M3"
+    ],
+    "seconds": 1.1233958000084385,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 5.212883723137238,
+       "se": 0.5389763427976393,
+       "n": 17
+      },
+      "rms_std": 2.151265828940299,
+      "aicc": 137.89015677655865,
+      "dirs": {
+       "correct": 9,
+       "clear": 12
+      },
+      "heldout_bhp_rms": 118.98267285489871,
+      "params": {},
+      "n_rows": 90,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPS-45",
+    "ok": true,
+    "wall": 4.808867700048722,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 7.380391631228469,
+     "reason": "M0 is the simplest model whose held-out loss (6.65) is within one standard error of the best (M0: 6.65 + 0.73)."
+    },
+    "gate": {
+     "count": 53,
+     "median_abs": 0.20465673922639127,
+     "median_signed": -0.07457388406469545,
+     "passes": false
+    },
+    "losses": null,
+    "skipped": [
+     "M1",
+     "M2",
+     "M3"
+    ],
+    "seconds": 4.502894999925047,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 6.654559852087575,
+       "se": 0.725831779140894,
+       "n": 38
+      },
+      "rms_std": 2.8736980208672653,
+      "aicc": 333.5695081606584,
+      "dirs": {
+       "correct": 1,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 160.02749185354259,
+      "params": {},
+      "n_rows": 158,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPB-39",
+    "ok": true,
+    "wall": 2.603451299946755,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 17.915283141266638,
+     "reason": "M0 is the simplest model whose held-out loss (15.64) is within one standard error of the best (M0: 15.64 + 2.28)."
+    },
+    "gate": {
+     "count": 48,
+     "median_abs": 0.4430444662415971,
+     "median_signed": 0.4430444662415971,
+     "passes": false
+    },
+    "losses": null,
+    "skipped": [
+     "M1",
+     "M2",
+     "M3"
+    ],
+    "seconds": 2.2780294000403956,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 15.63568815236049,
+       "se": 2.279594988906148,
+       "n": 45
+      },
+      "rms_std": 7.212080159682386,
+      "aicc": 569.0181369726475,
+      "dirs": {
+       "correct": 5,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 172.20304591829185,
+      "params": {},
+      "n_rows": 144,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPB-32",
+    "ok": true,
+    "wall": 2.9200219999765977,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 41.9590831761087,
+     "reason": "M0 is the simplest model whose held-out loss (35.80) is within one standard error of the best (M0: 35.80 + 6.16)."
+    },
+    "gate": {
+     "count": 43,
+     "median_abs": 5.9613399336069195,
+     "median_signed": 5.9613399336069195,
+     "passes": false
+    },
+    "losses": null,
+    "skipped": [
+     "M1",
+     "M2",
+     "M3"
+    ],
+    "seconds": 1.9365316999610513,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 35.802257366728384,
+       "se": 6.156825809380314,
+       "n": 37
+      },
+      "rms_std": 18.56997692353342,
+      "aicc": 707.0141641108063,
+      "dirs": {
+       "correct": 4,
+       "clear": 9
+      },
+      "heldout_bhp_rms": 252.50333803247685,
+      "params": {},
+      "n_rows": 133,
+      "failed": 12
+     }
+    }
+   },
+   {
+    "well": "MPI-22",
+    "ok": true,
+    "wall": 70.99207929999102,
+    "selected": {
+     "model": "M2",
+     "basis": "held_out_1se",
+     "best": "M2",
+     "limit": 4.092121155283265,
+     "reason": "M2 is the simplest model whose held-out loss (3.64) is within one standard error of the best (M2: 3.64 + 0.46)."
+    },
+    "gate": {
+     "count": 41,
+     "median_abs": 0.06430399965585143,
+     "median_signed": -0.056222563097045763,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 70.21212012217107,
+     "collinearity_at_fit": null,
+     "sonic_tests": 19,
+     "solved_tests": 42
+    },
+    "skipped": [],
+    "seconds": 70.59370259998832,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 5.196780095746103,
+       "se": 0.5774379006033685,
+       "n": 36
+      },
+      "rms_std": 2.4089313371983354,
+      "aicc": 219.79580515266076,
+      "dirs": {
+       "correct": 8,
+       "clear": 8
+      },
+      "heldout_bhp_rms": 119.84213114532898,
+      "params": {},
+      "n_rows": 125,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 4.184195297850097,
+       "se": 0.46656676517161566,
+       "n": 36
+      },
+      "rms_std": 2.0490425990376493,
+      "aicc": 181.37568512534256,
+      "dirs": {
+       "correct": 8,
+       "clear": 8
+      },
+      "heldout_bhp_rms": 94.93336741763108,
+      "params": {
+       "kth": 0.05
+      },
+      "n_rows": 125,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 3.63604649928858,
+       "se": 0.45607465599468466,
+       "n": 36
+      },
+      "rms_std": 1.9197846977562047,
+      "aicc": 175.76512519843047,
+      "dirs": {
+       "correct": 8,
+       "clear": 8
+      },
+      "heldout_bhp_rms": 87.89368083322792,
+      "params": {
+       "kth": 0.05,
+       "fnz[0]": 0.946512897100862,
+       "fnz[1]": 1.0081425707470701,
+       "fnz[2]": 0.976279876716463,
+       "fnz[3]": 1.0144214123434376,
+       "fnz[4]": 0.9520330287013659
+      },
+      "n_rows": 125,
+      "failed": 0
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 3.727883779994327,
+       "se": 0.4613477586991381,
+       "n": 36
+      },
+      "rms_std": 1.917142199800982,
+      "aicc": 187.04519308893367,
+      "dirs": {
+       "correct": 8,
+       "clear": 8
+      },
+      "heldout_bhp_rms": 90.09996849886964,
+      "params": {
+       "kth": 0.061815090123196303,
+       "fnz[0]": 0.9474502528595685,
+       "fnz[1]": 1.0086087407280302,
+       "fnz[2]": 0.9779696075992205,
+       "fnz[3]": 1.015205361609549,
+       "fnz[4]": 0.9522441526006282,
+       "dkth[0]": 0.03748990539795208,
+       "dkth[1]": -0.015304854771996524,
+       "dkth[2]": 0.005639404838001199,
+       "dkth[3]": -0.012064802240181664,
+       "dkth[4]": -0.012504197887558622
+      },
+      "n_rows": 125,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPM-45",
+    "ok": true,
+    "wall": 28.428388600004837,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 4.62904294420057,
+     "reason": "M0 is the simplest model whose held-out loss (4.12) is within one standard error of the best (M0: 4.12 + 0.51)."
+    },
+    "gate": {
+     "count": 30,
+     "median_abs": 0.15469619863072614,
+     "median_signed": 0.010725842762335236,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 494.2239360215838,
+     "collinearity_at_fit": null,
+     "sonic_tests": 23,
+     "solved_tests": 30
+    },
+    "skipped": [],
+    "seconds": 27.815521299955435,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 4.1165032517945255,
+       "se": 0.512539692406045,
+       "n": 21
+      },
+      "rms_std": 1.7579216926043977,
+      "aicc": 100.41554135705611,
+      "dirs": {
+       "correct": 6,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 60.397147364894735,
+      "params": {},
+      "n_rows": 89,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 5.0376565958536945,
+       "se": 0.6229167412352025,
+       "n": 21
+      },
+      "rms_std": 1.7537048450646229,
+      "aicc": 102.03402460472819,
+      "dirs": {
+       "correct": 4,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 66.14246861987925,
+      "params": {
+       "kth": 0.22951597357626982
+      },
+      "n_rows": 89,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 4.615202763311378,
+       "se": 0.6762048226881465,
+       "n": 21
+      },
+      "rms_std": 1.3313767613358598,
+      "aicc": 61.6689062653663,
+      "dirs": {
+       "correct": 4,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 70.95879231029835,
+      "params": {
+       "kth": 0.3525909211819946,
+       "fnz[3]": 1.1003808166931963,
+       "fnz[4]": 1.0697054921693017,
+       "fnz[5]": 1.0910195270051943,
+       "fnz[7]": 1.0602818995534489
+      },
+      "n_rows": 89,
+      "failed": 0
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 4.783908243946113,
+       "se": 0.6787001843248686,
+       "n": 21
+      },
+      "rms_std": 1.2196464836020942,
+      "aicc": 55.622347772958975,
+      "dirs": {
+       "correct": 6,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 68.29508318570505,
+      "params": {
+       "kth": 0.36213349962859015,
+       "fnz[3]": 1.1026699148169679,
+       "fnz[4]": 1.0565503077693286,
+       "fnz[5]": 1.0789443011198967,
+       "fnz[7]": 1.06032395509106,
+       "dkth[3]": 0.10063284517643101,
+       "dkth[4]": -0.0979942049490392,
+       "dkth[5]": -0.0557055318992797,
+       "dkth[7]": 0.0
+      },
+      "n_rows": 89,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPM-64",
+    "ok": true,
+    "wall": 2.5244755999883637,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 4.865268605973199,
+     "reason": "M0 is the simplest model whose held-out loss (4.34) is within one standard error of the best (M0: 4.34 + 0.52)."
+    },
+    "gate": {
+     "count": 27,
+     "median_abs": 0.2355990234292229,
+     "median_signed": 0.11582185503546771,
+     "passes": false
+    },
+    "losses": null,
+    "skipped": [
+     "M1",
+     "M2",
+     "M3"
+    ],
+    "seconds": 2.159120799973607,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 4.341008534409515,
+       "se": 0.5242600715636843,
+       "n": 24
+      },
+      "rms_std": 1.804556975576311,
+      "aicc": 90.90852828977873,
+      "dirs": {
+       "correct": 4,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 77.93104711824274,
+      "params": {},
+      "n_rows": 83,
+      "failed": 6
+     }
+    }
+   },
+   {
+    "well": "MPE-35",
+    "ok": true,
+    "wall": 7.0559784000506625,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 7.591907969148339,
+     "reason": "M0 is the simplest model whose held-out loss (7.01) is within one standard error of the best (M0: 7.01 + 0.58)."
+    },
+    "gate": {
+     "count": 83,
+     "median_abs": 0.24743553966165877,
+     "median_signed": 0.04032928236092159,
+     "passes": false
+    },
+    "losses": null,
+    "skipped": [
+     "M1",
+     "M2",
+     "M3"
+    ],
+    "seconds": 5.84840889996849,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 7.010096069619909,
+       "se": 0.5818118995284306,
+       "n": 72
+      },
+      "rms_std": 2.76173989503059,
+      "aicc": 487.61322137409985,
+      "dirs": {
+       "correct": 6,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 124.23907715376133,
+      "params": {},
+      "n_rows": 249,
+      "failed": 9
+     }
+    }
+   },
+   {
+    "well": "MPE-42",
+    "ok": true,
+    "wall": 96.71587179997005,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 4.200878341421598,
+     "reason": "M0 is the simplest model whose held-out loss (3.41) is within one standard error of the best (M0: 3.41 + 0.79)."
+    },
+    "gate": {
+     "count": 75,
+     "median_abs": 0.1653140770823368,
+     "median_signed": -0.12481734130651201,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 279.6668103500051,
+     "collinearity_at_fit": null,
+     "sonic_tests": 2,
+     "solved_tests": 74
+    },
+    "skipped": [],
+    "seconds": 96.42019499989692,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 3.407356308606719,
+       "se": 0.793522032814879,
+       "n": 68
+      },
+      "rms_std": 2.7586585948363056,
+      "aicc": 450.546578078198,
+      "dirs": {
+       "correct": 1,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 74.67020286713974,
+      "params": {},
+      "n_rows": 225,
+      "failed": 3
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 4.874283580014515,
+       "se": 0.7657519569728756,
+       "n": 68
+      },
+      "rms_std": 2.7555678336754235,
+      "aicc": 458.1485264370746,
+      "dirs": {
+       "correct": 1,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 94.21173374227509,
+      "params": {
+       "kth": 0.3397604468654804
+      },
+      "n_rows": 225,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 4.64871516884351,
+       "se": 0.7652574017494451,
+       "n": 68
+      },
+      "rms_std": 2.627860819506501,
+      "aicc": 437.1638733382709,
+      "dirs": {
+       "correct": 3,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 91.44011657773713,
+      "params": {
+       "kth": 0.30444765978956745,
+       "fnz[3]": 1.0067968153006315,
+       "fnz[8]": 0.9736156921337298,
+       "fnz[9]": 1.059714268011613
+      },
+      "n_rows": 225,
+      "failed": 3
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 3.536802663207467,
+       "se": 0.7719698848787826,
+       "n": 68
+      },
+      "rms_std": 2.545247253384785,
+      "aicc": 434.9186380829675,
+      "dirs": {
+       "correct": 3,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 77.19540635855131,
+      "params": {
+       "kth": 0.1860113867765559,
+       "fnz[3]": 0.9777229910621722,
+       "fnz[8]": 0.9814406926826958,
+       "fnz[9]": 1.0344631525490664,
+       "dkth[3]": -0.13600307137300383,
+       "dkth[8]": 0.16299660320906262,
+       "dkth[9]": -0.12879501226748905
+      },
+      "n_rows": 225,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPB-28",
+    "ok": true,
+    "wall": 129.626571000088,
+    "selected": {
+     "model": "M1",
+     "basis": "held_out_1se",
+     "best": "M2",
+     "limit": 6.026562019961984,
+     "reason": "M1 is the simplest model whose held-out loss (5.56) is within one standard error of the best (M2: 5.50 + 0.53)."
+    },
+    "gate": {
+     "count": 70,
+     "median_abs": 0.174450738765752,
+     "median_signed": -0.17010357603531884,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 60.31016740614262,
+     "collinearity_at_fit": null,
+     "sonic_tests": 22,
+     "solved_tests": 70
+    },
+    "skipped": [],
+    "seconds": 129.33462270000018,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 6.870664367661707,
+       "se": 0.5173329270994396,
+       "n": 57
+      },
+      "rms_std": 2.988831041309024,
+      "aicc": 457.6608243379181,
+      "dirs": {
+       "correct": 0,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 226.0052348826652,
+      "params": {},
+      "n_rows": 209,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 5.556906757713087,
+       "se": 0.541008594264837,
+       "n": 57
+      },
+      "rms_std": 2.3286211616183876,
+      "aicc": 314.7740949469336,
+      "dirs": {
+       "correct": 0,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 174.45008820657856,
+      "params": {
+       "kth": 0.5157996251583404
+      },
+      "n_rows": 209,
+      "failed": 24
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 5.495744832982066,
+       "se": 0.5308171869799185,
+       "n": 57
+      },
+      "rms_std": 2.23453265546361,
+      "aicc": 293.372241608354,
+      "dirs": {
+       "correct": 0,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 161.13614337744974,
+      "params": {
+       "kth": 0.5274423263838542,
+       "fnz[5]": 1.0856844790822604,
+       "fnz[6]": 1.0017249767624967,
+       "fnz[8]": 0.9685285486590273,
+       "fnz[9]": 1.076580799758209
+      },
+      "n_rows": 209,
+      "failed": 33
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 5.581812499941163,
+       "se": 0.5328276494637535,
+       "n": 57
+      },
+      "rms_std": 2.1923676937092096,
+      "aicc": 295.3980360210045,
+      "dirs": {
+       "correct": 0,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 169.93007476091347,
+      "params": {
+       "kth": 0.42575290494873935,
+       "fnz[5]": 1.1079555756596886,
+       "fnz[6]": 1.01568043811263,
+       "fnz[8]": 0.9675659973012203,
+       "fnz[9]": 1.0562984930154107,
+       "dkth[5]": 0.009520911918901306,
+       "dkth[6]": 0.13568749967485993,
+       "dkth[8]": 0.10422923411194081,
+       "dkth[9]": -0.21146818238736637
+      },
+      "n_rows": 209,
+      "failed": 33
+     }
+    }
+   },
+   {
+    "well": "MPB-30",
+    "ok": true,
+    "wall": 114.35563619993627,
+    "selected": {
+     "model": "M2",
+     "basis": "held_out_1se",
+     "best": "M2",
+     "limit": 6.92121501944264,
+     "reason": "M2 is the simplest model whose held-out loss (6.41) is within one standard error of the best (M2: 6.41 + 0.51)."
+    },
+    "gate": {
+     "count": 65,
+     "median_abs": 0.18369839560374235,
+     "median_signed": 0.13380751460932472,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": true,
+     "collinearity": 4.988424708680447,
+     "collinearity_at_fit": 5.454467774784199,
+     "sonic_tests": 52,
+     "solved_tests": 59
+    },
+    "skipped": [],
+    "seconds": 113.08361920004245,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 10.220296633001995,
+       "se": 2.3367488639026845,
+       "n": 63
+      },
+      "rms_std": 8.202927939715506,
+      "aicc": 719.7359754738693,
+      "dirs": {
+       "correct": 5,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 231.11463886742249,
+      "params": {},
+      "n_rows": 190,
+      "failed": 19
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 9.275767334165486,
+       "se": 2.2823608636099593,
+       "n": 63
+      },
+      "rms_std": 8.192482095570936,
+      "aicc": 723.3716138853522,
+      "dirs": {
+       "correct": 5,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 176.2570009579688,
+      "params": {
+       "kth": 0.30026746560762385,
+       "kdi": 0.5356559508042877
+      },
+      "n_rows": 190,
+      "failed": 19
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 6.406447477114558,
+       "se": 0.5147675423280815,
+       "n": 63
+      },
+      "rms_std": 8.05570218138487,
+      "aicc": 749.0724922040843,
+      "dirs": {
+       "correct": 3,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 153.97308317364283,
+      "params": {
+       "kth": 0.25803549419479077,
+       "kdi": 0.46599579109515576,
+       "fnz[6]": 1.0166924038041607,
+       "fnz[8]": 1.0292705174250312,
+       "fnz[9]": 1.0072360894713528,
+       "fnz[11]": 1.0857239693793501,
+       "fnz[12]": 0.8
+      },
+      "n_rows": 190,
+      "failed": 14
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 9.174000773973493,
+       "se": 2.325136805541268,
+       "n": 63
+      },
+      "rms_std": 8.05619460176301,
+      "aicc": 772.3007592822197,
+      "dirs": {
+       "correct": 5,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 228.40119804424077,
+      "params": {
+       "kth": 0.268761766888146,
+       "kdi": 0.44988612155157254,
+       "fnz[6]": 1.0354468703077502,
+       "fnz[8]": 1.0292793780475087,
+       "fnz[9]": 1.0074556417184939,
+       "fnz[11]": 1.0862785171903975,
+       "fnz[12]": 0.8,
+       "dkth[6]": 0.0488072050956932,
+       "dkdi[6]": 0.04647263855546596,
+       "dkth[8]": 0.0,
+       "dkdi[8]": 0.0,
+       "dkth[9]": -0.007566754549028033,
+       "dkdi[9]": 0.0,
+       "dkth[11]": 0.0,
+       "dkdi[11]": 0.0,
+       "dkth[12]": -0.03259817400683939,
+       "dkdi[12]": -0.0338635449581073
+      },
+      "n_rows": 190,
+      "failed": 14
+     }
+    }
+   },
+   {
+    "well": "MPB-37",
+    "ok": true,
+    "wall": 2.897756600053981,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 5.504203978802223,
+     "reason": "M0 is the simplest model whose held-out loss (4.89) is within one standard error of the best (M0: 4.89 + 0.61)."
+    },
+    "gate": {
+     "count": 58,
+     "median_abs": 0.23325009953473164,
+     "median_signed": -0.12685681839306623,
+     "passes": false
+    },
+    "losses": null,
+    "skipped": [
+     "M1",
+     "M2",
+     "M3"
+    ],
+    "seconds": 2.5855764999287203,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 4.890523934119585,
+       "se": 0.6136800446826373,
+       "n": 54
+      },
+      "rms_std": 2.5609999887599724,
+      "aicc": 331.02002659562027,
+      "dirs": {
+       "correct": 3,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 112.03650880224802,
+      "params": {},
+      "n_rows": 176,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPI-29",
+    "ok": true,
+    "wall": 60.72452859999612,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M3",
+     "limit": 3.4974028592044126,
+     "reason": "M0 is the simplest model whose held-out loss (3.14) is within one standard error of the best (M3: 3.00 + 0.50)."
+    },
+    "gate": {
+     "count": 51,
+     "median_abs": 0.1022355776998577,
+     "median_signed": -0.04784396028080207,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 136.80415960608633,
+     "collinearity_at_fit": null,
+     "sonic_tests": 6,
+     "solved_tests": 51
+    },
+    "skipped": [],
+    "seconds": 60.38038390001748,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 3.1367939657355923,
+       "se": 0.3564576184775293,
+       "n": 35
+      },
+      "rms_std": 1.70270234642905,
+      "aicc": 162.85828097920464,
+      "dirs": {
+       "correct": 4,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 64.5509797775545,
+      "params": {},
+      "n_rows": 153,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 4.180559524095547,
+       "se": 0.33420076725366477,
+       "n": 35
+      },
+      "rms_std": 1.6416298659105897,
+      "aicc": 147.76031949303623,
+      "dirs": {
+       "correct": 4,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 83.18647151645798,
+      "params": {
+       "kth": 0.24041892488237843
+      },
+      "n_rows": 153,
+      "failed": 6
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 3.043199860684102,
+       "se": 0.48954007515077236,
+       "n": 35
+      },
+      "rms_std": 1.1830367719377144,
+      "aicc": 59.70417872296414,
+      "dirs": {
+       "correct": 4,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 66.6807835265223,
+      "params": {
+       "kth": 0.05699628993420473,
+       "fnz[2]": 0.9415552933063606,
+       "fnz[3]": 0.8842482096354995,
+       "fnz[5]": 0.903890180559401
+      },
+      "n_rows": 153,
+      "failed": 0
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 2.997739157661535,
+       "se": 0.49966370154287737,
+       "n": 35
+      },
+      "rms_std": 1.180558685455666,
+      "aicc": 65.56467712926055,
+      "dirs": {
+       "correct": 4,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 61.37623540172826,
+      "params": {
+       "kth": 0.07509103683606999,
+       "fnz[2]": 0.9364065667913084,
+       "fnz[3]": 0.8994547726123372,
+       "fnz[5]": 0.9038901805138183,
+       "dkth[2]": -0.025108457671384105,
+       "dkth[3]": 0.03140634164389937,
+       "dkth[5]": 0.0
+      },
+      "n_rows": 153,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPI-33",
+    "ok": true,
+    "wall": 6.504913400043733,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 10.538110932067454,
+     "reason": "M0 is the simplest model whose held-out loss (10.13) is within one standard error of the best (M0: 10.13 + 0.40)."
+    },
+    "gate": {
+     "count": 50,
+     "median_abs": 0.5368042268187625,
+     "median_signed": -0.5368042268187625,
+     "passes": false
+    },
+    "losses": null,
+    "skipped": [
+     "M1",
+     "M2",
+     "M3"
+    ],
+    "seconds": 6.157020399929024,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 10.134881284582514,
+       "se": 0.40322964748493995,
+       "n": 39
+      },
+      "rms_std": 3.791966993718482,
+      "aicc": 359.878917645017,
+      "dirs": {
+       "correct": 1,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 97.95467031203033,
+      "params": {},
+      "n_rows": 150,
+      "failed": 15
+     }
+    }
+   },
+   {
+    "well": "MPI-27",
+    "ok": true,
+    "wall": 41.4233020999236,
+    "selected": {
+     "model": "M1",
+     "basis": "held_out_1se",
+     "best": "M2",
+     "limit": 4.2043292093500835,
+     "reason": "M1 is the simplest model whose held-out loss (3.93) is within one standard error of the best (M2: 3.77 + 0.44)."
+    },
+    "gate": {
+     "count": 47,
+     "median_abs": 0.13914680518422218,
+     "median_signed": 0.12477261687222052,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 188.750038894518,
+     "collinearity_at_fit": null,
+     "sonic_tests": 33,
+     "solved_tests": 47
+    },
+    "skipped": [],
+    "seconds": 41.050180900027044,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 4.665604313699698,
+       "se": 0.3755658667424981,
+       "n": 42
+      },
+      "rms_std": 1.998600106283017,
+      "aicc": 195.27005079204812,
+      "dirs": {
+       "correct": 1,
+       "clear": 5
+      },
+      "heldout_bhp_rms": 124.62121863400775,
+      "params": {},
+      "n_rows": 141,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 3.925652510710212,
+       "se": 0.4375675171534913,
+       "n": 42
+      },
+      "rms_std": 1.7383087297683975,
+      "aicc": 154.63330210144017,
+      "dirs": {
+       "correct": 3,
+       "clear": 5
+      },
+      "heldout_bhp_rms": 91.2918791069112,
+      "params": {
+       "kth": 0.06054906090803579
+      },
+      "n_rows": 141,
+      "failed": 3
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 3.7659597785139844,
+       "se": 0.43836943083609925,
+       "n": 42
+      },
+      "rms_std": 1.7346408654482703,
+      "aicc": 167.95257790613877,
+      "dirs": {
+       "correct": 3,
+       "clear": 5
+      },
+      "heldout_bhp_rms": 102.47294276569596,
+      "params": {
+       "kth": 0.05,
+       "fnz[1]": 0.9749391386505053,
+       "fnz[2]": 0.9537315401229911,
+       "fnz[4]": 0.9828704080528667,
+       "fnz[5]": 0.999112394864858,
+       "fnz[6]": 0.9864879088650179
+      },
+      "n_rows": 141,
+      "failed": 0
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 3.767758251496252,
+       "se": 0.43518567179627937,
+       "n": 42
+      },
+      "rms_std": 1.7346363340506112,
+      "aicc": 179.37148719360152,
+      "dirs": {
+       "correct": 3,
+       "clear": 5
+      },
+      "heldout_bhp_rms": 89.88486265270784,
+      "params": {
+       "kth": 0.051139194361747374,
+       "fnz[1]": 0.9749375891848898,
+       "fnz[2]": 0.9537353963470063,
+       "fnz[4]": 0.9829490655848916,
+       "fnz[5]": 0.999217317668563,
+       "fnz[6]": 0.9866461972012367,
+       "dkth[1]": 0.0,
+       "dkth[2]": -0.009691531245624635,
+       "dkth[4]": -0.0016505700039943561,
+       "dkth[5]": -0.0033289927920488265,
+       "dkth[6]": -0.0019220887889108379
+      },
+      "n_rows": 141,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPI-36",
+    "ok": true,
+    "wall": 75.65744680003263,
+    "selected": {
+     "model": "M1",
+     "basis": "held_out_1se",
+     "best": "M2",
+     "limit": 2.951082610041889,
+     "reason": "M1 is the simplest model whose held-out loss (2.79) is within one standard error of the best (M2: 2.52 + 0.44)."
+    },
+    "gate": {
+     "count": 48,
+     "median_abs": 0.117881412751074,
+     "median_signed": -0.10968495191034927,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 122.277285133782,
+     "collinearity_at_fit": null,
+     "sonic_tests": 0,
+     "solved_tests": 48
+    },
+    "skipped": [],
+    "seconds": 75.27617899992038,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 5.713954200359329,
+       "se": 0.2670059565923096,
+       "n": 38
+      },
+      "rms_std": 2.3822862906170568,
+      "aicc": 250.00146803142562,
+      "dirs": {
+       "correct": 2,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 122.67124909098006,
+      "params": {},
+      "n_rows": 144,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 2.78709767849492,
+       "se": 0.4735670133428468,
+       "n": 38
+      },
+      "rms_std": 1.5893100668608278,
+      "aicc": 132.67937749961132,
+      "dirs": {
+       "correct": 2,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 106.00389163135992,
+      "params": {
+       "kth": 0.05
+      },
+      "n_rows": 144,
+      "failed": 3
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 2.515036124418857,
+       "se": 0.43604648562303217,
+       "n": 38
+      },
+      "rms_std": 1.5020317490177244,
+      "aicc": 131.98731240438198,
+      "dirs": {
+       "correct": 2,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 106.00613480961384,
+      "params": {
+       "kth": 0.05,
+       "fnz[3]": 1.020544851846926,
+       "fnz[4]": 0.9929236331835014,
+       "fnz[5]": 0.9607847267797313,
+       "fnz[6]": 1.022364754588942,
+       "fnz[7]": 0.9862456015046811,
+       "fnz[8]": 0.9895274633831691
+      },
+      "n_rows": 144,
+      "failed": 0
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 2.7490990702844176,
+       "se": 0.4792382549450638,
+       "n": 38
+      },
+      "rms_std": 1.4951988966119658,
+      "aicc": 144.65066089117533,
+      "dirs": {
+       "correct": 2,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 105.98647061053006,
+      "params": {
+       "kth": 0.05363156165631639,
+       "fnz[3]": 1.0217857562159944,
+       "fnz[4]": 0.9939545343635386,
+       "fnz[5]": 0.9626495447670548,
+       "fnz[6]": 1.023758079273774,
+       "fnz[7]": 0.9874639021589512,
+       "fnz[8]": 0.991371237482101,
+       "dkth[3]": -0.0053623591406883895,
+       "dkth[4]": -0.0034167298915761383,
+       "dkth[5]": 0.026422853167391815,
+       "dkth[6]": -0.004241915376636889,
+       "dkth[7]": -0.007614458047189999,
+       "dkth[8]": -0.003065496311510198
+      },
+      "n_rows": 144,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPF-107",
+    "ok": true,
+    "wall": 3.5674373999936506,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 8.0178903897093,
+     "reason": "M0 is the simplest model whose held-out loss (7.34) is within one standard error of the best (M0: 7.34 + 0.68)."
+    },
+    "gate": {
+     "count": 45,
+     "median_abs": 0.2060712648782005,
+     "median_signed": 0.024270103008591892,
+     "passes": false
+    },
+    "losses": null,
+    "skipped": [
+     "M1",
+     "M2",
+     "M3"
+    ],
+    "seconds": 3.244756000000052,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 7.341447316379235,
+       "se": 0.6764430733300646,
+       "n": 42
+      },
+      "rms_std": 2.7275156695408795,
+      "aicc": 240.8138840947577,
+      "dirs": {
+       "correct": 1,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 165.5082835609347,
+      "params": {},
+      "n_rows": 135,
+      "failed": 15
+     }
+    }
+   },
+   {
+    "well": "MPF-73",
+    "ok": true,
+    "wall": 38.13694250001572,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 11.297732782950527,
+     "reason": "M0 is the simplest model whose held-out loss (10.80) is within one standard error of the best (M0: 10.80 + 0.50)."
+    },
+    "gate": {
+     "count": 42,
+     "median_abs": 0.3417794140764473,
+     "median_signed": 0.3417794140764473,
+     "passes": false
+    },
+    "losses": null,
+    "skipped": [
+     "M1",
+     "M2",
+     "M3"
+    ],
+    "seconds": 37.75990770000499,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 10.798907759784868,
+       "se": 0.49882502316566035,
+       "n": 36
+      },
+      "rms_std": 5.820612686290325,
+      "aicc": 137.38963124336226,
+      "dirs": {
+       "correct": 0,
+       "clear": 0
+      },
+      "heldout_bhp_rms": 245.1910008761874,
+      "params": {},
+      "n_rows": 132,
+      "failed": 93
+     }
+    }
+   },
+   {
+    "well": "MPI-31",
+    "ok": true,
+    "wall": 76.43719369999599,
+    "selected": {
+     "model": "M1",
+     "basis": "held_out_1se",
+     "best": "M3",
+     "limit": 6.212864909023102,
+     "reason": "M1 is the simplest model whose held-out loss (5.83) is within one standard error of the best (M3: 5.83 + 0.39)."
+    },
+    "gate": {
+     "count": 45,
+     "median_abs": 0.13078944930581704,
+     "median_signed": -0.0396558484085896,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 134.93447134936434,
+     "collinearity_at_fit": null,
+     "sonic_tests": 10,
+     "solved_tests": 42
+    },
+    "skipped": [],
+    "seconds": 76.03449290001299,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 6.917492064918302,
+       "se": 0.310167277867214,
+       "n": 42
+      },
+      "rms_std": 2.3779180034368803,
+      "aicc": 216.55632909018925,
+      "dirs": {
+       "correct": 5,
+       "clear": 9
+      },
+      "heldout_bhp_rms": 65.1718911210429,
+      "params": {},
+      "n_rows": 137,
+      "failed": 12
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 5.826609378456336,
+       "se": 0.34748125144461095,
+       "n": 42
+      },
+      "rms_std": 2.174787527498801,
+      "aicc": 211.80143742884925,
+      "dirs": {
+       "correct": 6,
+       "clear": 9
+      },
+      "heldout_bhp_rms": 64.99930649537508,
+      "params": {
+       "kth": 0.14497117226377504
+      },
+      "n_rows": 137,
+      "failed": 2
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 6.096681937513707,
+       "se": 0.37057900673699606,
+       "n": 42
+      },
+      "rms_std": 1.720907534890388,
+      "aicc": 160.37316813675707,
+      "dirs": {
+       "correct": 6,
+       "clear": 9
+      },
+      "heldout_bhp_rms": 73.55920544704435,
+      "params": {
+       "kth": 0.05,
+       "fnz[1]": 0.9283667202875358,
+       "fnz[2]": 0.9379113364494681,
+       "fnz[3]": 0.9265182863826316,
+       "fnz[4]": 0.9348099622799183,
+       "fnz[5]": 0.9346742333804933,
+       "fnz[6]": 0.8732596298963233
+      },
+      "n_rows": 137,
+      "failed": 3
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 5.826257610627802,
+       "se": 0.38660729839530056,
+       "n": 42
+      },
+      "rms_std": 1.7042730995085098,
+      "aicc": 175.03934934649726,
+      "dirs": {
+       "correct": 6,
+       "clear": 9
+      },
+      "heldout_bhp_rms": 71.4082473110499,
+      "params": {
+       "kth": 0.05714036696271646,
+       "fnz[1]": 0.9317133510702185,
+       "fnz[2]": 0.9392006075950181,
+       "fnz[3]": 0.9285821713341894,
+       "fnz[4]": 0.9348098930574404,
+       "fnz[5]": 0.9372974590192705,
+       "fnz[6]": 0.8733940673421111,
+       "dkth[1]": -0.008224946189805044,
+       "dkth[2]": -0.01399855711793644,
+       "dkth[3]": -0.009476864882026268,
+       "dkth[4]": 0.0,
+       "dkth[5]": -0.00778594192495471,
+       "dkth[6]": -0.01326367239864925
+      },
+      "n_rows": 137,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPJ-27",
+    "ok": true,
+    "wall": 2.6395661999704316,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 9.044366965586851,
+     "reason": "M0 is the simplest model whose held-out loss (7.96) is within one standard error of the best (M0: 7.96 + 1.08)."
+    },
+    "gate": {
+     "count": 34,
+     "median_abs": 0.6391316122010493,
+     "median_signed": -0.6391316122010493,
+     "passes": false
+    },
+    "losses": null,
+    "skipped": [
+     "M1",
+     "M2",
+     "M3"
+    ],
+    "seconds": 2.2754488999489695,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 7.961499941187798,
+       "se": 1.0828670243990532,
+       "n": 26
+      },
+      "rms_std": 3.694768330783796,
+      "aicc": 250.92822804591725,
+      "dirs": {
+       "correct": 3,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 112.2059448420757,
+      "params": {},
+      "n_rows": 102,
+      "failed": 6
+     }
+    }
+   },
+   {
+    "well": "MPM-62",
+    "ok": true,
+    "wall": 2.950012900051661,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 6.910401649070598,
+     "reason": "M0 is the simplest model whose held-out loss (6.45) is within one standard error of the best (M0: 6.45 + 0.46)."
+    },
+    "gate": {
+     "count": 31,
+     "median_abs": 0.36545647040948437,
+     "median_signed": -0.36545647040948437,
+     "passes": false
+    },
+    "losses": null,
+    "skipped": [
+     "M1",
+     "M2",
+     "M3"
+    ],
+    "seconds": 2.583379000076093,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 6.448602044497259,
+       "se": 0.46179960457333863,
+       "n": 28
+      },
+      "rms_std": 2.644568714744885,
+      "aicc": 178.94147111824063,
+      "dirs": {
+       "correct": 7,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 108.22434161304044,
+      "params": {},
+      "n_rows": 95,
+      "failed": 3
+     }
+    }
+   },
+   {
+    "well": "MPM-14",
+    "ok": true,
+    "wall": 48.43591410003137,
+    "selected": {
+     "model": "M1",
+     "basis": "held_out_1se",
+     "best": "M3",
+     "limit": 7.2621786132631625,
+     "reason": "M1 is the simplest model whose held-out loss (6.75) is within one standard error of the best (M3: 6.38 + 0.89)."
+    },
+    "gate": {
+     "count": 31,
+     "median_abs": 0.10423862256239458,
+     "median_signed": 0.08119549916353663,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 310.63397575444066,
+     "collinearity_at_fit": null,
+     "sonic_tests": 2,
+     "solved_tests": 31
+    },
+    "skipped": [],
+    "seconds": 48.06519270001445,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 10.146005906980655,
+       "se": 1.1043277610101079,
+       "n": 27
+      },
+      "rms_std": 3.4238202056790947,
+      "aicc": 228.9207921191531,
+      "dirs": {
+       "correct": 3,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 219.64245575488397,
+      "params": {},
+      "n_rows": 93,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 6.752436416921717,
+       "se": 1.0906699344971083,
+       "n": 27
+      },
+      "rms_std": 2.653426344662772,
+      "aicc": 183.5523843516134,
+      "dirs": {
+       "correct": 3,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 156.07965497092496,
+      "params": {
+       "kth": 0.05
+      },
+      "n_rows": 93,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 6.705675357532538,
+       "se": 1.0831633242696617,
+       "n": 27
+      },
+      "rms_std": 2.2989638727390767,
+      "aicc": 157.89778444976756,
+      "dirs": {
+       "correct": 3,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 155.61452772624972,
+      "params": {
+       "kth": 0.05,
+       "fnz[21]": 0.9134249467270358,
+       "fnz[22]": 0.8720742551163041,
+       "fnz[23]": 0.9883541188280178,
+       "fnz[24]": 0.9919499925776241,
+       "fnz[25]": 1.022525158496814
+      },
+      "n_rows": 93,
+      "failed": 6
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 6.375687705191281,
+       "se": 0.886490908071882,
+       "n": 27
+      },
+      "rms_std": 2.2853089178152763,
+      "aicc": 178.98848413336236,
+      "dirs": {
+       "correct": 3,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 155.15697356948513,
+      "params": {
+       "kth": 0.07463606420729889,
+       "fnz[21]": 0.9262209643622361,
+       "fnz[22]": 0.8729714082057445,
+       "fnz[23]": 0.9883541188279591,
+       "fnz[24]": 1.0064025232552818,
+       "fnz[25]": 1.02632133190807,
+       "dkth[21]": -0.025116802605781592,
+       "dkth[22]": -0.029555886524517596,
+       "dkth[23]": 0.0,
+       "dkth[24]": -0.02869329491528115,
+       "dkth[25]": -0.03508978317168278
+      },
+      "n_rows": 93,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPM-20",
+    "ok": true,
+    "wall": 2.879580600070767,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 10.539576080236358,
+     "reason": "M0 is the simplest model whose held-out loss (8.37) is within one standard error of the best (M0: 8.37 + 2.17)."
+    },
+    "gate": {
+     "count": 29,
+     "median_abs": 0.4081476065112095,
+     "median_signed": 0.4036394020487597,
+     "passes": false
+    },
+    "losses": null,
+    "skipped": [
+     "M1",
+     "M2",
+     "M3"
+    ],
+    "seconds": 1.8565005999989808,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 8.368486405092698,
+       "se": 2.1710896751436604,
+       "n": 23
+      },
+      "rms_std": 4.511716846101909,
+      "aicc": 259.1485741157139,
+      "dirs": {
+       "correct": 5,
+       "clear": 9
+      },
+      "heldout_bhp_rms": 68.79620761512003,
+      "params": {},
+      "n_rows": 91,
+      "failed": 5
+     }
+    }
+   },
+   {
+    "well": "MPS-54",
+    "ok": true,
+    "wall": 62.883581800037064,
+    "selected": {
+     "model": "M1",
+     "basis": "held_out_1se",
+     "best": "M1",
+     "limit": 12.967719383777094,
+     "reason": "M1 is the simplest model whose held-out loss (11.61) is within one standard error of the best (M1: 11.61 + 1.36)."
+    },
+    "gate": {
+     "count": 26,
+     "median_abs": 0.127405584058009,
+     "median_signed": 0.03179069465500528,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": null,
+     "collinearity_at_fit": null,
+     "sonic_tests": 29,
+     "solved_tests": 30
+    },
+    "skipped": [],
+    "seconds": 62.53595299995504,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 15.564655999337232,
+       "se": 2.573986167813294,
+       "n": 19
+      },
+      "rms_std": 5.639485296547713,
+      "aicc": 297.5243619213325,
+      "dirs": {
+       "correct": 0,
+       "clear": 2
+      },
+      "heldout_bhp_rms": 104.3138085218897,
+      "params": {},
+      "n_rows": 86,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 11.610873954688463,
+       "se": 1.3568454290886316,
+       "n": 19
+      },
+      "rms_std": 3.3043712416920985,
+      "aicc": 193.29067575266282,
+      "dirs": {
+       "correct": 0,
+       "clear": 2
+      },
+      "heldout_bhp_rms": 101.73898273224495,
+      "params": {
+       "kth": 0.9549350708546862
+      },
+      "n_rows": 86,
+      "failed": 6
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 12.78650562692136,
+       "se": 2.103131059314029,
+       "n": 19
+      },
+      "rms_std": 3.14930900259638,
+      "aicc": 189.8650797966549,
+      "dirs": {
+       "correct": 0,
+       "clear": 2
+      },
+      "heldout_bhp_rms": 110.30887984768829,
+      "params": {
+       "kth": 0.9212534426905552,
+       "fnz[0]": 0.9425382334804792,
+       "fnz[1]": 0.8903307403838598
+      },
+      "n_rows": 86,
+      "failed": 6
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 12.126010606087801,
+       "se": 2.0421065426332925,
+       "n": 19
+      },
+      "rms_std": 3.1775833206914217,
+      "aicc": 168.20019056806734,
+      "dirs": {
+       "correct": 0,
+       "clear": 2
+      },
+      "heldout_bhp_rms": 100.2049143723407,
+      "params": {
+       "kth": 0.916247755782401,
+       "fnz[0]": 0.9429285593038823,
+       "fnz[1]": 0.8898027438897027,
+       "dkth[0]": 0.03495035529847323,
+       "dkth[1]": -0.0714495119223295
+      },
+      "n_rows": 86,
+      "failed": 18
+     }
+    }
+   },
+   {
+    "well": "MPM-10",
+    "ok": true,
+    "wall": 2.165215599932708,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 5.476553673103191,
+     "reason": "M0 is the simplest model whose held-out loss (4.45) is within one standard error of the best (M0: 4.45 + 1.02)."
+    },
+    "gate": {
+     "count": 29,
+     "median_abs": 0.4554364303784513,
+     "median_signed": 0.4554364303784513,
+     "passes": false
+    },
+    "losses": null,
+    "skipped": [
+     "M1",
+     "M2",
+     "M3"
+    ],
+    "seconds": 1.7904590999241918,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 4.454566628548302,
+       "se": 1.0219870445548886,
+       "n": 11
+      },
+      "rms_std": 1.7737348530447057,
+      "aicc": 96.27868487092361,
+      "dirs": {
+       "correct": 6,
+       "clear": 8
+      },
+      "heldout_bhp_rms": 110.96128991689959,
+      "params": {},
+      "n_rows": 87,
+      "failed": 3
+     }
+    }
+   },
+   {
+    "well": "MPM-16",
+    "ok": true,
+    "wall": 31.91620800003875,
+    "selected": {
+     "model": "M1",
+     "basis": "held_out_1se",
+     "best": "M1",
+     "limit": 6.190382400090716,
+     "reason": "M1 is the simplest model whose held-out loss (5.51) is within one standard error of the best (M1: 5.51 + 0.68)."
+    },
+    "gate": {
+     "count": 27,
+     "median_abs": 0.0705111393229112,
+     "median_signed": -0.0001966127885186797,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 160.27378173284765,
+     "collinearity_at_fit": null,
+     "sonic_tests": 4,
+     "solved_tests": 23
+    },
+    "skipped": [],
+    "seconds": 31.260426200111397,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 7.429122810191524,
+       "se": 0.8452916172494621,
+       "n": 23
+      },
+      "rms_std": 2.734620142819088,
+      "aicc": 138.82697035112966,
+      "dirs": {
+       "correct": 7,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 118.30352392710523,
+      "params": {},
+      "n_rows": 81,
+      "failed": 12
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 5.511204930794327,
+       "se": 0.679177469296389,
+       "n": 23
+      },
+      "rms_std": 2.164021344226605,
+      "aicc": 113.22056715008962,
+      "dirs": {
+       "correct": 7,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 93.0868991773423,
+      "params": {
+       "kth": 0.05
+      },
+      "n_rows": 81,
+      "failed": 9
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 5.511204930794327,
+       "se": 0.679177469296389,
+       "n": 23
+      },
+      "rms_std": 1.9076718409979097,
+      "aicc": 131.57866223997576,
+      "dirs": {
+       "correct": 9,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 93.0868991773423,
+      "params": {
+       "kth": 0.05,
+       "fnz[25]": 1.0475324494589282,
+       "fnz[26]": 1.0377502693148595,
+       "fnz[27]": 0.9765328236895747,
+       "fnz[28]": 1.0078731515945023,
+       "fnz[29]": 0.9253043302127557,
+       "fnz[30]": 0.9541707893282626,
+       "fnz[31]": 1.0157672144340775,
+       "fnz[32]": 1.0,
+       "fnz[33]": 0.9223603361530985,
+       "fnz[35]": 1.0162007458935738,
+       "fnz[36]": 0.9608815552989979,
+       "fnz[37]": 1.0,
+       "fnz[38]": 1.0337602759551032,
+       "fnz[39]": 1.0594905854522307
+      },
+      "n_rows": 81,
+      "failed": 9
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 5.5327299941183075,
+       "se": 0.6835038624437405,
+       "n": 23
+      },
+      "rms_std": 1.910066010105611,
+      "aicc": 192.61641487712467,
+      "dirs": {
+       "correct": 9,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 93.37365602433103,
+      "params": {
+       "kth": 0.05652931036440054,
+       "fnz[25]": 1.049038242282371,
+       "fnz[26]": 1.0399316483521654,
+       "fnz[27]": 0.9783605748349502,
+       "fnz[28]": 1.0095664042821353,
+       "fnz[29]": 0.9282367629217334,
+       "fnz[30]": 0.9565107810079584,
+       "fnz[31]": 1.016043027309846,
+       "fnz[32]": 1.0,
+       "fnz[33]": 0.9259533330234574,
+       "fnz[35]": 1.0175092283350422,
+       "fnz[36]": 0.9628244058857246,
+       "fnz[37]": 1.0,
+       "fnz[38]": 1.0337621648775475,
+       "fnz[39]": 1.0594914848606753,
+       "dkth[25]": -0.016119352900184035,
+       "dkth[26]": -0.006835659516204203,
+       "dkth[27]": -0.006487719135384814,
+       "dkth[28]": -0.006526884201172636,
+       "dkth[29]": -0.002681895307205383,
+       "dkth[30]": -0.00750765724570997,
+       "dkth[31]": -0.011820338594884433,
+       "dkth[32]": 0.0,
+       "dkth[33]": 0.018965349878671607,
+       "dkth[35]": -0.011542122723315527,
+       "dkth[36]": -0.012532704046295454,
+       "dkth[37]": 0.0,
+       "dkth[38]": 0.0,
+       "dkth[39]": 0.0
+      },
+      "n_rows": 81,
+      "failed": 9
+     }
+    }
+   },
+   {
+    "well": "MPM-60",
+    "ok": true,
+    "wall": 1.8503637000685558,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 5.73652857838655,
+     "reason": "M0 is the simplest model whose held-out loss (5.13) is within one standard error of the best (M0: 5.13 + 0.60)."
+    },
+    "gate": {
+     "count": 25,
+     "median_abs": 0.2034273422559144,
+     "median_signed": 0.00046339083801383296,
+     "passes": false
+    },
+    "losses": null,
+    "skipped": [
+     "M1",
+     "M2",
+     "M3"
+    ],
+    "seconds": 0.9868357999948785,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 5.1348044471686105,
+       "se": 0.6017241312179398,
+       "n": 20
+      },
+      "rms_std": 2.103624665108684,
+      "aicc": 107.08731185095257,
+      "dirs": {
+       "correct": 3,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 112.44474938785498,
+      "params": {},
+      "n_rows": 75,
+      "failed": 3
+     }
+    }
+   },
+   {
+    "well": "MPM-18",
+    "ok": true,
+    "wall": 29.829665399971418,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M1",
+     "limit": 7.759602328599858,
+     "reason": "M0 is the simplest model whose held-out loss (6.79) is within one standard error of the best (M1: 6.76 + 1.00)."
+    },
+    "gate": {
+     "count": 23,
+     "median_abs": 0.10892092046698165,
+     "median_signed": 0.10892092046698165,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 84.0645187547197,
+     "collinearity_at_fit": null,
+     "sonic_tests": 3,
+     "solved_tests": 23
+    },
+    "skipped": [],
+    "seconds": 29.47490289993584,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 6.7853214171975225,
+       "se": 1.0735380206724168,
+       "n": 20
+      },
+      "rms_std": 2.826541829944073,
+      "aicc": 141.31134348667712,
+      "dirs": {
+       "correct": 3,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 223.3429952709496,
+      "params": {},
+      "n_rows": 68,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 6.759061022563506,
+       "se": 1.0005413060363524,
+       "n": 20
+      },
+      "rms_std": 2.665501715214303,
+      "aicc": 135.3939589649671,
+      "dirs": {
+       "correct": 3,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 216.48507597873808,
+      "params": {
+       "kth": 0.20895178162671113
+      },
+      "n_rows": 68,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 6.802722879204832,
+       "se": 1.0014828410897632,
+       "n": 20
+      },
+      "rms_std": 2.551400048307943,
+      "aicc": 160.12408634034975,
+      "dirs": {
+       "correct": 3,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 218.34268690494918,
+      "params": {
+       "kth": 0.20679379997476835,
+       "fnz[19]": 1.0385529803357503,
+       "fnz[20]": 1.022422036440568,
+       "fnz[21]": 1.028638942496158,
+       "fnz[22]": 0.9970814718605163,
+       "fnz[23]": 1.0022668091289626,
+       "fnz[24]": 1.0011612324344683,
+       "fnz[25]": 1.0586876300199504,
+       "fnz[26]": 0.9930015558639504,
+       "fnz[27]": 0.997212690901506,
+       "fnz[28]": 1.1012038902336614,
+       "fnz[29]": 1.0239820655582164,
+       "fnz[31]": 1.0071504455041982
+      },
+      "n_rows": 68,
+      "failed": 0
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 6.913984598504436,
+       "se": 1.0562162890538378,
+       "n": 20
+      },
+      "rms_std": 2.129963613261288,
+      "aicc": 183.78264688991254,
+      "dirs": {
+       "correct": 3,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 224.36066986435316,
+      "params": {
+       "kth": 0.23898977971636434,
+       "fnz[19]": 1.0394279468197938,
+       "fnz[20]": 1.0194128565723506,
+       "fnz[21]": 1.0282222682865905,
+       "fnz[22]": 1.0145796442103099,
+       "fnz[23]": 1.0483777713732847,
+       "fnz[24]": 1.0024747679844663,
+       "fnz[25]": 1.049574558597208,
+       "fnz[26]": 1.0163980008147897,
+       "fnz[27]": 1.0282769108280925,
+       "fnz[28]": 1.079673236472995,
+       "fnz[29]": 1.0201245405810668,
+       "fnz[31]": 1.007761139899513,
+       "dkth[19]": -0.03415232968606057,
+       "dkth[20]": -0.05706891375619441,
+       "dkth[21]": -0.0415252459379374,
+       "dkth[22]": 0.08678603163762254,
+       "dkth[23]": 0.24786486923013748,
+       "dkth[24]": -0.026632545061535146,
+       "dkth[25]": -0.18749994248866125,
+       "dkth[26]": 0.11634472016545366,
+       "dkth[27]": 0.16571083622760474,
+       "dkth[28]": -0.17743745809335784,
+       "dkth[29]": -0.17402860600699996,
+       "dkth[31]": -0.030206630720817605
+      },
+      "n_rows": 68,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPS-67",
+    "ok": true,
+    "wall": 0.6132415999891236,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 5.368783643838649,
+     "reason": "M0 is the simplest model whose held-out loss (4.44) is within one standard error of the best (M0: 4.44 + 0.93)."
+    },
+    "gate": {
+     "count": 11,
+     "median_abs": 0.2606177781983382,
+     "median_signed": -0.22056480792551048,
+     "passes": false
+    },
+    "losses": null,
+    "skipped": [
+     "M1",
+     "M2",
+     "M3"
+    ],
+    "seconds": 0.18749359995126724,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 4.43834276793617,
+       "se": 0.9304408759024781,
+       "n": 8
+      },
+      "rms_std": 2.079468702967909,
+      "aicc": 48.31942036809864,
+      "dirs": {
+       "correct": 2,
+       "clear": 2
+      },
+      "heldout_bhp_rms": 125.05495283759466,
+      "params": {},
+      "n_rows": 33,
+      "failed": 0
+     }
+    }
+   }
+  ],
+  "refit": [
+   {
+    "well": "MPM-28",
+    "ok": true,
+    "wall": 91.13327220000792,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M3",
+     "limit": 4.095746268370953,
+     "reason": "M0 is the simplest model whose held-out loss (4.04) is within one standard error of the best (M3: 3.50 + 0.60)."
+    },
+    "gate": {
+     "count": 30,
+     "median_abs": 0.36018721744123083,
+     "median_signed": -0.36018721744123083,
+     "passes": false
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 845.5667704237139,
+     "collinearity_at_fit": null,
+     "sonic_tests": 21,
+     "solved_tests": 30
+    },
+    "skipped": [],
+    "seconds": 63.91721260000486,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 4.036531091371773,
+       "se": 0.7176359768922094,
+       "n": 17
+      },
+      "rms_std": 1.656127308930269,
+      "aicc": 89.82691470991128,
+      "dirs": {
+       "correct": 9,
+       "clear": 12
+      },
+      "heldout_bhp_rms": 132.99139115273084,
+      "params": {
+       "ipr_scale": 1.5060239206794797
+      },
+      "n_rows": 90,
+      "failed": 3
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 4.198846737728125,
+       "se": 0.79884222568397,
+       "n": 17
+      },
+      "rms_std": 1.320167280243111,
+      "aicc": 54.134453119151225,
+      "dirs": {
+       "correct": 7,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 88.59357919124045,
+      "params": {
+       "ipr_scale": 1.4522706211975327,
+       "kth": 0.08445362625749372
+      },
+      "n_rows": 90,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 3.9662549215540244,
+       "se": 0.7134672084676281,
+       "n": 17
+      },
+      "rms_std": 1.2642524199173573,
+      "aicc": 63.69442650761233,
+      "dirs": {
+       "correct": 9,
+       "clear": 12
+      },
+      "heldout_bhp_rms": 101.36494594053866,
+      "params": {
+       "ipr_scale": 1.4542468229457415,
+       "kth": 0.13456257477859293,
+       "fnz[2]": 0.9718283205457534,
+       "fnz[3]": 0.9859512391543074,
+       "fnz[4]": 1.0203060599940295,
+       "fnz[5]": 1.0115812134518831,
+       "fnz[6]": 1.0441717745381824,
+       "fnz[7]": 1.0231144572566162,
+       "fnz[8]": 1.0318926114728912,
+       "fnz[10]": 1.0282257995832926
+      },
+      "n_rows": 90,
+      "failed": 3
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 3.4965220351731254,
+       "se": 0.599224233197828,
+       "n": 17
+      },
+      "rms_std": 1.2630950979406064,
+      "aicc": 86.69915716128503,
+      "dirs": {
+       "correct": 9,
+       "clear": 12
+      },
+      "heldout_bhp_rms": 109.25176598678482,
+      "params": {
+       "ipr_scale": 1.458903810990216,
+       "kth": 0.1674264949030323,
+       "fnz[2]": 0.9718076430693978,
+       "fnz[3]": 0.9859326062257585,
+       "fnz[4]": 1.0203261567692823,
+       "fnz[5]": 1.0116296128878177,
+       "fnz[6]": 1.0416004309921285,
+       "fnz[7]": 1.0143973939901432,
+       "fnz[8]": 1.0319144105832487,
+       "fnz[10]": 1.0402895685780644,
+       "dkth[2]": 0.0,
+       "dkth[3]": 0.0,
+       "dkth[4]": 0.0,
+       "dkth[5]": 0.0,
+       "dkth[6]": -0.046359839129390484,
+       "dkth[7]": -0.0416343247735833,
+       "dkth[8]": 0.0,
+       "dkth[10]": 0.005335117784323305
+      },
+      "n_rows": 90,
+      "failed": 3
+     }
+    }
+   },
+   {
+    "well": "MPS-45",
+    "ok": true,
+    "wall": 115.36862250010017,
+    "selected": {
+     "model": "M2",
+     "basis": "held_out_1se",
+     "best": "M3",
+     "limit": 6.1136848918722055,
+     "reason": "M2 is the simplest model whose held-out loss (5.58) is within one standard error of the best (M3: 5.51 + 0.60)."
+    },
+    "gate": {
+     "count": 53,
+     "median_abs": 0.20465673922639127,
+     "median_signed": -0.07457388406469545,
+     "passes": false
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 447.0858085793745,
+     "collinearity_at_fit": null,
+     "sonic_tests": 4,
+     "solved_tests": 53
+    },
+    "skipped": [],
+    "seconds": 115.08777950005606,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 7.358736876366799,
+       "se": 0.7003579024383955,
+       "n": 38
+      },
+      "rms_std": 2.880659358874395,
+      "aicc": 336.3597120169375,
+      "dirs": {
+       "correct": 1,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 137.20484111413492,
+      "params": {
+       "ipr_scale": 1.048735147192323
+      },
+      "n_rows": 158,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 6.1601273668826675,
+       "se": 0.5665120571432517,
+       "n": 38
+      },
+      "rms_std": 2.441116038106182,
+      "aicc": 286.09330281306126,
+      "dirs": {
+       "correct": 1,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 160.43986476273503,
+      "params": {
+       "ipr_scale": 1.0826719279548866,
+       "kth": 0.05
+      },
+      "n_rows": 158,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 5.5835826573641,
+       "se": 0.5994891855967257,
+       "n": 38
+      },
+      "rms_std": 2.3144079607338957,
+      "aicc": 275.56737376953254,
+      "dirs": {
+       "correct": 1,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 144.2761741966156,
+      "params": {
+       "ipr_scale": 1.046771499611684,
+       "kth": 0.05,
+       "fnz[2]": 0.9911298512948727,
+       "fnz[4]": 0.9262210660921215,
+       "fnz[5]": 0.9368254802966981
+      },
+      "n_rows": 158,
+      "failed": 0
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 5.511689257974384,
+       "se": 0.6019956338978218,
+       "n": 38
+      },
+      "rms_std": 2.3116456157001695,
+      "aicc": 281.7616950879963,
+      "dirs": {
+       "correct": 1,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 143.61037490439213,
+      "params": {
+       "ipr_scale": 1.0465449441251677,
+       "kth": 0.05494384780950926,
+       "fnz[2]": 0.9922052735197588,
+       "fnz[4]": 0.928133693682716,
+       "fnz[5]": 0.9368130969824698,
+       "dkth[2]": -0.0054522979683348,
+       "dkth[4]": 0.0024412828883378303,
+       "dkth[5]": 0.0
+      },
+      "n_rows": 158,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPB-39",
+    "ok": true,
+    "wall": 84.89094379998278,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 12.651345637258851,
+     "reason": "M0 is the simplest model whose held-out loss (10.85) is within one standard error of the best (M0: 10.85 + 1.80)."
+    },
+    "gate": {
+     "count": 48,
+     "median_abs": 0.4430444662415971,
+     "median_signed": 0.4430444662415971,
+     "passes": false
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 52.32745705896623,
+     "collinearity_at_fit": null,
+     "sonic_tests": 19,
+     "solved_tests": 49
+    },
+    "skipped": [],
+    "seconds": 84.66898199997377,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 10.851830042453393,
+       "se": 1.7995155948054582,
+       "n": 45
+      },
+      "rms_std": 5.0369182269921975,
+      "aicc": 438.56457187258064,
+      "dirs": {
+       "correct": 5,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 173.23606619521564,
+      "params": {
+       "ipr_scale": 0.4485273125764151
+      },
+      "n_rows": 144,
+      "failed": 9
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 11.03981340584068,
+       "se": 1.774152279706303,
+       "n": 45
+      },
+      "rms_std": 5.0369182269921975,
+      "aicc": 440.62540577551977,
+      "dirs": {
+       "correct": 5,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 177.24529541719966,
+      "params": {
+       "ipr_scale": 0.4485273125764151,
+       "kth": 0.3
+      },
+      "n_rows": 144,
+      "failed": 9
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 11.266710018874486,
+       "se": 1.8986945641767707,
+       "n": 45
+      },
+      "rms_std": 4.77101058300952,
+      "aicc": 462.33370450525285,
+      "dirs": {
+       "correct": 5,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 190.6666294784833,
+      "params": {
+       "ipr_scale": 0.5041643076337632,
+       "kth": 0.23220074235924534,
+       "fnz[3]": 0.8704712007698092,
+       "fnz[4]": 0.9717388695992426,
+       "fnz[5]": 0.8902355761624283,
+       "fnz[6]": 1.0294237630384186,
+       "fnz[7]": 0.9159955592592701,
+       "fnz[8]": 0.9695147250633176,
+       "fnz[9]": 0.9371244863813359,
+       "fnz[10]": 0.978945929579581
+      },
+      "n_rows": 144,
+      "failed": 3
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 11.10105068835112,
+       "se": 1.904704548408515,
+       "n": 45
+      },
+      "rms_std": 4.724597694325351,
+      "aicc": 479.4911979171075,
+      "dirs": {
+       "correct": 5,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 186.61727254609775,
+      "params": {
+       "ipr_scale": 0.518646438478475,
+       "kth": 0.24065457376424101,
+       "fnz[3]": 0.9096142341635759,
+       "fnz[4]": 0.9548115752388446,
+       "fnz[5]": 0.9321204184408317,
+       "fnz[6]": 0.9992953994394645,
+       "fnz[7]": 0.9391642518624157,
+       "fnz[8]": 0.9461671039186473,
+       "fnz[9]": 0.9359472621163055,
+       "fnz[10]": 0.931805821660522,
+       "dkth[3]": 0.17901285582416243,
+       "dkth[4]": -0.06591869182375824,
+       "dkth[5]": 0.13653924698033904,
+       "dkth[6]": -0.13050116809604773,
+       "dkth[7]": 0.1193244806968354,
+       "dkth[8]": -0.08523565268605465,
+       "dkth[9]": -0.006257034706143919,
+       "dkth[10]": -0.17485483487321446
+      },
+      "n_rows": 144,
+      "failed": 3
+     }
+    }
+   },
+   {
+    "well": "MPB-32",
+    "ok": true,
+    "wall": 129.53772319993004,
+    "selected": {
+     "model": "M1",
+     "basis": "held_out_1se",
+     "best": "M2",
+     "limit": 22.21456744181736,
+     "reason": "M1 is the simplest model whose held-out loss (20.90) is within one standard error of the best (M2: 19.44 + 2.78)."
+    },
+    "gate": {
+     "count": 43,
+     "median_abs": 5.9613399336069195,
+     "median_signed": 5.9613399336069195,
+     "passes": false
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 56.155237658406016,
+     "collinearity_at_fit": null,
+     "sonic_tests": 28,
+     "solved_tests": 41
+    },
+    "skipped": [],
+    "seconds": 124.69046459998935,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 24.307753419214134,
+       "se": 3.9508869678164067,
+       "n": 37
+      },
+      "rms_std": 11.298566110958612,
+      "aicc": 632.4469644561111,
+      "dirs": {
+       "correct": 4,
+       "clear": 11
+      },
+      "heldout_bhp_rms": 237.4580464512411,
+      "params": {
+       "ipr_scale": 0.3
+      },
+      "n_rows": 133,
+      "failed": 3
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 20.89714164447156,
+       "se": 3.4477883572361288,
+       "n": 37
+      },
+      "rms_std": 10.303845589983258,
+      "aicc": 498.61014782114415,
+      "dirs": {
+       "correct": 4,
+       "clear": 11
+      },
+      "heldout_bhp_rms": 210.9255335579855,
+      "params": {
+       "ipr_scale": 0.3,
+       "kth": 0.577402962207877
+      },
+      "n_rows": 133,
+      "failed": 27
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 19.435775459259006,
+       "se": 2.778791982558351,
+       "n": 37
+      },
+      "rms_std": 9.657532878736257,
+      "aicc": 570.7926492471307,
+      "dirs": {
+       "correct": 2,
+       "clear": 9
+      },
+      "heldout_bhp_rms": 240.23763653355928,
+      "params": {
+       "ipr_scale": 0.3,
+       "kth": 0.643544885277261,
+       "fnz[8]": 1.1455045715546777,
+       "fnz[9]": 1.1336074632685262,
+       "fnz[11]": 1.069351143832668,
+       "fnz[12]": 1.0437160365954088,
+       "fnz[13]": 1.0742967410478907,
+       "fnz[14]": 1.1522306251575376,
+       "fnz[15]": 1.0000000023012028,
+       "fnz[16]": 1.0503014509616804
+      },
+      "n_rows": 133,
+      "failed": 12
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 21.260472526824525,
+       "se": 3.2973943406833888,
+       "n": 37
+      },
+      "rms_std": 9.038780516120923,
+      "aicc": 588.4923038423084,
+      "dirs": {
+       "correct": 2,
+       "clear": 9
+      },
+      "heldout_bhp_rms": 238.89346457158354,
+      "params": {
+       "ipr_scale": 0.3,
+       "kth": 0.6322112104269394,
+       "fnz[8]": 1.1315643834137978,
+       "fnz[9]": 1.114998715022131,
+       "fnz[11]": 1.0482033108820588,
+       "fnz[12]": 1.0931868803608402,
+       "fnz[13]": 1.135782399523123,
+       "fnz[14]": 1.2783328981796869,
+       "fnz[15]": 1.0,
+       "fnz[16]": 1.0501537954647235,
+       "dkth[8]": -0.028702599253098496,
+       "dkth[9]": -0.061841310294768734,
+       "dkth[11]": -0.14919016028540585,
+       "dkth[12]": 0.37498880254883576,
+       "dkth[13]": 0.00036177768720335735,
+       "dkth[14]": 0.18829463869617588,
+       "dkth[15]": 0.0,
+       "dkth[16]": -0.18768551429270858
+      },
+      "n_rows": 133,
+      "failed": 9
+     }
+    }
+   },
+   {
+    "well": "MPI-22",
+    "ok": true,
+    "wall": 98.11032500001602,
+    "selected": {
+     "model": "M1",
+     "basis": "held_out_1se",
+     "best": "M3",
+     "limit": 5.2717821124171085,
+     "reason": "M1 is the simplest model whose held-out loss (5.10) is within one standard error of the best (M3: 4.82 + 0.45)."
+    },
+    "gate": {
+     "count": 41,
+     "median_abs": 0.06430399965585143,
+     "median_signed": -0.056222563097045763,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 70.21212012217107,
+     "collinearity_at_fit": null,
+     "sonic_tests": 19,
+     "solved_tests": 42
+    },
+    "skipped": [],
+    "seconds": 97.79507939994801,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 5.917219214823643,
+       "se": 0.5109954064511159,
+       "n": 36
+      },
+      "rms_std": 2.2428956539243807,
+      "aicc": 203.97445374797073,
+      "dirs": {
+       "correct": 8,
+       "clear": 8
+      },
+      "heldout_bhp_rms": 186.7714394076985,
+      "params": {
+       "ipr_scale": 1.3257804915015847
+      },
+      "n_rows": 125,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 5.104012780434821,
+       "se": 0.430594591579385,
+       "n": 36
+      },
+      "rms_std": 1.932945155783493,
+      "aicc": 168.85956746415397,
+      "dirs": {
+       "correct": 8,
+       "clear": 8
+      },
+      "heldout_bhp_rms": 153.15040027003369,
+      "params": {
+       "ipr_scale": 1.1567180450520493,
+       "kth": 0.05
+      },
+      "n_rows": 125,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 4.879084780440922,
+       "se": 0.4242900404784477,
+       "n": 36
+      },
+      "rms_std": 1.7884748208020138,
+      "aicc": 160.29806526457693,
+      "dirs": {
+       "correct": 8,
+       "clear": 8
+      },
+      "heldout_bhp_rms": 144.0564785744825,
+      "params": {
+       "ipr_scale": 1.1574037662558136,
+       "kth": 0.05,
+       "fnz[0]": 0.9485251763443232,
+       "fnz[1]": 0.9932145702065691,
+       "fnz[2]": 0.9525071803215622,
+       "fnz[3]": 1.00969320350555,
+       "fnz[4]": 0.9525840643670589
+      },
+      "n_rows": 125,
+      "failed": 0
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 4.820218700650746,
+       "se": 0.45156341176636267,
+       "n": 36
+      },
+      "rms_std": 1.7845544056099418,
+      "aicc": 171.57790212487768,
+      "dirs": {
+       "correct": 8,
+       "clear": 8
+      },
+      "heldout_bhp_rms": 146.14762114419256,
+      "params": {
+       "ipr_scale": 1.1601203451395112,
+       "kth": 0.06583279012515898,
+       "fnz[0]": 0.9504372749890987,
+       "fnz[1]": 0.993908189709745,
+       "fnz[2]": 0.9584138691036185,
+       "fnz[3]": 1.0109420179696667,
+       "fnz[4]": 0.9525553650587747,
+       "dkth[0]": 0.04373850584932128,
+       "dkth[1]": -0.017253070080786907,
+       "dkth[2]": 0.026045428038103374,
+       "dkth[3]": -0.01583483052383707,
+       "dkth[4]": -0.032754147586688376
+      },
+      "n_rows": 125,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPM-45",
+    "ok": true,
+    "wall": 42.441037499927916,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 4.6347854774980215,
+     "reason": "M0 is the simplest model whose held-out loss (4.17) is within one standard error of the best (M0: 4.17 + 0.47)."
+    },
+    "gate": {
+     "count": 30,
+     "median_abs": 0.15469619863072614,
+     "median_signed": 0.010725842762335236,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 494.2239360215838,
+     "collinearity_at_fit": null,
+     "sonic_tests": 23,
+     "solved_tests": 30
+    },
+    "skipped": [],
+    "seconds": 42.17725340009201,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 4.168018686558912,
+       "se": 0.4667667909391094,
+       "n": 21
+      },
+      "rms_std": 1.7439300801941737,
+      "aicc": 101.03911649462847,
+      "dirs": {
+       "correct": 6,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 56.172824059039904,
+      "params": {
+       "ipr_scale": 0.9546910859810065
+      },
+      "n_rows": 89,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 5.152015596663776,
+       "se": 0.5935724956323686,
+       "n": 21
+      },
+      "rms_std": 1.7424785001777383,
+      "aicc": 102.98445234875298,
+      "dirs": {
+       "correct": 4,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 62.575335452224785,
+      "params": {
+       "ipr_scale": 0.9723757139558339,
+       "kth": 0.23424584012997807
+      },
+      "n_rows": 89,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 4.670678145380433,
+       "se": 0.6738609889958848,
+       "n": 21
+      },
+      "rms_std": 1.3214116655773236,
+      "aicc": 62.633098604966186,
+      "dirs": {
+       "correct": 4,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 66.3733810380277,
+      "params": {
+       "ipr_scale": 0.9673340138864699,
+       "kth": 0.35959828971090374,
+       "fnz[3]": 1.0996952284826473,
+       "fnz[4]": 1.0697909592742505,
+       "fnz[5]": 1.0926974419192779,
+       "fnz[7]": 1.0606400516362873
+      },
+      "n_rows": 89,
+      "failed": 0
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 4.333968357509882,
+       "se": 0.6469435441945309,
+       "n": 21
+      },
+      "rms_std": 1.2149927701612624,
+      "aicc": 57.483899300177285,
+      "dirs": {
+       "correct": 6,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 63.85533035549035,
+      "params": {
+       "ipr_scale": 0.9641938369587367,
+       "kth": 0.3671994671864961,
+       "fnz[3]": 1.1019051186607012,
+       "fnz[4]": 1.0566881626459272,
+       "fnz[5]": 1.079314207674035,
+       "fnz[7]": 1.060913183430909,
+       "dkth[3]": 0.09835487495606188,
+       "dkth[4]": -0.09912067194507976,
+       "dkth[5]": -0.061936385870691904,
+       "dkth[7]": 0.0
+      },
+      "n_rows": 89,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPM-64",
+    "ok": true,
+    "wall": 47.83448820002377,
+    "selected": {
+     "model": "M2",
+     "basis": "held_out_1se",
+     "best": "M2",
+     "limit": 2.9770631268002044,
+     "reason": "M2 is the simplest model whose held-out loss (2.60) is within one standard error of the best (M2: 2.60 + 0.38)."
+    },
+    "gate": {
+     "count": 27,
+     "median_abs": 0.2355990234292229,
+     "median_signed": 0.11582185503546771,
+     "passes": false
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 340.07756359071516,
+     "collinearity_at_fit": null,
+     "sonic_tests": 7,
+     "solved_tests": 26
+    },
+    "skipped": [],
+    "seconds": 47.47882940003183,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 4.568026479893964,
+       "se": 0.5336467458410684,
+       "n": 24
+      },
+      "rms_std": 1.8384692181879307,
+      "aicc": 92.17768080674263,
+      "dirs": {
+       "correct": 4,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 101.77449827098252,
+      "params": {
+       "ipr_scale": 0.9286344133317731
+      },
+      "n_rows": 83,
+      "failed": 9
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 3.1617613461376846,
+       "se": 0.5315414139856174,
+       "n": 24
+      },
+      "rms_std": 1.2748084722342978,
+      "aicc": 41.5527383807123,
+      "dirs": {
+       "correct": 4,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 60.540521056059156,
+      "params": {
+       "ipr_scale": 0.8480183456397727,
+       "kth": 0.05
+      },
+      "n_rows": 83,
+      "failed": 6
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 2.601319887647895,
+       "se": 0.3757432391523092,
+       "n": 24
+      },
+      "rms_std": 1.0544202552301571,
+      "aicc": 24.289855066334106,
+      "dirs": {
+       "correct": 4,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 65.60768329759672,
+      "params": {
+       "ipr_scale": 0.8639530048648902,
+       "kth": 0.11587492569508169,
+       "fnz[1]": 1.0520474968886284,
+       "fnz[2]": 1.0380579549522884,
+       "fnz[3]": 1.058641288825509,
+       "fnz[4]": 1.0896684556046075,
+       "fnz[6]": 1.0265133796013473
+      },
+      "n_rows": 83,
+      "failed": 0
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 2.666942322044503,
+       "se": 0.38811744366897105,
+       "n": 24
+      },
+      "rms_std": 1.0378365167034282,
+      "aicc": 34.62209633792175,
+      "dirs": {
+       "correct": 4,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 66.55063272094682,
+      "params": {
+       "ipr_scale": 0.868566783625632,
+       "kth": 0.1272625087083959,
+       "fnz[1]": 1.056497248724935,
+       "fnz[2]": 1.0380563681687904,
+       "fnz[3]": 1.0536004875021052,
+       "fnz[4]": 1.0897974825162229,
+       "fnz[6]": 1.026632147564533,
+       "dkth[1]": 0.004660256970757562,
+       "dkth[2]": 0.0,
+       "dkth[3]": -0.07724263267736636,
+       "dkth[4]": 0.0,
+       "dkth[6]": 0.0
+      },
+      "n_rows": 83,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPE-35",
+    "ok": true,
+    "wall": 132.84707699995488,
+    "selected": {
+     "model": "M2",
+     "basis": "held_out_1se",
+     "best": "M2",
+     "limit": 6.736164456714734,
+     "reason": "M2 is the simplest model whose held-out loss (6.26) is within one standard error of the best (M2: 6.26 + 0.48)."
+    },
+    "gate": {
+     "count": 83,
+     "median_abs": 0.24743553966165877,
+     "median_signed": 0.04032928236092159,
+     "passes": false
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 815.2715196646478,
+     "collinearity_at_fit": null,
+     "sonic_tests": 21,
+     "solved_tests": 80
+    },
+    "skipped": [],
+    "seconds": 132.55553790007252,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 7.4443329501508195,
+       "se": 0.5805517599920895,
+       "n": 72
+      },
+      "rms_std": 2.6658856464160547,
+      "aicc": 490.323285436577,
+      "dirs": {
+       "correct": 6,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 153.69529350501574,
+      "params": {
+       "ipr_scale": 0.8485486032975783
+      },
+      "n_rows": 249,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 6.759176314006185,
+       "se": 0.5021396041209724,
+       "n": 72
+      },
+      "rms_std": 1.9726621296340952,
+      "aicc": 342.3819952362594,
+      "dirs": {
+       "correct": 6,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 147.02616409865877,
+      "params": {
+       "ipr_scale": 0.8565811287627036,
+       "kth": 0.5710235311694362
+      },
+      "n_rows": 249,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 6.2566193660391445,
+       "se": 0.4795450906755895,
+       "n": 72
+      },
+      "rms_std": 1.7357443320008217,
+      "aicc": 295.53966268508805,
+      "dirs": {
+       "correct": 6,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 136.45045714299388,
+      "params": {
+       "ipr_scale": 0.8850763924647892,
+       "kth": 0.6121337138287473,
+       "fnz[3]": 1.0739820246446012,
+       "fnz[5]": 1.0160256969900245,
+       "fnz[6]": 1.0126023744111219,
+       "fnz[7]": 1.0592156252245453,
+       "fnz[8]": 1.0497344884286486,
+       "fnz[9]": 1.0943060483699125,
+       "fnz[11]": 1.093759206760619,
+       "fnz[12]": 1.058441050387066
+      },
+      "n_rows": 249,
+      "failed": 0
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 7.1157273810425465,
+       "se": 0.5218647283692015,
+       "n": 72
+      },
+      "rms_std": 1.2441158417084808,
+      "aicc": 147.74961798582405,
+      "dirs": {
+       "correct": 7,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 152.24174552866987,
+      "params": {
+       "ipr_scale": 0.913944026336399,
+       "kth": 0.43026484892854183,
+       "fnz[3]": 1.0421713905348677,
+       "fnz[5]": 1.0123153849078659,
+       "fnz[6]": 0.9986154563767565,
+       "fnz[7]": 1.0339509522708634,
+       "fnz[8]": 1.0413510048751826,
+       "fnz[9]": 1.0803655008594903,
+       "fnz[11]": 1.094468208007383,
+       "fnz[12]": 1.04972408056509,
+       "dkth[3]": -0.1805355030243485,
+       "dkth[5]": -0.034502247836693846,
+       "dkth[6]": -0.11542169273549983,
+       "dkth[7]": -0.10915654076511898,
+       "dkth[8]": 0.11708831290074774,
+       "dkth[9]": 0.08910012281224694,
+       "dkth[11]": 0.3209357165534261,
+       "dkth[12]": -0.02961292423352089
+      },
+      "n_rows": 249,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPE-42",
+    "ok": true,
+    "wall": 131.71430970006622,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M3",
+     "limit": 5.21813646395197,
+     "reason": "M0 is the simplest model whose held-out loss (4.57) is within one standard error of the best (M3: 4.41 + 0.81)."
+    },
+    "gate": {
+     "count": 75,
+     "median_abs": 0.1653140770823368,
+     "median_signed": -0.12481734130651201,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 279.6668103500051,
+     "collinearity_at_fit": null,
+     "sonic_tests": 2,
+     "solved_tests": 74
+    },
+    "skipped": [],
+    "seconds": 131.4344357000664,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 4.572235394739832,
+       "se": 0.8165216867101629,
+       "n": 68
+      },
+      "rms_std": 2.760166775887751,
+      "aicc": 452.8074319718775,
+      "dirs": {
+       "correct": 1,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 93.4392987183918,
+      "params": {
+       "ipr_scale": 1.0552299216381325
+      },
+      "n_rows": 225,
+      "failed": 3
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 5.322516646472342,
+       "se": 0.8033149640591575,
+       "n": 68
+      },
+      "rms_std": 2.755544320600725,
+      "aicc": 460.18080343532904,
+      "dirs": {
+       "correct": 1,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 124.91555536576377,
+      "params": {
+       "ipr_scale": 1.0599703907211877,
+       "kth": 0.3426346015463809
+      },
+      "n_rows": 225,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 5.184213899305525,
+       "se": 0.8054747398322512,
+       "n": 68
+      },
+      "rms_std": 2.6310935899783936,
+      "aicc": 439.803188386523,
+      "dirs": {
+       "correct": 3,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 127.16362843832513,
+      "params": {
+       "ipr_scale": 1.0541721758202447,
+       "kth": 0.3093348841096111,
+       "fnz[3]": 1.0069646743590202,
+       "fnz[8]": 0.9744694030616484,
+       "fnz[9]": 1.0609384587643937
+      },
+      "n_rows": 225,
+      "failed": 3
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 4.413045499020071,
+       "se": 0.8050909649318984,
+       "n": 68
+      },
+      "rms_std": 2.549114917233403,
+      "aicc": 437.7524601043047,
+      "dirs": {
+       "correct": 3,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 113.08455939108849,
+      "params": {
+       "ipr_scale": 1.044118206753971,
+       "kth": 0.19328907758460467,
+       "fnz[3]": 0.9768159681789248,
+       "fnz[8]": 0.9822549403714671,
+       "fnz[9]": 1.0332581379993968,
+       "dkth[3]": -0.14328508327521955,
+       "dkth[8]": 0.15988130649739346,
+       "dkth[9]": -0.12052290579395425
+      },
+      "n_rows": 225,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPB-28",
+    "ok": true,
+    "wall": 159.5333163999021,
+    "selected": {
+     "model": "M3",
+     "basis": "held_out_1se",
+     "best": "M3",
+     "limit": 5.312881441892641,
+     "reason": "M3 is the simplest model whose held-out loss (4.72) is within one standard error of the best (M3: 4.72 + 0.59)."
+    },
+    "gate": {
+     "count": 70,
+     "median_abs": 0.174450738765752,
+     "median_signed": -0.17010357603531884,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 60.31016740614262,
+     "collinearity_at_fit": null,
+     "sonic_tests": 22,
+     "solved_tests": 70
+    },
+    "skipped": [],
+    "seconds": 159.25182289991062,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 7.599871463068518,
+       "se": 0.582200601269495,
+       "n": 57
+      },
+      "rms_std": 2.82470465399982,
+      "aicc": 436.07211703577343,
+      "dirs": {
+       "correct": 0,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 239.04485694129357,
+      "params": {
+       "ipr_scale": 1.3400920364062763
+      },
+      "n_rows": 209,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 5.324353759582994,
+       "se": 0.45398603730877446,
+       "n": 57
+      },
+      "rms_std": 2.207342301339526,
+      "aicc": 287.52872016969997,
+      "dirs": {
+       "correct": 0,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 160.6653046905503,
+      "params": {
+       "ipr_scale": 1.3502576420720536,
+       "kth": 0.4860856691311155
+      },
+      "n_rows": 209,
+      "failed": 30
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 5.340394500282471,
+       "se": 0.46243478270654415,
+       "n": 57
+      },
+      "rms_std": 2.165383011280589,
+      "aicc": 289.07818985910745,
+      "dirs": {
+       "correct": 0,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 152.86975471417995,
+      "params": {
+       "ipr_scale": 1.3470565893108333,
+       "kth": 0.47523650539604845,
+       "fnz[5]": 1.1132948006791434,
+       "fnz[6]": 1.0131274459586792,
+       "fnz[8]": 0.9734859815215485,
+       "fnz[9]": 1.0659055411187779
+      },
+      "n_rows": 209,
+      "failed": 30
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 4.7223726378175765,
+       "se": 0.5905088040750637,
+       "n": 57
+      },
+      "rms_std": 1.6837746046353737,
+      "aicc": 183.0495768842132,
+      "dirs": {
+       "correct": 0,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 177.53791554750734,
+      "params": {
+       "ipr_scale": 1.3874157484219882,
+       "kth": 0.4002134767712828,
+       "fnz[5]": 1.1009427060699781,
+       "fnz[6]": 1.078442242608455,
+       "fnz[8]": 0.9722686133092575,
+       "fnz[9]": 1.0505721878585492,
+       "dkth[5]": -0.0988463929150512,
+       "dkth[6]": 0.24959537880383387,
+       "dkth[8]": 0.060220036255410093,
+       "dkth[9]": -0.16148752778590095
+      },
+      "n_rows": 209,
+      "failed": 54
+     }
+    }
+   },
+   {
+    "well": "MPB-30",
+    "ok": true,
+    "wall": 189.57838620000985,
+    "selected": {
+     "model": "M1",
+     "basis": "held_out_1se",
+     "best": "M1",
+     "limit": 7.540142543488773,
+     "reason": "M1 is the simplest model whose held-out loss (7.04) is within one standard error of the best (M1: 7.04 + 0.50)."
+    },
+    "gate": {
+     "count": 65,
+     "median_abs": 0.18369839560374235,
+     "median_signed": 0.13380751460932472,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": true,
+     "collinearity": 4.988424708680447,
+     "collinearity_at_fit": 13.95201584475749,
+     "sonic_tests": 52,
+     "solved_tests": 59
+    },
+    "skipped": [],
+    "seconds": 189.26159749994986,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 7.774347136598005,
+       "se": 0.7363949280079499,
+       "n": 63
+      },
+      "rms_std": 8.200335432600903,
+      "aicc": 721.6515391071744,
+      "dirs": {
+       "correct": 3,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 202.8795965708086,
+      "params": {
+       "ipr_scale": 1.0200353878972699
+      },
+      "n_rows": 190,
+      "failed": 19
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 7.0436108650233225,
+       "se": 0.4965316784654511,
+       "n": 63
+      },
+      "rms_std": 8.257714745717983,
+      "aicc": 715.4920305165474,
+      "dirs": {
+       "correct": 3,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 114.08281766310735,
+      "params": {
+       "ipr_scale": 1.0199224653378953,
+       "kth": 0.2942323173495243,
+       "kdi": 0.5237474074685213
+      },
+      "n_rows": 190,
+      "failed": 22
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 7.08389904560047,
+       "se": 0.479387786701432,
+       "n": 63
+      },
+      "rms_std": 8.060306825416985,
+      "aicc": 751.469246908283,
+      "dirs": {
+       "correct": 2,
+       "clear": 2
+      },
+      "heldout_bhp_rms": 117.3105831022335,
+      "params": {
+       "ipr_scale": 1.0029536185409984,
+       "kth": 0.26161286224817454,
+       "kdi": 0.44851190176630856,
+       "fnz[6]": 1.0149406997309283,
+       "fnz[8]": 1.0294132640237705,
+       "fnz[9]": 1.0078090529367432,
+       "fnz[11]": 1.086327050406879,
+       "fnz[12]": 0.8
+      },
+      "n_rows": 190,
+      "failed": 14
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 7.681407172521136,
+       "se": 0.7279253131054544,
+       "n": 63
+      },
+      "rms_std": 8.056941708568448,
+      "aicc": 774.8166713468293,
+      "dirs": {
+       "correct": 3,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 236.0724674790093,
+      "params": {
+       "ipr_scale": 1.0018266763280403,
+       "kth": 0.271116646245022,
+       "kdi": 0.44529166951401805,
+       "fnz[6]": 1.0339659716309242,
+       "fnz[8]": 1.0293521273315238,
+       "fnz[9]": 1.0075415897154203,
+       "fnz[11]": 1.086273189279927,
+       "fnz[12]": 0.8,
+       "dkth[6]": 0.048790705655924874,
+       "dkdi[6]": 0.04694216022184208,
+       "dkth[8]": 0.0,
+       "dkdi[8]": 0.0,
+       "dkth[9]": -0.01838851312887141,
+       "dkdi[9]": 0.0,
+       "dkth[11]": 0.0,
+       "dkdi[11]": 0.0,
+       "dkth[12]": -0.027108376443817354,
+       "dkdi[12]": -0.02856003391995079
+      },
+      "n_rows": 190,
+      "failed": 14
+     }
+    }
+   },
+   {
+    "well": "MPB-37",
+    "ok": true,
+    "wall": 99.51038410002366,
+    "selected": {
+     "model": "M2",
+     "basis": "held_out_1se",
+     "best": "M2",
+     "limit": 5.104355794175558,
+     "reason": "M2 is the simplest model whose held-out loss (4.51) is within one standard error of the best (M2: 4.51 + 0.60)."
+    },
+    "gate": {
+     "count": 58,
+     "median_abs": 0.23325009953473164,
+     "median_signed": -0.12685681839306623,
+     "passes": false
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 82.38551747694142,
+     "collinearity_at_fit": null,
+     "sonic_tests": 39,
+     "solved_tests": 60
+    },
+    "skipped": [],
+    "seconds": 98.95625829999335,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 5.154413118732146,
+       "se": 0.590954879166452,
+       "n": 54
+      },
+      "rms_std": 2.533052004039781,
+      "aicc": 329.1805538058069,
+      "dirs": {
+       "correct": 3,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 138.1165578249681,
+      "params": {
+       "ipr_scale": 0.9628089359097852
+      },
+      "n_rows": 176,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 5.390435987344996,
+       "se": 0.5762644871543519,
+       "n": 54
+      },
+      "rms_std": 2.524013728789062,
+      "aicc": 329.9686993166618,
+      "dirs": {
+       "correct": 3,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 126.42276318657208,
+      "params": {
+       "ipr_scale": 0.9678624846744281,
+       "kth": 0.31921986588296913
+      },
+      "n_rows": 176,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 4.507885707719678,
+       "se": 0.5964700864558795,
+       "n": 54
+      },
+      "rms_std": 2.218080550967231,
+      "aicc": 288.1442270977191,
+      "dirs": {
+       "correct": 3,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 93.58242635298701,
+      "params": {
+       "ipr_scale": 1.0081523598346953,
+       "kth": 0.40234046872909945,
+       "fnz[5]": 1.0109127213035307,
+       "fnz[6]": 0.9972177269954131,
+       "fnz[7]": 1.0640317239542778,
+       "fnz[8]": 1.1544369527159766
+      },
+      "n_rows": 176,
+      "failed": 3
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 4.596625886795017,
+       "se": 0.5913508101827426,
+       "n": 54
+      },
+      "rms_std": 2.131095020031192,
+      "aicc": 287.66918475248804,
+      "dirs": {
+       "correct": 3,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 83.70292291168167,
+      "params": {
+       "ipr_scale": 1.0286005769150004,
+       "kth": 0.39955243233466914,
+       "fnz[5]": 1.0109378155820115,
+       "fnz[6]": 1.0066599313141011,
+       "fnz[7]": 1.0486700401291227,
+       "fnz[8]": 1.1554273615773902,
+       "dkth[5]": -0.002512926565139029,
+       "dkth[6]": 0.09852726183729425,
+       "dkth[7]": -0.048579128499479755,
+       "dkth[8]": -0.0034278241020849753
+      },
+      "n_rows": 176,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPI-29",
+    "ok": true,
+    "wall": 86.06460150005296,
+    "selected": {
+     "model": "M2",
+     "basis": "held_out_1se",
+     "best": "M2",
+     "limit": 3.322933774324083,
+     "reason": "M2 is the simplest model whose held-out loss (2.92) is within one standard error of the best (M2: 2.92 + 0.40)."
+    },
+    "gate": {
+     "count": 51,
+     "median_abs": 0.1022355776998577,
+     "median_signed": -0.04784396028080207,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 136.80415960608633,
+     "collinearity_at_fit": null,
+     "sonic_tests": 6,
+     "solved_tests": 51
+    },
+    "skipped": [],
+    "seconds": 85.83519339992199,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 3.5251029127546474,
+       "se": 0.31478034358009854,
+       "n": 35
+      },
+      "rms_std": 1.6768705190218665,
+      "aicc": 160.20684667846672,
+      "dirs": {
+       "correct": 4,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 89.44285768855657,
+      "params": {
+       "ipr_scale": 1.0671800317393307
+      },
+      "n_rows": 153,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 4.6194867106537,
+       "se": 0.3185085092713212,
+       "n": 35
+      },
+      "rms_std": 1.5948668114322846,
+      "aicc": 138.52069231941545,
+      "dirs": {
+       "correct": 4,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 75.89079646422968,
+      "params": {
+       "ipr_scale": 1.0837403077764127,
+       "kth": 0.23174071172744748
+      },
+      "n_rows": 153,
+      "failed": 9
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 2.92020840967377,
+       "se": 0.402725364650313,
+       "n": 35
+      },
+      "rms_std": 1.1362574515040174,
+      "aicc": 48.73864400688107,
+      "dirs": {
+       "correct": 4,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 56.52754609303123,
+      "params": {
+       "ipr_scale": 1.077811335154473,
+       "kth": 0.05,
+       "fnz[2]": 0.9408570664687473,
+       "fnz[3]": 0.8912395692203641,
+       "fnz[5]": 0.9047836276238437
+      },
+      "n_rows": 153,
+      "failed": 3
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 2.9966267031003997,
+       "se": 0.476979376841262,
+       "n": 35
+      },
+      "rms_std": 1.124359885821425,
+      "aicc": 52.867448301725204,
+      "dirs": {
+       "correct": 4,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 58.19848453949327,
+      "params": {
+       "ipr_scale": 1.0762821643877867,
+       "kth": 0.06538830825554204,
+       "fnz[2]": 0.9390661085469064,
+       "fnz[3]": 0.8989451430881592,
+       "fnz[5]": 0.9047732228021624,
+       "dkth[2]": -0.015392376343704425,
+       "dkth[3]": 0.029700273661298505,
+       "dkth[5]": 0.0
+      },
+      "n_rows": 153,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPI-33",
+    "ok": true,
+    "wall": 131.66729519993532,
+    "selected": {
+     "model": "M3",
+     "basis": "held_out_1se",
+     "best": "M3",
+     "limit": 4.534774704361283,
+     "reason": "M3 is the simplest model whose held-out loss (4.13) is within one standard error of the best (M3: 4.13 + 0.41)."
+    },
+    "gate": {
+     "count": 50,
+     "median_abs": 0.5368042268187625,
+     "median_signed": -0.5368042268187625,
+     "passes": false
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 29.875437607799256,
+     "collinearity_at_fit": null,
+     "sonic_tests": 16,
+     "solved_tests": 45
+    },
+    "skipped": [],
+    "seconds": 131.42438019998372,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 6.181682299699431,
+       "se": 0.47765821387447893,
+       "n": 39
+      },
+      "rms_std": 2.3505043815504747,
+      "aicc": 253.28878726543468,
+      "dirs": {
+       "correct": 2,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 140.89601030867365,
+      "params": {
+       "ipr_scale": 2.008831074041221
+      },
+      "n_rows": 150,
+      "failed": 3
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 5.683228882438315,
+       "se": 0.48577382520469387,
+       "n": 39
+      },
+      "rms_std": 2.3539406824738847,
+      "aicc": 255.7740314472761,
+      "dirs": {
+       "correct": 2,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 120.25834102717677,
+      "params": {
+       "ipr_scale": 1.9761553928880962,
+       "kth": 0.12507083031193042
+      },
+      "n_rows": 150,
+      "failed": 3
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 4.784611013986108,
+       "se": 0.4468776781772305,
+       "n": 39
+      },
+      "rms_std": 1.8053831082101661,
+      "aicc": 184.11274028318977,
+      "dirs": {
+       "correct": 2,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 141.27730482617588,
+      "params": {
+       "ipr_scale": 2.0245402458628576,
+       "kth": 0.05,
+       "fnz[1]": 0.877004474048501,
+       "fnz[2]": 0.9230829981141618,
+       "fnz[4]": 0.9516749094486434
+      },
+      "n_rows": 150,
+      "failed": 3
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 4.125857683441445,
+       "se": 0.4089170209198385,
+       "n": 39
+      },
+      "rms_std": 1.8056126266725199,
+      "aicc": 190.76806049110138,
+      "dirs": {
+       "correct": 2,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 125.42362948588286,
+      "params": {
+       "ipr_scale": 2.03245058222087,
+       "kth": 0.0632003799853133,
+       "fnz[1]": 0.8749045583315102,
+       "fnz[2]": 0.923122605193047,
+       "fnz[4]": 0.9556781113472116,
+       "dkth[1]": -0.05403339580572488,
+       "dkth[2]": 0.0,
+       "dkth[4]": -0.013040448005640628
+      },
+      "n_rows": 150,
+      "failed": 3
+     }
+    }
+   },
+   {
+    "well": "MPI-27",
+    "ok": true,
+    "wall": 75.53608290001284,
+    "selected": {
+     "model": "M1",
+     "basis": "held_out_1se",
+     "best": "M2",
+     "limit": 4.073993881361907,
+     "reason": "M1 is the simplest model whose held-out loss (3.79) is within one standard error of the best (M2: 3.63 + 0.44)."
+    },
+    "gate": {
+     "count": 47,
+     "median_abs": 0.13914680518422218,
+     "median_signed": 0.12477261687222052,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 188.750038894518,
+     "collinearity_at_fit": null,
+     "sonic_tests": 33,
+     "solved_tests": 47
+    },
+    "skipped": [],
+    "seconds": 75.277031699894,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 4.868138051178487,
+       "se": 0.3855079147239689,
+       "n": 42
+      },
+      "rms_std": 1.8745637021122072,
+      "aicc": 175.4611712429372,
+      "dirs": {
+       "correct": 1,
+       "clear": 5
+      },
+      "heldout_bhp_rms": 121.82900097437668,
+      "params": {
+       "ipr_scale": 0.8655716384778289
+      },
+      "n_rows": 141,
+      "failed": 3
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 3.7934601349090875,
+       "se": 0.44666484595759987,
+       "n": 42
+      },
+      "rms_std": 1.6263958908459082,
+      "aicc": 141.24229733801477,
+      "dirs": {
+       "correct": 3,
+       "clear": 5
+      },
+      "heldout_bhp_rms": 107.36064288076031,
+      "params": {
+       "ipr_scale": 0.8338283159609549,
+       "kth": 0.05
+      },
+      "n_rows": 141,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 3.629321238050994,
+       "se": 0.4446726433109128,
+       "n": 42
+      },
+      "rms_std": 1.5475676423418179,
+      "aicc": 137.9871160298895,
+      "dirs": {
+       "correct": 3,
+       "clear": 5
+      },
+      "heldout_bhp_rms": 106.21605007926111,
+      "params": {
+       "ipr_scale": 0.8376167077328798,
+       "kth": 0.05,
+       "fnz[1]": 0.9775681463276001,
+       "fnz[2]": 0.9532183207998014,
+       "fnz[4]": 0.9969891347122305,
+       "fnz[5]": 1.006627266931443,
+       "fnz[6]": 0.9953482350632914
+      },
+      "n_rows": 141,
+      "failed": 0
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 4.101926266602474,
+       "se": 0.4474151833446956,
+       "n": 42
+      },
+      "rms_std": 1.5476508222503145,
+      "aicc": 149.5976675218816,
+      "dirs": {
+       "correct": 1,
+       "clear": 5
+      },
+      "heldout_bhp_rms": 108.44009689872307,
+      "params": {
+       "ipr_scale": 0.8376706319716288,
+       "kth": 0.05262763105641152,
+       "fnz[1]": 0.977567169043903,
+       "fnz[2]": 0.9532235642323907,
+       "fnz[4]": 0.9971170160281166,
+       "fnz[5]": 1.006769340137036,
+       "fnz[6]": 0.9954916486458035,
+       "dkth[1]": 0.0,
+       "dkth[2]": -0.009516368868998386,
+       "dkth[4]": -0.003621327971376477,
+       "dkth[5]": -0.004503806203073134,
+       "dkth[6]": -0.002830136430961398
+      },
+      "n_rows": 141,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPI-36",
+    "ok": true,
+    "wall": 118.78198910003994,
+    "selected": {
+     "model": "M1",
+     "basis": "held_out_1se",
+     "best": "M3",
+     "limit": 3.0708265390887908,
+     "reason": "M1 is the simplest model whose held-out loss (2.63) is within one standard error of the best (M3: 2.61 + 0.46)."
+    },
+    "gate": {
+     "count": 48,
+     "median_abs": 0.117881412751074,
+     "median_signed": -0.10968495191034927,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 122.277285133782,
+     "collinearity_at_fit": null,
+     "sonic_tests": 0,
+     "solved_tests": 48
+    },
+    "skipped": [],
+    "seconds": 118.55072169995401,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 5.960277769360934,
+       "se": 0.3026523666147988,
+       "n": 38
+      },
+      "rms_std": 2.4308912958319735,
+      "aicc": 257.84646682503717,
+      "dirs": {
+       "correct": 2,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 136.15657301362035,
+      "params": {
+       "ipr_scale": 0.8501492742762436
+      },
+      "n_rows": 144,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 2.6329624304023875,
+       "se": 0.4573887781537895,
+       "n": 38
+      },
+      "rms_std": 1.5147562875109637,
+      "aicc": 121.18874235475901,
+      "dirs": {
+       "correct": 2,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 107.04328323540409,
+      "params": {
+       "ipr_scale": 1.1233626544927584,
+       "kth": 0.05
+      },
+      "n_rows": 144,
+      "failed": 3
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 2.6361544704148314,
+       "se": 0.4558607714067337,
+       "n": 38
+      },
+      "rms_std": 1.4349984061538135,
+      "aicc": 121.08182335949384,
+      "dirs": {
+       "correct": 2,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 106.65217442673361,
+      "params": {
+       "ipr_scale": 1.1095188710259427,
+       "kth": 0.05,
+       "fnz[3]": 1.018141528145914,
+       "fnz[4]": 0.9880710559195355,
+       "fnz[5]": 0.9555623803928023,
+       "fnz[6]": 1.019178278008194,
+       "fnz[7]": 0.9880526151550081,
+       "fnz[8]": 0.9915353475169335
+      },
+      "n_rows": 144,
+      "failed": 0
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 2.6131995308128477,
+       "se": 0.45762700827594294,
+       "n": 38
+      },
+      "rms_std": 1.431511030429736,
+      "aicc": 134.5702126503808,
+      "dirs": {
+       "correct": 2,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 104.97376379145514,
+      "params": {
+       "ipr_scale": 1.108023589885481,
+       "kth": 0.05305118257600704,
+       "fnz[3]": 1.0190474692124376,
+       "fnz[4]": 0.9889197853149186,
+       "fnz[5]": 0.9564070028427696,
+       "fnz[6]": 1.0202010041715346,
+       "fnz[7]": 0.9894298035144233,
+       "fnz[8]": 0.9929292822491498,
+       "dkth[3]": -0.011039921232350229,
+       "dkth[4]": -0.0025078412847773547,
+       "dkth[5]": 0.008196635263650562,
+       "dkth[6]": -0.007363663422828509,
+       "dkth[7]": -0.0031462631959324845,
+       "dkth[8]": -0.0032178940798882113
+      },
+      "n_rows": 144,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPF-107",
+    "ok": true,
+    "wall": 90.90899620007258,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M1",
+     "limit": 7.8133800348213365,
+     "reason": "M0 is the simplest model whose held-out loss (7.44) is within one standard error of the best (M1: 7.22 + 0.59)."
+    },
+    "gate": {
+     "count": 45,
+     "median_abs": 0.2060712648782005,
+     "median_signed": 0.024270103008591892,
+     "passes": false
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": true,
+     "collinearity": 7.4346165620123,
+     "collinearity_at_fit": 10.71152171254018,
+     "sonic_tests": 7,
+     "solved_tests": 40
+    },
+    "skipped": [],
+    "seconds": 90.6532400000142,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 7.437372264171733,
+       "se": 0.6932533773989692,
+       "n": 42
+      },
+      "rms_std": 2.728568091317522,
+      "aicc": 242.94036940568674,
+      "dirs": {
+       "correct": 1,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 194.09152175917228,
+      "params": {
+       "ipr_scale": 1.0710558947081419
+      },
+      "n_rows": 135,
+      "failed": 15
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 7.2206833991672355,
+       "se": 0.5926966356541009,
+       "n": 42
+      },
+      "rms_std": 2.3442827251876737,
+      "aicc": 195.36374384493806,
+      "dirs": {
+       "correct": 1,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 184.92846527025785,
+      "params": {
+       "ipr_scale": 1.1246331014717066,
+       "kth": 0.3143837180306653,
+       "kdi": 0.2815163437174165
+      },
+      "n_rows": 135,
+      "failed": 24
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 8.101607243236057,
+       "se": 0.5366782422922486,
+       "n": 42
+      },
+      "rms_std": 2.289498276591648,
+      "aicc": 236.30607909998335,
+      "dirs": {
+       "correct": 1,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 224.09860294662784,
+      "params": {
+       "ipr_scale": 1.043737877644391,
+       "kth": 0.12220154644229435,
+       "kdi": 0.39794201346288355,
+       "fnz[3]": 0.892953846074152,
+       "fnz[4]": 0.9007024221999819,
+       "fnz[5]": 1.0177795311068163
+      },
+      "n_rows": 135,
+      "failed": 0
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 8.657261029167834,
+       "se": 0.5804892610145759,
+       "n": 42
+      },
+      "rms_std": 2.2919865497925627,
+      "aicc": 250.50048828618432,
+      "dirs": {
+       "correct": 1,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 225.49429439793073,
+      "params": {
+       "ipr_scale": 1.0450549735716017,
+       "kth": 0.1373568641526743,
+       "kdi": 0.39933892348230565,
+       "fnz[3]": 0.9022337569106835,
+       "fnz[4]": 0.906171190568808,
+       "fnz[5]": 0.9957906144765134,
+       "dkth[3]": 0.02890554445482386,
+       "dkdi[3]": 0.02837698271061933,
+       "dkth[4]": -0.03412385189526787,
+       "dkdi[4]": 0.04802309347868858,
+       "dkth[5]": -0.06764728138871129,
+       "dkdi[5]": -0.07644981488773052
+      },
+      "n_rows": 135,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPF-73",
+    "ok": true,
+    "wall": 699.8847610000521,
+    "selected": {
+     "model": "M1",
+     "basis": "held_out_1se",
+     "best": "M1",
+     "limit": 6.549621495751202,
+     "reason": "M1 is the simplest model whose held-out loss (5.96) is within one standard error of the best (M1: 5.96 + 0.59)."
+    },
+    "gate": {
+     "count": 42,
+     "median_abs": 0.3417794140764473,
+     "median_signed": 0.3417794140764473,
+     "passes": false
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 8878.698914273917,
+     "collinearity_at_fit": null,
+     "sonic_tests": 0,
+     "solved_tests": 13
+    },
+    "skipped": [],
+    "seconds": 699.644542700029,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 11.27702708033563,
+       "se": 0.5850230740384845,
+       "n": 36
+      },
+      "rms_std": 5.820812728599526,
+      "aicc": 139.50042000260424,
+      "dirs": {
+       "correct": 0,
+       "clear": 0
+      },
+      "heldout_bhp_rms": 226.54168650262102,
+      "params": {
+       "ipr_scale": 0.9651365463224695
+      },
+      "n_rows": 132,
+      "failed": 93
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 5.95725235048581,
+       "se": 0.5923691452653924,
+       "n": 36
+      },
+      "rms_std": 2.335894445168512,
+      "aicc": 214.50110324847603,
+      "dirs": {
+       "correct": 3,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 105.89893984945792,
+      "params": {
+       "ipr_scale": 0.6524733791296833,
+       "kth": 0.05
+      },
+      "n_rows": 132,
+      "failed": 8
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 6.281718344413732,
+       "se": 0.5960172185727938,
+       "n": 36
+      },
+      "rms_std": 2.075383157382448,
+      "aicc": 178.48399059876755,
+      "dirs": {
+       "correct": 3,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 109.91252192290003,
+      "params": {
+       "ipr_scale": 0.7105672042667738,
+       "kth": 0.05,
+       "fnz[2]": 0.9971484991889566,
+       "fnz[3]": 1.0297100973993678,
+       "fnz[4]": 1.0164246892247353
+      },
+      "n_rows": 132,
+      "failed": 17
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 6.940861421021307,
+       "se": 0.675056415195765,
+       "n": 36
+      },
+      "rms_std": 2.213477479993151,
+      "aicc": 214.30424411526943,
+      "dirs": {
+       "correct": 3,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 118.8449685971015,
+      "params": {
+       "ipr_scale": 0.7116051866184249,
+       "kth": 0.06706096451319382,
+       "fnz[2]": 0.9912602086605394,
+       "fnz[3]": 1.0122186824394852,
+       "fnz[4]": 1.001423262278685,
+       "dkth[2]": -0.022034080335549003,
+       "dkth[3]": -0.045111656630812784,
+       "dkth[4]": -0.02032024668958167
+      },
+      "n_rows": 132,
+      "failed": 8
+     }
+    }
+   },
+   {
+    "well": "MPI-31",
+    "ok": true,
+    "wall": 94.38570939993951,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M1",
+     "limit": 6.509378365214486,
+     "reason": "M0 is the simplest model whose held-out loss (6.42) is within one standard error of the best (M1: 6.19 + 0.32)."
+    },
+    "gate": {
+     "count": 45,
+     "median_abs": 0.13078944930581704,
+     "median_signed": -0.0396558484085896,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 134.93447134936434,
+     "collinearity_at_fit": null,
+     "sonic_tests": 10,
+     "solved_tests": 42
+    },
+    "skipped": [],
+    "seconds": 92.6276415999746,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 6.4235725685405995,
+       "se": 0.3039228626939879,
+       "n": 42
+      },
+      "rms_std": 2.1909705665136796,
+      "aicc": 202.82397046929228,
+      "dirs": {
+       "correct": 6,
+       "clear": 9
+      },
+      "heldout_bhp_rms": 110.43717727137366,
+      "params": {
+       "ipr_scale": 1.5214204346548992
+      },
+      "n_rows": 137,
+      "failed": 9
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 6.192665196138915,
+       "se": 0.31671316907557157,
+       "n": 42
+      },
+      "rms_std": 2.1088321149409244,
+      "aicc": 208.53034885571324,
+      "dirs": {
+       "correct": 6,
+       "clear": 9
+      },
+      "heldout_bhp_rms": 89.94626323619283,
+      "params": {
+       "ipr_scale": 1.221496457467704,
+       "kth": 0.17728879791707175
+      },
+      "n_rows": 137,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 6.43572054423576,
+       "se": 0.3670376334102275,
+       "n": 42
+      },
+      "rms_std": 1.5519003241674556,
+      "aicc": 134.93269241534955,
+      "dirs": {
+       "correct": 6,
+       "clear": 9
+      },
+      "heldout_bhp_rms": 100.09904575468043,
+      "params": {
+       "ipr_scale": 1.3072824181049039,
+       "kth": 0.05,
+       "fnz[1]": 0.9090881027818418,
+       "fnz[2]": 0.9504221114793755,
+       "fnz[3]": 0.9259740969346215,
+       "fnz[4]": 0.9344350549823294,
+       "fnz[5]": 0.9196513356708976,
+       "fnz[6]": 0.8744174292095382
+      },
+      "n_rows": 137,
+      "failed": 3
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 6.321125242922783,
+       "se": 0.42132823003225894,
+       "n": 42
+      },
+      "rms_std": 1.553050482861151,
+      "aicc": 149.5086532477645,
+      "dirs": {
+       "correct": 6,
+       "clear": 9
+      },
+      "heldout_bhp_rms": 107.34077094994004,
+      "params": {
+       "ipr_scale": 1.3201616659370836,
+       "kth": 0.05774073265145705,
+       "fnz[1]": 0.9160887856068856,
+       "fnz[2]": 0.9475969026735398,
+       "fnz[3]": 0.9287077852705805,
+       "fnz[4]": 0.9344351594681343,
+       "fnz[5]": 0.9214444138156723,
+       "fnz[6]": 0.8744998666841322,
+       "dkth[1]": 0.008939561849526703,
+       "dkth[2]": -0.046619423484422884,
+       "dkth[3]": -0.0034275755755374835,
+       "dkth[4]": 0.0,
+       "dkth[5]": -0.008570238983425472,
+       "dkth[6]": -0.020443883004599834
+      },
+      "n_rows": 137,
+      "failed": 3
+     }
+    }
+   },
+   {
+    "well": "MPJ-27",
+    "ok": true,
+    "wall": 77.0213267999934,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M3",
+     "limit": 9.142817068923328,
+     "reason": "M0 is the simplest model whose held-out loss (7.80) is within one standard error of the best (M3: 7.64 + 1.50)."
+    },
+    "gate": {
+     "count": 34,
+     "median_abs": 0.6391316122010493,
+     "median_signed": -0.6391316122010493,
+     "passes": false
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 82.43806416907718,
+     "collinearity_at_fit": null,
+     "sonic_tests": 14,
+     "solved_tests": 32
+    },
+    "skipped": [],
+    "seconds": 76.59333080006763,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 7.797445433958544,
+       "se": 1.6722017694116436,
+       "n": 26
+      },
+      "rms_std": 3.8702618015824837,
+      "aicc": 261.8804067098234,
+      "dirs": {
+       "correct": 3,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 71.37036855024614,
+      "params": {
+       "ipr_scale": 2.6233436980500944
+      },
+      "n_rows": 102,
+      "failed": 6
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 7.720057121748466,
+       "se": 1.5971771630775602,
+       "n": 26
+      },
+      "rms_std": 3.5422322007058566,
+      "aicc": 231.79420788142895,
+      "dirs": {
+       "correct": 1,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 62.859999744407986,
+      "params": {
+       "ipr_scale": 2.0867825522388004,
+       "kth": 0.17845817045787207
+      },
+      "n_rows": 102,
+      "failed": 12
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 8.409566759411037,
+       "se": 1.5425615125542231,
+       "n": 26
+      },
+      "rms_std": 3.4964497080109505,
+      "aicc": 198.63177789765467,
+      "dirs": {
+       "correct": 1,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 65.34028124137551,
+      "params": {
+       "ipr_scale": 2.2791276262209,
+       "kth": 0.1612239482764346,
+       "fnz[1]": 1.0544838251061246,
+       "fnz[3]": 1.0077294042099554,
+       "fnz[4]": 1.0378607891866571
+      },
+      "n_rows": 102,
+      "failed": 27
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 7.638794919502028,
+       "se": 1.5040221494213004,
+       "n": 26
+      },
+      "rms_std": 3.453339206097823,
+      "aicc": 218.77334710061996,
+      "dirs": {
+       "correct": 1,
+       "clear": 4
+      },
+      "heldout_bhp_rms": 61.16964028409431,
+      "params": {
+       "ipr_scale": 2.297200446680576,
+       "kth": 0.20045241209977444,
+       "fnz[1]": 1.0735518476784325,
+       "fnz[3]": 1.0294926978926942,
+       "fnz[4]": 1.0381387482234323,
+       "dkth[1]": -0.013770878912934563,
+       "dkth[3]": -0.020344569786848753,
+       "dkth[4]": 0.0
+      },
+      "n_rows": 102,
+      "failed": 21
+     }
+    }
+   },
+   {
+    "well": "MPM-62",
+    "ok": true,
+    "wall": 76.6382384999888,
+    "selected": {
+     "model": "M1",
+     "basis": "held_out_1se",
+     "best": "M2",
+     "limit": 5.523452496614252,
+     "reason": "M1 is the simplest model whose held-out loss (4.86) is within one standard error of the best (M2: 4.82 + 0.71)."
+    },
+    "gate": {
+     "count": 31,
+     "median_abs": 0.36545647040948437,
+     "median_signed": -0.36545647040948437,
+     "passes": false
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 102.95847828068814,
+     "collinearity_at_fit": null,
+     "sonic_tests": 0,
+     "solved_tests": 31
+    },
+    "skipped": [],
+    "seconds": 76.27403730002698,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 7.704837728315658,
+       "se": 0.5662389323450712,
+       "n": 28
+      },
+      "rms_std": 2.562835969918753,
+      "aicc": 180.8547555083689,
+      "dirs": {
+       "correct": 7,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 234.67894627137252,
+      "params": {
+       "ipr_scale": 1.1407941459177515
+      },
+      "n_rows": 95,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 4.855291747829383,
+       "se": 0.6933252084342866,
+       "n": 28
+      },
+      "rms_std": 1.8635594255664398,
+      "aicc": 122.40321722637327,
+      "dirs": {
+       "correct": 7,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 163.67837508758558,
+      "params": {
+       "ipr_scale": 1.2851458479233364,
+       "kth": 0.05
+      },
+      "n_rows": 95,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 4.817333848220166,
+       "se": 0.706118648394086,
+       "n": 28
+      },
+      "rms_std": 1.8120034302943624,
+      "aicc": 134.67569053200708,
+      "dirs": {
+       "correct": 7,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 164.25297758057107,
+      "params": {
+       "ipr_scale": 1.443095061017704,
+       "kth": 0.05,
+       "fnz[4]": 1.0353280113768821,
+       "fnz[5]": 0.9920929160179117,
+       "fnz[6]": 0.9627369106036969,
+       "fnz[7]": 1.0152965487884227,
+       "fnz[8]": 1.012513755703057,
+       "fnz[9]": 1.0305280649038893,
+       "fnz[12]": 1.0237146718110837,
+       "fnz[13]": 1.0187404111050116,
+       "fnz[14]": 0.9408567921575763
+      },
+      "n_rows": 95,
+      "failed": 3
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 5.021522108588376,
+       "se": 0.6870913773242507,
+       "n": 28
+      },
+      "rms_std": 1.8010347785584486,
+      "aicc": 160.08947922839738,
+      "dirs": {
+       "correct": 7,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 164.1417323162627,
+      "params": {
+       "ipr_scale": 1.4527390540754466,
+       "kth": 0.07344107550387881,
+       "fnz[4]": 1.0333441409572612,
+       "fnz[5]": 0.9967878353010584,
+       "fnz[6]": 0.9815265720894457,
+       "fnz[7]": 1.0168713485376868,
+       "fnz[8]": 1.0155634338165203,
+       "fnz[9]": 1.0299405322809603,
+       "fnz[12]": 1.023918655533571,
+       "fnz[13]": 1.0187976356885733,
+       "fnz[14]": 0.9446448250150944,
+       "dkth[4]": -0.03475208565901763,
+       "dkth[5]": 0.0004322938706924127,
+       "dkth[6]": 0.08975413346904894,
+       "dkth[7]": -0.02284876968282753,
+       "dkth[8]": -0.02147726261486944,
+       "dkth[9]": -0.02342017567491679,
+       "dkth[12]": -0.02477253998522794,
+       "dkth[13]": 0.0,
+       "dkth[14]": -0.010195587664191704
+      },
+      "n_rows": 95,
+      "failed": 3
+     }
+    }
+   },
+   {
+    "well": "MPM-14",
+    "ok": true,
+    "wall": 78.65028940001503,
+    "selected": {
+     "model": "M1",
+     "basis": "held_out_1se",
+     "best": "M1",
+     "limit": 6.842296620826468,
+     "reason": "M1 is the simplest model whose held-out loss (5.92) is within one standard error of the best (M1: 5.92 + 0.92)."
+    },
+    "gate": {
+     "count": 31,
+     "median_abs": 0.10423862256239458,
+     "median_signed": 0.08119549916353663,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 310.63397575444066,
+     "collinearity_at_fit": null,
+     "sonic_tests": 2,
+     "solved_tests": 31
+    },
+    "skipped": [],
+    "seconds": 78.34320680005476,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 8.85339413037121,
+       "se": 0.8768617434527337,
+       "n": 27
+      },
+      "rms_std": 3.1005270811123276,
+      "aicc": 205.7284367220948,
+      "dirs": {
+       "correct": 3,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 114.15502404259323,
+      "params": {
+       "ipr_scale": 0.636071737719459
+      },
+      "n_rows": 93,
+      "failed": 3
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 5.922394849154559,
+       "se": 0.9199017716719087,
+       "n": 27
+      },
+      "rms_std": 2.321165271493436,
+      "aicc": 155.7104107543801,
+      "dirs": {
+       "correct": 3,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 105.77604271952877,
+      "params": {
+       "ipr_scale": 0.8119105648559718,
+       "kth": 0.05
+      },
+      "n_rows": 93,
+      "failed": 3
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 6.174753246697109,
+       "se": 1.0081624917255938,
+       "n": 27
+      },
+      "rms_std": 2.0980172700033,
+      "aicc": 148.7445471449145,
+      "dirs": {
+       "correct": 3,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 107.56568272862224,
+      "params": {
+       "ipr_scale": 0.8224052348119014,
+       "kth": 0.05,
+       "fnz[21]": 0.9316755310708846,
+       "fnz[22]": 0.8778049230941942,
+       "fnz[23]": 0.9888480441960078,
+       "fnz[24]": 1.0131941319005309,
+       "fnz[25]": 1.032368083891735
+      },
+      "n_rows": 93,
+      "failed": 3
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 6.148079867066621,
+       "se": 1.0107700180527297,
+       "n": 27
+      },
+      "rms_std": 2.079976261780945,
+      "aicc": 164.11830547395851,
+      "dirs": {
+       "correct": 3,
+       "clear": 6
+      },
+      "heldout_bhp_rms": 113.93862596605624,
+      "params": {
+       "ipr_scale": 0.8295002126828089,
+       "kth": 0.06890047030091905,
+       "fnz[21]": 0.9249546179781959,
+       "fnz[22]": 0.8770033565495522,
+       "fnz[23]": 0.9887203677563371,
+       "fnz[24]": 1.0063558443689935,
+       "fnz[25]": 1.0270647616812234,
+       "dkth[21]": -0.019611750980856556,
+       "dkth[22]": -0.04843145648609804,
+       "dkth[23]": 0.0,
+       "dkth[24]": -0.034682410258490996,
+       "dkth[25]": -0.06921145016454125
+      },
+      "n_rows": 93,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPM-20",
+    "ok": true,
+    "wall": 51.77003519993741,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M3",
+     "limit": 10.019010120339447,
+     "reason": "M0 is the simplest model whose held-out loss (8.17) is within one standard error of the best (M3: 7.85 + 2.17)."
+    },
+    "gate": {
+     "count": 29,
+     "median_abs": 0.4081476065112095,
+     "median_signed": 0.4036394020487597,
+     "passes": false
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 73.61589124552579,
+     "collinearity_at_fit": null,
+     "sonic_tests": 5,
+     "solved_tests": 29
+    },
+    "skipped": [],
+    "seconds": 51.41330969997216,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 8.165274417631187,
+       "se": 2.194495434299721,
+       "n": 23
+      },
+      "rms_std": 4.258894433866116,
+      "aicc": 248.37982545666554,
+      "dirs": {
+       "correct": 5,
+       "clear": 9
+      },
+      "heldout_bhp_rms": 98.5628532173503,
+      "params": {
+       "ipr_scale": 0.5193077398786848
+      },
+      "n_rows": 91,
+      "failed": 6
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 8.071979225364203,
+       "se": 2.1733319433547966,
+       "n": 23
+      },
+      "rms_std": 4.145356343845325,
+      "aicc": 254.41119725496765,
+      "dirs": {
+       "correct": 5,
+       "clear": 9
+      },
+      "heldout_bhp_rms": 88.05226954900769,
+      "params": {
+       "ipr_scale": 0.5533973958496553,
+       "kth": 0.38219043439373396
+      },
+      "n_rows": 91,
+      "failed": 3
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 8.117538118750593,
+       "se": 2.188017630369492,
+       "n": 23
+      },
+      "rms_std": 3.763995406171299,
+      "aicc": 278.4567702138264,
+      "dirs": {
+       "correct": 5,
+       "clear": 9
+      },
+      "heldout_bhp_rms": 97.12940179752086,
+      "params": {
+       "ipr_scale": 0.5578879985726929,
+       "kth": 0.3768078130680851,
+       "fnz[5]": 0.9908429317318768,
+       "fnz[6]": 0.9666158788887748,
+       "fnz[7]": 1.0151312476300984,
+       "fnz[8]": 0.9363897497570455,
+       "fnz[10]": 0.967482210705495,
+       "fnz[11]": 1.0119525382095733,
+       "fnz[12]": 1.0182043814163702,
+       "fnz[13]": 1.0352144641256917,
+       "fnz[14]": 0.9227804636894148,
+       "fnz[15]": 1.0087701030178777,
+       "fnz[16]": 0.9487590754204954,
+       "fnz[17]": 1.0008536095628913,
+       "fnz[19]": 0.988697849476042,
+       "fnz[20]": 0.9443445501237133,
+       "fnz[21]": 0.9377081485868807,
+       "fnz[22]": 0.9956409476763626,
+       "fnz[23]": 1.0035427103765255,
+       "fnz[24]": 1.0316361111041767
+      },
+      "n_rows": 91,
+      "failed": 6
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 7.845177499846658,
+       "se": 2.1738326204927887,
+       "n": 23
+      },
+      "rms_std": 3.570907817813493,
+      "aicc": 356.8141578174607,
+      "dirs": {
+       "correct": 4,
+       "clear": 9
+      },
+      "heldout_bhp_rms": 81.45282959313175,
+      "params": {
+       "ipr_scale": 0.625890901061105,
+       "kth": 0.4279024760999934,
+       "fnz[5]": 0.9695628831907429,
+       "fnz[6]": 0.9645309539967477,
+       "fnz[7]": 0.9960523490950136,
+       "fnz[8]": 0.9514582598564228,
+       "fnz[10]": 0.9835694899680348,
+       "fnz[11]": 1.0115863056053345,
+       "fnz[12]": 1.0264016403098613,
+       "fnz[13]": 1.032677294555191,
+       "fnz[14]": 0.9203785853360035,
+       "fnz[15]": 1.0330546653630945,
+       "fnz[16]": 0.9896333742436775,
+       "fnz[17]": 1.021475176377459,
+       "fnz[19]": 1.006535216292775,
+       "fnz[20]": 0.9708362378510985,
+       "fnz[21]": 0.948329306418029,
+       "fnz[22]": 0.990994766479995,
+       "fnz[23]": 1.0265699248461402,
+       "fnz[24]": 1.0311251823920617,
+       "dkth[5]": -0.13472401243226434,
+       "dkth[6]": -0.038656202334932194,
+       "dkth[7]": -0.11011026019780124,
+       "dkth[8]": 0.12302262362416735,
+       "dkth[10]": 0.04377354052196719,
+       "dkth[11]": -0.04519390210374162,
+       "dkth[12]": 0.00045152038750760897,
+       "dkth[13]": -0.05649684364759843,
+       "dkth[14]": -0.13700609005815506,
+       "dkth[15]": 0.07662075128532839,
+       "dkth[16]": 0.08513934641405595,
+       "dkth[17]": 0.12592293716386652,
+       "dkth[19]": 0.049523063053630786,
+       "dkth[20]": 0.19958506277581947,
+       "dkth[21]": 0.02113871125402725,
+       "dkth[22]": -0.12529949922687414,
+       "dkth[23]": 0.12395215971969982,
+       "dkth[24]": -0.13102405804812006
+      },
+      "n_rows": 91,
+      "failed": 6
+     }
+    }
+   },
+   {
+    "well": "MPS-54",
+    "ok": true,
+    "wall": 68.85887060000096,
+    "selected": {
+     "model": "M2",
+     "basis": "held_out_1se",
+     "best": "M3",
+     "limit": 12.650505605735887,
+     "reason": "M2 is the simplest model whose held-out loss (11.69) is within one standard error of the best (M3: 10.60 + 2.05)."
+    },
+    "gate": {
+     "count": 26,
+     "median_abs": 0.127405584058009,
+     "median_signed": 0.03179069465500528,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": null,
+     "collinearity_at_fit": null,
+     "sonic_tests": 29,
+     "solved_tests": 30
+    },
+    "skipped": [],
+    "seconds": 68.49224950000644,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 17.47591680974499,
+       "se": 2.4182422530246126,
+       "n": 19
+      },
+      "rms_std": 5.179054936544387,
+      "aicc": 284.9227053779501,
+      "dirs": {
+       "correct": 0,
+       "clear": 2
+      },
+      "heldout_bhp_rms": 93.38403344876278,
+      "params": {
+       "ipr_scale": 0.7654587731679285
+      },
+      "n_rows": 86,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 12.697945887739237,
+       "se": 1.9582714245378698,
+       "n": 19
+      },
+      "rms_std": 3.0581608664544984,
+      "aicc": 189.7070760662492,
+      "dirs": {
+       "correct": 0,
+       "clear": 2
+      },
+      "heldout_bhp_rms": 98.8487540231434,
+      "params": {
+       "ipr_scale": 0.6585528626763864,
+       "kth": 0.9697396959304037
+      },
+      "n_rows": 86,
+      "failed": 3
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 11.68865277793254,
+       "se": 1.9619230587774987,
+       "n": 19
+      },
+      "rms_std": 2.848923402551601,
+      "aicc": 176.04392044102448,
+      "dirs": {
+       "correct": 0,
+       "clear": 2
+      },
+      "heldout_bhp_rms": 122.76940984879924,
+      "params": {
+       "ipr_scale": 0.6753611529057807,
+       "kth": 0.9503606984911781,
+       "fnz[0]": 0.9387085014466832,
+       "fnz[1]": 0.8943584878498789
+      },
+      "n_rows": 86,
+      "failed": 6
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 10.596699782044292,
+       "se": 2.0538058236915964,
+       "n": 19
+      },
+      "rms_std": 3.0401820244918842,
+      "aicc": 197.6835499150258,
+      "dirs": {
+       "correct": 2,
+       "clear": 2
+      },
+      "heldout_bhp_rms": 110.87870410426339,
+      "params": {
+       "ipr_scale": 0.6957097673037371,
+       "kth": 0.9411687418387156,
+       "fnz[0]": 0.9398904330303174,
+       "fnz[1]": 0.8937593069624907,
+       "dkth[0]": 0.050003347409373844,
+       "dkth[1]": -0.07991902373236318
+      },
+      "n_rows": 86,
+      "failed": 3
+     }
+    }
+   },
+   {
+    "well": "MPM-10",
+    "ok": true,
+    "wall": 57.95842200005427,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M3",
+     "limit": 3.5448448650655395,
+     "reason": "M0 is the simplest model whose held-out loss (3.35) is within one standard error of the best (M3: 2.84 + 0.70)."
+    },
+    "gate": {
+     "count": 29,
+     "median_abs": 0.4554364303784513,
+     "median_signed": 0.4554364303784513,
+     "passes": false
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 66.92543804895496,
+     "collinearity_at_fit": null,
+     "sonic_tests": 14,
+     "solved_tests": 28
+    },
+    "skipped": [],
+    "seconds": 57.64450219995342,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 3.347547210272934,
+       "se": 0.9194532113425365,
+       "n": 11
+      },
+      "rms_std": 1.3172043541633431,
+      "aicc": 49.98607324504102,
+      "dirs": {
+       "correct": 6,
+       "clear": 8
+      },
+      "heldout_bhp_rms": 123.34424210276377,
+      "params": {
+       "ipr_scale": 0.6761010868206601
+      },
+      "n_rows": 87,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 2.9667843748077143,
+       "se": 0.7125607099088657,
+       "n": 11
+      },
+      "rms_std": 1.192298920824846,
+      "aicc": 34.74655303223268,
+      "dirs": {
+       "correct": 6,
+       "clear": 8
+      },
+      "heldout_bhp_rms": 103.77964142520501,
+      "params": {
+       "ipr_scale": 0.6762903478636223,
+       "kth": 0.3796203979460635
+      },
+      "n_rows": 87,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 2.9786446206758583,
+       "se": 0.6878753758706552,
+       "n": 11
+      },
+      "rms_std": 1.137542792442415,
+      "aicc": 47.943465410503,
+      "dirs": {
+       "correct": 6,
+       "clear": 8
+      },
+      "heldout_bhp_rms": 101.35354371092126,
+      "params": {
+       "ipr_scale": 0.6842029665709046,
+       "kth": 0.4077580297564934,
+       "fnz[19]": 0.978201724276938,
+       "fnz[20]": 0.9877674821378124,
+       "fnz[21]": 1.026717582359095,
+       "fnz[23]": 0.9981150227508,
+       "fnz[24]": 1.0189612193421285,
+       "fnz[25]": 0.981431703251413,
+       "fnz[26]": 0.9969473955208827,
+       "fnz[27]": 0.9715902361851283,
+       "fnz[28]": 1.003016426983426
+      },
+      "n_rows": 87,
+      "failed": 0
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 2.8427758970051755,
+       "se": 0.7020689680603638,
+       "n": 11
+      },
+      "rms_std": 1.1029157591899974,
+      "aicc": 69.7718539055582,
+      "dirs": {
+       "correct": 6,
+       "clear": 8
+      },
+      "heldout_bhp_rms": 98.38965231697668,
+      "params": {
+       "ipr_scale": 0.6847868923912042,
+       "kth": 0.40842925060209573,
+       "fnz[19]": 0.9782844627476187,
+       "fnz[20]": 0.9878958294844814,
+       "fnz[21]": 1.0259928229552906,
+       "fnz[23]": 0.9977824572919384,
+       "fnz[24]": 1.0187458574863655,
+       "fnz[25]": 0.9823948223957681,
+       "fnz[26]": 0.9970591466817021,
+       "fnz[27]": 0.9722769542377424,
+       "fnz[28]": 1.0021863379139726,
+       "dkth[19]": 0.009523410677437965,
+       "dkth[20]": 0.003991768660284392,
+       "dkth[21]": -0.01473106111540669,
+       "dkth[23]": -0.006495075998202841,
+       "dkth[24]": -0.0037073986896810386,
+       "dkth[25]": 0.03983519409608162,
+       "dkth[26]": 0.004574368651096549,
+       "dkth[27]": 0.017771192483844685,
+       "dkth[28]": -0.028647851691626605
+      },
+      "n_rows": 87,
+      "failed": 0
+     }
+    }
+   },
+   {
+    "well": "MPM-16",
+    "ok": true,
+    "wall": 54.797867999994196,
+    "selected": {
+     "model": "M1",
+     "basis": "held_out_1se",
+     "best": "M2",
+     "limit": 6.178547129715994,
+     "reason": "M1 is the simplest model whose held-out loss (5.61) is within one standard error of the best (M2: 5.49 + 0.69)."
+    },
+    "gate": {
+     "count": 27,
+     "median_abs": 0.0705111393229112,
+     "median_signed": -0.0001966127885186797,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 160.27378173284765,
+     "collinearity_at_fit": null,
+     "sonic_tests": 4,
+     "solved_tests": 23
+    },
+    "skipped": [],
+    "seconds": 54.480240100063384,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 7.479008459804038,
+       "se": 0.8972125172976091,
+       "n": 23
+      },
+      "rms_std": 2.6993642748331013,
+      "aicc": 145.05148883619214,
+      "dirs": {
+       "correct": 7,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 131.59774840610493,
+      "params": {
+       "ipr_scale": 0.7775284814511435
+      },
+      "n_rows": 81,
+      "failed": 9
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 5.611505805938416,
+       "se": 0.6827954007633755,
+       "n": 23
+      },
+      "rms_std": 2.1570512968819378,
+      "aicc": 114.87278245781556,
+      "dirs": {
+       "correct": 7,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 97.66844315975266,
+      "params": {
+       "ipr_scale": 0.9033607324339413,
+       "kth": 0.05
+      },
+      "n_rows": 81,
+      "failed": 9
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 5.490224927608128,
+       "se": 0.6883222021078665,
+       "n": 23
+      },
+      "rms_std": 1.8844800014022631,
+      "aicc": 133.13678578952704,
+      "dirs": {
+       "correct": 9,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 93.09995840732333,
+      "params": {
+       "ipr_scale": 0.8961170182050774,
+       "kth": 0.05,
+       "fnz[25]": 1.0462499664506455,
+       "fnz[26]": 1.040411265765422,
+       "fnz[27]": 0.9799536430258385,
+       "fnz[28]": 1.0105548591941729,
+       "fnz[29]": 0.9220002901149487,
+       "fnz[30]": 0.95175588864492,
+       "fnz[31]": 1.0155145984773286,
+       "fnz[32]": 1.0,
+       "fnz[33]": 0.9194547944386319,
+       "fnz[35]": 1.0135954820877933,
+       "fnz[36]": 0.9584432336981573,
+       "fnz[37]": 1.0,
+       "fnz[38]": 1.0339716577980909,
+       "fnz[39]": 1.056766474743297
+      },
+      "n_rows": 81,
+      "failed": 9
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 5.5428312006986005,
+       "se": 0.6896234935042519,
+       "n": 23
+      },
+      "rms_std": 1.8867326354693175,
+      "aicc": 196.7837595559663,
+      "dirs": {
+       "correct": 9,
+       "clear": 10
+      },
+      "heldout_bhp_rms": 90.94975351001591,
+      "params": {
+       "ipr_scale": 0.8942638454880651,
+       "kth": 0.056720947452656184,
+       "fnz[25]": 1.0479248389856788,
+       "fnz[26]": 1.042687824625594,
+       "fnz[27]": 0.9814801950857852,
+       "fnz[28]": 1.0122388046133386,
+       "fnz[29]": 0.9247176342513529,
+       "fnz[30]": 0.9540125698601297,
+       "fnz[31]": 1.0158075274372025,
+       "fnz[32]": 1.0,
+       "fnz[33]": 0.9229472439640563,
+       "fnz[35]": 1.0147144939367791,
+       "fnz[36]": 0.9604089701440602,
+       "fnz[37]": 1.0,
+       "fnz[38]": 1.0339735676443085,
+       "fnz[39]": 1.0567512294217174,
+       "dkth[25]": -0.009919623824086614,
+       "dkth[26]": -0.01104851090609141,
+       "dkth[27]": -0.008542399342870242,
+       "dkth[28]": -0.008155253390856355,
+       "dkth[29]": 0.000545150148560071,
+       "dkth[30]": -0.008582888090710153,
+       "dkth[31]": -0.008117307707339268,
+       "dkth[32]": 0.0,
+       "dkth[33]": 0.01941715530529297,
+       "dkth[35]": -0.013606482661278013,
+       "dkth[36]": -0.010252037407122402,
+       "dkth[37]": 0.0,
+       "dkth[38]": 0.0,
+       "dkth[39]": 0.0
+      },
+      "n_rows": 81,
+      "failed": 9
+     }
+    }
+   },
+   {
+    "well": "MPM-60",
+    "ok": true,
+    "wall": 46.793438100023195,
+    "selected": {
+     "model": "M1",
+     "basis": "held_out_1se",
+     "best": "M2",
+     "limit": 4.0883346420608255,
+     "reason": "M1 is the simplest model whose held-out loss (3.80) is within one standard error of the best (M2: 3.64 + 0.45)."
+    },
+    "gate": {
+     "count": 25,
+     "median_abs": 0.2034273422559144,
+     "median_signed": 0.00046339083801383296,
+     "passes": false
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 538.0676075997168,
+     "collinearity_at_fit": null,
+     "sonic_tests": 14,
+     "solved_tests": 25
+    },
+    "skipped": [],
+    "seconds": 46.42552039993461,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 5.537919219037287,
+       "se": 0.654149709490812,
+       "n": 20
+      },
+      "rms_std": 2.1061098994240415,
+      "aicc": 109.31447672611137,
+      "dirs": {
+       "correct": 3,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 125.92470367998206,
+      "params": {
+       "ipr_scale": 0.9095623287514901
+      },
+      "n_rows": 75,
+      "failed": 3
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 3.8010464005320466,
+       "se": 0.2883976940880906,
+       "n": 20
+      },
+      "rms_std": 2.061961538732972,
+      "aicc": 104.04658533747005,
+      "dirs": {
+       "correct": 3,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 107.10882396249292,
+      "params": {
+       "ipr_scale": 0.905594653132932,
+       "kth": 0.2684999319252914
+      },
+      "n_rows": 75,
+      "failed": 6
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 3.642452403528904,
+       "se": 0.44588223853192177,
+       "n": 20
+      },
+      "rms_std": 1.545563659726976,
+      "aicc": 73.60505969412543,
+      "dirs": {
+       "correct": 3,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 105.67644545090968,
+      "params": {
+       "ipr_scale": 0.9084072119075812,
+       "kth": 0.05,
+       "fnz[0]": 0.9483108176996636,
+       "fnz[1]": 1.0138084674067454,
+       "fnz[2]": 0.967742028670814
+      },
+      "n_rows": 75,
+      "failed": 3
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 3.839812209813643,
+       "se": 0.4647793187573839,
+       "n": 20
+      },
+      "rms_std": 1.5446050664500177,
+      "aicc": 82.56108668876053,
+      "dirs": {
+       "correct": 3,
+       "clear": 3
+      },
+      "heldout_bhp_rms": 100.05303887984124,
+      "params": {
+       "ipr_scale": 0.8886346229761384,
+       "kth": 0.11208918185047989,
+       "fnz[0]": 0.9485535550389507,
+       "fnz[1]": 0.9912859030881773,
+       "fnz[2]": 0.9674857019074963,
+       "dkth[0]": -0.04673094476071261,
+       "dkth[1]": -0.062148085981600376,
+       "dkth[2]": 0.0
+      },
+      "n_rows": 75,
+      "failed": 1
+     }
+    }
+   },
+   {
+    "well": "MPM-18",
+    "ok": true,
+    "wall": 42.0283876999747,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M0",
+     "limit": 7.413900164007199,
+     "reason": "M0 is the simplest model whose held-out loss (6.34) is within one standard error of the best (M0: 6.34 + 1.08)."
+    },
+    "gate": {
+     "count": 23,
+     "median_abs": 0.10892092046698165,
+     "median_signed": 0.10892092046698165,
+     "passes": true
+    },
+    "losses": {
+     "fit_kth": true,
+     "fit_kdi": false,
+     "collinearity": 84.0645187547197,
+     "collinearity_at_fit": null,
+     "sonic_tests": 3,
+     "solved_tests": 23
+    },
+    "skipped": [],
+    "seconds": 41.74195699999109,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 6.335094907853553,
+       "se": 1.078805256153646,
+       "n": 20
+      },
+      "rms_std": 2.6518086794617775,
+      "aicc": 134.69350823304472,
+      "dirs": {
+       "correct": 3,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 216.90294222931368,
+      "params": {
+       "ipr_scale": 0.869722277760904
+      },
+      "n_rows": 68,
+      "failed": 0
+     },
+     "M1": {
+      "cv": {
+       "mean_loss": 6.387105045433922,
+       "se": 1.0339839251882175,
+       "n": 20
+      },
+      "rms_std": 2.596344181689281,
+      "aicc": 133.94280992195627,
+      "dirs": {
+       "correct": 3,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 217.94860667007492,
+      "params": {
+       "ipr_scale": 0.8944198791896709,
+       "kth": 0.23985523151047708
+      },
+      "n_rows": 68,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 6.435494464062768,
+       "se": 1.05193875539665,
+       "n": 20
+      },
+      "rms_std": 2.486154626427817,
+      "aicc": 159.78478614720865,
+      "dirs": {
+       "correct": 3,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 217.9096886395216,
+      "params": {
+       "ipr_scale": 0.8945567652562161,
+       "kth": 0.24823323758536958,
+       "fnz[19]": 1.0366551441861882,
+       "fnz[20]": 1.021489377780435,
+       "fnz[21]": 1.0253673129283942,
+       "fnz[22]": 0.9946698243521855,
+       "fnz[23]": 1.004647905103074,
+       "fnz[24]": 0.9991236434574143,
+       "fnz[25]": 1.0611565283693,
+       "fnz[26]": 0.9978344082525505,
+       "fnz[27]": 1.000090735700676,
+       "fnz[28]": 1.0926366936110394,
+       "fnz[29]": 1.0276078391526102,
+       "fnz[31]": 1.004647064294854
+      },
+      "n_rows": 68,
+      "failed": 0
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 6.425746968670774,
+       "se": 1.0334240188290884,
+       "n": 20
+      },
+      "rms_std": 2.148588725658475,
+      "aicc": 186.95087698683506,
+      "dirs": {
+       "correct": 3,
+       "clear": 7
+      },
+      "heldout_bhp_rms": 217.96339769058972,
+      "params": {
+       "ipr_scale": 0.8910822420213838,
+       "kth": 0.2685887411260413,
+       "fnz[19]": 1.0376445129620335,
+       "fnz[20]": 1.01742776924876,
+       "fnz[21]": 1.0256975450741994,
+       "fnz[22]": 1.0126275920293462,
+       "fnz[23]": 1.0430632264862623,
+       "fnz[24]": 1.0105505703451216,
+       "fnz[25]": 1.0507922624929065,
+       "fnz[26]": 1.0121234585426142,
+       "fnz[27]": 1.0245448098235672,
+       "fnz[28]": 1.088846207593348,
+       "fnz[29]": 1.022703451859494,
+       "fnz[31]": 1.0061629506397634,
+       "dkth[19]": -0.02834999536236231,
+       "dkth[20]": -0.04071217700433629,
+       "dkth[21]": -0.01921972345268274,
+       "dkth[22]": 0.08417117736325956,
+       "dkth[23]": 0.23213486328469007,
+       "dkth[24]": -0.00015465883864615188,
+       "dkth[25]": -0.13330925968186993,
+       "dkth[26]": 0.12208496859216328,
+       "dkth[27]": 0.17285623188398305,
+       "dkth[28]": -0.1824235269205128,
+       "dkth[29]": -0.20064298441284464,
+       "dkth[31]": -0.007458477402771961
+      },
+      "n_rows": 68,
+      "failed": 6
+     }
+    }
+   },
+   {
+    "well": "MPS-67",
+    "ok": true,
+    "wall": 5.922849900089204,
+    "selected": {
+     "model": "M0",
+     "basis": "held_out_1se",
+     "best": "M3",
+     "limit": 5.775472694070181,
+     "reason": "M0 is the simplest model whose held-out loss (5.23) is within one standard error of the best (M3: 4.64 + 1.14)."
+    },
+    "gate": {
+     "count": 11,
+     "median_abs": 0.2606177781983382,
+     "median_signed": -0.22056480792551048,
+     "passes": false
+    },
+    "losses": {
+     "fit_kth": false,
+     "fit_kdi": false,
+     "collinearity": null,
+     "collinearity_at_fit": null,
+     "sonic_tests": 11,
+     "solved_tests": 11
+    },
+    "skipped": [
+     "M1",
+     "M3"
+    ],
+    "seconds": 5.4579785000532866,
+    "n_obs": null,
+    "models": {
+     "M0": {
+      "cv": {
+       "mean_loss": 5.228203566143655,
+       "se": 0.9709928038693212,
+       "n": 8
+      },
+      "rms_std": 2.0570487705648732,
+      "aicc": 49.73300537474671,
+      "dirs": {
+       "correct": 2,
+       "clear": 2
+      },
+      "heldout_bhp_rms": 171.56231686846587,
+      "params": {
+       "ipr_scale": 1.1043311584956115
+      },
+      "n_rows": 33,
+      "failed": 0
+     },
+     "M2": {
+      "cv": {
+       "mean_loss": 4.635860790947293,
+       "se": 1.1396119968101768,
+       "n": 8
+      },
+      "rms_std": 1.685002092349986,
+      "aicc": 41.26419537347953,
+      "dirs": {
+       "correct": 2,
+       "clear": 2
+      },
+      "heldout_bhp_rms": 175.30723213296173,
+      "params": {
+       "ipr_scale": 1.11811831403191,
+       "fnz[0]": 0.9163185611173892,
+       "fnz[1]": 0.9244848002203908
+      },
+      "n_rows": 33,
+      "failed": 0
+     },
+     "M3": {
+      "cv": {
+       "mean_loss": 4.635860700691029,
+       "se": 1.139611993379152,
+       "n": 8
+      },
+      "rms_std": 1.6849860010267017,
+      "aicc": 41.26356508796675,
+      "dirs": {
+       "correct": 2,
+       "clear": 2
+      },
+      "heldout_bhp_rms": 175.30722969407464,
+      "params": {
+       "ipr_scale": 1.1180995437405787,
+       "fnz[0]": 0.9163188949878609,
+       "fnz[1]": 0.924484023772545
+      },
+      "n_rows": 33,
+      "failed": 0
+     }
+    }
+   }
+  ]
+ }
+}

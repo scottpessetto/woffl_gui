@@ -21,8 +21,10 @@ findings are implemented in the delivery record. Common oil-IPR refitting is
 explicit, and I/M/E fixed-plan stress cases are available. Read the delivery's
 remaining work before treating a saved model as qualified for pad decisions.
 The shared production plot defaults to saved-well BHP/oil predictions at every
-usable test, with chronological validation modes also available. Shared
-multi-installation pump-loss fitting remains unfinished. Every-test replay can
+usable test, with chronological validation modes also available. A read-only
+pooled fit across installations exists ([delivery 2026-09-23](docs/installation_fit_delivery_2026-09-23.md)):
+it never saves, replacements keep reference losses, and its 29-well benchmark
+shows level gains without better pump-change direction. Every-test replay can
 use a saved fit for its exact matching installation/model; other installations
 use clean reference losses. No deployment was performed.
 Historical replay now uses each test's WC/GOR while preserving one saved oil

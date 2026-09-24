@@ -159,3 +159,47 @@ class TestSafety:
         dbc.execute_query = lambda sql: pd.DataFrame()
         assert ia.warm_saved_ipr_cache() == 0
         assert ia._saved_ipr_cache == {}
+
+
+class TestWellsWithNoRows:
+    """The warm-up LEFT JOINs from the well header, so a well with nothing
+    saved comes back as one all-NULL row. It must be cached as None: an inner
+    join dropped it and every such well paid its own per-well read."""
+
+    WITH_EMPTY = pd.concat([BULK, pd.DataFrame([{
+        "well_name": "S-090", "prop_id": None, "prop_value": None,
+        "entry_datetime": None, "entry_user": None,
+    }])], ignore_index=True)
+
+    def test_empty_well_is_cached_as_none_without_a_per_well_read(self, monkeypatch):
+        import woffl.assembly.databricks_client as dbc
+
+        monkeypatch.setattr(dbc, "execute_query", lambda sql: self.WITH_EMPTY)
+        ia.warm_saved_ipr_cache()
+        assert "MPS-90" in ia._saved_ipr_cache and ia._saved_ipr_cache["MPS-90"] is None
+
+        def no_per_well_read(sql):
+            raise AssertionError("per-well read after a fleet snapshot")
+
+        monkeypatch.setattr(dbc, "execute_query", no_per_well_read)
+        assert ia.load_saved_ipr("MPS-90") is None
+
+    def test_null_row_does_not_erase_a_sibling_enthid_record(self, monkeypatch):
+        """Two header rows can share a well name; an empty one adds nothing."""
+        import woffl.assembly.databricks_client as dbc
+
+        extra = pd.DataFrame([{"well_name": "B-028", "prop_id": None, "prop_value": None,
+                               "entry_datetime": None, "entry_user": None}])
+        monkeypatch.setattr(dbc, "execute_query", lambda sql: pd.concat([BULK, extra], ignore_index=True))
+        ia.warm_saved_ipr_cache()
+        assert ia._saved_ipr_cache["MPB-28"]["values"]["qwf_liq"] == 2135.0
+
+    def test_query_keeps_every_header_well(self, monkeypatch):
+        import woffl.assembly.databricks_client as dbc
+
+        seen = []
+        monkeypatch.setattr(dbc, "execute_query", lambda sql: (seen.append(sql), BULK)[1])
+        ia.warm_saved_ipr_cache()
+        sql = " ".join(seen[0].split())
+        assert "FROM mpu.wells.vw_well_header h LEFT JOIN" in sql
+        assert "p.rn = 1" in sql.split("LEFT JOIN", 1)[1]

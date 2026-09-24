@@ -239,6 +239,18 @@ def _saved_ipr_snapshot() -> int:
     return ipr_anchor.warm_saved_ipr_cache(force=True)
 
 
+def prime_saved_ipr() -> None:
+    """Fill the saved-IPR memo fleet-wide before a multi-well hydration.
+
+    Free while the snapshot is fresh. Fail-soft: a failed snapshot leaves
+    each well to its own per-well read, exactly as before.
+    """
+    try:
+        _saved_ipr_snapshot()
+    except Exception:  # noqa: BLE001
+        log.warning("saved-IPR fleet snapshot failed; falling back per well", exc_info=True)
+
+
 # maxsize 256 covers the fleet: keyed per well so ONE save evicts only its own
 # well (a fleet-wide clear made one engineer's save cost every other well a
 # cold read - see _evict_after_write).
@@ -248,10 +260,7 @@ def _saved_ipr(well: str) -> Optional[dict[str, Any]]:
     # it - in memory, no round trip. A well the write path just cleared is
     # absent from the snapshot, so load_saved_ipr falls through to its
     # per-well read and the saver still sees their own write immediately.
-    try:
-        _saved_ipr_snapshot()
-    except Exception:  # noqa: BLE001 - fail soft; the per-well read still works
-        log.warning("saved-IPR fleet snapshot failed; falling back per well", exc_info=True)
+    prime_saved_ipr()
     return ipr_anchor.load_saved_ipr(well)
 
 

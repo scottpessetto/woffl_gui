@@ -474,11 +474,11 @@ export interface ChokePlanRow {
    *  full-open settings, plus reservoir pressure for drawdown. */
   psu: number | null;
   psu_full: number | null;
-  /** Cavitation floor (sonic throat entry) at the chosen / full-open point:
+  /** Entry-choke floor (gas-choked throat entry) at the chosen / full-open point:
    *  psu and oil are pinned there, only PF responds to delivered pressure. */
   sonic: boolean | null;
   sonic_full: boolean | null;
-  /** Field-data suction response for wells whose modeled cavitation floor is
+  /** Field-data suction response for wells whose modeled entry-choke floor is
    *  contradicted by measured BHP history; absent on old payloads. floor and
    *  violation populate whenever evidence exists for a model-basis well;
    *  beta/beta_source only when the response was corrected. */
@@ -905,7 +905,7 @@ export interface SinglePointMatch {
   kdi: number;
   modeled_bhp: number | null;
   target_bhp: number | null;
-  // "pinned": sonic well - target BHP sits on the cavitation floor, so a
+  // "pinned": sonic well - target BHP sits on the entry-choke floor, so a
   // single BHP point cannot identify friction; coefs come back at their
   // seeds. "failed": no valid operating point at any friction setting.
   match_quality: "good" | "fair" | "poor" | "failed" | "pinned";
@@ -1711,6 +1711,82 @@ export interface PumpMatchResult {
   notes: string[]; eras: PumpMatchEra[]; rows: PumpMatchRow[];
   well_inputs: Record<string, unknown>;
   validated_for_sizing: false;
+}
+
+// Fit across installations (server/services/installation_fit.py) -----------
+
+export type InstallationModel = "M0" | "M1" | "M2" | "M3";
+
+export interface InstallationFitRequest {
+  hydraulics_model: HydraulicsModel;
+  months: 24 | 60;
+  refit_ipr: boolean;
+  include_m3: boolean;
+  exclude_wt_uids: string[];
+}
+
+export interface InstallationFitParam {
+  name: string; physical: "ipr" | "kth" | "kdi" | "fnz"; installation_id: string | null;
+  value: number; sd: number | null; prior_mean: number | null; prior_sd: number | null;
+  posterior_to_prior: number | null; at_bound: boolean; identified: boolean;
+}
+
+export interface InstallationFitPrediction {
+  index: number; installation_id: string; origin?: string;
+  predicted_bhp?: number; predicted_oil?: number; predicted_pf?: number; predicted_liquid?: number;
+  sonic?: boolean; message?: string;
+}
+
+export interface InstallationFitModel {
+  model: InstallationModel; label: string; cost: number; iterations: number; converged: boolean;
+  message: string; evaluations: number; test_evaluations: number; seconds: number;
+  n_rows: number; n_failed_rows: number; rms_standardized: number | null; aicc: number | null;
+  collinearity: number | null; params: InstallationFitParam[]; predictions: InstallationFitPrediction[];
+}
+
+export interface ChangeoutDelta { measured: number; predicted: number; clear: boolean; direction_correct: boolean | null }
+
+export interface InstallationFitFoldModel {
+  mean_loss: number; n: number; failed: number;
+  bhp_rms: number | null; bhp_bias: number | null;
+  oil_median_abs_pct: number | null; pf_median_abs_pct: number | null;
+  changeout?: { bhp: ChangeoutDelta | null; oil: ChangeoutDelta | null };
+}
+
+export interface InstallationFitFold {
+  origin: string; kind: "changeout" | "later_same_pump"; n_train: number; n_test: number;
+  skipped?: string; models: Partial<Record<InstallationModel, InstallationFitFoldModel>>;
+}
+
+export interface InstallationFitEra {
+  installation_id: string; date_set: string; end: string | null; pump: string;
+  nozzle: string | null; throat: string | null; flags: string[]; unavailable: string | null;
+  n_tests: number; ppf_span: number | null;
+}
+
+export interface InstallationFitResult {
+  well: string; request: InstallationFitRequest; physics_model: string; as_of: string;
+  source: "databricks" | "excel_fallback"; notes: string[];
+  eras: InstallationFitEra[]; rows: PumpMatchRow[];
+  ipr_gate: { count: number; median_abs: number | null; median_signed: number | null; passes: boolean };
+  losses: { fit_kth: boolean; fit_kdi: boolean; reason: string | null; collinearity: number | null;
+    collinearity_at_fit?: number | null; sonic_tests: number; solved_tests: number;
+    information_kth: number; information_kdi: number } | null;
+  skipped: Partial<Record<InstallationModel, string>>;
+  models: Partial<Record<InstallationModel, InstallationFitModel>>;
+  cv: { folds: InstallationFitFold[]; embargo_days: number;
+    scores: Partial<Record<InstallationModel, { mean_loss: number; se: number | null; n: number }>>;
+    held_predictions: Partial<Record<InstallationModel, InstallationFitPrediction[]>> };
+  selected: { model: InstallationModel | null; basis: "held_out_1se" | "aicc_unvalidated" | "none";
+    reason: string; best?: InstallationModel; limit?: number };
+  seconds: number; validated_for_sizing: false; snapshot_id: string;
+}
+
+export interface InstallationFitJob {
+  job_id: string; kind: "installation-fit";
+  status: "running" | "done" | "error" | "cancelled";
+  progress: string; result: InstallationFitResult | null; error: string | null;
+  started_at: string; seconds: number;
 }
 
 export interface PumpMatchJob {

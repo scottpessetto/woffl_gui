@@ -47,6 +47,7 @@ import numpy as np
 from scipy.optimize import minimize
 
 from woffl.assembly.solopump import jetpump_solver
+from woffl.flow.entry_energy import scoped_paths
 from woffl.geometry.jetpump import JetPump
 from woffl.gui.fric_calibration import KDI_BOUNDS, KTH_BOUNDS
 
@@ -159,6 +160,7 @@ def _rms(oil: float, pf: float, oil_test: float, pf_test: float) -> float:
     return sqrt(0.5 * (((oil - oil_test) / oil_test) ** 2 + ((pf - pf_test) / pf_test) ** 2))
 
 
+@scoped_paths  # one entry-path cache per match; see fric_calibration
 def match_test(
     *,
     well_name: str,

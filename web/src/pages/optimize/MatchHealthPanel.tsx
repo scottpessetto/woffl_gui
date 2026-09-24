@@ -31,7 +31,7 @@ const VERDICT_META: Record<
   contradicted: {
     tone: "fair",
     hint:
-      "Field data contradicts the model: the modeled cavitation floor sits above " +
+      "Field data contradicts the model: the modeled entry-choke floor sits above " +
       "the measured BHP floor, or the well's own measured response slope shows it " +
       "responding to PF while the model claims it is sonic-pinned.",
   },
@@ -249,7 +249,7 @@ export function MatchHealthPanel({ pad }: { pad: RunPad }) {
                         {row.sonic === true && (
                           <span
                             className="ml-1 text-slate-400"
-                            title="Model reports this well sonic-pinned at its cavitation floor"
+                            title="Model reports this well sonic-pinned at its entry-choke floor"
                           >
                             *
                           </span>

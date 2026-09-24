@@ -56,6 +56,14 @@ def client(monkeypatch) -> TestClient:
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _no_saved_ipr_snapshot(monkeypatch):
+    """The fleet saved-IPR snapshot is a warehouse read; well_context is faked."""
+    primes: list[bool] = []
+    monkeypatch.setattr(runs.ipr_svc, "prime_saved_ipr", lambda: primes.append(True))
+    return primes
+
+
 def _wait_done(client: TestClient, job_id: str, timeout: float = 10.0) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -861,3 +869,21 @@ def test_pad_run_forwards_the_water_price(client, monkeypatch):
     assert meta["lambda_used"] == 0.02 and meta["lambda_source"] == "manual"
     assert meta["objective_bopd_equiv"] == 570.0
     assert meta["solver_agreement"]["agree"] is True
+
+
+def test_build_configs_reads_saved_ipr_fleet_wide_once(monkeypatch, _no_saved_ipr_snapshot):
+    """One fleet snapshot before the per-well loop, not one prop_hist read per
+    well (live S-Pad 2026-09-23: 19 per-well reads, 17.1 of 17.6 s cold)."""
+    order: list[str] = []
+    _no_saved_ipr_snapshot.clear()
+    monkeypatch.setattr(runs.ipr_svc, "prime_saved_ipr", lambda: order.append("prime"))
+    monkeypatch.setattr(wells_svc, "list_wells", lambda: _UNIVERSE)
+
+    def context(well, months, cap):
+        order.append(well)
+        return {"seeds": dict(_SEEDS[well])}
+
+    monkeypatch.setattr(wells_svc, "well_context", context)
+    configs = runs._build_configs(["M"], set(), [], [])
+    assert [c.well_name for c in configs] == ["MPM-01", "MPM-02"]
+    assert order == ["prime", "MPM-01", "MPM-02"]

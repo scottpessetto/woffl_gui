@@ -153,7 +153,7 @@ def test_calibrate_pinned_passes_quality_and_message(client, monkeypatch):
     "pinned" quality value, and the explanatory message intact."""
 
     msg = (
-        "target BHP sits on the cavitation floor at these inputs - a single "
+        "target BHP sits on the entry-choke floor at these inputs - a single "
         "BHP point cannot identify friction on a sonic well (ken would only "
         "move the floor; kth/kdi cannot move it at all). Left coefficients "
         "at their seeds. Floor gap: +283 psi."
@@ -190,7 +190,7 @@ def test_calibrate_pinned_passes_quality_and_message(client, monkeypatch):
     body = r.json()
     assert body["converged"] is True
     assert body["match_quality"] == "pinned"
-    assert "cavitation floor" in body["message"]
+    assert "entry-choke floor" in body["message"]
     assert (body["ken"], body["kth"], body["kdi"]) == (0.08, 0.30, 0.30)
     assert body["sonic"] is True
 

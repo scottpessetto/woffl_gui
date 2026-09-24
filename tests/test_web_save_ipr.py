@@ -224,6 +224,7 @@ def test_saved_preview_values_reload_into_optimizer_and_refresh_characterization
     monkeypatch.setattr(wells_svc.tests_svc, "tests_for_well", lambda *_: None)
     monkeypatch.setattr(wells_svc, "_live_pf_seed", lambda *_: None)
     monkeypatch.setattr(ipr_anchor, "resolve_entry_user", lambda: "fixture@example.com")
+    monkeypatch.setattr(optimizer_runs.ipr_svc, "prime_saved_ipr", lambda: None)
     datasources.well_chars.cache_clear()
     try:
         assert wells_svc.well_context(WELL)["seeds"]["form_temp"] == 80.

@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from server import schemas
 from server.services import history as history_service
-from server.services import pump_match
+from server.services import installation_fit, pump_match
 from server import jobs
 
 router = APIRouter(tags=["history"])
@@ -57,4 +57,30 @@ def get_pump_match(job_id: str) -> Any:
 def cancel_pump_match(job_id: str) -> Any:
     if not jobs.cancel(job_id, pump_match.KINDS):
         raise HTTPException(404, "History job expired or unavailable")
+    return {"cancel_requested": True}
+
+
+@router.post("/wells/{name}/installation-fit", response_model=schemas.OptimizeRunStarted)
+def start_installation_fit(name: str, req: schemas.InstallationFitRequest) -> Any:
+    """Fit the well across all its pump installations (read-only job)."""
+    from woffl.assembly.sql_guards import UnsafeSqlValueError, validate_well_name
+    try:
+        validate_well_name(name)
+    except UnsafeSqlValueError:
+        raise HTTPException(404, "Unknown well")
+    return {"job_id": installation_fit.start(name, req)}
+
+
+@router.get("/installation-fit/{job_id}", response_model=schemas.InstallationFitJob)
+def get_installation_fit(job_id: str) -> Any:
+    result = jobs.get(job_id, installation_fit.KINDS)
+    if result is None:
+        raise HTTPException(404, "Fit job expired or unavailable. Run the fit again.")
+    return result
+
+
+@router.delete("/installation-fit/{job_id}")
+def cancel_installation_fit(job_id: str) -> Any:
+    if not jobs.cancel(job_id, installation_fit.KINDS):
+        raise HTTPException(404, "Fit job expired or unavailable")
     return {"cancel_requested": True}

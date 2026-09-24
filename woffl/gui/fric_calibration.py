@@ -27,6 +27,7 @@ import numpy as np
 from scipy.optimize import minimize
 
 from woffl.assembly.solopump import jetpump_solver
+from woffl.flow.entry_energy import scoped_paths
 from woffl.geometry.jetpump import JetPump
 
 # Bounds for each varied parameter. ken (entrance loss) is geometry-dominated
@@ -211,6 +212,10 @@ def _run_one_start(
     return ken_opt, kth_opt, kdi_opt, psu, oil, pf, sonic, ok, iters, abs_err
 
 
+# One entry-path scope per fit: every trial solve shares the fluid's cached
+# throat-entry PVT path (it depends on fluid, temperature and pressure range,
+# never on the coefficients), instead of each solve rebuilding it.
+@scoped_paths
 def calibrate_friction_coefs(
     *,
     well_name: str,
@@ -263,7 +268,7 @@ def calibrate_friction_coefs(
             it down further)
           - ``match_quality == "pinned"``: the final solve was sonic, so the
             single-point match is degenerate (kth/kdi have zero psu gradient
-            and ken only moves the cavitation floor). Coefficients are
+            and ken only moves the entry-choke floor). Coefficients are
             returned at their SEEDS, not the optimizer's railed values, and
             ``message`` explains the floor gap.
     """
@@ -329,7 +334,7 @@ def calibrate_friction_coefs(
             starts_tried=starts_tried,
         )
     if sonic:
-        # Sonic-pinned: psu sits on the cavitation floor. On that branch a
+        # Sonic-pinned: psu sits on the entry-choke floor. On that branch a
         # single BHP point cannot identify friction - kth/kdi have zero
         # gradient on psu (they cannot move the floor) and ken only moves
         # the floor itself - so the optimizer rails coefficients without
@@ -360,7 +365,7 @@ def calibrate_friction_coefs(
                 sonic=True,
                 starts_tried=starts_tried,
                 message=(
-                    "target BHP sits on the cavitation floor at these inputs "
+                    "target BHP sits on the entry-choke floor at these inputs "
                     "- a single BHP point cannot identify friction on a sonic "
                     "well (ken would only move the floor; kth/kdi cannot move "
                     "it at all). Left coefficients at their seeds. "
@@ -676,6 +681,7 @@ def _mp_refused(refusal: str, seed, n_dropped: int = 0) -> MultipointResult:
     )
 
 
+@scoped_paths  # see calibrate_friction_coefs
 def calibrate_multipoint(
     well_config,
     nozzle: str,
