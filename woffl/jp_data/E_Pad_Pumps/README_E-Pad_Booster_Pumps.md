@@ -4,8 +4,48 @@
 **Source:** `Summit E Pad Booster (1).xlsx` and `Summit E Pad Booster as SN35000.xlsx` - the stage
 tables on sheet `Current` plus the Summit ESP catalog performance page embedded in each workbook
 (`SM25000 Pump`, halliburton.com p. 250; `SN35000 Pump`, p. 256).
-**Not validated against live E-Pad SCADA.** No operating point, and no motor nameplate, came with
-the workbooks. Everything below is catalog physics plus the workbooks' own affinity sheet.
+**Updated 2026-09-24 with the E-41 surface-kit rate test** (section 0). Sections 1-5 describe the
+catalog physics; the optimizer's default E-Pad plant is now calibrated to that test.
+
+---
+
+## 0. Field rate test (E-41 surface kit)
+
+The booster was ramped up until the drive's motor current limit (I-limit) was reached at 889 A.
+
+| | Baseline | Current limit |
+|---|---|---|
+| CFP suction | 2,725 psi | 2,704 psi |
+| Discharge | 3,400 psi | 3,400 psi |
+| Frequency | 53.1 Hz | 53.1 Hz |
+| Current | 826 A | **889 A** (I-limit) |
+| Rate | 27,789 BWPD | **29,491 BWPD** |
+
+At 2,704 psi suction any additional rate lost discharge pressure, and the achievable rate depends on
+the CFP water-header pressure holding. The field recommendation was to consider downsizing E-48 and
+possibly shutting in E-07 and E-17 to free rate and pressure for new wells.
+
+What the catalog model said before the test, and what changed (`e_pad_booster.field_calibration`
+derives the numbers from the limit point in the meta `field_test`, so a repeat test only updates
+the points):
+
+| Item | Before | Now |
+|---|---|---|
+| Suction default | 2,800 psi (workbook cell) | **2,704 psi** (measured at the limit) |
+| Amps per BHP | 0.1435 (I-Pad 4,160 V motor), model read 89 A for 889 A measured | **1.4281**, the E-41 motor at the limit point |
+| Amp limit | none | **889 A** (drive I-limit) |
+| Head at 53.1 Hz, 29,491 BWPD | 909 psid catalog vs 696 measured | **condition 0.766** on the installed unit |
+| Upper operating range (60 Hz) | 32,400 BPD catalog | **33,323 BPD**, where the unit ran |
+| PF capacity at 3,400 psi | **32,400 BWPD** (about 10 pct high) | **29,491 BWPD**, current-limited at 53.1 Hz |
+
+The head condition and range apply to the installed SM25000 only; the SN35000 alternative and an
+as-new replacement (`EPadPlant(field_calibrated=False)`) stay on catalog curves. The motor values
+(amps per BHP, 889 A) belong to the kit and apply to either build on it. The baseline is not
+fitted: the model draws 873 A there (826 measured) and could make about 3,477 psi at 53.1 Hz, so
+the header was held at 3,400 with margin below the limit. The 0.766 condition means the unit makes
+about 23 pct less head than the catalog at the reported speed - wear, or an actual speed below the
+53.1 Hz display; one test at one speed cannot separate them, so frontier values away from 3,400 psi
+are the catalog shape through one point. The 3,500 psi header cap is still I-Pad's number.
 
 ---
 
@@ -153,15 +193,14 @@ E-Pad runs through the pad optimizer like S/I/M. Its capability frontier is
 
 Two consequences, and they are the pad's actual answer:
 
-- **The booster is not the pressure constraint at 3,400 psi.** Its frontier
-  sits above 4,000 psi across the whole range, so the PF budget is a flat
-  32,400 BPD over the entire sweep band and the **operational header cap**
-  (3,500 psi, adopted from I-Pad pending an E-Pad piping number) is what
-  limits the sweep. Raise that cap and the optimizer gets more PF pressure
-  for free - which is exactly why it is a run knob.
-- **The booster's real limit is throughput.** 32,400 BPD installed against
-  **49,500 BPD** on the SN35000. That +17,100 BPD is what a changeout buys if
-  E-Pad's PF demand grows past the installed ceiling - e.g. adding wells.
+- **As new on the catalog** (the table above), the booster is not the
+  pressure constraint at 3,400 psi and the PF budget is a flat 32,400 BPD.
+  **As tested** (section 0) the installed unit is current-limited: 29,491 BWPD
+  up to 3,400 psi, falling to about 27,100 BWPD at the 3,500 psi cap.
+- **The booster's real limit is throughput at its motor current.** On the
+  E-41 motor (889 A) the SN35000 would reach about 38,600 BWPD at 3,400 psi
+  (49,500 BPD as new with no current cap). That is what a changeout buys if
+  E-Pad's PF demand grows past the installed limit - e.g. adding wells.
 
 Every inverse in the plant scans before it bisects. A monotone bisection from
 zero flow (the shape the I/M inverses assume, because their frontiers are
@@ -174,13 +213,13 @@ budget of 0.0 at every header. `tests/test_e_pad_plant.py` pins that.
 
 `amps = k * BHP` - the convention the I-Pad and M-Pad plant models already use.
 
-**No E-Pad motor data came with the curve sheets.** So:
+**Calibrated to the E-41 rate test (section 0).**
 
-- `k` defaults to **0.1435 A/BHP**, the live-calibrated value for the I-Pad 26-stage SN35000 HPS
-  unit on a **4160 V** motor (SCADA 2026-06-16). It is a **transferred estimate**. Scale it by
-  `4160 / V` for another voltage, and replace it on screen the moment the E-Pad nameplate is known.
-- The **amp limit defaults to unset**: the screen reports amps always and enforces a cap only when
-  the engineer types the motor limit in. Nothing is invented.
+- `k` defaults to **1.4281 A/BHP**: 889 A over the catalog shaft power at 29,491 BWPD and 53.1 Hz.
+  The previous default, 0.1435 A/BHP from I-Pad's 4,160 V motor, read about ten times low -
+  consistent with a low-voltage surface-kit motor.
+- The **amp limit defaults to 889 A**, the drive's I-limit. Clear the field to report amps
+  without enforcing a cap; a build on a different motor needs its own limit and `k`.
 
 Amps are for **trend, not protection** - power factor and motor efficiency drift away from the
 calibration point, and `k * BHP` makes amps scale as `(Hz/60)^3` where constant-V/Hz theory says

@@ -222,7 +222,7 @@ def fake_core(monkeypatch):
         reconcile_calls=[],
     )
 
-    def fake_optimize(opt, method="milp", water_key=None):
+    def fake_optimize(opt, method="milp", water_key=None, **kw):
         ns.method, ns.water_key = method, water_key
         return ns.optimize_fn(opt)
 

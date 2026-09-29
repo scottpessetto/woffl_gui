@@ -167,11 +167,16 @@ def score_plan(name: str, choices: dict, configs: list[Any], options: dict,
     machine_water = pf + form_water if plant.water_key == "totl_wat" else pf
     budget = plant.budget_at_pressure(pressure, n_pumps)
     lo, hi = plant.clamp_window(n_pumps)
-    flags = plant.flags(machine_water, n_pumps)
-    delivered, over = plant.delivered_header(machine_water, pressure, n_pumps)
-    residual = delivered - pressure if delivered is not None else None
+    # The optimizer's own qualification, so a stress case can never call a
+    # point feasible that the run rejected: below E-Pad's frontier the plant
+    # holds no header without a recycle arrangement, which is not modeled.
+    from woffl.gui.pad_optimize import _plant_operating_check
+
+    check = _plant_operating_check(plant, machine_water, pressure, n_pumps)
+    flags = check
+    delivered, residual = check["delivered_header_psi"], check["coupling_residual_psi"]
     feasible = (lo <= pressure <= hi and budget is not None and machine_water <= budget + 1e-6
-                and not flags.get("over_capacity", False) and not over
+                and bool(check["hydraulically_feasible"])
                 and residual is not None and math.isfinite(residual) and abs(residual) <= 10.)
     return {**empty, "feasible": feasible, "oil": oil, "pf": pf, "machine_water": machine_water,
             "budget": budget, "objective": oil - lam * machine_water if feasible else None,

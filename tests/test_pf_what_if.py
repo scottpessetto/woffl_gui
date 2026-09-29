@@ -86,7 +86,7 @@ class FakeOptimizer:
 
     instances: list = []
 
-    def __init__(self, well_configs, pf, nozzles, throats, marginal_watercut=0.6):
+    def __init__(self, well_configs, pf, nozzles, throats, marginal_watercut=0.6, well_grids=None):
         self.well_configs = well_configs
         self.power_fluid = pf
         type(self).instances.append(self)

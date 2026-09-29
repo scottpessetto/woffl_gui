@@ -31,11 +31,13 @@ _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+from server import jobs
 from server.config import WEB_DIST
 from server.routers import (
     compute,
     database,
     gauge,
+    header,
     history,
     meta,
     optimize,
@@ -115,6 +117,13 @@ app.include_router(well_sort.router, prefix="/api")
 app.include_router(gauge.router, prefix="/api")
 app.include_router(optimize.router, prefix="/api")
 app.include_router(tools.router, prefix="/api")
+app.include_router(header.router, prefix="/api")
+
+
+@app.exception_handler(jobs.JobQueueFull)
+async def job_queue_full(request: Request, exc: jobs.JobQueueFull) -> JSONResponse:
+    # Every background-job route shares the one queue; say why, not "500".
+    return JSONResponse(status_code=429, content={"detail": {"error": "invalid", "message": str(exc)}})
 
 
 @app.exception_handler(Exception)

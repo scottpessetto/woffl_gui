@@ -157,9 +157,14 @@ def _valid_configs(df: "pd.DataFrame", *, deduplicate: bool = True) -> "pd.DataF
     # marker does not make NaN, infinite or negative production rates usable.
     from woffl.assembly.network import valid_rate_rows
     valid = valid_rate_rows(valid)
+    return _deduplicate_configs(valid) if deduplicate else valid
+
+
+def _deduplicate_configs(valid: "pd.DataFrame") -> "pd.DataFrame":
+    """Drop replacement rows whose modeled outcome equals the installed pump's."""
     # [LIBRARY change -> upstream PR to kwellis/woffl] no changeout for an
     # exactly identical modeled outcome. Keep both candidates in batch reports.
-    if deduplicate and "pump_state" in valid:
+    if "pump_state" in valid:
         keys = [k for k in ("nozzle", "throat", "qoil_std", "lift_wat", "form_wat", "psu_solv", "sonic_status", "mach_te") if k in valid]
         valid = valid.sort_values("pump_state", kind="stable").drop_duplicates(keys)
     return valid
@@ -431,40 +436,138 @@ class _WellView:
         self.df = df
 
 
+_CANDIDATE_COLUMNS = ["nozzle", "throat", "pump_state", "qoil_std",
+                      "lift_wat", "form_wat", "totl_wat", "perf"]
+# Columns NetworkOptimizer.get_pump_performance reads unconditionally.
+_PERF_COLUMNS = ("nozzle", "throat", "qoil_std", "form_wat", "lift_wat", "totl_wat",
+                 "psu_solv", "sonic_status", "mach_te")
+
+
+def _standard_performance_lookup(optimizer) -> bool:
+    """True when ``optimizer.get_pump_performance`` is NetworkOptimizer's own
+    method, so its per-row lookups can be evaluated in one pass over the frame.
+    Duck-typed optimizers with their own lookup keep per-row calls."""
+    from woffl.assembly.network_optimizer import NetworkOptimizer
+
+    method = getattr(optimizer, "get_pump_performance", None)
+    return (getattr(method, "__func__", None) is NetworkOptimizer.get_pump_performance
+            and getattr(method, "__self__", None) is optimizer)
+
+
+def _performance_rows(valid: "pd.DataFrame", df: "pd.DataFrame") -> list[dict]:
+    """Candidate rows exactly as ``NetworkOptimizer.get_pump_performance`` would
+    build them for each ``valid`` row, without a per-row mask over ``df``.
+
+    Mirrors the lookup: the first ``df`` row matching nozzle/throat (and the
+    row's ``pump_state``; a ``None`` state prefers an installed match), then
+    finite nonnegative rates, then the same float/bool conversions.
+    """
+    # [LIBRARY change -> upstream PR to kwellis/woffl] Patch 49: linear, not
+    # one boolean mask over the whole frame per candidate.
+    def comparable(value):
+        try:
+            return bool(value == value)  # pandas == never matches NaN
+        except (TypeError, ValueError):
+            return False
+
+    has_state = "pump_state" in df
+    col = {key: df[key].tolist() for key in _PERF_COLUMNS}
+    states = df["pump_state"].tolist() if has_state else [None] * len(df)
+    marginal = {key: df[key].tolist() if key in df else None for key in ("molwr", "motwr")}
+    first, first_installed, first_state = {}, {}, {}
+    for pos, (nozzle, throat, state) in enumerate(zip(col["nozzle"], col["throat"], states)):
+        if not (comparable(nozzle) and comparable(throat)):
+            continue
+        first.setdefault((nozzle, throat), pos)
+        if has_state:
+            if isinstance(state, str) and state == "installed":
+                first_installed.setdefault((nozzle, throat), pos)
+            if state is not None and comparable(state):
+                first_state.setdefault((nozzle, throat, state), pos)
+
+    rows = []
+    valid_states = valid["pump_state"].tolist() if has_state else [None] * len(valid)
+    for nozzle, throat, state in zip(valid["nozzle"].tolist(), valid["throat"].tolist(), valid_states):
+        if not has_state:
+            pos = first.get((nozzle, throat))
+        elif state is not None:
+            pos = first_state.get((nozzle, throat, state)) if comparable(state) else None
+        else:
+            pos = first_installed.get((nozzle, throat), first.get((nozzle, throat)))
+        if pos is None:
+            continue
+        try:
+            rates = [float(col[key][pos]) for key in ("qoil_std", "form_wat", "lift_wat", "totl_wat")]
+        except (TypeError, ValueError):
+            continue
+        if not all(np.isfinite(rate) and rate >= 0 for rate in rates):
+            continue
+        oil, form, lift, total = rates
+        margins = {}
+        for key, name in (("molwr", "marginal_oil_lift_water"), ("motwr", "marginal_oil_total_water")):
+            value = marginal[key][pos] if marginal[key] is not None else None
+            margins[name] = float(value) if pd.notna(value) else 0.0
+        perf = {"pump_state": states[pos] if has_state else None, "oil_rate": oil,
+                "formation_water": form, "lift_water": lift, "total_water": total,
+                "suction_pressure": float(col["psu_solv"][pos]),
+                "sonic_status": bool(col["sonic_status"][pos]),
+                "mach_te": float(col["mach_te"][pos]), **margins}
+        rows.append(dict(nozzle=nozzle, throat=throat, pump_state=perf["pump_state"],
+                         qoil_std=oil, lift_wat=lift, form_wat=form, totl_wat=total, perf=perf))
+    return rows
+
+
 def _allocation_candidates(optimizer):
-    """One validated candidate/performance table for both allocation engines."""
+    """One validated candidate/performance table for both allocation engines.
+
+    Returns:
+        tuple: ``(names, candidates, excluded, deduplicated)``. ``excluded``
+        counts rows per well that failed, carried invalid rates or had no
+        performance; ``deduplicated`` counts replacement rows dropped because
+        they model exactly the installed pump's outcome.
+    """
     from woffl.assembly.network import valid_rate_rows
 
     if not optimizer.batch_results:
         raise ValueError("Must run batch simulations before optimization")
-    names, candidates, excluded = [], [], {}
+    standard = _standard_performance_lookup(optimizer)
+    names, candidates, excluded, deduplicated = [], [], {}, {}
     for well in optimizer.wells:
         name = well.well_name
         bp = optimizer.batch_results.get(name)
-        rows = []
+        rows, duplicates = [], 0
         if bp is not None:
-            for _, row in _valid_configs(bp.df).iterrows():
-                perf = optimizer.get_pump_performance(name, row["nozzle"], row["throat"],
-                    **({"pump_state": row["pump_state"]} if "pump_state" in row else {}))
-                if perf is None:
-                    continue
-                rows.append(dict(nozzle=row["nozzle"], throat=row["throat"],
-                    pump_state=perf.get("pump_state"), qoil_std=perf["oil_rate"],
-                    lift_wat=perf["lift_water"], form_wat=perf["formation_water"],
-                    totl_wat=perf["total_water"], perf=perf))
-        df = pd.DataFrame(rows, columns=["nozzle", "throat", "pump_state", "qoil_std",
-                                        "lift_wat", "form_wat", "totl_wat", "perf"])
+            successful = _valid_configs(bp.df, deduplicate=False)
+            valid = _deduplicate_configs(successful)
+            duplicates = len(successful) - len(valid)
+            if standard and all(key in bp.df for key in _PERF_COLUMNS):
+                rows = _performance_rows(valid, bp.df)
+            else:
+                for _, row in valid.iterrows():
+                    perf = optimizer.get_pump_performance(name, row["nozzle"], row["throat"],
+                        **({"pump_state": row["pump_state"]} if "pump_state" in row else {}))
+                    if perf is None:
+                        continue
+                    rows.append(dict(nozzle=row["nozzle"], throat=row["throat"],
+                        pump_state=perf.get("pump_state"), qoil_std=perf["oil_rate"],
+                        lift_wat=perf["lift_water"], form_wat=perf["formation_water"],
+                        totl_wat=perf["total_water"], perf=perf))
+        df = pd.DataFrame(rows, columns=_CANDIDATE_COLUMNS)
         df = valid_rate_rows(df).reset_index(drop=True)
         names.append(name)
         candidates.append(df)
-        excluded[name] = int(len(bp.df) - len(df)) if bp is not None else 0
-    return names, candidates, excluded
+        # [LIBRARY change -> upstream PR to kwellis/woffl] Patch 49: identical
+        # installed/clean outcomes are not invalid candidates.
+        deduplicated[name] = int(duplicates)
+        excluded[name] = int(len(bp.df) - len(df) - duplicates) if bp is not None else 0
+    return names, candidates, excluded, deduplicated
 
 
-def _allocate(optimizer, water_key, method):
+def _allocate(optimizer, water_key, method, time_limit_s=None):
     # [LIBRARY change -> upstream PR to kwellis/woffl] Patch 46: common valid
     # candidates, required online wells and explicit successful/failure status.
-    from woffl.assembly.network import AllocationError, optimize_jet_pumps, solve_milp_choices
+    from woffl.assembly.network import (
+        AllocationDeadline, AllocationError, optimize_jet_pumps, solve_milp_choices)
     from woffl.assembly.network_optimizer import OptimizationResult
 
     if water_key not in _MARG_COLS:
@@ -477,20 +580,24 @@ def _allocate(optimizer, water_key, method):
     optimizer.mwc_excluded_wells = []
     optimizer.mckp_skipped = []
     required = set(getattr(optimizer, "required_wells", None) or ())
-    excluded = {}
+    excluded, deduplicated = {}, {}
     try:
-        names, candidates, excluded = _allocation_candidates(optimizer)
+        # [LIBRARY change -> upstream PR to kwellis/woffl] Patch 47: one
+        # deadline for every solve of this allocation call.
+        deadline = AllocationDeadline(time_limit_s)
+        names, candidates, excluded, deduplicated = _allocation_candidates(optimizer)
         optimizer.mckp_skipped = [name for name, df in zip(names, candidates) if df.empty]
         lam = water_price(optimizer)
         optimizer.lambda_used = lam
         if method == "milp":
             selected, status = solve_milp_choices(names, candidates, optimizer.power_fluid.total_rate,
-                                                  water_key, lam, required)
+                                                  water_key, lam, required, deadline=deadline)
         else:
             table = optimize_jet_pumps(
                 well_list=[_WellView(name, df) for name, df in zip(names, candidates)],
                 qpf_tot=optimizer.power_fluid.total_rate, water_key=water_key,
-                allow_shutin=True, water_price=lam, all_configs=True, required_wells=required)
+                allow_shutin=True, water_price=lam, all_configs=True, required_wells=required,
+                deadline=deadline)
             status = dict(table.attrs.get("allocation_status") or {})
             selected = {}
             for _, row in table.iterrows():
@@ -506,11 +613,12 @@ def _allocate(optimizer, water_key, method):
                 if not len(hits):
                     raise AllocationError(f"Selected pump for {row['wellname']} has no matching performance", "error")
                 selected[row["wellname"]] = (i, int(hits[0]))
-        status.update(excluded_candidates=excluded,
+        status.update(excluded_candidates=excluded, deduplicated_candidates=deduplicated,
                       unsupported_wells=[name for name, df in zip(names, candidates) if df.empty])
         optimizer.allocation_status = status
     except AllocationError as exc:
-        optimizer.allocation_status = {**exc.details, "excluded_candidates": excluded}
+        optimizer.allocation_status = {**exc.details, "excluded_candidates": excluded,
+                                       "deduplicated_candidates": deduplicated}
         raise
     except Exception as exc:
         error = AllocationError(f"{method.upper()} allocation error: {exc}", "error", solver=method)
@@ -532,18 +640,24 @@ def _allocate(optimizer, water_key, method):
     return results
 
 
-def milp_optimization(optimizer: "NetworkOptimizer", water_key: str = "lift_wat") -> list["OptimizationResult"]:
+# [LIBRARY change -> upstream PR to kwellis/woffl] Patch 47: time_limit_s (s)
+# bounds every solve of one allocation call; None reads WOFFL_ALLOC_TIME_LIMIT_S
+# or the 20 s default (woffl.assembly.network.resolve_time_limit).
+def milp_optimization(optimizer: "NetworkOptimizer", water_key: str = "lift_wat",
+                      time_limit_s: float | None = None) -> list["OptimizationResult"]:
     """Original-unit MILP allocation; status is retained on the optimizer."""
-    return _allocate(optimizer, water_key, "milp")
+    return _allocate(optimizer, water_key, "milp", time_limit_s)
 
 
-def mckp_optimization(optimizer: "NetworkOptimizer", water_key: str = "lift_wat") -> list["OptimizationResult"]:
+def mckp_optimization(optimizer: "NetworkOptimizer", water_key: str = "lift_wat",
+                      time_limit_s: float | None = None) -> list["OptimizationResult"]:
     """CP-SAT allocation with precise-resource refinement and typed failure."""
-    return _allocate(optimizer, water_key, "mckp")
+    return _allocate(optimizer, water_key, "mckp", time_limit_s)
 
 
 def optimize(
-    optimizer: "NetworkOptimizer", method: str = "milp", water_key: str = "lift_wat"
+    optimizer: "NetworkOptimizer", method: str = "milp", water_key: str = "lift_wat",
+    time_limit_s: float | None = None,
 ) -> list["OptimizationResult"]:
     """Main optimization dispatcher
 
@@ -552,6 +666,10 @@ def optimize(
         method: Optimization method ('milp' or 'mckp')
         water_key: Constrained water stream — 'lift_wat' (PF-only budget)
             or 'totl_wat' (lift + formation, full-POPS pad pump limit)
+        time_limit_s (float | None): Wall-clock budget for the whole
+            allocation, s. A timed-out solve with a qualified incumbent is
+            reported ``feasible`` with its gap; without one it raises
+            ``AllocationError`` (status ``unknown``, reason ``time_limit``).
 
     Returns:
         List of OptimizationResult objects
@@ -564,8 +682,8 @@ def optimize(
     from woffl.assembly import compute_runtime
     with compute_runtime.cpu_slot(), compute_runtime.measure("compute.allocation"):
         if method == "milp":
-            return milp_optimization(optimizer, water_key=water_key)
+            return milp_optimization(optimizer, water_key=water_key, time_limit_s=time_limit_s)
         elif method == "mckp":
-            return mckp_optimization(optimizer, water_key=water_key)
+            return mckp_optimization(optimizer, water_key=water_key, time_limit_s=time_limit_s)
         else:
             raise ValueError(f"Unknown optimization method: {method}. Use 'milp' or 'mckp'")

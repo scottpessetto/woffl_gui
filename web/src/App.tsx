@@ -20,6 +20,7 @@ const JpHistoryPage = lazy(() => import("./pages/JpHistoryPage"));
 const WellDatabasePage = lazy(() => import("./pages/WellDatabasePage"));
 const WellSortPage = lazy(() => import("./pages/WellSortPage"));
 const OptimizePage = lazy(() => import("./pages/OptimizePage"));
+const HeaderPage = lazy(() => import("./pages/HeaderPage"));
 // Scott's Tools - the secret menu. Lazy like every other route, so a locked
 // app never downloads them.
 const ToolsPage = lazy(() => import("./pages/ToolsPage"));
@@ -125,6 +126,14 @@ export default function App() {
           element={
             <Suspense fallback={<Spinner label="Loading view" />}>
               <OptimizePage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="/header"
+          element={
+            <Suspense fallback={<Spinner label="Loading view" />}>
+              <HeaderPage />
             </Suspense>
           }
         />

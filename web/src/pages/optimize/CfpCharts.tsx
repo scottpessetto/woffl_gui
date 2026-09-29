@@ -173,28 +173,22 @@ function dumbbellOption(result: CfpRunResult): { option: EChartsOption; height: 
           ].join("<br/>");
         },
       },
-      legend: { top: 4, right: 8, textStyle: { fontSize: 12 } },
+      legend: { top: 4, right: 8, data: ["Reference", "Plan"], textStyle: { fontSize: 12 } },
       grid: { ...baseGrid, top: 36, left: 76 },
       xAxis: { type: "value", ...axis("Oil (BOPD)", { min: 0 }) },
       yAxis: { type: "category", data: wells, inverse: true, axisLabel: { fontSize: 11 } },
       series: [
-        {
-          // connector segments, colored by direction
-          type: "custom",
+        // Connector segments, colored by direction: one two-point line per
+        // well, so zooming the value axis keeps them on their dots (a custom
+        // renderItem drifted after zoom).
+        ...rows.map((r, i) => ({
+          type: "line" as const,
           silent: true,
-          renderItem: (params: { dataIndex: number }, api: { coord: (v: [number, number]) => [number, number] }) => {
-            const r = rows[params.dataIndex];
-            const p0 = api.coord([r.baseline_oil, params.dataIndex]);
-            const p1 = api.coord([r.plan_oil, params.dataIndex]);
-            const gain = r.plan_oil >= r.baseline_oil;
-            return {
-              type: "line",
-              shape: { x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1] },
-              style: { stroke: gain ? OIL_GREEN : CRIMSON, lineWidth: 2 },
-            };
-          },
-          data: rows.map((r) => [r.baseline_oil, r.plan_oil]),
-        },
+          showSymbol: false,
+          tooltip: { show: false },
+          lineStyle: { color: r.plan_oil >= r.baseline_oil ? OIL_GREEN : CRIMSON, width: 2 },
+          data: [[r.baseline_oil, i], [r.plan_oil, i]],
+        })),
         {
           name: "Reference",
           type: "scatter",

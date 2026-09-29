@@ -160,26 +160,32 @@ def test_milp_limit_preserves_qualified_incumbent_and_gap(monkeypatch):
         mip_dual_bound=-110., mip_gap=.1))
     result = milp_optimization(opt)
     assert result[0].predicted_oil_rate == 100.
-    assert opt.allocation_status["status"] == "feasible"
-    assert opt.allocation_status["objective_bound"] == 110.
-    assert opt.allocation_status["gap"] == .1
+    status = opt.allocation_status
+    assert status["status"] == "feasible"
+    # Patch 48: the solver bound includes the bounded tie-break terms; the
+    # reported primary bound stays valid and within tie_break_bound of it.
+    assert 110. <= status["objective_bound"] <= 110. + status["tie_break_bound"]
+    assert status["gap"] == pytest.approx((status["objective_bound"] - 100.) / 100.)
+    assert status["gap"] == pytest.approx(.1, abs=status["tie_break_bound"])
 
 
-def test_failed_oil_tie_break_retains_qualified_primary_plan(monkeypatch):
+def test_priced_oil_tie_break_is_one_bounded_solve(monkeypatch):
+    """Patch 48 replaced the equality-constrained second MILP (Patch 39/46)
+    with one solve; the old secondary-failure path no longer exists."""
     import scipy.optimize
     original = scipy.optimize.milp
     calls = 0
-    def fail_second(**kwargs):
+    def counted(**kwargs):
         nonlocal calls
         calls += 1
-        if calls == 2:
-            raise RuntimeError("injected secondary failure")
         return original(**kwargs)
-    monkeypatch.setattr(scipy.optimize, "milp", fail_second)
-    opt = make_optimizer({"A": [(100., 100.)]}, price=.1)
+    monkeypatch.setattr(scipy.optimize, "milp", counted)
+    opt = make_optimizer({"A": [(80., 80.), (100., 100.)]}, price=1.)
     assert milp_optimization(opt)[0].predicted_oil_rate == 100.
-    assert opt.allocation_status["status"] == "optimal"
-    assert "injected secondary failure" in opt.allocation_status["oil_tie_break"]
+    status = opt.allocation_status
+    assert calls == 1
+    assert status["status"] == "optimal" and "oil_tie_break" not in status
+    assert 0. < status["tie_break_bound"] <= 1e-6 * 200.
 
 
 def test_direct_api_retains_exactly_one_default_and_dataframe_status():

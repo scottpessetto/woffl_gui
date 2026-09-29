@@ -55,7 +55,7 @@ def clear():
         _BYTES = _HITS = _MISSES = 0
 
 
-def _key(well, pressure, nozzles, throats):
+def _key(well, pressure, nozzles, throats, pumps=None):
     survey = ROOT / "woffl" / "jp_data" / "well_surveys" / f"{well.well_name} Deviation Survey.csv"
     try:
         survey_hash = sha256(survey.read_bytes()).digest()
@@ -65,8 +65,13 @@ def _key(well, pressure, nozzles, throats):
         # Let the existing profile loader decide its fallback. An unreadable
         # input cannot safely identify a reusable response node.
         return None
-    return sha256(pickle.dumps((_MODEL, vars(well), pressure, tuple(nozzles),
-                                tuple(throats), survey_hash), protocol=5)).digest()
+    identity = (_MODEL, vars(well), pressure, tuple(nozzles), tuple(throats), survey_hash)
+    if pumps is not None:
+        # A candidate subset is a different response node than the full grid
+        # (and than any other subset): its exact, order-free key set joins
+        # the identity. Full-grid keys are unchanged.
+        identity += (tuple(sorted({tuple(str(v) for v in p) for p in pumps})),)
+    return sha256(pickle.dumps(identity, protocol=5)).digest()
 
 
 def _get(key):
@@ -130,22 +135,26 @@ def status():
 
 
 def run_jobs(jobs, progress=None):
-    """Simulate ``[(well, pressure, nozzles, throats), ...]`` in one pooled
-    submit; results in job order. Each job is cached exactly like a batch
-    entry, so mixed wells, headers and pump grids reuse the same nodes."""
+    """Simulate ``[(well, pressure, nozzles, throats[, pumps]), ...]`` in one
+    pooled submit; results in job order. Each job is cached exactly like a
+    batch entry, so mixed wells, headers and pump grids reuse the same nodes.
+    The optional fifth element is an explicit candidate subset (keyed)."""
     from woffl.assembly.network_optimizer import _simulate_single_well
 
     jobs = list(jobs)
     with _BATCH_LOCK, performance.measure("physics.batch"):
         out = [None] * len(jobs)
         pending, slots, keys = [], [], []
-        for i, (well, pressure, nozzles, throats) in enumerate(jobs):
-            key = _key(well, pressure, nozzles, throats)
+        for i, job in enumerate(jobs):
+            well, pressure, nozzles, throats, *rest = job
+            pumps = rest[0] if rest else None
+            key = (_key(well, pressure, nozzles, throats) if pumps is None
+                   else _key(well, pressure, nozzles, throats, pumps))
             cached = _get(key)
             if cached is None:
                 keys.append(key)
                 slots.append(i)
-                pending.append((well, pressure, nozzles, throats))
+                pending.append(tuple(job) if pumps is not None else (well, pressure, nozzles, throats))
             else:
                 out[i] = cached
         if progress:

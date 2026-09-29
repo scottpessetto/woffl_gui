@@ -1,5 +1,17 @@
 # Documentation index
 
+The [Header page delivery](header_impact_delivery_2026-09-29.md) (2026-09-29,
+local) adds a production-header pressure impact page: per-well closed-loop
+BHP~WHP relations, lift + reservoir correlations for gaugeless wells, IPR
+ladder, jet pumps on the optimizer's saved models, scenario and observed-event
+runs with gauge validation, and six new `hdr_*` prop_xref ids for saving.
+
+The [September 24 optimization review](optimization_review_2026-09-24.md)
+records a full review of pad, choke and CFP runs, the allocators, the job
+layer and the Optimize page, the reproduced defects and their fixes, measured
+speedups (CFP studies 6-8x, priced allocation up to 90x, bounded solves) and
+the new recommendation-first run screen. Its addendum calibrates the E-Pad booster to the E-41 rate test (889 A current limit at 29,491 BWPD and 3,400 psi).
+
 The [September 22 save and optimization fixes](review_fixes_2026-09-22.md) make
 Match test fits reload with the well, save pin and values atomically, add job
 cancel and default-offline shut-ins, and record the measured run timings.
@@ -58,6 +70,7 @@ inputs and revision; later implementation notes do not retroactively rerun them.
 | [Pad accounting and stress cases](pad_decision_accounting_2026-09-12.md) | Complete modeled coverage, hardware counterfactual and bounded I/M/E plan comparisons |
 | [App README](../README.md) / [frontend README](../web/README.md) | Setup, checks and frontend conventions |
 | [Optimization user guide](optimization_user_guide.md) | Save well inputs, fit/save installed pumps, run optimization and explore WC |
+| [Optimization review 2026-09-24](optimization_review_2026-09-24.md) | Current run screen, fixed defects, speed, changed contracts and remaining work |
 | [Web architecture](web_port.md) | API, caching, writes and deployment; later sections include port history |
 | [Pump calibration scope](pump_calibration_scope_2026-09-08.md) | Installation/model identity, persistence, clean replacements and tests |
 | [WC uncertainty GUI](wc_uncertainty_gui_2026-09-08.md) | Sensitivity assumptions, failures, stale-result behavior and browser QA |
@@ -67,7 +80,7 @@ inputs and revision; later implementation notes do not retroactively rerun them.
 | [Selectable hydraulics](hydraulics_models_2026-09-11.md) | BB, Hagedorn–Brown/Griffith and Shi/Pan; scoped model selection, primary sources, limitations and same-input historical comparison; Tulsa pending |
 | [Pad optimization formulation](optimization_redesign_2026-09.md) | Water pricing, plant constraints, both allocators and hardware identity |
 | [CFP moves methodology](cfp_moves_methodology.md) | Measured-anchor deltas and response surfaces |
-| [Upstream patch register](upstream_sync.md) | Shared-library changes through patch 46 and merge regressions |
+| [Upstream patch register](upstream_sync.md) | Shared-library changes through patch 51 and merge regressions |
 
 ## September 7-8 implementation and validation records
 

@@ -55,8 +55,10 @@ from complete well coverage and numerical convergence.
 
 from __future__ import annotations
 
+import os
 from copy import copy
 from math import isfinite
+from time import monotonic
 from typing import Any, Callable, Iterable, Optional
 
 from woffl.gui.pad_plant_base import PadPlant
@@ -65,6 +67,25 @@ from woffl.flow.inflow import InFlow
 # The scenario evaluators / match check never apply the marginal-WC economics
 # gate — see the module docstring.
 _SCENARIO_MARGINAL_WC = 1.0
+
+# Allocation wall-clock for one run_optimization sweep (s; env
+# WOFFL_RUN_ALLOC_BUDGET_S). Realistic pads allocate in 0.2-3 s per trial;
+# the budget only binds on pathological instances, which then report a gap.
+_ALLOC_RUN_BUDGET_S = 120.0
+_ALLOC_TRIAL_MAX_S = 20.0
+_ALLOC_TRIAL_FLOOR_S = 2.0
+
+# Sweep pruning (2026-09-24; env WOFFL_SWEEP_PRUNE=0 restores the unpruned
+# sweep exactly). Between two solved headers a pump is not solved when one
+# common rival beats it at BOTH by this relative margin: at least 1% more oil
+# for at least 1% less plant water. The window ends and middle always run the
+# full grid, and the winning header is always re-run on the full grid.
+_PRUNE_MARGIN = 0.01
+
+
+def _sweep_prune_enabled() -> bool:
+    """False only when WOFFL_SWEEP_PRUNE is "0"/"false"/"no"/"off"."""
+    return os.getenv("WOFFL_SWEEP_PRUNE", "1").strip().lower() not in ("0", "false", "no", "off")
 
 # I-Pad's historical guard: when the frontier inverse can't produce a flow
 # ceiling (flow_window hi == 0), the scenario optimizer still needs a
@@ -233,8 +254,13 @@ def _settle_scenario_coupling(
             m_c, m_new, _m_pf, payload = _probe(mid)
             g_m = m_new - m_c
             header = m_new
-            if abs(g_m) <= tol_psi or 0.5 * (b - a) <= tol_psi:
+            # Only a closed residual certifies the header. A shrunken bracket
+            # around a jump in the plan's draw is a discontinuity, not a
+            # crossing (the rows there can sit 200 psi off the balance).
+            if abs(g_m) <= tol_psi:
                 converged = True
+                break
+            if 0.5 * (b - a) <= tol_psi:
                 break
             if g_m > 0:
                 a = m_c
@@ -307,11 +333,16 @@ def _settle_curve_selection(well_configs, plant, n_pumps, results, header, *, to
         for wc in configs:
             wc.ppf_surf_well = p
         sizes = {wc.well_name: size for size, wells in groups.items() for wc in wells}
+        # Only the selected candidate's row is read: solve that row alone
+        # (not also the installed pump / its same-size twin).
+        reads = {wc.well_name: [sizes[wc.well_name] + ((selected[wc.well_name].pump_state,)
+                                if getattr(selected[wc.well_name], "pump_state", None) is not None else ())]
+                 for wc in configs}
         opt = NetworkOptimizer(configs,
             PowerFluidConstraint(total_rate=cap, pressure=p, rho_pf=power_fluid_density(plant)),
             sorted({n for n, _t in sizes.values()}), sorted({t for _n, t in sizes.values()}),
             marginal_watercut=_SCENARIO_MARGINAL_WC,
-            well_grids={w: ([n], [t]) for w, (n, t) in sizes.items()})
+            well_grids=_read_grids(configs, reads))
         opt.run_all_batch_simulations(max_workers=worker_ceiling())
         for wc in configs:
             nozzle, throat = sizes[wc.well_name]
@@ -404,6 +435,228 @@ def _settle_curve_selection(well_configs, plant, n_pumps, results, header, *, to
             b = current["P"]
     current["coupling_error"] = "selected pumps do not close the station pressure balance within tolerance/capacity"
     return current
+
+
+# ---------------------------------------------------------------------------
+# Solving only the rows a caller reads (2026-09-24, upstream_sync patch 51)
+# ---------------------------------------------------------------------------
+
+
+def _read_key(wc, choice):
+    """The one batch row ``_pump_perf(opt, well, choice)`` reads.
+
+    A stated third part selects that state. A two-part choice follows
+    ``get_pump_performance``: the installed candidate when the well's scoped
+    installed identity has that size, else the clean replacement. Unscoped
+    (legacy) wells carry no state.
+    """
+    from woffl.assembly.pump_candidates import pump_key
+
+    nozzle, throat = choice[0], choice[1]
+    if not getattr(wc, "pump_calibration_scoped", False):
+        return pump_key(nozzle, throat, None)
+    if len(choice) > 2 and choice[2] is not None:
+        return pump_key(nozzle, throat, choice[2])
+    installed = (getattr(wc, "installed_nozzle", None), getattr(wc, "installed_throat", None))
+    if all(installed) and pump_key(*installed)[:2] == pump_key(nozzle, throat)[:2]:
+        return pump_key(nozzle, throat, "installed")
+    return pump_key(nozzle, throat, "replacement")
+
+
+def _read_grids(configs, reads):
+    """``well_grids`` solving only the rows ``reads`` ({well: [choice, ...]})
+    will read. Wells with no choice get no entry."""
+    from woffl.assembly.pump_candidates import pump_key
+
+    grids = {}
+    for wc in configs:
+        choices = [c for c in reads.get(wc.well_name, ()) if c]
+        if not choices:
+            continue
+        nozzles, throats = sorted({c[0] for c in choices}), sorted({c[1] for c in choices})
+        keys = {_read_key(wc, c) for c in choices}
+        scoped = getattr(wc, "pump_calibration_scoped", False)
+        grid = {pump_key(n, t, "replacement" if scoped else None) for n in nozzles for t in throats}
+        installed = (getattr(wc, "installed_nozzle", None), getattr(wc, "installed_throat", None))
+        if scoped and all(installed):
+            grid.add(pump_key(*installed, "installed"))
+        # The subset rides along only when it removes a solve.
+        grids[wc.well_name] = (nozzles, throats) + (() if grid <= keys else (sorted(keys, key=str),))
+    return grids
+
+
+def _run_reads(well_configs, pf, nozzles, throats, reads, *, complete=True):
+    """Scenario batch holding exactly the rows ``reads`` needs.
+
+    With ``complete``, a well whose every read fails is re-run on the whole
+    ``nozzles`` x ``throats`` grid, so the best-feasible-pump fallback sees
+    the same rows the union-grid batch always gave it.
+    """
+    from woffl.assembly.network_optimizer import NetworkOptimizer
+    from woffl.assembly.parallelism import worker_ceiling
+
+    grids = _read_grids(well_configs, reads)
+    runnable = [wc for wc in well_configs if wc.well_name in grids]
+    opt = NetworkOptimizer(runnable, pf, nozzles, throats,
+                           marginal_watercut=_SCENARIO_MARGINAL_WC, well_grids=grids)
+    if runnable:
+        opt.run_all_batch_simulations(max_workers=worker_ceiling())
+    if complete and runnable:
+        failing = [wc for wc in runnable
+                   if all(_pump_perf(opt, wc.well_name, c) is None for c in reads[wc.well_name] if c)]
+        if failing:
+            full = NetworkOptimizer(failing, pf, nozzles, throats, marginal_watercut=_SCENARIO_MARGINAL_WC)
+            full.run_all_batch_simulations(max_workers=worker_ceiling())
+            opt.batch_results.update(full.batch_results)
+    return opt
+
+
+# ---------------------------------------------------------------------------
+# Sweep pruning (2026-09-24)
+# ---------------------------------------------------------------------------
+
+
+def _prune_order(n: int) -> list[tuple[int, bool]]:
+    """Coarse indices in solve order, with a full-grid flag.
+
+    Both ends and the middle run the full grid. The rest follow bisection
+    depth-first, left half first, so every pruned point has solved
+    neighbours on both sides and the natural-order allocation is at most
+    three solves behind.
+    """
+    if n <= 3:
+        return [(i, True) for i in range(n)]
+    mid = (n - 1) // 2
+    order = [(0, True), (mid, True)]
+
+    def split(a, b):
+        if b - a < 2:
+            return
+        m = (a + b) // 2
+        order.append((m, False))
+        split(a, m)
+        split(m, b)
+
+    split(0, mid)
+    order.append((n - 1, True))
+    split(mid, n - 1)
+    return order
+
+
+def _merge_batch(bp, extra, order) -> None:
+    """Complete ``bp`` in place with ``extra``'s rows (same well, header and
+    inputs) in the full grid's row ``order``; derived columns and curve fits
+    are recomputed from the complete frame, as a full-grid batch does."""
+    import pandas as pd
+    from woffl.assembly.pump_candidates import pump_key
+
+    derived = ("semi", "motwr", "molwr")
+    df = pd.concat([f.drop(columns=[c for c in derived if c in f]) for f in (bp.df, extra.df)],
+                   ignore_index=True)
+    states = df["pump_state"].tolist() if "pump_state" in df else [None] * len(df)
+    rank = {key: i for i, key in enumerate(order)}
+    keys = [pump_key(n, t, s if isinstance(s, str) else None)
+            for n, t, s in zip(df["nozzle"].tolist(), df["throat"].tolist(), states)]
+    positions = sorted(range(len(df)), key=lambda i: rank.get(keys[i], len(rank)))
+    bp.df = df.iloc[positions].reset_index(drop=True)
+    for attr in ("coeff_totl", "coeff_lift"):
+        if hasattr(bp, attr):
+            delattr(bp, attr)
+    if hasattr(bp, "process_results"):
+        try:
+            bp.process_results()
+        except (ValueError, RuntimeError, TypeError):
+            pass  # same tolerance as _simulate_single_well: raw rows stand
+
+
+class _SweepPruner:
+    """Bracket dominance across the header sweep.
+
+    Every trial batch is recorded per well and header as, for each candidate,
+    the set of rivals that beat it by the margin (``None`` for a failed or
+    invalid row). A candidate is skipped at a new header when one common
+    rival beats it at the nearest solved headers on both sides; the skipped
+    candidate carries that common set as its record there. Rows are always
+    read from what the batch returned, so a runner that ignores the subset
+    loses nothing.
+    """
+
+    def __init__(self, water_key: str, margin: float = _PRUNE_MARGIN):
+        self.water_key = water_key
+        self.margin = margin
+        self.order: dict[str, list] = {}
+        self.records: dict[str, dict[float, dict]] = {}
+        self.skipped = 0
+        self.solved = 0
+
+    def _rows(self, df):
+        from woffl.assembly.pump_candidates import pump_key
+
+        cols = ("nozzle", "throat", "qoil_std", self.water_key)
+        if df is None or not all(c in df for c in cols):
+            return None
+        states = df["pump_state"].tolist() if "pump_state" in df else [None] * len(df)
+        errors = df["error"].tolist() if "error" in df else [None] * len(df)
+        rows = {}
+        for n, t, q, w, s, e in zip(df["nozzle"].tolist(), df["throat"].tolist(), df["qoil_std"].tolist(),
+                                     df[self.water_key].tolist(), states, errors):
+            key = pump_key(n, t, s if isinstance(s, str) else None)
+            ok = (e is None or (isinstance(e, float) and e != e) or str(e).strip() in ("na", "")) and all(
+                isinstance(v, (int, float)) and isfinite(v) and v >= 0 for v in (q, w))
+            rows.setdefault(key, (float(q), float(w)) if ok else None)
+        return rows
+
+    def _dominators(self, rows):
+        valid = [(k, v) for k, v in rows.items() if v is not None]
+        out = {k: None for k, v in rows.items() if v is None}
+        m = self.margin
+        for k, (q, w) in valid:
+            out[k] = frozenset(j for j, (qj, wj) in valid
+                               if qj >= q * (1 + m) and wj <= w * (1 - m) and (qj > q or wj < w))
+        return out
+
+    def plan(self, names, header):
+        """``{well: (keep keys, {skipped key: common rivals})}`` for bracketed wells."""
+        out = {}
+        for name in names:
+            recs = self.records.get(name)
+            if name not in self.order or not recs:
+                continue
+            below = max((h for h in recs if h < header), default=None)
+            above = min((h for h in recs if h > header), default=None)
+            if below is None or above is None:
+                continue
+            da, db = recs[below], recs[above]
+            keep, skipped = [], {}
+            for key in self.order[name]:
+                common = (da[key] & db[key]) if da.get(key) and db.get(key) else None
+                if common:
+                    skipped[key] = common
+                else:
+                    keep.append(key)
+            if skipped and keep:
+                out[name] = (keep, skipped)
+        return out
+
+    def observe(self, header, batch_results, plan) -> int:
+        """Record one trial's batches; return the candidates actually skipped."""
+        skipped_here = 0
+        for name, bp in batch_results.items():
+            rows = self._rows(getattr(bp, "df", None))
+            if rows is None:
+                continue
+            carried = plan.get(name, (None, {}))[1]
+            if name not in self.order and not carried:
+                self.order[name] = list(rows)
+            record = self._dominators(rows)
+            for key in self.order.get(name, ()):
+                if key not in rows:
+                    skipped_here += 1
+                    record[key] = carried.get(key)
+            self.records.setdefault(name, {})[header] = record
+            self.solved += len(rows)
+        self.skipped += skipped_here
+        return skipped_here
 
 
 def run_optimization(
@@ -504,6 +757,11 @@ def run_optimization(
         raise ValueError("Required wells are missing from this pad's model inputs")
 
     fixed_curve = plant.coupling == "fixed_curve"
+    try:
+        alloc_budget_s = float(os.getenv("WOFFL_RUN_ALLOC_BUDGET_S", _ALLOC_RUN_BUDGET_S))
+    except ValueError:
+        alloc_budget_s = _ALLOC_RUN_BUDGET_S
+    alloc_clock = {"spent": 0.0}
     # Per-run compact results only, bounded by the number of sweep points.
     # Repeated hardware selections share a settle; no full batch grids retained.
     coupled_selections = {}
@@ -526,9 +784,14 @@ def run_optimization(
         pinned_setpoint = coarse[0]
         n_steps, refine_rounds = 1, 0
 
-    def _trial(x: float) -> Optional[dict]:
-        """Solve the knapsack at one decision point; None when the plant has
-        no budget there."""
+    # Sweep pruning: None when disabled (WOFFL_SWEEP_PRUNE=0) or pinned, which
+    # leaves every trial on the full grid exactly as before.
+    pruner = _SweepPruner(water_key) if _sweep_prune_enabled() and len(coarse) > 1 else None
+
+    def _trial_physics(x: float, prune: bool = True):
+        """One decision point's header, budget and solved batch (``None``
+        when the plant has no budget there). With a pruner, bracketed wells
+        solve only candidates not beaten on both sides (``prune``)."""
         if fixed_curve:
             header = plant.header_at_flow(x, n_pumps)
             cap = x
@@ -545,14 +808,29 @@ def run_optimization(
         for wc in trial_configs:
             wc.ppf_surf_well = header
         pf = PowerFluidConstraint(total_rate=cap, pressure=header, rho_pf=power_fluid_density(plant))
+        plan = pruner.plan([wc.well_name for wc in trial_configs], header) if pruner is not None and prune else {}
         opt = NetworkOptimizer(
             trial_configs,
             pf,
             list(nozzles),
             list(throats),
             marginal_wc if marginal_wc is not None else 1.0,
+            **({"well_grids": {w: (list(nozzles), list(throats), keep) for w, (keep, _s) in plan.items()}}
+               if plan else {}),
         )
         opt.run_all_batch_simulations(max_workers=worker_ceiling())
+        skipped = pruner.observe(header, opt.batch_results, plan) if pruner is not None else 0
+        if not skipped:
+            opt.well_grids = {}  # complete frames (a runner may ignore subsets)
+        return header, cap, opt, skipped
+
+    def _trial(x: float, prune: bool = True) -> Optional[dict]:
+        """Solve the knapsack at one decision point; None when the plant has
+        no budget there."""
+        physics = _trial_physics(x, prune)
+        return None if physics is None else _trial_allocate(x, *physics)
+
+    def _trial_allocate(x: float, header: float, cap: float, opt, skipped: int) -> dict:
         diagnostic_lam, slack = derive_lambda(opt.batch_results, cap, water_key)
         lam = lam_fixed
         opt.required_wells = required
@@ -560,7 +838,16 @@ def run_optimization(
         # the legacy attribute now reports the EQUIVALENT gate 1/(1+λ)
         # (what the label shows); nothing gates on it any more
         opt.marginal_watercut = 1.0 / (1.0 + lam) if lam > 0 else 1.0
-        results = optimize(opt, method=method, water_key=water_key)
+        # One allocation budget for the whole sweep: each trial gets at most
+        # the per-call limit, and never less than a short floor, so one hard
+        # header reports a gap instead of starving (or stalling) the rest.
+        spent = alloc_clock["spent"]
+        limit = max(_ALLOC_TRIAL_FLOOR_S, min(_ALLOC_TRIAL_MAX_S, alloc_budget_s - spent))
+        t_alloc = monotonic()
+        try:
+            results = optimize(opt, method=method, water_key=water_key, time_limit_s=limit)
+        finally:
+            alloc_clock["spent"] += monotonic() - t_alloc
         if required - {r.well_name for r in results}:
             raise AllocationError("Required wells were not allocated", status="infeasible")
         if not results and opt.batch_results and not any(
@@ -608,6 +895,8 @@ def run_optimization(
             "coupling_error": coupled.get("coupling_error") or (None if check["hydraulically_feasible"] else "Selected machine-water draw cannot hold the requested header inside plant limits."),
             "history": coupled.get("history", []),
             "plant_check": check,
+            # candidates this trial did not solve (pruned); 0 = full grid
+            "skipped_solves": skipped,
         }
 
     def _score(rec: dict) -> tuple:
@@ -618,8 +907,14 @@ def run_optimization(
     trials: list[dict] = []
     retained = None
     failed_trials = []
+    # Every decision point tried, solved or not: refinement bisects toward
+    # the nearest one, so an optimum beside a failed or zero-budget point
+    # (often a capacity boundary) is still approached, and a point is never
+    # solved twice (a degenerate lo == hi window re-ran one header 13 times).
+    tried: set[float] = set()
 
     def safe_trial(x):
+        tried.add(x)
         try:
             return _trial(x)
         except AllocationError as exc:
@@ -650,29 +945,67 @@ def run_optimization(
             progress(step, total_steps, header,
                      rec["total_pf"] if rec else 0.0, rec["total_oil"] if rec else 0.0)
 
-    for x in coarse:
-        rec = safe_trial(x)
-        step += 1
-        if rec is not None:
-            remember(rec)
-        report_progress(x, rec)
+    if pruner is None:
+        for x in coarse:
+            step += 1
+            if x in tried:
+                continue
+            rec = safe_trial(x)
+            if rec is not None:
+                remember(rec)
+            report_progress(x, rec)
+    else:
+        # Physics in bracketing order (ends and middle on the full grid);
+        # allocation, settling, budget and progress still in coarse order,
+        # each point as soon as every earlier point has its physics.
+        physics: dict = {}
+        next_i = 0
+        for i, full in _prune_order(len(coarse)):
+            if coarse[i] not in physics:
+                physics[coarse[i]] = _trial_physics(coarse[i], prune=not full)
+            while next_i < len(coarse) and coarse[next_i] in physics:
+                x = coarse[next_i]
+                next_i += 1
+                step += 1
+                if x in tried:
+                    continue
+                tried.add(x)
+                done = physics[x]
+                try:
+                    rec = None if done is None else _trial_allocate(x, *done)
+                except AllocationError as exc:
+                    rec = None
+                    failed_trials.append({"trial": x, "status": exc.status, "error": str(exc),
+                                          "details": exc.details})
+                physics[x] = None  # release the batch; the key marks it solved
+                if rec is not None:
+                    remember(rec)
+                report_progress(x, rec)
 
     if not trials:
-        raise RuntimeError(plant.infeasible_sweep_msg + (" " + failed_trials[-1]["error"] if failed_trials else ""))
+        if failed_trials:
+            # Every point failed ALLOCATION (e.g. required wells cannot all
+            # be served): say that, not the plant headline about amp limits.
+            statuses = ", ".join(sorted({str(f["status"]) for f in failed_trials}))
+            raise RuntimeError(f"No header in the sweep has a valid allocation ({statuses}). "
+                               + failed_trials[-1]["error"])
+        raise RuntimeError(plant.infeasible_sweep_msg)
 
-    # Refine around the best trial: halve the bracket on each side.
+    # Refine around the best trial: halve the bracket toward the nearest
+    # tried point on each side.
     for _ in range(max(0, int(refine_rounds))):
         trials.sort(key=lambda r: r["x"])
-        best_i = max(range(len(trials)), key=lambda i: _score(trials[i]))
-        xs = [r["x"] for r in trials]
-        left = xs[best_i - 1] if best_i > 0 else None
-        right = xs[best_i + 1] if best_i + 1 < len(xs) else None
+        best_rec = max(trials, key=_score)
+        xs = sorted(tried)
+        bi = xs.index(best_rec["x"])
+        left = xs[bi - 1] if bi > 0 else None
+        right = xs[bi + 1] if bi + 1 < len(xs) else None
         for neighbour in (left, right):
             step += 1
-            if neighbour is None:
-                report_progress(xs[best_i], trials[best_i])
+            mid = None if neighbour is None else 0.5 * (best_rec["x"] + neighbour)
+            if mid is None or mid in tried:
+                report_progress(best_rec["x"], best_rec)
                 continue
-            mid = 0.5 * (xs[best_i] + neighbour)
             rec = safe_trial(mid)
             if rec is not None:
                 remember(rec)
@@ -680,6 +1013,51 @@ def run_optimization(
 
     trials.sort(key=lambda r: r["x"])
     best = max(trials, key=_score)
+    def _complete_trial(rec):
+        """Solve only the candidates ``rec``'s batch skipped, at its header,
+        merge them in grid order and re-allocate on the complete grid."""
+        opt = rec["opt"]
+        missing = {}
+        for wc in opt.wells:
+            rows = pruner._rows(getattr(opt.batch_results.get(wc.well_name), "df", None)) or {}
+            keys = [k for k in pruner.order.get(wc.well_name, ()) if k not in rows]
+            if keys:
+                missing[wc.well_name] = keys
+        if missing:
+            extra = NetworkOptimizer([wc for wc in opt.wells if wc.well_name in missing], opt.power_fluid,
+                                     list(nozzles), list(throats), opt.marginal_watercut,
+                                     well_grids={w: (list(nozzles), list(throats), k) for w, k in missing.items()})
+            extra.run_all_batch_simulations(max_workers=worker_ceiling())
+            for w in missing:
+                _merge_batch(opt.batch_results[w], extra.batch_results[w], pruner.order[w])
+            pruner.solved += sum(len(extra.batch_results[w].df) for w in missing)
+        # the completed optimizer is a full-grid one: any later re-run (the
+        # fixed-curve refresh at the settled header) must solve the full grid
+        opt.well_grids = {}
+        return _trial_allocate(rec["x"], rec["search_header_psi"], rec["cap"], opt, 0)
+
+    winner_reruns = 0
+    while pruner is not None and (best.get("skipped_solves") or best.get("opt") is None):
+        # Every reported number comes from the full grid: a pruned leader's
+        # skipped candidates are solved at its header and the trial is
+        # re-allocated on the complete grid (its objective can only rise),
+        # then the sweep is re-ranked. A leader whose batch was released (it
+        # lost to a pruned trial that then fell back) is recomputed on the
+        # full grid. Each point reruns once.
+        trials.remove(best)
+        winner_reruns += 1
+        try:
+            full = _complete_trial(best) if best.get("opt") is not None else _trial(best["x"], prune=False)
+        except AllocationError as exc:
+            full = None
+            failed_trials.append({"trial": best["x"], "status": exc.status, "error": str(exc),
+                                  "details": exc.details})
+        if full is not None:
+            trials.append(full)
+        if not trials:
+            raise RuntimeError(plant.infeasible_sweep_msg)
+        trials.sort(key=lambda r: r["x"])
+        best = max(trials, key=_score)
     if not best["converged"]:
         raise RuntimeError("No selected pump plan closes the booster-station pressure balance. "
                            + (best["coupling_error"] or "Review the station curve and well models."))
@@ -720,6 +1098,18 @@ def run_optimization(
         "diagnostic_pf_slack": best["diagnostic_pf_slack"],
         "allocation_status": best["allocation_status"],
         "failed_trials": failed_trials,
+        # A solver error or timeout (not an infeasible/unsupported header)
+        # leaves that header unsearched: the winner is the best of the rest.
+        "sweep_complete": not any(f["status"] not in ("infeasible", "unsupported") for f in failed_trials),
+        # Bracket-dominance pruning of the sweep's candidate solves; the
+        # reported winner always comes from a full-grid batch.
+        "sweep_pruning": {
+            "enabled": pruner is not None,
+            "margin": pruner.margin if pruner is not None else None,
+            "skipped_solves": pruner.skipped if pruner is not None else 0,
+            "total_solves": pruner.solved if pruner is not None else None,
+            "winner_reruns": winner_reruns,
+        },
         "objective_bopd_equiv": best["objective"],
         "pf_slack": best["pf_slack"],
         "water_key": water_key,
@@ -753,7 +1143,13 @@ def run_optimization(
 
     # Cross-check: the two solvers must agree on the priced objective at the
     # winning trial (CP-SAT quantizes to 0.01, so allow that slack).
-    if method == "mckp":
+    refined = isinstance(best["allocation_status"], dict) and best["allocation_status"].get("refinement_reason")
+    if method == "mckp" and refined:
+        # Fractional water made the CP-SAT request solve by original-unit
+        # MILP refinement already; re-solving the same MILP is not a check.
+        meta["solver_agreement"] = {"skipped": "The CP-SAT request was solved by MILP refinement ("
+                                    + str(refined) + "); no independent cross-check was run."}
+    elif method == "mckp":
         try:
             alt = optimize(best["opt"], method="milp", water_key=water_key)
             alt_obj = sum(r.predicted_oil_rate for r in alt) - lam * sum(
@@ -1005,6 +1401,12 @@ def evaluate_fixed_scenario(
     lo_p, hi_p = plant.clamp_window(n_pumps)
     history: list[dict] = []
 
+    # Rows read per well: the chosen pump, then its fallback. A well whose
+    # reads all fail is re-run on the union grid for the best-feasible
+    # fallback, exactly the batch it always had.
+    reads = {wc.well_name: [choices.get(wc.well_name), (fallback_choices or {}).get(wc.well_name)]
+             for wc in well_configs}
+
     def _evaluate(trial: float):
         ppf_c = max(lo_p, min(hi_p, trial))
         for wc in well_configs:
@@ -1012,10 +1414,7 @@ def evaluate_fixed_scenario(
         pf = PowerFluidConstraint(
             total_rate=cap, pressure=ppf_c, rho_pf=power_fluid_density(plant)
         )
-        opt = NetworkOptimizer(
-            well_configs, pf, nozzles, throats, marginal_watercut=_SCENARIO_MARGINAL_WC
-        )
-        opt.run_all_batch_simulations(max_workers=worker_ceiling())
+        opt = _run_reads(well_configs, pf, nozzles, throats, reads)
         rows, tot_pf, tot_oil = _score_fixed_choices(
             opt, well_configs, choices, fallback_choices, test_rates
         )
@@ -1188,21 +1587,19 @@ def evaluate_existing_scenario(
         plant, total_pf_base, plant.warm_start_psi(n_pumps), n_pumps
     )
 
-    def _run(ppf):
+    def _run(ppf, reads, complete):
+        # Only the rows this pass reads; a well whose scenario pump fails is
+        # re-run on the union grid for the best-feasible estimate.
         ppf_c = max(lo_p, min(hi_p, ppf))
         for wc in well_configs:
             wc.ppf_surf_well = ppf_c
         pf = PowerFluidConstraint(
             total_rate=cap, pressure=ppf_c, rho_pf=power_fluid_density(plant)
         )
-        opt = NetworkOptimizer(
-            well_configs, pf, nozzles, throats, marginal_watercut=_SCENARIO_MARGINAL_WC
-        )
-        opt.run_all_batch_simulations(max_workers=worker_ceiling())
-        return opt
+        return _run_reads(well_configs, pf, nozzles, throats, reads, complete=complete)
 
     # Reference: model at the CURRENT pump @ the current (baseline) header.
-    opt_base = _run(header_base)
+    opt_base = _run(header_base, {w: [current_choices.get(w)] for w in names}, False)
     mc = {}
     for w in names:
         cc = current_choices.get(w)
@@ -1211,7 +1608,7 @@ def evaluate_existing_scenario(
 
     def _evaluate(trial: float):
         ppf_c = max(lo_p, min(hi_p, trial))
-        o = _run(ppf_c)
+        o = _run(ppf_c, {w: [scenario_choices.get(w)] for w in names}, True)
         rows, tot_pf = _score_existing_choices(
             o, names, scenario_choices, mc, cur_oil, cur_pf
         )
@@ -1295,6 +1692,11 @@ def match_check(
     nozzles = sorted({c[0] for c in pumps}) or ["12"]
     throats = sorted({c[1] for c in pumps}) or ["B"]
     total_pf = sum(cur_pf.values())
+    if getattr(plant, "water_key", "lift_wat") == "totl_wat":
+        # M/E machines also carry the produced water: the fallback header
+        # must see formation water too, or it sits too high.
+        total_pf += sum(cur_oil[wc.well_name] * wc.form_wc / (1.0 - wc.form_wc)
+                        for wc in well_configs if 0.0 <= (getattr(wc, "form_wc", None) or 0.0) < 1.0)
     header = plant.match_check_header(total_pf, n_pumps)
     for wc in well_configs:
         # The match check asks "does the model reproduce the well's TEST?",
@@ -1360,39 +1762,61 @@ def match_check(
 # ---------------------------------------------------------------------------
 
 
-def _model_at_forced_header(well_configs, header_psi: float, current_choices: dict):
+def _model_at_forced_header(well_configs, header_psi, current_choices: dict):
     """Model every well at its CURRENT pump with the delivered header FORCED.
 
     Same plumbing as ``match_check`` but the header is the caller's number,
     not the plant's derivation — this exists so the PF what-if can ask "what
-    do these wells do at pressure X" directly. Returns
+    do these wells do at pressure X" directly. ``header_psi`` is one header
+    for every well, or ``{well: psi}`` for per-well pressures (a missing
+    well is not modeled). Returns
     ``{well: (oil_bopd, pf_bpd, psu_psig, sonic) | None}`` (None = pump
     missing or unsolvable at this header; psu/sonic are None when the batch
     row lacks them). ``sonic`` True means the solver returned the entry-choke
     floor: throat entry choked by the gas-liquid mixture, so psu and oil are pinned there
     and only PF responds to the delivered pressure.
+
+    Each well runs ONLY its own held pump (per-well grids, one pooled
+    batch): the shared union grid solved every well on every other well's
+    size - 8 wells cost 256 solves per ladder level for 8 answers.
     """
     from woffl.assembly.network_optimizer import NetworkOptimizer, PowerFluidConstraint
     from woffl.assembly.parallelism import worker_ceiling
 
-    pumps = [c for c in current_choices.values() if c]
-    nozzles = sorted({c[0] for c in pumps}) or ["12"]
-    throats = sorted({c[1] for c in pumps}) or ["B"]
+    per_well = header_psi if isinstance(header_psi, dict) else None
+    held = {wc.well_name: tuple(current_choices[wc.well_name]) for wc in well_configs
+            if current_choices.get(wc.well_name)
+            and (per_well is None or per_well.get(wc.well_name) is not None)}
     for wc in well_configs:
-        wc.ppf_surf_well = header_psi
-    pf = PowerFluidConstraint(
-        total_rate=_EVAL_CAP_FALLBACK_BPD, pressure=header_psi, rho_pf=None
-    )
-    opt = NetworkOptimizer(
-        well_configs, pf, nozzles, throats, marginal_watercut=_SCENARIO_MARGINAL_WC
-    )
-    opt.run_all_batch_simulations(max_workers=worker_ceiling())
+        if per_well is None:
+            wc.ppf_surf_well = header_psi
+        elif per_well.get(wc.well_name) is not None:
+            wc.ppf_surf_well = float(per_well[wc.well_name])
+    runnable = [wc for wc in well_configs if wc.well_name in held]
+    opt = None
+    if runnable:
+        nominal = float(header_psi) if per_well is None else float(
+            sorted(per_well[w] for w in held)[len(held) // 2])
+        # The constraint only validates a nominal pressure; each well solves
+        # at its own ppf_surf_well. Clamp so an off-window anchor (a collapsed
+        # settle) can never abort the whole plan.
+        pf = PowerFluidConstraint(
+            total_rate=_EVAL_CAP_FALLBACK_BPD, pressure=min(5000.0, max(1000.0, nominal)), rho_pf=None
+        )
+        opt = NetworkOptimizer(
+            runnable, pf,
+            sorted({c[0] for c in held.values()}), sorted({c[1] for c in held.values()}),
+            marginal_watercut=_SCENARIO_MARGINAL_WC,
+            # the held pump's one row only (not also its same-size twin)
+            well_grids=_read_grids(runnable, {w: [c] for w, c in held.items()}),
+        )
+        opt.run_all_batch_simulations(max_workers=worker_ceiling())
 
     out = {}
     for wc in well_configs:
         w = wc.well_name
-        cc = current_choices.get(w)
-        perf = _pump_perf(opt, w, cc) if cc else None
+        cc = held.get(w)
+        perf = _pump_perf(opt, w, cc) if cc and opt is not None else None
         out[w] = (
             (
                 float(perf["oil_rate"]),
@@ -1618,11 +2042,13 @@ def _trim_to_budget(wells: list[dict], budget: float) -> tuple[float, float, Opt
     matrix = csc_array((vv, (rr, cc)), shape=(len(wells)+1, n))
     constraints = LinearConstraint(matrix, np.r_[np.ones(len(wells)), -np.inf],
                                    np.r_[np.ones(len(wells)), budget])
+    # No "threads" option: HiGHS sizes one process-wide worker pool, and a
+    # later request for a different size fails every MILP in the process
+    # ("HiGHS Status 0: Not Set") once any default-thread solve has run.
     with compute_runtime.cpu_slot(), compute_runtime.measure("compute.allocation"), warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="Unrecognized options detected:.*threads.*", category=RuntimeWarning)
         solved = milp(c=-oil, integrality=np.ones(n), bounds=Bounds(np.zeros(n), np.ones(n)),
                       constraints=constraints,
-                      options={"mip_rel_gap": 0., "threads": 1, "time_limit": 5.})
+                      options={"mip_rel_gap": 0., "time_limit": 5.})
     if not solved.success:
         raise AllocationError("Choke allocation did not prove an optimal sampled plan: " + str(solved.message),
                               status="infeasible" if solved.status == 2 else "unknown")
@@ -1679,13 +2105,11 @@ def _vogel_ipr_curve(wc) -> Optional[list[list[float]]]:
         return None
     pres = inflow.pres
     n = 25
-    return [
-        [
-            round(inflow.oil_flow(pres * (n - 1 - i) / (n - 1), method="vogel"), 1),
-            round(pres * (n - 1 - i) / (n - 1), 1),
-        ]
-        for i in range(n)
-    ]
+    # min(): pres * 24 / 24 can round a hair above pres for a non-integer
+    # reservoir pressure, and InFlow raises above pres - that crashed about
+    # 6% of choke runs at the first curve point.
+    pwfs = [min(pres, pres * (n - 1 - i) / (n - 1)) for i in range(n)]
+    return [[round(inflow.oil_flow(p, method="vogel"), 1), round(p, 1)] for p in pwfs]
 
 
 # Evidence gate: a model entry-choke floor is only "contradicted" when it sits
@@ -1706,6 +2130,7 @@ def _apply_suction_evidence(
     names: list[str],
     evidence: dict[str, dict],
     configs_by_name: dict,
+    decided: Optional[dict[str, dict]] = None,
 ) -> dict[str, dict]:
     """Overwrite the priced grid's suction response with field evidence on
     wells where measurement contradicts the model's entry-choke floor.
@@ -1734,11 +2159,16 @@ def _apply_suction_evidence(
     trigger) or "response", and ``violation`` is measured against the
     ORIGINAL model floor at k* (the grid's psu there is psu_ref after the
     overwrite).
+
+    ``decided`` (the bookkeeping a previous call returned) applies that
+    call's verdicts to another grid - the "today" anchor - without gating
+    again: exactly the decided wells are corrected, so one well's today
+    point and its ladder never disagree about which suction model holds.
     """
     corrected: dict[str, dict] = {}
     for w in names:
         ev = evidence.get(w)
-        if not ev:
+        if not ev or (decided is not None and w not in decided):
             continue
         k_star = None
         for k in range(len(levels) - 1, -1, -1):
@@ -1750,7 +2180,7 @@ def _apply_suction_evidence(
         v = grid[k_star][w]
         psu_model = float(v[2]) if len(v) > 2 and v[2] is not None else None
         sonic = v[3] if len(v) > 3 else None
-        if sonic is not True:
+        if sonic is not True and decided is None:
             continue  # model suction already responsive
         floor = ev.get("floor")
         # A floor measured under a PREVIOUS pump cannot falsify this pump's
@@ -1769,7 +2199,7 @@ def _apply_suction_evidence(
             and beta is not None
             and float(beta) >= _EVIDENCE_BETA_MIN
         )
-        if not (floor_violated or response_shown):
+        if not (floor_violated or response_shown) and decided is None:
             continue  # evidence CONFIRMS the model (floor and response)
         psu_ref = ev.get("psu_ref")
         ppf_ref = ev.get("ppf_ref")
@@ -1811,7 +2241,7 @@ def _apply_suction_evidence(
             ),
             "beta": beta,
             "beta_source": ev.get("beta_source"),
-            "gate": "floor" if floor_violated else "response",
+            "gate": decided[w]["gate"] if decided is not None else "floor" if floor_violated else "response",
         }
     return corrected
 
@@ -1935,6 +2365,12 @@ def run_choke_optimization(
                     if v is not None else None) for w, v in points.items()}
 
     names = [wc.well_name for wc in well_configs]
+    # Each well's measured PF pressure, captured before the ladder overwrites
+    # ppf_surf_well: the fallback "today" anchor when the plant model cannot
+    # carry today's measured draw (a reduced bank during the outage).
+    measured_ppf = {wc.well_name: float(wc.ppf_surf_well) for wc in well_configs
+                    if getattr(wc, "ppf_surf_well", None) is not None
+                    and isfinite(float(wc.ppf_surf_well)) and 1000.0 <= float(wc.ppf_surf_well) <= 5000.0}
     # IPR context for the landing table: reservoir pressure per well
     res_pres = {
         wc.well_name: getattr(wc, "res_pres", None) for wc in well_configs
@@ -1978,18 +2414,54 @@ def run_choke_optimization(
     # -- today anchor: the header the plant settles to for the measured PF
     #    draw; per-well model-at-today is the bias reference for projections
     grid = [machine_grid(g) for g in grid]
+    # A well the model can lift somewhere on the ladder but not at or below a
+    # candidate header cannot run there: it is shut in, never credited with
+    # its measured rates (only a never-solvable well is held at its test).
+    modelable = {w: any(g.get(w) is not None for g in grid) for w in names}
     pf_today = sum(float((test_rates.get(w) or (0, 0))[1] or 0.0)
                    + float((test_rates.get(w) or (0, 0))[0] or 0.0) * formation_per_oil[w]
                    for w in names)
-    header_today, _ = settled_header(
+    header_today, today_over = settled_header(
         plant, pf_today, plant.warm_start_psi(n_pumps), n_pumps
     )
-    today = _model_at_forced_header(well_configs, header_today, current_choices)
-    if evidence:
-        _apply_suction_evidence(
-            [today], [header_today], names, evidence,
-            {wc.well_name: wc for wc in well_configs},
-        )
+    today_basis = "settled_header"
+    if today_over and measured_ppf:
+        # The model cannot carry today's measured draw at this pump count, so
+        # the "settle" collapsed to suction: every projection would be test
+        # oil scaled by a model point far from where the tests were taken.
+        # Anchor today on each well's measured PF pressure instead.
+        today_at = {w: measured_ppf.get(w) for w in names}
+        today = _model_at_forced_header(well_configs, today_at, current_choices)
+        weight = {w: float((test_rates.get(w) or (0, 0))[1] or 0.0) for w in measured_ppf}
+        total_w = sum(weight.values())
+        header_today = (sum(measured_ppf[w] * weight[w] for w in measured_ppf) / total_w if total_w > 0
+                        else sum(measured_ppf.values()) / len(measured_ppf))
+        today_basis = "measured_well_pf"
+        if evidence:
+            configs_by_name = {wc.well_name: wc for wc in well_configs}
+            for w in measured_ppf:
+                # Each well's correction at its own measured pressure.
+                _apply_suction_evidence(
+                    [today], [measured_ppf[w]], [w], evidence, configs_by_name, decided=corrected,
+                )
+    else:
+        if today_over:
+            # No measured pressures: the tests were taken on the plant as
+            # installed, so settle today's draw on its default bank; if the
+            # model still cannot carry it, hold the nearest searched header
+            # rather than the suction collapse.
+            header_today, still_over = settled_header(plant, pf_today, plant.warm_start_psi(None), None)
+            today_basis = "settled_header_installed_bank"
+            if still_over:
+                header_today = min(p_hi, max(p_lo, header_today))
+                today_basis = "search_window_limit"
+        today = _model_at_forced_header(well_configs, header_today, current_choices)
+        if evidence:
+            # The ladder's verdicts, not a second gate on the lone today point.
+            _apply_suction_evidence(
+                [today], [header_today], names, evidence,
+                {wc.well_name: wc for wc in well_configs}, decided=corrected,
+            )
     today = machine_grid(today)
     if progress:
         progress(n_levels + 1, n_levels + 1, header_today, pf_today, 0.0)
@@ -2021,6 +2493,11 @@ def run_choke_optimization(
                 # sonic knee); row deltas are vs this raw point so that
                 # "free oil" chokes read as gains, not zeros.
                 full_raw = pts[-1]
+                basis = "model"
+            elif modelable[w]:
+                # Solves only above this header: it cannot lift here.
+                opts = [(None, 0.0, 0.0, None)]
+                full_raw = opts[0]
                 basis = "model"
             elif oil_t > 0.0 or pf_t > 0.0:
                 # unmodelable: hold measured rates, or shut in
@@ -2190,7 +2667,6 @@ def run_choke_optimization(
     # so the anchor is unique), then re-runs the same header sweep and
     # discrete allocation against the degraded frontier. Pure allocation over
     # the already-priced grid - no extra solves.
-    modelable = {w: any(g.get(w) is not None for g in grid) for w in names}
     ladder = []
     for j, P in enumerate(levels):
         if P >= best["P"] - 1e-6:
@@ -2270,6 +2746,7 @@ def run_choke_optimization(
         "allocation_status": best["wells"][0].get("allocation_status") if best["wells"] else None,
         "failed_trials": failed_trials,
         "header_today_psi": header_today,
+        "today_basis": today_basis,
         "projected_d_oil_bopd": projected_d,
         "suction_psi": plant.suction_psi(),
         "min_total_flow": plant.flow_window(n_pumps)[0],

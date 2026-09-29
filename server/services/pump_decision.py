@@ -136,7 +136,11 @@ def _run(job: dict[str, Any], req: schemas.PumpDecisionRequest) -> dict[str, Any
     configs = optimizer_runs._build_configs([pad], set(req.offline) - {target}, req.future, notes, prov)
     by_name = {c.well_name: c for c in configs}
     if target is not None and target not in by_name:
-        raise ValueError(f"{target} has no usable well model on {pad}-Pad; save its fit (or its donor's) first")
+        # Name the actual cause (water cut, geometry, unknown donor...) when
+        # hydration recorded one; "save its fit" is only the fallback advice.
+        why = [n for n in notes if n.split(":", 1)[0] in {target, *(f.match for f in req.future if f.name == target)}]
+        raise ValueError(f"{target} has no usable well model on {pad}-Pad: " + "; ".join(why) if why else
+                         f"{target} has no usable well model on {pad}-Pad; save its fit (or its donor's) first")
 
     n_pumps = req.n_pumps if req.n_pumps is not None else optimizer_runs._PAD_DEFAULTS[pad]["n_pumps"]
     lo, hi = plant.clamp_window(n_pumps)

@@ -253,7 +253,7 @@ def _run_match_health_job(job: dict[str, Any], pad: str, offline: Optional[set[s
     prov: dict[str, dict[str, Any]] = {}
     configs = optimizer_runs._build_configs([pad], set(offline or ()), [], notes, prov)
     if len(configs) == 0:
-        raise ValueError(f"no active wells with usable saved fits on {pad}-Pad")
+        raise optimizer_runs._failure(f"no active wells with usable saved fits on {pad}-Pad", notes)
 
     names = [c.well_name for c in configs]
     jobs.set_progress(job, "reading current pumps + tests...")

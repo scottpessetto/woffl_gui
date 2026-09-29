@@ -89,14 +89,18 @@ interface Duty {
   ampLimit: string;
 }
 
+// The E-41 surface-kit rate test's current-limit duty: 2,704 psi suction to
+// the 3,400 psi header (696 psid), with that motor's calibrated amps and its
+// 889 A drive limit (server/schemas.py EPadBoosterRequest). Condition stays
+// 1.00: the screen compares builds as new.
 const SEED: Duty = {
-  dpPsid: 600,
-  suctionPsi: 2800,
+  dpPsid: 696,
+  suctionPsi: 2704,
   sg: 1.02,
   condition: 1.0,
   hzMax: 60,
-  ampsPerBhp: 0.1435,
-  ampLimit: "",
+  ampsPerBhp: 1.4281,
+  ampLimit: "889",
 };
 
 interface NumFieldSpec {
@@ -132,7 +136,7 @@ const FIELDS: NumFieldSpec[] = [
     min: 0.6,
     max: 1.0,
     step: 0.01,
-    help: "Head-only wear derate, the workbooks' Condition cell. 1.00 = as-new. Shaft power stays on the as-new curve, so efficiency falls with it.",
+    help: "Head-only wear derate, the workbooks' Condition cell. 1.00 = as-new. Shaft power stays on the as-new curve, so efficiency falls with it. The installed SM25000 measured about 0.77 at its current limit in the E-41 rate test; enter that to see the unit in the ground.",
   },
   { key: "hzMax", label: "Max speed (Hz)", min: 30, max: 60, step: 1 },
   {
@@ -141,7 +145,7 @@ const FIELDS: NumFieldSpec[] = [
     min: 0.01,
     max: 20,
     step: 0.001,
-    help: "amps = k x shaft BHP. The 0.1435 default is the I-Pad SN35000 live calibration on a 4160 V motor - a transferred estimate, not E-Pad data. Scale by 4160/V for another voltage.",
+    help: "amps = k x shaft BHP. 1.4281 is the E-41 surface-kit motor, calibrated to 889 A at 29,491 BWPD and 53.1 Hz in the rate test. A build on a different motor needs its own value.",
   },
 ];
 
@@ -662,7 +666,7 @@ export function EPadBoosterPanel() {
           ))}
           <label
             className="block"
-            title="Motor current cap. Leave blank to report amps without enforcing anything - no E-Pad motor nameplate came with the vendor curve sheets, so nothing is assumed."
+            title="Motor current cap. 889 A is the E-41 drive's I-limit reached in the rate test. Leave blank to report amps without enforcing a cap."
           >
             <span className="text-xs font-medium text-slate-500">Amp limit (A)</span>
             <input

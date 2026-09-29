@@ -10,10 +10,12 @@ what these tests defend:
   Every inverse therefore scans then bisects the falling branch. A monotone
   bisection from zero flow - the shape the I/M inverses assume - reports 0.0
   here, so ``budget_at_pressure`` has its own test.
-* Its configuration is not measured. No E-Pad SCADA point, no motor nameplate
-  and no piping rating came with the vendor curve sheets, so the build,
-  suction, speed cap and header cap are all per-run knobs. The tests pin that
-  they actually move the answer AND that they never mutate the class default.
+* Its configuration is per run: build, suction, speed cap, header cap and
+  amp limit are knobs. The tests pin that they actually move the answer AND
+  that they never mutate the class default.
+* The default plant is calibrated to the E-41 rate test (2026-09-24; see
+  test_e_pad_field_2026_09_24.py). The frontier mechanics below are pinned on
+  the as-new CATALOG plant, whose numbers are the vendor curve's own.
 
 Pure static physics plus a faked NetworkOptimizer - no Databricks anywhere. If
 this path grows a query these tests fail on the .env write-gate leak
@@ -33,11 +35,27 @@ from server.main import app
 from woffl.assembly.network_optimizer import WellConfig
 from woffl.gui.e_pad_plant import INSTALLED_BUILD, PLANT, EPadPlant
 
-# Installed build at its defaults: SM25000 26 stg, SG 1.02, 2,800 psi suction,
-# 60 Hz cap, XRC 8,100-32,400 BPD at 60 Hz.
+# Installed build as new on the catalog: SM25000 26 stg, SG 1.02, the
+# workbook's 2,800 psi suction, 60 Hz cap, no amp cap, XRC 8,100-32,400 BPD.
 _KNEE = 8100.0  # ror_lo at 60 Hz — the frontier peak
 _CEILING = 32400.0  # ror_hi at 60 Hz — the throughput limit
 _SUCTION = 2800.0
+# The field-calibrated default (E-41 rate test): measured suction, and the
+# upper range the unit demonstrably ran at (29,491 BWPD at 53.1 Hz).
+_FIELD_SUCTION = 2704.0
+_FIELD_CEILING = 29491.0 * 60.0 / 53.1
+
+
+def catalog(*args, **kw) -> EPadPlant:
+    """The installed build as new on the catalog curve, workbook suction and
+    no amp cap: the plant these mechanics tests were written against."""
+    kw.setdefault("suction_psi", _SUCTION)
+    kw.setdefault("amps_per_bhp", 0.1435)
+    kw.setdefault("amp_limit", None)
+    return EPadPlant(*args, field_calibrated=False, **kw)
+
+
+CATALOG = catalog()
 
 _TOP_KEYS = {
     "pad",
@@ -72,10 +90,14 @@ def test_plant_identity():
     assert PLANT.coupling == "free_pressure"
     assert PLANT.n_pump_options == []  # single machine
     assert PLANT.build.key == INSTALLED_BUILD
-    assert PLANT.suction_psi() == _SUCTION
+    assert PLANT.suction_psi() == _FIELD_SUCTION
     assert PLANT.specific_gravity() == pytest.approx(1.02)
     assert PLANT.knee_flow() == pytest.approx(_KNEE)
-    assert PLANT.flow_ceiling() == pytest.approx(_CEILING)
+    assert PLANT.flow_ceiling() == pytest.approx(_FIELD_CEILING)
+    assert PLANT.amp_limit == 889.0
+    assert CATALOG.suction_psi() == _SUCTION
+    assert CATALOG.flow_ceiling() == pytest.approx(_CEILING)
+    assert CATALOG.condition == 1.0 and CATALOG.amp_limit is None
 
 
 def test_frontier_is_unimodal_with_the_peak_at_the_range_floor_knee():
@@ -83,19 +105,19 @@ def test_frontier_is_unimodal_with_the_peak_at_the_range_floor_knee():
     # recommended-range FLOOR forces a lower speed and deliverable pressure
     # collapses; above it the drive is pinned at 60 Hz and pressure falls with
     # flow the ordinary way.
-    peak = PLANT.header_at_flow(_KNEE)
+    peak = CATALOG.header_at_flow(_KNEE)
     assert peak == pytest.approx(4562.0, abs=2.0)
     # The rising branch starts above the model's 20 Hz speed floor: below
     # ~2,700 BPD the drive cannot slow far enough to keep the flow in range
     # at all, so the frontier is None there rather than merely low.
-    assert PLANT.header_at_flow(2000.0) is None
-    rising = [PLANT.header_at_flow(q) for q in (3000.0, 4000.0, 6000.0, _KNEE)]
+    assert CATALOG.header_at_flow(2000.0) is None
+    rising = [CATALOG.header_at_flow(q) for q in (3000.0, 4000.0, 6000.0, _KNEE)]
     assert all(a < b for a, b in zip(rising, rising[1:])), rising
     falling = [
-        PLANT.header_at_flow(q) for q in (_KNEE, 16000.0, 24000.0, _CEILING)
+        CATALOG.header_at_flow(q) for q in (_KNEE, 16000.0, 24000.0, _CEILING)
     ]
     assert all(a > b for a, b in zip(falling, falling[1:])), falling
-    assert PLANT.header_at_flow(_CEILING) == pytest.approx(4005.0, abs=2.0)
+    assert CATALOG.header_at_flow(_CEILING) == pytest.approx(4005.0, abs=2.0)
 
 
 def test_budget_at_pressure_survives_the_unimodal_frontier():
@@ -103,21 +125,21 @@ def test_budget_at_pressure_survives_the_unimodal_frontier():
     # flow tests ok(lo) first; on the collapsed low-flow branch that is False
     # for any useful pressure, so the budget would come back 0.0 and the
     # optimizer would report the pad infeasible at every header.
-    assert PLANT.header_at_flow(100.0) is None  # ok(lo) really does fail
+    assert CATALOG.header_at_flow(100.0) is None  # ok(lo) really does fail
     for pressure in (3000.0, 3400.0, 3500.0, 4000.0):
-        assert PLANT.budget_at_pressure(pressure) == pytest.approx(_CEILING, rel=1e-6)
+        assert CATALOG.budget_at_pressure(pressure) == pytest.approx(_CEILING, rel=1e-6)
     # Above the frontier's falling branch the budget starts to bite.
-    assert PLANT.budget_at_pressure(4400.0) == pytest.approx(18861.0, abs=50.0)
+    assert CATALOG.budget_at_pressure(4400.0) == pytest.approx(18861.0, abs=50.0)
     # And past the peak nothing is deliverable at all.
-    assert PLANT.budget_at_pressure(4600.0) == 0.0
+    assert CATALOG.budget_at_pressure(4600.0) == 0.0
 
 
 def test_budget_is_the_flow_where_the_frontier_crosses_the_pressure():
     for pressure in (4100.0, 4300.0, 4500.0):
-        q = PLANT.budget_at_pressure(pressure)
+        q = CATALOG.budget_at_pressure(pressure)
         assert q > 0
-        assert PLANT.header_at_flow(q) == pytest.approx(pressure, rel=1e-4)
-        beyond = PLANT.header_at_flow(q * 1.01)
+        assert CATALOG.header_at_flow(q) == pytest.approx(pressure, rel=1e-4)
+        beyond = CATALOG.header_at_flow(q * 1.01)
         assert beyond is None or beyond < pressure
 
 
@@ -125,32 +147,32 @@ def test_the_header_cap_not_the_pump_limits_the_sweep():
     # Worth stating plainly: at 3,400 psi this booster has pressure to spare
     # (its frontier sits at 4,000+ psi across the whole range), so the sweep
     # ceiling is the OPERATIONAL cap. Raising the cap raises the ceiling.
-    floor, ceiling = PLANT.pressure_window()
-    assert ceiling == pytest.approx(PLANT.max_header_psi)
+    floor, ceiling = CATALOG.pressure_window()
+    assert ceiling == pytest.approx(CATALOG.max_header_psi)
     assert floor == pytest.approx(_SUCTION + 200.0)
-    raised = EPadPlant(max_header_psi=4200.0)
+    raised = catalog(max_header_psi=4200.0)
     assert raised.pressure_window()[1] == pytest.approx(4200.0)
 
 
 def test_flow_window_is_the_knee_to_the_ceiling():
-    lo, hi = PLANT.flow_window()
+    lo, hi = CATALOG.flow_window()
     assert (lo, hi) == pytest.approx((_KNEE, _CEILING))
 
 
 def test_flags_tell_recirc_from_over_capacity():
-    assert PLANT.flags(20000.0) == {
+    assert CATALOG.flags(20000.0) == {
         "in_range": True,
         "recirc": False,
         "over_capacity": False,
     }
     # Too little flow: the drive cannot slow far enough to keep it in range.
-    assert PLANT.flags(500.0) == {
+    assert CATALOG.flags(500.0) == {
         "in_range": False,
         "recirc": True,
         "over_capacity": False,
     }
     # Too much: past the range ceiling at max speed.
-    assert PLANT.flags(_CEILING * 1.2) == {
+    assert CATALOG.flags(_CEILING * 1.2) == {
         "in_range": False,
         "recirc": False,
         "over_capacity": True,
@@ -158,29 +180,29 @@ def test_flags_tell_recirc_from_over_capacity():
 
 
 def test_warm_start_and_match_check_cap_at_the_operational_limit():
-    assert PLANT.warm_start_psi() == pytest.approx(3400.0)
+    assert CATALOG.warm_start_psi() == pytest.approx(3400.0)
     # A measured PF anywhere in the operating band puts the raw frontier above
     # 4,000 psi; the match check must cap at the operational limit or every
     # well gets a spurious pass (the P0-7 family, exactly as on I-Pad).
-    assert PLANT.header_at_flow(20000.0) > PLANT.max_header_psi
-    assert PLANT.match_check_header(20000.0) == pytest.approx(PLANT.max_header_psi)
+    assert CATALOG.header_at_flow(20000.0) > CATALOG.max_header_psi
+    assert CATALOG.match_check_header(20000.0) == pytest.approx(CATALOG.max_header_psi)
     # No measured PF at all falls back to the header setpoint.
-    assert PLANT.match_check_header(0.0) == pytest.approx(3400.0)
+    assert CATALOG.match_check_header(0.0) == pytest.approx(3400.0)
     # Below the frontier knee the collapse is real and NOT capped away: a pad
     # running 3,000 BPD of PF really can only hold ~3,040 psi. This is where
     # E-Pad differs from I-Pad, whose frontier only ever falls with flow.
-    assert PLANT.match_check_header(3000.0) == pytest.approx(
-        PLANT.header_at_flow(3000.0)
+    assert CATALOG.match_check_header(3000.0) == pytest.approx(
+        CATALOG.header_at_flow(3000.0)
     )
 
 
 def test_envelope_reports_the_speed_and_amps_behind_each_frontier_point():
-    rows = PLANT.envelope([500.0, 20000.0, _CEILING * 1.2])
+    rows = CATALOG.envelope([500.0, 20000.0, _CEILING * 1.2])
     assert [r["feasible"] for r in rows] == [False, True, False]
     assert rows[0]["recirc"] is True
     assert rows[2]["recirc"] is False
     good = rows[1]
-    assert good["max_discharge_psi"] == pytest.approx(PLANT.header_at_flow(20000.0))
+    assert good["max_discharge_psi"] == pytest.approx(CATALOG.header_at_flow(20000.0))
     assert good["per_pump_bpd"] == pytest.approx(20000.0)
     pump = good["pumps"][0]
     assert pump["hz"] == pytest.approx(60.0)  # 60 Hz above the knee
@@ -204,32 +226,38 @@ def test_every_knob_moves_the_plant_and_none_mutates_the_class():
     assert alt.suction_psi() == 2600.0
     assert alt.hz_max == 55.0
     assert alt.max_header_psi == 3400.0
-    # 950-series range 12,400-49,500 at 60 Hz, scaled to the 55 Hz cap.
+    # 950-series range 12,400-49,500 at 60 Hz, scaled to the 55 Hz cap: the
+    # alternative is never field-calibrated (the test ran on the SM25000).
     assert alt.knee_flow() == pytest.approx(12400.0 * 55.0 / 60.0)
     assert alt.flow_ceiling() == pytest.approx(49500.0 * 55.0 / 60.0)
+    assert alt.condition == 1.0 and alt.field_calibration is None
     # The installed default is untouched by the alternative's construction.
     assert EPadPlant.max_header_psi == 3500.0
     assert PLANT.max_header_psi == 3500.0
     assert PLANT.build.key == INSTALLED_BUILD
-    assert PLANT.flow_ceiling() == pytest.approx(_CEILING)
+    assert PLANT.flow_ceiling() == pytest.approx(_FIELD_CEILING)
+    assert CATALOG.flow_ceiling() == pytest.approx(_CEILING)
 
 
 def test_the_alternative_build_moves_more_water_at_the_header():
-    installed = PLANT.budget_at_pressure(3400.0)
-    alt = EPadPlant("SN35000_18STG").budget_at_pressure(3400.0)
+    installed = CATALOG.budget_at_pressure(3400.0)
+    alt = catalog("SN35000_18STG").budget_at_pressure(3400.0)
     assert alt > installed
     assert alt == pytest.approx(49500.0, rel=1e-6)
+    # On the E-41 motor the alternative is current-limited, still above the
+    # installed unit's tested rate.
+    assert PLANT.budget_at_pressure(3400.0) < EPadPlant("SN35000_18STG").budget_at_pressure(3400.0) < alt
 
 
 def test_a_lower_speed_cap_shrinks_the_budget():
-    assert EPadPlant(hz_max=50.0).budget_at_pressure(3400.0) == pytest.approx(
+    assert catalog(hz_max=50.0).budget_at_pressure(3400.0) == pytest.approx(
         _CEILING * 50.0 / 60.0, rel=1e-6
     )
 
 
 def test_an_amp_cap_shrinks_the_budget():
-    free = PLANT.budget_at_pressure(3400.0)
-    capped = EPadPlant(amp_limit=80.0).budget_at_pressure(3400.0)
+    free = CATALOG.budget_at_pressure(3400.0)
+    capped = catalog(amp_limit=80.0).budget_at_pressure(3400.0)
     assert 0.0 < capped < free
 
 
@@ -244,11 +272,11 @@ def test_unknown_build_raises():
 
 
 def test_curve_report_carries_the_contract_and_is_json_safe():
-    rep = PLANT.curve_report(None)
+    rep = CATALOG.curve_report(None)
     assert set(rep) == _TOP_KEYS
     assert rep["pad"] == "E"
     assert rep["suction_psi"] == _SUCTION
-    assert rep["max_header_psi"] == PLANT.max_header_psi
+    assert rep["max_header_psi"] == CATALOG.max_header_psi
     assert len(rep["pumps"]) == 1  # one machine
     for path, value in leaves(rep):
         assert isinstance(value, (bool, int, float, str, type(None))), path
@@ -256,7 +284,7 @@ def test_curve_report_carries_the_contract_and_is_json_safe():
 
 
 def test_station_family_is_iso_speed_lines_with_the_cap_active():
-    st = PLANT.curve_report()["station"]
+    st = CATALOG.curve_report()["station"]
     assert [c["hz"] for c in st["curves"]] == [45.0, 50.0, 55.0, 60.0]
     active = [c for c in st["curves"] if c["active"]]
     assert len(active) == 1 and active[0]["hz"] == 60.0
@@ -264,27 +292,31 @@ def test_station_family_is_iso_speed_lines_with_the_cap_active():
     assert active[0]["points"][0][1] > _SUCTION
     assert st["aor"] == [_KNEE, _CEILING]
     assert st["min_flow"] == pytest.approx(_KNEE)
-    assert st["header_cap"] == PLANT.max_header_psi
+    assert st["header_cap"] == CATALOG.max_header_psi
 
 
 def test_frontier_points_stop_where_the_range_does():
-    front = PLANT.curve_report()["station"]["frontier"]
+    front = CATALOG.curve_report()["station"]["frontier"]
     assert "Recommended range limit" in front["label"]
     flows = [p[0] for p in front["points"]]
     assert max(flows) <= _CEILING + 1e-6
     # Every reported point is a real frontier value, and the peak is at the
     # knee, not at zero flow.
     for q, psi in front["points"]:
-        assert psi == pytest.approx(PLANT.header_at_flow(q), rel=1e-9)
+        assert psi == pytest.approx(CATALOG.header_at_flow(q), rel=1e-9)
     peak_q = max(front["points"], key=lambda p: p[1])[0]
     assert peak_q == pytest.approx(_KNEE, rel=0.05)
 
 
-def test_nameplate_says_the_model_is_not_scada_validated():
+def test_nameplate_states_what_the_curves_rest_on():
     np_ = PLANT.curve_report()["nameplate"]
-    assert "NOT validated" in np_["validated"]
-    assert "2,800" in np_["validated"]  # the suction assumption, stated
+    # One rate-test point, stated with its numbers and its limits.
+    assert "rate-test point" in np_["validated"]
+    assert "889 A" in np_["validated"] and "29,491 BWPD" in np_["validated"]
+    assert "not measured" in np_["validated"]
     assert "SM25000" in np_["model"] and "26 stg" in np_["model"]
+    as_new = CATALOG.curve_report()["nameplate"]["validated"]
+    assert "Catalog" in as_new and "2,800" in as_new
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +330,7 @@ class _FakeOptimizer:
 
     seen: list = []
 
-    def __init__(self, well_configs, pf, nozzles, throats, marginal_watercut=0.6):
+    def __init__(self, well_configs, pf, nozzles, throats, marginal_watercut=0.6, well_grids=None):
         self.well_configs = well_configs
         self.power_fluid = pf
         self.marginal_watercut = marginal_watercut
@@ -323,7 +355,7 @@ def fake_core(monkeypatch):
 
     ns = SimpleNamespace(Optimizer=Optimizer, oil_at=lambda psi: 100.0)
 
-    def fake_optimize(opt, method="milp", water_key=None):
+    def fake_optimize(opt, method="milp", water_key=None, **kw):
         # One well at half the budget, on the descending/fully deliverable
         # branch. Low-flow pressure infeasibility has a separate regression.
         return [
@@ -371,7 +403,7 @@ def test_run_optimization_sweeps_the_e_pad_pressure_window(fake_core):
         [floor + (ceiling - floor) * i / 5 for i in range(6)]
     )
     assert meta["header_psi"] == pytest.approx(ceiling)
-    assert meta["suction_psi"] == _SUCTION
+    assert meta["suction_psi"] == _FIELD_SUCTION
     assert meta["min_total_flow"] == pytest.approx(_KNEE)
     assert meta["in_range"] is True and meta["over_capacity"] is False
     # Every trial got the plant's budget as its PF cap.
@@ -416,10 +448,10 @@ def test_pad_plant_lookup_knows_e_and_run_lookup_honours_the_knobs():
 def test_run_request_defaults_match_the_plant_defaults():
     req = schemas.OptimizeRunRequest(kind="pad", pad="E")
     assert req.e_pad_build == INSTALLED_BUILD
-    assert req.e_pad_suction_psi == _SUCTION
+    assert req.e_pad_suction_psi == PLANT.suction_psi() == _FIELD_SUCTION
     assert req.e_pad_hz_max == 60.0
     assert req.e_pad_max_header_psi == EPadPlant.max_header_psi
-    assert req.e_pad_amp_limit_a is None
+    assert req.e_pad_amp_limit_a == PLANT.amp_limit == 889.0
 
 
 # ---------------------------------------------------------------------------
@@ -437,7 +469,7 @@ def test_pump_curve_endpoint_serves_e_pad(client):
     assert r.status_code == 200
     body = schemas.PumpCurveResponse.model_validate(r.json())
     assert body.pad == "E"
-    assert body.suction_psi == _SUCTION
+    assert body.suction_psi == _FIELD_SUCTION
     assert body.n_pump_options == []  # single machine
     assert len(body.pumps) == 1
 

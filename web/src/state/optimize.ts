@@ -11,6 +11,10 @@
 
 import { create } from "zustand";
 
+import type { RunForm } from "./runForm";
+
+export { DEFAULT_RUN_FORM, formFor, type RunForm } from "./runForm";
+
 const STORAGE_KEY = "woffl.optimize";
 
 export interface FutureWell {
@@ -38,6 +42,8 @@ interface Persisted {
    * "inputs changed" across tab switches and reloads. Absent in older
    * saved states, which restore as {}. */
   lastJobKey: Record<string, string | null>;
+  /** Run-tab key -> the engineer's form edits (merged over the defaults). */
+  forms: Record<string, Partial<RunForm>>;
 }
 
 function restore(): Persisted {
@@ -54,12 +60,13 @@ function restore(): Persisted {
         future: p.future && typeof p.future === "object" ? p.future : {},
         lastJob: p.lastJob && typeof p.lastJob === "object" ? p.lastJob : {},
         lastJobKey: p.lastJobKey && typeof p.lastJobKey === "object" ? p.lastJobKey : {},
+        forms: p.forms && typeof p.forms === "object" ? p.forms : {},
       };
     }
   } catch {
     // storage unavailable - defaults still work in-memory
   }
-  return { pad: null, offline: {}, keepOnline: {}, requiredOnline: {}, future: {}, lastJob: {}, lastJobKey: {} };
+  return { pad: null, offline: {}, keepOnline: {}, requiredOnline: {}, future: {}, lastJob: {}, lastJobKey: {}, forms: {} };
 }
 
 function persist(state: OptimizeState): void {
@@ -74,6 +81,7 @@ function persist(state: OptimizeState): void {
         future: state.future,
         lastJob: state.lastJob,
         lastJobKey: state.lastJobKey,
+        forms: state.forms,
       }),
     );
   } catch {
@@ -94,6 +102,8 @@ interface OptimizeState extends Persisted {
   /** Store a tab's job id; ``requestKey`` records the request behind it
    * (cleared with the id, and null when the caller does not track one). */
   setLastJob: (runKey: string, jobId: string | null, requestKey?: string | null) => void;
+  setForm: (runKey: string, patch: Partial<RunForm>) => void;
+  resetForm: (runKey: string) => void;
 }
 
 const initial = restore();
@@ -156,6 +166,20 @@ export const useOptimizeStore = create<OptimizeState>((set, get) => ({
       lastJob: { ...s.lastJob, [runKey]: jobId },
       lastJobKey: { ...s.lastJobKey, [runKey]: jobId === null ? null : requestKey },
     }));
+    persist(get());
+  },
+
+  setForm: (runKey, patch) => {
+    set((s) => ({ forms: { ...s.forms, [runKey]: { ...(s.forms[runKey] ?? {}), ...patch } } }));
+    persist(get());
+  },
+
+  resetForm: (runKey) => {
+    set((s) => {
+      const forms = { ...s.forms };
+      delete forms[runKey];
+      return { forms };
+    });
     persist(get());
   },
 }));

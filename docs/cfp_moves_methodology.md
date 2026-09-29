@@ -137,6 +137,18 @@ this scale. CP-SAT polish can be added later if a gap ever matters.
 
 ## 4. The algorithm
 
+**September 24 amendment** ([optimization review](optimization_review_2026-09-24.md)).
+Stage A sweeps each well over the requested catalog plus only its own current
+size (no fleet-wide union of every well's size), in one pooled call per grid
+point; a well whose delivered PF does not change with the grid (C-Pad) is
+simulated once. Stage B settles in closed form per grid interval when water is
+nondecreasing and tabulated cleanly, and falls back to the original iteration
+otherwise. Required-online studies are seeded with today's pumps plus each
+required well at each size (alone and with each single offset) before the
+bounded neighborhood. Pair and swap budgets rotate round-robin across options,
+and offsets are scored by same-pressure water change. The singles and pairs
+boards stay relative to today; each row carries `meets_required`.
+
 **Stage A — response surfaces (expensive, cached).** For each discharge `P`
 on a grid (≈7 points spanning `[P₀ − 300, trip]`): assign every well its
 pad's delivered PF, run one `NetworkOptimizer` batch over all wells × all

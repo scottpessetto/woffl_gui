@@ -263,7 +263,9 @@ export function PumpDecisionPanel({ pad }: { pad: "S" | "I" }) {
   const debouncedKey = useDebounced(requestKey, AUTO_RUN_DEBOUNCE_MS);
 
   const send = (req: PumpDecisionRequest, key: string) => {
-    start.mutate(req, { onSuccess: (r) => setLastJob(jobKey, r.job_id, key) });
+    // mutateAsync: a per-call onSuccess is dropped if the tab unmounts
+    // first, orphaning the job in the only slot.
+    start.mutateAsync(req).then((r) => setLastJob(jobKey, r.job_id, key)).catch(() => undefined);
   };
 
   const run = () => {

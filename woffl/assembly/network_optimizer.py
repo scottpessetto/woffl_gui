@@ -313,6 +313,8 @@ class NetworkOptimizer:
         # [LIBRARY change -> upstream PR to kwellis/woffl] well name ->
         # (nozzles, throats) overriding the shared grid for that well, so
         # wells holding different pump sizes run in ONE pooled batch.
+        # Patch 51: an optional third element lists the exact candidate keys
+        # ``(nozzle, throat, pump_state)`` to solve (see _simulate_single_well).
         self.well_grids = dict(well_grids or {})
 
         # Results storage
@@ -689,6 +691,10 @@ def simulate_jobs(jobs: list[tuple], max_workers: int = 1) -> list[BatchPump]:
     from concurrent.futures import ProcessPoolExecutor
     from concurrent.futures.process import BrokenProcessPool
 
+    # [LIBRARY change -> upstream PR to kwellis/woffl] Patch 51: a job may add a
+    # fifth element (the candidate subset); pad the rest so map's columns align.
+    if len({len(job) for job in jobs}) > 1:
+        jobs = [tuple(job) + (None,) * (5 - len(job)) for job in jobs]
     try:
         with ProcessPoolExecutor(max_workers=min(workers, len(jobs))) as pool:
             return list(pool.map(_simulate_single_well, *zip(*jobs)))
@@ -701,6 +707,7 @@ def _simulate_single_well(
     pf_pressure: float,
     nozzle_options: list[str],
     throat_options: list[str],
+    pumps=None,
 ) -> BatchPump:
     """Build well objects and run the full nozzle×throat sweep for ONE well.
 
@@ -708,6 +715,11 @@ def _simulate_single_well(
     dispatch it to ProcessPool workers (everything passed in and returned
     must pickle). The sequential path calls it directly, so both paths share
     one implementation.
+
+    ``pumps`` (optional, Patch 51) is an iterable of candidate keys
+    ``(nozzle, throat, pump_state)`` (``pump_state`` None for unscoped
+    wells): only those candidates of the grid are solved, in grid order, and
+    every row is the row the full grid would produce. None solves the grid.
     """
     wellbore, well_profile, inflow, res_mix, prop_pf = (
         NetworkOptimizer._create_well_objects(well)
@@ -749,6 +761,7 @@ def _simulate_single_well(
             ):
                 jp.dnz = jp.dnz * dnz_scale
 
+    rejected_installed = []  # (nozzle, throat, reason) of a non-catalog installed identity
     # [LIBRARY change -> upstream PR to kwellis/woffl] explicit application policy;
     # the upstream/legacy API retains its previous coefficient behavior.
     if well.pump_calibration_scoped:
@@ -758,7 +771,18 @@ def _simulate_single_well(
             {key: value for key, value in {
                 "ken": well.ken_well, "kth": well.kth_well, "kdi": well.kdi_well,
                 "nozzle_area_factor": well.fnz_well,
-            }.items() if value is not None})
+            }.items() if value is not None}, rejected=rejected_installed)
+
+    # [LIBRARY change -> upstream PR to kwellis/woffl] Patch 51: explicit
+    # candidate subsets (the pad sweep's pruned grids and single-row reads)
+    # and one solve for an installed pump identical to its clean twin.
+    from woffl.assembly.pump_candidates import identical_twins, jetpump_key, pump_key
+    if pumps is not None:
+        wanted = {pump_key(*key) for key in pumps}
+        jp_list = [jp for jp in jp_list if jetpump_key(jp) in wanted]
+        rejected_installed = [r for r in rejected_installed
+                              if pump_key(r[0], r[1], "installed") in wanted]
+    twins = identical_twins(jp_list) if well.pump_calibration_scoped else {}
 
     batch_pump = BatchPump(
         pwh=well.surf_pres,
@@ -776,7 +800,30 @@ def _simulate_single_well(
     )
 
     # Run batch simulation (don't raise errors, capture them)
-    batch_pump.batch_run(jp_list, debug=False)
+    if twins:
+        # [LIBRARY change -> upstream PR to kwellis/woffl] Patch 51: solve each
+        # distinct candidate once, then give the twin row its own pump_state
+        # at its own grid position (same columns, values and order).
+        solved = batch_pump.batch_run([jp for i, jp in enumerate(jp_list) if i not in twins],
+                                      debug=False).to_dict("records")
+        by_index = dict(zip((i for i in range(len(jp_list)) if i not in twins), solved))
+        rows = []
+        for i, jp in enumerate(jp_list):
+            row = dict(by_index[twins.get(i, i)])
+            row["pump_state"] = jp.pump_state
+            rows.append(row)
+        batch_pump.df = pd.DataFrame(rows)
+    else:
+        batch_pump.batch_run(jp_list, debug=False)
+    if rejected_installed:
+        # [LIBRARY change -> upstream PR to kwellis/woffl] Patch 50: record an
+        # unbuildable installed identity as a failed row (like any failed
+        # solve) so accounting explains it; replacements and other wells run.
+        failed = [{"nozzle": nozzle, "throat": throat, "sonic_status": False, "mach_te": np.nan,
+                   "psu_solv": np.nan, "qoil_std": np.nan, "form_wat": np.nan, "lift_wat": np.nan,
+                   "totl_wat": np.nan, "form_wor": np.nan, "totl_wor": np.nan, "error": reason,
+                   "pump_state": "installed"} for nozzle, throat, reason in rejected_installed]
+        batch_pump.df = pd.concat([pd.DataFrame(failed), batch_pump.df], ignore_index=True)
 
     # Process results. TypeError included: scipy's curve_fit raises it when
     # a marginal well yields fewer semi-finalists than fit parameters — it

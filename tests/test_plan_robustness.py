@@ -24,9 +24,16 @@ def snapshot():
 
 
 class Plant:
+    """Free-pressure toy whose frontier is the inverse of its budget line.
+    Scoring uses the optimizer's own qualification (_plant_operating_check),
+    so the stub states the frontier, not only a delivered header."""
     water_key = "totl_wat"
+    coupling = "free_pressure"
+    max_header_psi = 3500.
     def budget_at_pressure(self, pressure, n_pumps):
         return 6000. - (pressure - 2600.) * 5.
+    def header_at_flow(self, water, n_pumps):
+        return 2600. + (6000. - water) / 5.
     def clamp_window(self, n_pumps):
         return 2000., 3500.
     def flags(self, water, n_pumps):
@@ -192,7 +199,7 @@ def test_capacity_alone_does_not_certify_low_flow_pressure_delivery():
     snap = snapshot()
     configs = stress.scenario_configs(snap, {"wc_offset": 0., "gor_factor": 1.})
     plant = Plant()
-    plant.delivered_header = lambda water, pressure, n: (pressure - 100., False)
+    plant.header_at_flow = lambda water, n: 2500.  # frontier 100 psi short of 2,600
     options = {("MPM-01", "12", "B", "installed"):
                {"oil_rate": 250., "lift_water": 3000., "formation_water": 900.}}
     score = stress.score_plan("Current", snap["current"], configs, options, plant, 3, 2600., .02)

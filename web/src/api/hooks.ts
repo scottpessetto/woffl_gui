@@ -14,6 +14,11 @@ import type {
   EPadBuild,
   EquivalentsResponse,
   EventCalibrationRequest,
+  HeaderJobStatus,
+  HeaderRunRequest,
+  HeaderSaveResponse,
+  HeaderSaveWell,
+  HeaderWellDetail,
   MatchTestRequest,
   MatchTestResponse,
   IprFitRequest,
@@ -578,12 +583,15 @@ export const usePumpCurve = (
     suctionPsi: number;
     hzMax: number;
     maxHeaderPsi: number;
+    /** Motor amp cap the run applies; null/undefined = none. */
+    ampLimitA?: number | null;
   },
 ) => {
   const knobs =
     pad === "E" && ePad !== undefined
       ? `&build=${ePad.build}&suction_psi=${ePad.suctionPsi}` +
-        `&hz_max=${ePad.hzMax}&max_header_psi=${ePad.maxHeaderPsi}`
+        `&hz_max=${ePad.hzMax}&max_header_psi=${ePad.maxHeaderPsi}` +
+        (ePad.ampLimitA != null ? `&amp_limit_a=${ePad.ampLimitA}` : "")
       : "";
   return useQuery({
     queryKey: ["pump-curve", pad, nPumps, knobs],
@@ -874,5 +882,64 @@ export const useHeaderImpactInputs = (pads: string[], monthsBack: number, enable
         signal,
       ),
     enabled: enabled && pads.length > 0,
+    staleTime: MIN_30,
+  });
+
+// ── Header page ─────────────────────────────────────────────────────────────
+
+/** Pads with producers tested in the last six months. */
+export const useHeaderPads = () =>
+  useQuery({
+    queryKey: ["header-pads"],
+    queryFn: ({ signal }) => get<{ pads: string[] }>("/header/pads", signal),
+    staleTime: HOUR_1,
+  });
+
+/** Start a board job: wells, relations, IPR candidates, correlations. */
+export const useStartHeaderBoard = () =>
+  useMutation({
+    mutationFn: (req: { pads: string[]; fit_days: number }) => post<OptimizeRunStarted>("/header/board", req),
+  });
+
+/** Start a header-impact run (scenario or observed event). */
+export const useStartHeaderRun = () =>
+  useMutation({
+    mutationFn: (req: HeaderRunRequest) => post<OptimizeRunStarted>("/header/run", req),
+  });
+
+/** Poll a header job every 2 s while running; a 404 (expired) surfaces as error. */
+export const useHeaderJob = (jobId: string | null) =>
+  useQuery({
+    queryKey: ["header-job", jobId],
+    queryFn: ({ signal }) => get<HeaderJobStatus>(`/header/job/${jobId}`, signal),
+    enabled: jobId !== null,
+    refetchInterval: (query) => (isMissingJob(query.state.error) ? false : (!query.state.data || query.state.data.status === "running" ? 2000 : false)),
+    refetchIntervalInBackground: true,
+    staleTime: Infinity,
+    gcTime: HOUR_1,
+    retry: retryJobPoll,
+    retryDelay: jobPollDelay,
+  });
+
+export const useCancelHeaderJob = () =>
+  useMutation({
+    mutationFn: (jobId: string) => api<{ cancel_requested: boolean }>(`/header/job/${jobId}`, { method: "DELETE" }),
+  });
+
+/** Save chosen relations/IPRs from a completed board job (gated write). */
+export const useSaveHeader = () =>
+  useMutation({
+    mutationFn: (req: { board_job_id: string; wells: HeaderSaveWell[] }) => post<HeaderSaveResponse>("/header/save", req),
+  });
+
+/** One well's review data (trends, day-by-day fits, tests). ``pads`` reuses
+ *  the board's cached historian pull; ``enabled`` lets cards fetch only when
+ *  they scroll into view. */
+export const useHeaderWell = (well: string, pads: string[], fitDays: number, enabled: boolean) =>
+  useQuery({
+    queryKey: ["header-well", well, pads.join(","), fitDays],
+    queryFn: ({ signal }) =>
+      get<HeaderWellDetail>(`/header/well/${encodeURIComponent(well)}?fit_days=${fitDays}&pads=${pads.join(",")}`, signal),
+    enabled,
     staleTime: MIN_30,
   });

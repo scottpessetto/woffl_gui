@@ -51,6 +51,9 @@ PAD_HEADER_TAGS: dict[str, str] = {
     "F": "MPU_PI_2440",  "G": "MPU_PI_3001",  "H": "MPU_PI_3110",
     "I": "MPU_PI_3205",  "J": "MPU_PI_3305",  "K": "MPU_PI_4440",
     "L": "MPU_PI_2540",  "M": "MPU_PI_4287A", "S": "MPU_PI_8006",
+    # R-Pad header per Scott (2026-09-29); verified live the same day
+    # (daily means track F/L at +8 to +10 psi).
+    "R": "MPU_PI_4661",
 }
 
 # Hourly-binned, date-bounded historian pull. Averages into time bins WITHOUT a

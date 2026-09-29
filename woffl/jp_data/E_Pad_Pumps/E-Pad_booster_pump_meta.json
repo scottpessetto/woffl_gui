@@ -22,12 +22,15 @@
   },
   "defaults": {
     "sg": 1.02,
-    "suction_psi": 2800,
+    "suction_psi": 2704,
+    "suction_note": "CFP water-header suction measured at the booster's current-limited maximum rate in the E-41 surface-kit rate test (2,725 psi at the 27,789 BWPD baseline). Suction sags as rate rises, and the achievable rate depends on the CFP header holding it (see field_test). Replaces the Summit workbook's 2,800 psi cell.",
     "target_discharge_psi": 3400,
     "condition": 1.0,
     "hz_max": 60.0,
-    "amps_per_bhp": 0.1435,
-    "amps_per_bhp_note": "amps ~ k * BHP, the convention the I-Pad and M-Pad plant models use. k = 0.1435 A/BHP is the LIVE-CALIBRATED value for the I-Pad 26-stage SN35000 HPS unit on a 4160 V motor (SCADA 2026-06-16), carried over here because no E-Pad motor nameplate came with the curve sheets. It is a TRANSFERRED ESTIMATE: valid for a 4160 V class motor, scale by 4160/V for another voltage, and replace it on screen once the E-Pad motor data is in hand. Use for trend, not for protection.",
+    "amps_per_bhp": 1.4281,
+    "amps_per_bhp_note": "amps ~ k * BHP, the convention the I-Pad and M-Pad plant models use. k = 1.4281 A/BHP is calibrated to the E-41 surface-kit rate test: 889 A at the current limit, 29,491 BWPD, 53.1 Hz, against the catalog SM25000 26-stage shaft power there (field_test). It replaces 0.1435 A/BHP, carried over from I-Pad's 4160 V motor, which read about ten times low - consistent with a low-voltage surface-kit motor. The same test's baseline reads 873 A in the model against 826 A measured (+6 pct).",
+    "amp_limit_a": 889,
+    "amp_limit_note": "The E-41 surface-kit drive's motor current limit (I-limit), reached in the rate test at 29,491 BWPD and 3,400 psi discharge; beyond it more rate cost discharge pressure. It limits whichever build runs on this motor.",
     "hz_floor_note": "The model's 20 Hz speed floor (e_pad_booster._HZ_FLOOR) is numerical, not an operating limit: below it the 60-Hz-equivalent flow walks off the digitized stage table. The recommended operating range binds long before it at any useful flow.",
     "target_discharge_note": "3,400 psig is the E-Pad power-fluid header pressure (server/services/wells.py _PAD_PF_DEFAULTS; C/E/H/I/M/S run at 3400)."
   },
@@ -40,8 +43,8 @@
       "series_housing": "875 series, 8.75 in housing (10.75 in min casing)",
       "arrangement": "single unit, VFD driven",
       "n_stages": 26,
-      "motor": "not stated in the supplied curve sheet - enter the amp limit on screen",
-      "amp_limit_A": null,
+      "motor": "E-41 surface kit; drive current limit 889 A (rate test, field_test)",
+      "amp_limit_A": 889,
       "bep_flow_bpd_60hz": 27000,
       "xrc_operating_range_bpd_60hz": [8100, 32400],
       "max_valid_flow_bpd_60hz": 41000,
@@ -114,11 +117,28 @@
       "source": "temp/Summit E Pad Booster as SN35000.xlsx (sheet 'Current' stage table + the embedded Summit ESP 'SN35000 Pump / Pump Performance Curve / S.G. 1.0 | 1 Stage | 3500 RPM | 60 Hz' catalog page, halliburton.com p. 256)"
     }
   },
+  "field_test": {
+    "source": "E-Pad booster rate test on the E-41 surface kit (summary received 2026-09-24)",
+    "build": "SM25000_26STG",
+    "sg_assumed": 1.02,
+    "method": "The booster was ramped up until the drive's motor current limit was reached at 889 A. Discharge held 3,400 psi at both points; at the limit any further rate lost discharge pressure.",
+    "points": [
+      {"label": "baseline", "suction_psi": 2725, "discharge_psi": 3400, "hz": 53.1, "amps": 826, "rate_bwpd": 27789},
+      {"label": "current limit", "suction_psi": 2704, "discharge_psi": 3400, "hz": 53.1, "amps": 889, "rate_bwpd": 29491, "limit": true}
+    ],
+    "observations": [
+      "At 2,704 psi CFP suction any additional rate resulted in a loss of discharge pressure.",
+      "Achievable rate depends on the stability of the CFP water-header (suction) pressure.",
+      "Field recommendation: potential to downsize E-48 and possibly shut in E-07 and E-17 to free rate and pressure capacity for new wells."
+    ],
+    "calibration_note": "e_pad_booster.field_calibration derives the installed unit's calibration from the current-limit point: amps_per_bhp so the catalog shaft power draws 889 A at 53.1 Hz; a head condition so the catalog curve makes the measured 696 psid there (0.766 - the unit makes about 23 pct less head than the catalog at the reported speed, from wear or a speed difference the summary cannot separate); and an upper operating range at the demonstrated 60-Hz-equivalent flow (33,323 BPD against the catalog 32,400), because the unit ran there. With it the plant's capacity at a 3,400 psi header is 29,491 BWPD, current-limited at 53.1 Hz. The baseline is not fitted: the model makes 752 psid there against 675 measured, consistent with the discharge being held at 3,400 with margin below the limit. Condition and range apply to the installed unit only; the booster comparison screen keeps catalog curves for both candidates."
+  },
   "housing_pressure_caveat": "The housing pressure limits above are the ESP CATALOG numbers for a downhole housing (SN35000: 2,800 psi). They are NOT enforced by the model. E-Pad boosts on surface in an HPS barrel with its own pressure-rated discharge head, and the same SN35000 stage runs at 3,408 psig discharge on I-Pad today (SCADA 2026-06-16, I_Pad_Pumps meta 'validated'). Enforcing the catalog housing limit would raise a false alarm at the 3,400 psi header. Chase the actual HPS barrel/discharge-head rating before committing a build.",
   "not_enforced": [
     "shaft HP limit - carried for reference; neither build approaches it (SM25000 26 stg peaks near 721 BHP at 55 Hz against a 1,094 HP standard shaft)",
     "housing pressure limit - see housing_pressure_caveat",
     "NPSH / suction requirements - not published on the catalog pages supplied"
   ],
-  "prepared": "2026-08-27"
+  "prepared": "2026-08-27",
+  "updated": "2026-09-24: E-41 surface-kit rate test (field_test)"
 }

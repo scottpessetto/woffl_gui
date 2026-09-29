@@ -81,6 +81,13 @@ export function Topbar({
         >
           Optimization
         </NavLink>
+        <NavLink
+          to="/header"
+          className={({ isActive }) => clsx(NAV_BASE, isActive ? NAV_ACTIVE : NAV_INACTIVE)}
+          title="Production-header pressure impact"
+        >
+          Header
+        </NavLink>
         {toolsUnlocked && (
           <NavLink
             to="/tools"

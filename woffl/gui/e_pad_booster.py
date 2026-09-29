@@ -99,6 +99,7 @@ BLOCK_DP_UNREACHABLE = "this speed cannot make the dP"
 
 # What caps the top of a feasible window.
 LIMIT_ROR_HIGH = "Recommended range (high)"
+LIMIT_ROR_LOW = "Recommended range (low)"
 LIMIT_AMPS = "Amp limit"
 LIMIT_CAPABILITY = "Capability at max speed"
 LIMIT_OVER_DELIVERS = "Over-delivers dP past here"
@@ -122,8 +123,54 @@ def meta() -> dict:
 
 def defaults() -> dict:
     """Screen defaults: sg, suction_psi, target_discharge_psi, condition,
-    hz_min/hz_max, amps_per_bhp, and the notes explaining each."""
+    hz_min/hz_max, amps_per_bhp, amp_limit_a, and the notes explaining each."""
     return dict(meta()["defaults"])
+
+
+def field_test() -> Optional[dict]:
+    """The recorded E-Pad booster rate test (meta ``field_test``), or None."""
+    test = meta().get("field_test")
+    return dict(test) if test else None
+
+
+def field_calibration(build_key: str) -> Optional[dict]:
+    """Installed-unit calibration derived from the rate test's limit point.
+
+    Derived here rather than stored, so a repeated test only has to update
+    the meta points. At the point flagged ``limit`` (the drive's current
+    limit, where more rate cost discharge pressure):
+
+    * ``amps_per_bhp`` - measured amps over the catalog shaft power at that
+      rate and speed (shaft power does not wear, see ``bhp``);
+    * ``condition`` - measured dP over the catalog dP there, the head-only
+      derate that makes the catalog curve pass through the point;
+    * ``ror_hi_60hz`` - the point's 60-Hz-equivalent rate, never below the
+      catalog upper range: the unit demonstrably ran there.
+
+    Args:
+        build_key (str): meta ``pumps`` key.
+
+    Returns:
+        dict | None: the three values plus the ``point`` they came from, or
+        None when no test ran on this build.
+    """
+    test = field_test()
+    if not test or test.get("build") != build_key:
+        return None
+    limit = next((p for p in test.get("points", []) if p.get("limit")), None)
+    hits = [b for b in candidates() if b.key == build_key]
+    if limit is None or not hits:
+        return None
+    build = hits[0]
+    sg = float(test.get("sg_assumed", defaults()["sg"]))
+    q, hz = float(limit["rate_bwpd"]), float(limit["hz"])
+    dp = float(limit["discharge_psi"]) - float(limit["suction_psi"])
+    return {
+        "amps_per_bhp": float(limit["amps"]) / build.bhp(q, hz, sg),
+        "condition": dp / build.dp_psi(q, hz, sg, 1.0),
+        "ror_hi_60hz": max(build.ror_60hz[1], q * 60.0 / hz),
+        "point": dict(limit),
+    }
 
 
 def _interp(table: list[list[float]], q: float, col: int) -> float:
@@ -217,8 +264,9 @@ class EPadBooster:
         self, flow_bpd: float, hz: float, sg: float, amps_per_bhp: float
     ) -> float:
         """Motor amps at a flow + speed, ``amps = k * BHP`` (the convention the
-        I-Pad and M-Pad plant models use). ``k`` is a transferred estimate for
-        E-Pad - see ``defaults()["amps_per_bhp_note"]``."""
+        I-Pad and M-Pad plant models use). The E-Pad default ``k`` is
+        calibrated to the E-41 rate test - see ``field_calibration`` and
+        ``defaults()["amps_per_bhp_note"]``."""
         return amps_per_bhp * self.bhp(flow_bpd, hz, sg)
 
     def ror(self, hz: float) -> tuple[float, float]:
@@ -924,7 +972,9 @@ def solve_candidate(
             "window": None,
             "limited_by": {
                 BLOCK_ROR_HIGH: LIMIT_ROR_HIGH,
-                BLOCK_ROR_LOW: LIMIT_ROR_HIGH,
+                # An empty window blocked below the range is a low-flow
+                # limit; it was labelled "(high)".
+                BLOCK_ROR_LOW: LIMIT_ROR_LOW,
                 BLOCK_AMPS: LIMIT_AMPS,
             }.get(why, LIMIT_CAPABILITY),
             "infeasible_reason": (

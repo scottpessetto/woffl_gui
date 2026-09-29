@@ -14,7 +14,7 @@
 import clsx from "clsx";
 import { Check, Plus, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { usePadFitStatus, useWells } from "../api/hooks";
 import type { PadFitWell, RunPad } from "../api/types";
@@ -323,7 +323,19 @@ export default function OptimizePage() {
   const pad = useOptimizeStore((s) => s.pad);
   const setPad = useOptimizeStore((s) => s.setPad);
 
-  const [view, setView] = useState<"board" | RunPad | "CFP" | "E-boost">("board");
+  // The tab lives in the URL (?tab=M) so Back from a well link returns to
+  // the run tab, and a link can open a pad directly.
+  type View = "board" | RunPad | "CFP" | "E-boost";
+  const [params, setParams] = useSearchParams();
+  const VIEWS: View[] = ["board", "S", "I", "M", "E", "CFP", "E-boost"];
+  const tab = params.get("tab");
+  const view: View = VIEWS.includes(tab as View) ? (tab as View) : "board";
+  const setView = (next: View) => setParams((prev) => {
+    const p = new URLSearchParams(prev);
+    if (next === "board") p.delete("tab");
+    else p.set("tab", next);
+    return p;
+  }, { replace: true });
 
   const pads = useMemo(() => {
     const uniq = new Set((wells.data?.wells ?? []).map((w) => w.pad).filter(Boolean));
@@ -369,7 +381,7 @@ export default function OptimizePage() {
         </p>
       </div>
 
-      <div className="flex gap-1 rounded-lg bg-white p-1 shadow-sm ring-1 ring-slate-200 w-fit">
+      <div className="flex max-w-full flex-wrap gap-1 rounded-lg bg-white p-1 shadow-sm ring-1 ring-slate-200 w-fit">
         {VIEW_TABS.map((t) => (
           <button
             key={t.key}
@@ -397,6 +409,9 @@ export default function OptimizePage() {
 
       {isRun && (
         <RunPanel
+          // One instance per tab: mutation state (a start error, a pending
+          // start) belongs to the tab that made it.
+          key={padRun ?? "CFP"}
           kind={padRun === null ? "cfp" : "pad"}
           pad={padRun}
           // Pad run tabs carry their own readiness board, scoped to the pad -

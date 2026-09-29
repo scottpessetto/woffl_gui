@@ -446,6 +446,7 @@ export function PadCharts({
     suctionPsi: number;
     hzMax: number;
     maxHeaderPsi: number;
+    ampLimitA?: number | null;
   };
 }) {
   const meta = result !== null ? result.meta : null;

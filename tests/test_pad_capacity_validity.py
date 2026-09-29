@@ -47,7 +47,9 @@ def test_e_sweep_selects_lower_deliverable_header(monkeypatch):
         oil = 400 + .2 * (p-3000)
         return oil, 4000-oil, oil
     _responses(monkeypatch, {"E": response})
-    _, _, meta = _run(_wells("E"), EPadPlant())
+    # Catalog (as-new) E-Pad at the workbook suction: low-flow mechanics.
+    _, _, meta = _run(_wells("E"), EPadPlant(suction_psi=2800., amps_per_bhp=.1435,
+                                             amp_limit=None, field_calibrated=False))
     assert meta["header_psi"] == 3000.
     assert meta["total_oil_bopd"] == 400.
     assert meta["feasible"] is True
@@ -105,7 +107,7 @@ def test_e_pressure_limits_and_amp_report_describe_one_operating_point():
         EPadPlant(suction_psi=3600., max_header_psi=3500.)
     low_cap = EPadPlant(suction_psi=2800., max_header_psi=2900.)
     assert low_cap.pressure_window() == (2900., 2900.)
-    plant = EPadPlant(amp_limit=50.)
+    plant = EPadPlant(amp_limit=50., amps_per_bhp=.1435, suction_psi=2800., field_calibrated=False)
     row = plant.envelope([18000.], at_pressure=3400.)[0]
     pump = row["pumps"][0]
     assert row["feasible"]

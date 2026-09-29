@@ -398,7 +398,10 @@ def test_required_existing_well_can_resize_but_cannot_shut_in():
     s.wells["PIG"].options["10A"] = _opt(4., 500.)
     out = moves_summary(s, _plant(s), required_wells={"PIG"})
     assert out["plan"]["choices"]["PIG"] == "10A"
-    assert not any(m["well"] == "PIG" and m["to"] == SI for m in out["singles"])
+    # The board stays relative to today: shutting PIG in is priced but flagged.
+    si_pig = [m for m in out["singles"] if m["well"] == "PIG" and m["to"] == SI]
+    assert len(si_pig) == 1 and si_pig[0]["meets_required"] is False
+    assert all(m["meets_required"] for m in out["singles"] if m["well"] != "PIG" or m["to"] != SI)
     assert out["baseline_meets_requirements"] is True
 
 
@@ -436,7 +439,10 @@ def test_required_new_well_can_need_two_offsets_to_fit_the_pressure_domain():
     out = moves_summary(s, _plant(s), required_wells={"New"})
     assert out["plan"]["choices"] == {"Old1": SI, "Old2": SI, "New": "B"}
     assert out["plan"]["pressure"] == 2575. and out["plan_gain"] == 300.
-    assert out["singles"] == [] and out["pairs"] == []
+    # Single shut-ins stay on the board, flagged: none switches New on.
+    assert {(m["well"], m["to"]) for m in out["singles"]} == {("Old1", SI), ("Old2", SI)}
+    assert not any(m["meets_required"] for m in out["singles"])
+    assert out["pairs"] == []  # New plus one offset still lands below the grid
 
 
 _AUDIT_CASES = {
@@ -556,45 +562,69 @@ def test_action_deltas_use_baseline_and_plan_pressures_when_old_pump_is_unavaila
 # ── Stage A builder against a fake optimizer ────────────────────────────────
 
 
-class FakeOptimizer:
-    """Perf varies with the constraint pressure so the arrays must vary."""
+class FakeBatch:
+    """What one fake job simulated: the well clone and its pump grid."""
 
-    instances: list = []
+    def __init__(self, well, pressure, nozzles, throats):
+        self.well, self.pressure = well, pressure
+        self.nozzles, self.throats = list(nozzles), list(throats)
+
+
+class FakeJobs:
+    """Stands in for network_optimizer.simulate_jobs; records each call."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, jobs, max_workers=1):
+        jobs = list(jobs)
+        self.calls.append(jobs)
+        return [FakeBatch(*job) for job in jobs]
+
+
+class FakeReader:
+    """Reads fake batches like NetworkOptimizer.get_pump_performance. Oil
+    varies with the delivered PF so the arrays must vary with the grid."""
 
     def __init__(self, well_configs, pf, nozzles, throats, marginal_watercut=1.0):
-        self.wells = well_configs
-        self.pf = pf
-        self.nozzles = nozzles
-        self.throats = throats
-        type(self).instances.append(self)
+        self.batch_results = {}
 
-    def run_all_batch_simulations(self, max_workers=None):
-        self.ran = True
-
-    def get_pump_performance(self, well, nozzle, throat):
+    def get_pump_performance(self, well, nozzle, throat, pump_state=None):
+        batch = self.batch_results[well]
+        cfg = batch.well
+        if pump_state == "installed":
+            if (nozzle, throat) != (cfg.installed_nozzle, cfg.installed_throat):
+                return None
+        elif nozzle not in batch.nozzles or throat not in batch.throats:
+            return None
         if nozzle == "13":  # the never-converging combo
             return None
         return {
-            "oil_rate": 100.0 + self.pf.pressure / 100.0,
+            "oil_rate": 100.0 + cfg.ppf_surf_well / 100.0,
             "total_water": 3000.0,
             "lift_water": 2000.0,
             "formation_water": 1000.0,
         }
 
 
+def _fake_simulation(monkeypatch):
+    import woffl.assembly.network_optimizer as no_mod
+    import woffl.assembly.parallelism as common_mod
+
+    jobs = FakeJobs()
+    monkeypatch.setattr(no_mod, "simulate_jobs", jobs)
+    monkeypatch.setattr(no_mod, "NetworkOptimizer", FakeReader)
+    monkeypatch.setattr(common_mod, "worker_ceiling", lambda: 1)
+    return jobs
+
+
 class TestBuilder:
     def _run(self, monkeypatch):
-        import woffl.assembly.network_optimizer as no_mod
-        import woffl.assembly.parallelism as common_mod
-
         from woffl.assembly.network_optimizer import WellConfig
         from woffl.gui.cfp_pad_plant import PLANT
 
-        FakeOptimizer.instances = []
-        monkeypatch.setattr(no_mod, "NetworkOptimizer", FakeOptimizer)
-        monkeypatch.setattr(common_mod, "worker_ceiling", lambda: 1)
-
-        pad_configs = {
+        self.jobs = _fake_simulation(monkeypatch)
+        self.pad_configs = {
             "B": [WellConfig(well_name="MPB-28", res_pres=1500, form_temp=70,
                              jpump_tvd=4000)],
             "J": [WellConfig(well_name="MPJ-29", res_pres=1500, form_temp=70,
@@ -602,7 +632,7 @@ class TestBuilder:
         }
         seen = []
         surf = cm.build_response_surfaces(
-            pad_configs,
+            self.pad_configs,
             online={"MPB-28": True, "MPJ-29": False},
             current={"MPB-28": ("13", "E")},  # NOT in the candidate lists
             plant_model=PLANT,
@@ -615,17 +645,26 @@ class TestBuilder:
         )
         return surf, seen
 
-    def test_one_batch_per_grid_point_and_progress(self, monkeypatch):
+    def test_one_pooled_call_per_grid_point_and_progress(self, monkeypatch):
         _surf, seen = self._run(monkeypatch)
-        assert len(FakeOptimizer.instances) == 2
+        assert len(self.jobs.calls) == 2
+        assert all({job[0].well_name for job in call} == {"MPB-28", "MPJ-29"} for call in self.jobs.calls)
         assert seen == [(1, 2), (2, 2)]
 
-    def test_current_size_unioned_into_the_candidates(self, monkeypatch):
-        """The baseline must always exist, so the current pump is added to the
-        sweep even when the engineer's candidate list omits it."""
+    def test_current_size_joins_only_its_own_sweep(self, monkeypatch):
+        """The baseline must always exist, so the current pump is simulated
+        for its own well even when the engineer's catalog omits it - and for
+        no other well (review 2026-09-24: the union added ~25% simulations)."""
         _surf, _ = self._run(monkeypatch)
-        opt = FakeOptimizer.instances[0]
-        assert "13" in opt.nozzles and "E" in opt.throats
+        grids = {(job[0].well_name, tuple(job[2]), tuple(job[3])) for job in self.jobs.calls[0]}
+        assert grids == {("MPB-28", ("12",), ("B",)), ("MPB-28", ("13",), ("E",)),
+                         ("MPJ-29", ("12",), ("B",))}
+
+    def test_job_pressure_is_the_simulated_pf_and_configs_stay_unmodified(self, monkeypatch):
+        _surf, _ = self._run(monkeypatch)
+        for call in self.jobs.calls:
+            assert all(job[1] == job[0].ppf_surf_well for job in call)
+        assert all(wc.ppf_surf_well is None for wells in self.pad_configs.values() for wc in wells)
 
     def test_arrays_vary_with_the_grid_pressure(self, monkeypatch):
         surf, _ = self._run(monkeypatch)

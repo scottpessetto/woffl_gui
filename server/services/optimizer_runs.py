@@ -38,6 +38,7 @@ import math
 from copy import copy
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Optional
 
 import numpy as np
@@ -83,6 +84,15 @@ def _plain(v: Any) -> Any:
         return [_plain(x) for x in v]
     if isinstance(v, pd.DataFrame):
         return [_plain(r) for r in v.to_dict("records")]
+    # Arrays and Series are lists to the client, never their repr string.
+    if isinstance(v, (np.ndarray, pd.Series, pd.Index)):
+        return [_plain(x) for x in v.tolist()]
+    if isinstance(v, Decimal):
+        v = float(v)
+    if isinstance(v, np.datetime64):
+        v = pd.Timestamp(v)
+    if v is pd.NaT or v is pd.NA:
+        return None
     if isinstance(v, (np.floating, np.integer, np.bool_)):
         v = v.item()
     if isinstance(v, float) and not math.isfinite(v):
@@ -110,6 +120,38 @@ log = logging.getLogger("woffl.web.optimizer_runs")
 _MAX_MODELABLE_WC = 0.99
 
 
+def _pump_identity(nozzle: Any, throat: Any) -> Optional[tuple[str, str]]:
+    """One normalized (nozzle, throat) for every read of an installed pump.
+
+    The saved-inputs seeds upper-case the throat and keep only the sidebar's
+    sizes, while the tracker read used raw strings, so a lowercase throat or
+    a size-7 nozzle (both in the tracker) made the two disagree and the well
+    silently lost its current-pump model. Any catalog size is a valid
+    installed identity; "0.39"-style legacy throat entries are not.
+    """
+    from woffl.geometry.jetpump import JetPump
+
+    nz = "" if nozzle is None else str(nozzle).strip()
+    th = "" if throat is None else str(throat).strip().upper()
+    if nz.endswith(".0"):
+        nz = nz[:-2]
+    if not (nz.isdigit() and 1 <= int(nz) <= len(JetPump.nozzle_dia)) or th not in JetPump.area_code:
+        return None
+    return str(int(nz)), th
+
+
+_REASON_MARKERS = ("seeding failed", "invalid model", "unknown well", "skipped", "no tracked pump")
+
+
+def _failure(message: str, notes: list[str]) -> ValueError:
+    """A job error that carries the per-well reasons, not just the verdict."""
+    reasons = [n for n in notes if any(k in n for k in _REASON_MARKERS)]
+    if not reasons:
+        return ValueError(message)
+    shown = "; ".join(reasons[:6]) + (f"; +{len(reasons) - 6} more" if len(reasons) > 6 else "")
+    return ValueError(f"{message}. {shown}")
+
+
 def _config_from_seeds(name: str, pad: str, seeds: dict[str, Any]):
     """A fresh WellConfig from one well's context seeds (sidebar-identical)."""
     from woffl.assembly.network_optimizer import WellConfig
@@ -129,7 +171,7 @@ def _config_from_seeds(name: str, pad: str, seeds: dict[str, Any]):
     wc_seed = f("form_wc", 0.5)
     if wc_seed >= _MAX_MODELABLE_WC:
         raise ValueError(
-            f"water cut {wc_seed:.2f} >= {_MAX_MODELABLE_WC} - not modelable as an "
+            f"water cut {wc_seed:.3f} >= {_MAX_MODELABLE_WC:.2f} - not modelable as an "
             "oil producer; mark the well offline (bring-online candidate) instead"
         )
 
@@ -252,6 +294,13 @@ def _build_configs(
             # without it WellConfig models MD = TVD (review 2026-09-01, #2).
             if ctx.get("jpump_md") is not None:
                 seeds["jpump_md"] = ctx["jpump_md"]
+            # Installed identity from the same tracker read, normalized like
+            # every other read (_pump_identity), including catalog sizes the
+            # sidebar lists omit.
+            pump = ctx.get("pump") or {}
+            ident = _pump_identity(pump.get("nozzle_no"), pump.get("throat_ratio"))
+            if ident is not None:
+                seeds["nozzle_no"], seeds["area_ratio"] = ident
             seeds_by_well[name] = seeds
             if prov is not None:
                 # Where this well's inflow curve came from. The pump the
@@ -264,6 +313,10 @@ def _build_configs(
                     "ipr_r2": ctx.get("ipr_r2"),
                     "has_friction": (ctx.get("pump_calibration") or {}).get("status") == "active",
                 }
+        except KeyError:
+            note.append(f"{name}: unknown well (not in the well characteristics list)")
+            if coverage is not None and name in coverage and name not in offline:
+                coverage[name].update(outcome="missing_inputs", reason="Well is not in the well characteristics list.")
         except Exception as exc:  # noqa: BLE001 - fail-soft per well
             note.append(f"{name}: seeding failed ({exc})")
             if coverage is not None and name in coverage and name not in offline:
@@ -304,6 +357,11 @@ def _build_configs(
             configs.append(cfg)
             if coverage is not None:
                 coverage[fw.name].update(outcome="not_evaluated", reason="Donor model loaded; no operating result yet.")
+            if prov is not None and fw.match in prov:
+                # The donor's inflow provenance with a clean pump: without
+                # this a planned well read as "defaults - a guess".
+                prov[fw.name] = {**prov[fw.match], "donor": fw.match,
+                                 "pump_calibration": None, "has_friction": False}
             note.append(f"{fw.name}: future well modeled on {fw.match}'s saved fit")
         except Exception as exc:  # noqa: BLE001
             note.append(f"{fw.name}: invalid model ({exc})")
@@ -326,12 +384,22 @@ def _coverage_summary(ledger: dict[str, dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _required_online(req: schemas.OptimizeRunRequest, configs: list[Any]) -> set[str]:
+def _required_online(req: schemas.OptimizeRunRequest, configs: list[Any], notes: Optional[list[str]] = None) -> set[str]:
     required = set(req.required_wells) | {f.name for f in req.future if f.require_online}
     missing = required - {c.well_name for c in configs}
     if missing:
-        raise ValueError("Required online wells have no usable model in this run: " + ", ".join(sorted(missing)))
+        why = [n for n in (notes or []) if n.split(":", 1)[0] in missing]
+        raise ValueError("Required online wells have no usable model in this run: " + ", ".join(sorted(missing))
+                         + (". " + "; ".join(why) if why else ""))
     return required
+
+
+def _installed_current(configs: list[Any], current: dict[str, tuple[str, str]]) -> None:
+    """Prefer each model's own installed identity (the pump its calibration
+    belongs to) over the separate tracker read of the same well."""
+    for cfg in configs:
+        if cfg.installed_nozzle and cfg.installed_throat:
+            current[cfg.well_name] = (cfg.installed_nozzle, cfg.installed_throat)
 
 
 def _qualify_coverage(meta: dict[str, Any], coverage: dict[str, Any]) -> None:
@@ -417,10 +485,9 @@ def _current_and_tests(
         if jp_hist is not None:
             try:
                 pump = get_current_pump(jp_hist, well)
-                nz = str(pump.get("nozzle_no") or "") if pump else ""
-                th = str(pump.get("throat_ratio") or "") if pump else ""
-                if nz and th:
-                    current[well] = (nz, th)
+                ident = _pump_identity(pump.get("nozzle_no"), pump.get("throat_ratio")) if pump else None
+                if ident is not None:
+                    current[well] = ident
             except Exception:  # noqa: BLE001
                 pass
         try:
@@ -497,11 +564,15 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
 
     pad = req.pad or "S"
     defaults = _PAD_DEFAULTS[pad]
+    # The booster an E-Pad result ran on, so its chart and any comparison of
+    # builds never read the form's current (possibly changed) settings.
+    e_pad = {"build": req.e_pad_build, "suction_psi": req.e_pad_suction_psi, "hz_max": req.e_pad_hz_max,
+             "max_header_psi": req.e_pad_max_header_psi, "amp_limit_a": req.e_pad_amp_limit_a} if pad == "E" else None
     notes: list[str] = []
     prov: dict[str, dict[str, Any]] = {}
     ledger: dict[str, dict[str, Any]] = {}
     configs = _build_configs([pad], set(req.offline), req.future, notes, prov, coverage=ledger)
-    required = _required_online(req, configs)
+    required = _required_online(req, configs, notes)
     if len(configs) == 0:
         coverage = _coverage_summary(ledger)
         meta = {"feasible": None}
@@ -529,6 +600,7 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         # come sorted action-first; provenance rides along like pad rows.
         jobs.set_progress(job, "reading current pumps + tests...")
         current, test_rates = _current_and_tests([c.well_name for c in configs])
+        _installed_current(configs, current)
         current.update({f.name: (f.nozzle, f.throat) for f in req.future if f.nozzle is not None})
         # Field-measured suction response (floor/psu_ref/beta per well) -
         # corrects the model's entry-choke floor where the gauges contradict
@@ -587,6 +659,8 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
             )
         coverage = _coverage_summary(ledger)
         _qualify_coverage(meta, coverage)
+        if e_pad is not None:
+            meta["e_pad"] = e_pad
         return _plain(
             {
                 "pad": pad,
@@ -617,12 +691,21 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
     jobs.set_progress(job, "assembling results...")
     names = [c.well_name for c in configs]
     current, test_rates = _current_and_tests(names)
+    _installed_current(configs, current)
     jobs.set_progress(job, "checking installed pumps at the plan header...")
     try:
         current_model = _modeled_current(configs, current, meta.get("header_psi"), _optimizer)
     except Exception as exc:
         current_model = {}
         notes.append(f"Current-pump counterfactual unavailable ({exc}); no modeled hardware gain reported.")
+    future_names = {f.name for f in req.future}
+    no_baseline = sorted(c.well_name for c in configs
+                         if c.well_name not in current_model and c.well_name not in future_names)
+    if no_baseline and meta.get("header_psi") is not None:
+        # Say which wells blanked the pad's baseline and gain totals.
+        notes.append("No current-pump model at the plan header for " + ", ".join(no_baseline)
+                     + " (installed pump unknown in the tracker, or it does not solve there); "
+                     "pad totals for the current pumps and the hardware gain are withheld.")
 
     chosen = {r.well_name: r for r in results}
     reconciliation = _plain(meta.get("reconciliation")) or []
@@ -685,6 +768,8 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
     meta["current_model_oil_bopd"] = sum(r["current_model_oil"] for r in rows) if baseline_complete else None
     meta["modeled_hardware_gain_bopd"] = sum(r["modeled_hardware_gain"] for r in rows) if comparison_complete else None
     meta["required_wells"] = sorted(required)
+    if e_pad is not None:
+        meta["e_pad"] = e_pad
     if meta.get("feasible") is False:
         notes.append("Hardware gains withheld: the modeled plan does not meet all operating limits. Current-model rates remain a conditional comparison.")
     meta["comparison_basis"] = "Installed and proposed pumps at the same plan header and saved well inputs. This isolates the hardware decision; recent test oil is context, not the modeled baseline. Future wells start offline. Current hardware at this header is a counterfactual, not a separate plant-feasible plan."
@@ -720,8 +805,8 @@ def _run_pad_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         "qualified_selections", "rejected_selections", "search_scope",
         "allocation_status", "diagnostic_lambda", "diagnostic_lambda_source", "diagnostic_pf_slack",
         "operating_assumptions", "minimum_flow_bpd", "min_total_flow", "gross_machine_water_bpd", "recirculation_bpd",
-        "hydraulically_feasible", "failed_trials",
-        "delivered_header_psi", "required_wells",
+        "hydraulically_feasible", "failed_trials", "sweep_complete", "sweep_pruning",
+        "delivered_header_psi", "required_wells", "e_pad",
         "recommendation_status", "modeled_subset_feasible", "current_model_oil_bopd", "modeled_hardware_gain_bopd", "comparison_basis",
     )
     return _plain(
@@ -772,7 +857,7 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
     # so the SI/BOL ladder could never price bringing a shut-in well back on.
     configs = _build_configs(run_pads, offline, req.future, notes, include_offline=True, coverage=ledger)
     if len(configs) == 0:
-        raise ValueError(f"no active wells with usable saved fits on pads {', '.join(run_pads)}")
+        raise _failure(f"no active wells with usable saved fits on pads {', '.join(run_pads)}", notes)
 
     # Pre-flight the physics invariants WOFFL enforces at model build time -
     # a well with an inconsistent saved fit (pwf >= ResP, or no rate) must be
@@ -791,9 +876,9 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
     if bad:
         notes.append("inconsistent saved fit (skipped): " + ", ".join(sorted(bad)))
     configs = usable
-    required = _required_online(req, configs)
+    required = _required_online(req, configs, notes)
     if len(configs) == 0:
-        raise ValueError(f"no wells with a consistent saved fit on pads {', '.join(run_pads)}")
+        raise _failure(f"no wells with a consistent saved fit on pads {', '.join(run_pads)}", notes)
 
     names = [c.well_name for c in configs]
     jobs.set_progress(job, "reading current pumps + tests...")
@@ -801,9 +886,11 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
     # well so future wells can enter the bring-online response surfaces.
     donor_names = [fw.match for fw in req.future]
     current, _rates = _current_and_tests(list(dict.fromkeys(names + donor_names)))
+    _installed_current(configs, current)
 
-    # Existing wells need a tracked pump to anchor the delta model. Future
-    # wells borrow the donor's pump and enter with an offline baseline.
+    # Online wells need a tracked pump to anchor the delta model. Future and
+    # board-offline wells enter as bring-online candidates from an idle
+    # baseline, so a missing tracked pump only loses their installed option.
     donors_of_future = {fw.name: fw.match for fw in req.future}
     planned_pumps = {fw.name: (fw.nozzle, fw.throat) for fw in req.future if fw.nozzle is not None}
     pad_configs: dict[str, list[Any]] = {}
@@ -813,23 +900,21 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         cur = planned_pumps.get(cfg.well_name) or current.get(cfg.well_name) or (
             current.get(donors_of_future.get(cfg.well_name, "")) or None
         )
-        if cur is None:
+        is_online = cfg.well_name not in donors_of_future and cfg.well_name not in offline
+        if cur is None and is_online:
             skipped.append(cfg.well_name)
             ledger[cfg.well_name].update(outcome="missing_inputs", reason="No tracked current pump; no response surface was built.")
             continue
-        current[cfg.well_name] = cur
+        if cur is not None:
+            current[cfg.well_name] = cur
         pad_configs.setdefault(cfg.pad, []).append(cfg)
-        # Future wells and board-offline wells enter as bring-online
-        # candidates; everything else is online at its current pump.
-        online[cfg.well_name] = (
-            cfg.well_name not in donors_of_future and cfg.well_name not in offline
-        )
+        online[cfg.well_name] = is_online
     if skipped:
         notes.append("no tracked pump (skipped): " + ", ".join(sorted(skipped)))
     if required & set(skipped):
         raise ValueError("Required online wells have no current/planned pump: " + ", ".join(sorted(required & set(skipped))))
     if not pad_configs:
-        raise ValueError("no CFP wells with a tracked current pump")
+        raise _failure("no CFP wells with a tracked current pump", notes)
 
     measured_pad_pf = {p: v for p, v in req.cfp_pad_pf_psi.items() if p in pad_configs} or None
     p0 = req.p0_psi
@@ -845,7 +930,7 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
     surfaces = build_response_surfaces(
         pad_configs,
         online,
-        {w: current[w] for w in included},
+        {w: current.get(w) for w in included},
         PLANT,
         p_grid=grid,
         nozzles=req.nozzles,
@@ -855,6 +940,28 @@ def _run_cfp_job(job: dict[str, Any], req: schemas.OptimizeRunRequest) -> dict[s
         measured_pad_pf=measured_pad_pf,
         progress=cb,
     )
+
+    # An online well whose current pump has no converged response at P0
+    # cannot anchor the delta model. Exclude it with a note (anchor() would
+    # otherwise abort the whole study); coverage then reads incomplete.
+    from woffl.gui.cfp_moves import is_available
+
+    unanchored = sorted(
+        w for w, ws in surfaces.wells.items()
+        if ws.online and (not ws.current or ws.current not in ws.options
+                          or not is_available(ws, ws.current, surfaces.p0))
+    )
+    if required & set(unanchored):
+        raise ValueError("Required online wells have no converged current-pump response at the reference discharge: "
+                         + ", ".join(sorted(required & set(unanchored))))
+    for w in unanchored:
+        del surfaces.wells[w]
+        ledger[w].update(outcome="unsupported_model",
+                         reason="Current pump has no converged response at the reference discharge; left out of the delta model.")
+    if unanchored:
+        notes.append("No converged current-pump response at the reference discharge (excluded): " + ", ".join(unanchored))
+    if not surfaces.wells:
+        raise _failure("no CFP well has a converged current-pump response at the reference discharge", notes)
 
     jobs.set_progress(job, "pricing moves...")
     plant = anchor(surfaces, psi_per_kbpd=req.psi_per_kbpd)

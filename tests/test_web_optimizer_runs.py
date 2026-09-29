@@ -147,7 +147,8 @@ def test_cfp_reference_grid_and_water_delta_use_one_baseline(client, monkeypatch
 
     def surfaces(pad_configs, online, current, plant, **kw):
         captured.update(kw)
-        return SimpleNamespace(wells={"MPB-28": SimpleNamespace(pad="B", online=True)})
+        return SimpleNamespace(p0=2793., wells={"MPB-28": SimpleNamespace(
+            pad="B", online=True, current="12B", options={"12B": {}})})
 
     def summary(surfaces, plant, **kw):
         return {"today": {"pressure": 2793., "oil": 100., "water": 500.},
@@ -624,12 +625,15 @@ def test_cfp_pads_filter_and_water_enrichment(client, monkeypatch):
 
     def fake_surfaces(pad_configs, online, current, plant, **kw):
         captured["pads"] = sorted(pad_configs)
+        # Online wells carry an anchorable current option at P0, as the
+        # real surfaces must (the job excludes any that do not).
         wells = {
-            c.well_name: SimpleNamespace(pad=c.pad, online=online[c.well_name])
+            c.well_name: SimpleNamespace(pad=c.pad, online=online[c.well_name],
+                                         current="12B", options={"12B": {}})
             for ws in pad_configs.values()
             for c in ws
         }
-        return SimpleNamespace(wells=wells)
+        return SimpleNamespace(p0=2800.0, wells=wells)
 
     def fake_summary(surfaces, plant):
         return {
@@ -713,7 +717,8 @@ def test_cfp_offline_wells_are_bring_online_candidates(client, monkeypatch, with
     from server.services import datasources
 
     universe = {
-        "wells": [{"name": "MPB-28", "pad": "B"}, {"name": "MPG-01", "pad": "G"}],
+        # MPM-01 is the future well's donor: a real well on another pad.
+        "wells": [{"name": "MPB-28", "pad": "B"}, {"name": "MPG-01", "pad": "G"}, {"name": "MPM-01", "pad": "M"}],
         "source": "databricks",
     }
     seeds = {"pres": 1700.0, "qwf": 900.0, "pwf": 600.0, "form_wc": 0.7}
@@ -732,12 +737,15 @@ def test_cfp_offline_wells_are_bring_online_candidates(client, monkeypatch, with
         captured["online"] = dict(online)
         captured["current"] = dict(current)
         captured["pads"] = {c.well_name: c.pad for cs in pad_configs.values() for c in cs}
+        # Online wells carry an anchorable current option at P0, as the
+        # real surfaces must (the job excludes any that do not).
         wells = {
-            c.well_name: SimpleNamespace(pad=c.pad, online=online[c.well_name])
+            c.well_name: SimpleNamespace(pad=c.pad, online=online[c.well_name],
+                                         current="12B", options={"12B": {}})
             for ws in pad_configs.values()
             for c in ws
         }
-        return SimpleNamespace(wells=wells)
+        return SimpleNamespace(p0=2800.0, wells=wells)
 
     def fake_summary(surfaces, plant):
         return {

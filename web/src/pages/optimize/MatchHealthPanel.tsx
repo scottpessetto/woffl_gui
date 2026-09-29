@@ -164,7 +164,9 @@ export function MatchHealthPanel({ pad }: { pad: RunPad }) {
             disabled={running || (!offlineReady && !offlineFailed)}
             title={!offlineReady && !offlineFailed ? "Loading the downtime log so offline wells are left out" : undefined}
             onClick={() =>
-              start.mutate({ pad, offline: [...offline].sort() }, { onSuccess: (r) => setJobId(r.job_id) })
+              // mutateAsync: a per-call onSuccess is dropped if the tab
+              // unmounts first, orphaning the job in the only slot.
+              start.mutateAsync({ pad, offline: [...offline].sort() }).then((r) => setJobId(r.job_id)).catch(() => undefined)
             }
             className="flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >

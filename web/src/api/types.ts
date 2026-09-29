@@ -434,6 +434,8 @@ export interface PadRunRow {
   /** ken/kth/kdi came from a BHP calibration rather than library defaults. */
   pump_calibration?: PumpCalibrationScope;
   has_friction: boolean;
+  /** Planned (future) wells: the existing well whose inputs they copy. */
+  donor?: string | null;
 }
 
 export interface RunCoverage {
@@ -502,6 +504,8 @@ export interface ChokePlanRow {
   ipr_r2: number | null;
   pump_calibration?: PumpCalibrationScope;
   has_friction: boolean;
+  hydraulics_model?: HydraulicsModel;
+  donor?: string | null;
 }
 
 /** One action in a ladder rung's best response (full-open rows omitted). */
@@ -550,6 +554,9 @@ export interface CfpMoveRow {
   pressure_after: number;
   at_trip: boolean;
   own_water_delta: number | null; // BWPD at the move's settled discharge
+  /** False when the move switches off a Required-online well (the board
+   *  stays relative to today; the plan itself always honors requirements). */
+  meets_required?: boolean;
 }
 
 export interface CfpFrontierPoint {
@@ -588,6 +595,7 @@ export interface CfpPair {
   pressure_after: number;
   pressure_delta: number;
   at_trip: boolean;
+  meets_required?: boolean;
 }
 
 /** Today-vs-plan per well, read off the same response surfaces. */
@@ -2290,4 +2298,303 @@ export interface HarnessRunResult {
   failed: number;
   total: number;
   seconds: number;
+}
+
+// ── Header page (production-header impact) ──────────────────────────────────
+
+export type HeaderRelationChoice = "auto" | "saved" | "measured" | "correlation" | "manual";
+export type HeaderIprChoice = "auto" | "saved" | "fit" | "correlation" | "manual";
+
+export interface HeaderRelationFit {
+  slope: number | null;
+  q25?: number | null;
+  q75?: number | null;
+  r2: number | null;
+  n_fit: number;
+  n_days: number;
+  status: "measured" | "weak" | "no_data";
+}
+
+export interface HeaderIpr {
+  qwf: number | null;
+  pwf: number | null;
+  pres: number | null;
+}
+
+/** One reservoir-correlation IPR for a well: with its own gauge BHP, or
+ *  gaugeless (BHP from the group's BHP/ResP ratio). */
+export interface HeaderIprOption {
+  qwf: number;
+  pwf: number;
+  pres: number;
+  pres_lo: number;
+  pres_hi: number;
+  /** "saved" = the well's prop_hist ResP (no range); "default" = documented +/-20%. */
+  pres_basis?: "saved" | "default";
+}
+
+export interface HeaderBoardRow {
+  well: string;
+  pad: string;
+  lift: "JP" | "ESP" | "gas-lift" | "flowing";
+  reservoir: string;
+  pump: string | null;
+  test_date: string | null;
+  test_age_days: number | null;
+  age_ok: boolean;
+  looks_down: boolean;
+  online_default: boolean;
+  down_note: string | null;
+  oil: number | null;
+  liquid: number | null;
+  wc: number | null;
+  gor: number | null;
+  whp_test: number | null;
+  bhp_test: number | null;
+  whp_now: number | null;
+  bhp_now: number | null;
+  header_now: number | null;
+  has_gauge: boolean;
+  gauge_auto_bad: boolean;
+  gauge_note: string | null;
+  resvr_press: number | null;
+  /** This well's reservoir pressure: saved in prop_hist, else the documented default. */
+  pres_well: number | null;
+  pres_basis: "saved" | "default";
+  pres_saved_at?: string | null;
+  pres_saved_by?: string | null;
+  measured: HeaderRelationFit;
+  whp_hdr: HeaderRelationFit;
+  ipr_fit_stats: {
+    pres: number | null; qmax: number | null; n: number; spread: number | null;
+    rmse: number | null; usable: boolean; why_not: string | null;
+  } | null;
+  ipr_fit: HeaderIpr | null;
+  /** The gauge-test fit even when flagged (pinned, narrow spread...): an
+   *  engineer who has looked at the test points may still choose it. */
+  ipr_fit_any: HeaderIpr | null;
+  saved: {
+    slope: number; whp_hdr: number | null; source: string; r2: number | null;
+    days: number | null; at: string | null; by: string | null;
+  } | null;
+  saved_ipr: (HeaderIpr & { source: string; at: string | null; by: string | null }) | null;
+  /** Every BHP~WHP correlation group this well can borrow, keyed "ESP schrader". */
+  corr_options: Record<string, { slope: number; lo: number; hi: number; same_lift: boolean }>;
+  corr_group: string | null;
+  /** IPR options by BHP-ratio group ("L kuparuk" / "schrader"): always this
+   *  well's own ResP and rate; the group only supplies BHP without a gauge. */
+  ipr_options: Record<string, { gauge: HeaderIprOption | null; nogauge: HeaderIprOption | null; same_reservoir: boolean }>;
+  ipr_group: string | null;
+}
+
+export interface HeaderCorrelation {
+  lift: string;
+  /** null = every reservoir (the lift-only fallback group). */
+  reservoir: string | null;
+  correlation: {
+    kind: "trend" | "median"; a: number; b: number; n: number;
+    q_min: number; q_max: number; resid_mad: number; wells: string[];
+  } | null;
+  points: { well: string; q_liq: number; slope: number; reservoir: string }[];
+  n_wells: number;
+}
+
+export interface HeaderSpread {
+  med: number;
+  q25: number;
+  q75: number;
+  n: number;
+}
+
+export interface HeaderIprGroup {
+  reservoir: string;
+  pad: string | null;
+  /** Documented ResP for wells with none saved. */
+  default_pres: number;
+  /** BHP / ResP of gauged, flowing wells: gives a gaugeless well its BHP. */
+  ratio: HeaderSpread;
+  wells: string[];
+  n_saved_pres: number;
+  n_members: number;
+  /** Plausible gauges on shut-in / untested wells: lower bounds on ResP (evidence only). */
+  shut_in?: { well: string; bhp: number }[];
+  note: string | null;
+}
+
+export interface HeaderWellDetail {
+  well: string;
+  fit_days: number;
+  trend: { t: string; bhp?: number | null; whp?: number | null; headerp?: number | null }[];
+  daily: { day: string; slope: number | null; r2: number | null; n: number; x_min: number | null; x_max: number | null }[];
+  daily_whp_hdr: { day: string; slope: number | null; r2: number | null; n: number }[];
+  tests: { date: string; liquid: number | null; oil: number | null; wc: number | null; bhp: number | null; whp: number | null }[];
+  r2_day_min: number;
+}
+
+export interface HeaderBoard {
+  pads: string[];
+  fit_days: number;
+  built_at: string;
+  rows: HeaderBoardRow[];
+  correlations: Record<string, HeaderCorrelation>;
+  ipr_groups: Record<string, HeaderIprGroup>;
+  header_now: Record<string, number | null>;
+  defaults: { res_pres: Record<string, number>; online_max_test_age_days: number };
+}
+
+export interface HeaderWellChoice {
+  well: string;
+  online?: boolean | null;
+  /** true/false overrides the automatic gauge check; null keeps it. */
+  gauge_bad?: boolean | null;
+  relation?: HeaderRelationChoice | null;
+  corr_group?: string | null;
+  slope?: number | null;
+  ipr?: HeaderIprChoice | null;
+  ipr_group?: string | null;
+  qwf?: number | null;
+  pwf?: number | null;
+  pres?: number | null;
+}
+
+export interface HeaderRunRequest {
+  pads: string[];
+  fit_days: number;
+  mode: "scenario" | "event";
+  delta_by_pad: Record<string, number>;
+  event_time?: string | null;
+  pre_hours?: number;
+  post_hours?: number;
+  gap_hours?: number;
+  event_well?: string | null;
+  event_well_oil?: number | null;
+  wells: HeaderWellChoice[];
+}
+
+export interface HeaderRunRow {
+  well: string;
+  pad: string;
+  lift: string;
+  reservoir: string;
+  online: boolean;
+  outcome: "modeled" | "offline" | "missing_inputs" | "event_well";
+  reason?: string;
+  note?: string;
+  d_header: number | null;
+  oil: number | null;
+  liquid: number | null;
+  wc: number | null;
+  whp_now: number | null;
+  bhp_now: number | null;
+  gauge_bad?: boolean;
+  pump: string | null;
+  measured_slope: number | null;
+  relation_source?: string;
+  relation_saved?: boolean;
+  relation_group?: string | null;
+  ipr_source?: string;
+  ipr_saved?: boolean;
+  ipr_group?: string | null;
+  slope?: number | null;
+  whp_hdr?: number | null;
+  ipr?: HeaderIpr | null;
+  d_whp?: number | null;
+  d_bhp?: number | null;
+  d_liq?: number | null;
+  d_oil?: number | null;
+  d_oil_lo?: number | null;
+  d_oil_hi?: number | null;
+  pi?: number | null;
+  sonic?: boolean;
+  pump_calibration?: string | null;
+}
+
+export interface HeaderPadResult {
+  pad: string;
+  d_header: number | null;
+  online: number;
+  modeled: number;
+  d_oil: number | null;
+  d_oil_lo: number | null;
+  d_oil_hi: number | null;
+  d_liq: number | null;
+  oil_per_10psi: number | null;
+  by_lift: Record<string, number>;
+}
+
+export interface HeaderValidationRow {
+  well: string;
+  pad: string;
+  lift: string;
+  d_bhp_pred: number | null;
+  d_bhp_meas: number | null;
+  d_whp_pred: number | null;
+  d_whp_meas: number | null;
+  d_bhp_from_meas_whp: number | null;
+  error: number | null;
+  operational: boolean;
+}
+
+export interface HeaderCurveSeries {
+  base: number[];
+  lo: number[];
+  hi: number[];
+}
+
+export interface HeaderRunResult {
+  mode: "scenario" | "event";
+  pads: HeaderPadResult[];
+  rows: HeaderRunRow[];
+  totals: {
+    d_oil: number | null; d_oil_lo: number | null; d_oil_hi: number | null; d_liq: number | null;
+    modeled: number; online: number; event_well_oil: number | null; net_oil: number | null;
+  };
+  curve: { grid: number[]; pads: Record<string, HeaderCurveSeries>; total: HeaderCurveSeries };
+  status: { status: "complete" | "conditional" | "incomplete"; missing: string[]; soft: string[]; online: number };
+  event: {
+    time: string;
+    windows: Record<string, string>;
+    pads: Record<string, { pre: number | null; post: number | null; delta: number | null; n_pre: number; n_post: number }>;
+    pops: { well: string; pad: string; kind: "came on" | "went down"; day: string; note: string }[];
+  } | null;
+  event_well: string | null;
+  validation: {
+    rows: HeaderValidationRow[]; n: number; n_used: number; n_operational: number;
+    bias: number | null; mae: number | null; median_abs: number | null; within_5: number;
+    operational_err_psi: number;
+  } | null;
+  notes: string[];
+  board_built_at: string;
+  board: HeaderBoard;
+  assumptions: string;
+}
+
+export interface HeaderJobStatus {
+  job_id: string;
+  kind: "header_board" | "header_run";
+  status: "running" | "done" | "error" | "cancelled";
+  progress: string | null;
+  result: HeaderBoard | HeaderRunResult | null;
+  error: string | null;
+  started_at: string | null;
+  seconds: number;
+}
+
+export interface HeaderSaveWell {
+  well: string;
+  relation?: "measured" | "correlation" | "manual" | null;
+  corr_group?: string | null;
+  slope?: number | null;
+  ipr?: "fit" | "correlation" | "manual" | null;
+  ipr_group?: string | null;
+  gauge_bad?: boolean | null;
+  qwf?: number | null;
+  pwf?: number | null;
+  pres?: number | null;
+}
+
+export interface HeaderSaveResponse {
+  results: { well: string; saved: number; error: string | null; values?: Record<string, number> }[];
+  saved_wells: number;
+  entry_user: string;
 }

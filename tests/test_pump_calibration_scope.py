@@ -346,8 +346,10 @@ def test_cfp_surface_retains_clean_same_size_changeout_separately(monkeypatch):
     opt = allocation()
     cfg = opt.wells[0]
     cfg.pad = "B"
-    def batch(self, **kw): self.batch_results = opt.batch_results
-    monkeypatch.setattr(NetworkOptimizer, "run_all_batch_simulations", batch)
+    import woffl.assembly.network_optimizer as no_mod
+    # The builder pools every well's sweep into one simulate_jobs call per
+    # grid point; hand back the prepared installed/clean batch for each job.
+    monkeypatch.setattr(no_mod, "simulate_jobs", lambda jobs, max_workers=1: [opt.batch_results[WELL] for _ in jobs])
     monkeypatch.setattr(cfp_optimize, "delivered_by_pad", lambda *a, **kw: ({"B": 3000.}, []))
     surfaces = cfp_moves.build_response_surfaces({"B": [cfg]}, {WELL: True}, {WELL: ("13", "C")},
         object(), p_grid=[2500., 2700.], nozzles=["13"], throats=["C"], p0=2600., c_pad_pf_psi=3000.)

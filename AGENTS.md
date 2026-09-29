@@ -3,7 +3,19 @@
 Operating rules for coding agents in this repo. Read this before touching anything.
 Prose lives in `docs/`; this file is only the rules you will otherwise violate.
 
-Latest optimization implementation: [September 12 capacity repairs](docs/pad_cfp_capacity_delivery_2026-09-12.md).
+Header page (2026-09-29, local): [delivery](docs/header_impact_delivery_2026-09-29.md).
+"Header" there is the PRODUCTION header (wellhead back-pressure), never the PF
+header the pad optimizer sweeps. Its BHP~WHP slopes are closed-loop: never
+couple them to the IPR again. Six `hdr_*` ids were added to prop_xref; saves go
+through `push_props` and never write jet-pump IPRs.
+
+Latest optimization review: [September 24 review, fixes and speed](docs/optimization_review_2026-09-24.md).
+It fixes choke "today"/held-well defects, required-well CFP plans, allocation
+time limits and the process-wide HiGHS `threads` failure (upstream 47-51), and
+reworks the Optimize page to lead with one recommendation card. Never pass a
+`threads` option to HiGHS.
+
+Previous optimization implementation: [September 12 capacity repairs](docs/pad_cfp_capacity_delivery_2026-09-12.md).
 Default pad runs maximize oil within capacity; manual water pricing is explicit.
 Required-online constraints, qualified plant delivery and solver outcomes are
 preserved through API/UI. CFP uses a coherent manual reference, unclipped lower
@@ -114,9 +126,9 @@ escapes, rather than line-slicing/reconstructing source through the shell.
 
 (`tests/test_joint_match_sweep.py` was deleted; the old `--deselect` of it is a no-op and was dropped from the command on 2026-09-02.)
 
-Latest recorded green baseline: **2,198 Python tests and 29 frontend tests passed**
-(2026-09-12 capacity repairs), plus the TypeScript/Vite production build.
-See [the delivery record](docs/pad_cfp_capacity_delivery_2026-09-12.md). The
+Latest recorded green baseline: **2,384 Python tests and 52 frontend tests passed**
+(2026-09-24 optimization review), plus the TypeScript/Vite production build.
+See [the review record](docs/optimization_review_2026-09-24.md). The
 [recovered review](docs/recovered_review_2026-09-11.md) records the prior fixes.
 Earlier counts in dated reports are milestones, not the current baseline.
 Live tests are opt-in (`--run-live`); ordinary verification stays offline.
@@ -232,7 +244,7 @@ inside `woffl/assembly/` are fork-only Databricks glue, not upstream physics.
 Editing a shared-library file requires **all three**:
 1. Tag the site `# [LIBRARY change -> upstream PR to kwellis/woffl]`.
    `rg -n "upstream PR" woffl/` finds the existing tags.
-2. Record it in `docs/upstream_sync.md` (numbered through **45** on 2026-09-12).
+2. Record it in `docs/upstream_sync.md` (numbered through **51** on 2026-09-24).
 3. Guard it with a **named regression test** — every documented patch has a `Guarded by:` line.
 
 For robustness/performance patches, preserve already-converging answers;

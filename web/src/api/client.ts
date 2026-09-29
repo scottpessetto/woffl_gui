@@ -12,6 +12,22 @@ export class ApiError extends Error {
   }
 }
 
+/** FastAPI 422 bodies carry ``detail`` as a list of {loc, msg}; pydantic
+ *  prefixes our own validators' text with "Value error, ". One sentence an
+ *  engineer can act on, or null when ``detail`` is not such a list. */
+export function validationMessage(detail: unknown): string | null {
+  if (!Array.isArray(detail) || detail.length === 0) return null;
+  const parts = detail.map((d) => {
+    const item = (d ?? {}) as { msg?: unknown; loc?: unknown };
+    const raw = typeof item.msg === "string" ? item.msg : "invalid value";
+    // Our validators already name the problem; range errors need the field.
+    if (raw.startsWith("Value error, ")) return raw.slice("Value error, ".length);
+    const loc = Array.isArray(item.loc) ? item.loc.filter((p) => p !== "body").join(".") : "";
+    return loc ? `${loc}: ${raw}` : raw;
+  });
+  return [...new Set(parts)].join("; ");
+}
+
 async function parseError(res: Response): Promise<ApiErrorDetail> {
   try {
     const body = (await res.json()) as Record<string, unknown>;
@@ -21,6 +37,10 @@ async function parseError(res: Response): Promise<ApiErrorDetail> {
     if (typeof detail === "string") {
       return { error: "http", message: detail };
     }
+    // Request validation (422): FastAPI sends a list of {loc, msg}. Without
+    // this every rejected run read "HTTP 422" with no reason.
+    const invalid = validationMessage(detail);
+    if (invalid !== null) return { error: "invalid", message: invalid };
     return {
       error: (detail.error as ApiErrorDetail["error"]) ?? "http",
       message: (detail.message as string) ?? `HTTP ${res.status}`,

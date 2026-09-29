@@ -2,10 +2,17 @@
 
 E-Pad boosts on-pad into the 3,400 psig power-fluid header
 (``server/services/wells.py:_PAD_PF_DEFAULTS``). One 26-stage Summit SM25000
-on a VFD, taking ~2,800 psi suction from the upstream stage: a single 26-stage
-unit makes at most ~1,500 psid, so it cannot lift separator water to 3,400 by
-itself and is the HP/final stage of a train, the same architecture as I-Pad's
-LP -> HP pair.
+on a VFD (the E-41 surface kit), taking ~2,700 psi suction from the CFP water
+header: a single 26-stage unit makes at most ~1,500 psid, so it cannot lift
+separator water to 3,400 by itself and is the HP/final stage of a train, the
+same architecture as I-Pad's LP -> HP pair.
+
+Field-calibrated (2026-09-24 rate test, meta ``field_test``): the installed
+unit current-limits at 889 A at 29,491 BWPD, 53.1 Hz and 3,400 psi from
+2,704 psi suction. By default the plant carries that motor (amps per BHP and
+the 889 A limit) and, for the installed build, the head derate and the upper
+operating range derived from that point (``e_pad_booster.field_calibration``),
+so its capacity at 3,400 psi is the tested rate.
 
 ``coupling="free_pressure"``: the delivered header is a decision variable
 bounded above by a capability frontier, like I-Pad and M-Pad. The frontier
@@ -36,7 +43,7 @@ only the ``PadPlant`` face on it. Fork-only, MPU pump data, no upstream PR.
 from typing import Iterable, Optional
 from math import isfinite
 
-from woffl.gui.e_pad_booster import EPadBooster, candidates, defaults
+from woffl.gui.e_pad_booster import EPadBooster, candidates, defaults, field_calibration
 from woffl.gui.pad_plant_base import (
     PF_CONSTRAINT_MIN_PSI,
     PadPlant,
@@ -61,6 +68,10 @@ _MAX_HEADER_PSI = 3500.0
 # Lift above suction the optimizer sweep starts at, mirroring I-Pad's floor.
 _SWEEP_FLOOR_LIFT_PSI = 200.0
 
+# "Not given": take the field-measured motor current limit. Distinct from an
+# explicit None, which enforces no cap.
+_FIELD_DEFAULT = object()
+
 
 class EPadPlant(PadPlant):
     """E-Pad's booster as the uniform plant interface.
@@ -68,15 +79,21 @@ class EPadPlant(PadPlant):
     Args:
         build_key (str): meta ``pumps`` key; defaults to the installed build.
         suction_psi (float | None): booster suction (psig). None takes the
-            meta default (2,800, the Summit workbook's suction cell).
+            meta default (2,704, CFP header suction measured at the tested
+            maximum rate).
         sg (float | None): pumped-fluid SG. None takes the meta default.
-        condition (float): head-only wear derate (1.00 = as-new).
+        condition (float | None): head-only wear derate (1.00 = as-new).
+            None takes the rate-test calibration for the installed build
+            (about 0.77) and 1.00 for any other build.
         hz_max (float): VFD speed cap (Hz).
         amps_per_bhp (float | None): amps per shaft BHP. None takes the meta
-            default (a transferred estimate - see the booster module).
-        amp_limit (float | None): motor amp cap. None enforces nothing, which
-            is the default because no E-Pad motor nameplate exists in the
-            vendor data.
+            default, calibrated to the E-41 motor in the rate test.
+        amp_limit (float | None): motor amp cap. Omitted takes the E-41
+            drive's measured current limit (889 A); an explicit None
+            enforces no cap.
+        field_calibrated (bool): apply the rate-test head derate and upper
+            range to the installed build (default). False models an as-new
+            unit on the catalog curve and range, e.g. a replacement.
     """
 
     coupling = "free_pressure"
@@ -99,19 +116,30 @@ class EPadPlant(PadPlant):
         *,
         suction_psi: Optional[float] = None,
         sg: Optional[float] = None,
-        condition: float = 1.0,
+        condition: Optional[float] = None,
         hz_max: float = 60.0,
         max_header_psi: Optional[float] = None,
         amps_per_bhp: Optional[float] = None,
-        amp_limit: Optional[float] = None,
+        amp_limit=_FIELD_DEFAULT,
+        field_calibrated: bool = True,
     ) -> None:
         d = defaults()
         hits = [b for b in candidates() if b.key == build_key]
         if not hits:
             raise ValueError(f"unknown E-Pad booster build '{build_key}'")
-        self.build: EPadBooster = hits[0]
+        self.build: EPadBooster = hits[0]  # a fresh instance: safe to calibrate
+        # The rate test ran on the installed unit only. Its demonstrated
+        # upper range always applies to that unit (it ran there); its head
+        # derate is the default unless the caller states a condition.
+        self.field_calibration = (field_calibration(build_key)
+                                  if self.build.installed and field_calibrated else None)
+        if self.field_calibration is not None:
+            self.build.ror_60hz = (self.build.ror_60hz[0], self.field_calibration["ror_hi_60hz"])
         self._suction = float(d["suction_psi"] if suction_psi is None else suction_psi)
         self._sg = float(d["sg"] if sg is None else sg)
+        if condition is None:
+            condition = (self.field_calibration["condition"] if self.field_calibration is not None
+                         else d["condition"])
         self.condition = float(condition)
         self.hz_max = float(hz_max)
         # Instance attribute deliberately shadows the class default: the
@@ -123,6 +151,8 @@ class EPadPlant(PadPlant):
         self.amps_per_bhp = float(
             d["amps_per_bhp"] if amps_per_bhp is None else amps_per_bhp
         )
+        if amp_limit is _FIELD_DEFAULT:
+            amp_limit = d.get("amp_limit_a")
         self.amp_limit = None if amp_limit is None else float(amp_limit)
         if not all(isfinite(v) for v in (self._suction, self._sg, self.condition,
                                          self.hz_max, self.max_header_psi, self.amps_per_bhp)):
@@ -235,11 +265,12 @@ class EPadPlant(PadPlant):
 
     def pressure_window(self, n_pumps: int | None = None) -> tuple[float, float]:
         floor = max(self._suction + _SWEEP_FLOOR_LIFT_PSI, PF_CONSTRAINT_MIN_PSI)
-        peak = self.max_discharge_pressure(self.knee_flow())
-        if peak is None:
-            # Amp limits can move the maximum away from the nominal knee.
-            available = [self.max_discharge_pressure(q) for q in PadPlant._curve_grid(self.flow_ceiling(), _SCAN_POINTS)]
-            peak = max((p for p in available if p is not None), default=None)
+        # Always scan: an amp limit moves the maximum off the nominal knee
+        # even when the knee itself still solves (40 A: true peak 3,928 psi
+        # at 6,480 BPD vs 3,870 at the knee), which cut the sweep short.
+        available = [self.max_discharge_pressure(q) for q in
+                     [self.knee_flow(), *PadPlant._curve_grid(self.flow_ceiling(), _SCAN_POINTS)]]
+        peak = max((p for p in available if p is not None), default=None)
         if peak is None:
             raise ValueError("E-Pad has no operating pressure inside its speed, amp and flow limits")
         ceiling = clamp_to_pf_constraint(
@@ -313,6 +344,24 @@ class EPadPlant(PadPlant):
 
     # -- curve report --------------------------------------------------------
 
+    def _validation_note(self) -> str:
+        """What the curves rest on, stated on the nameplate."""
+        cal = self.field_calibration
+        if cal is not None:
+            p = cal["point"]
+            return (
+                "Calibrated to one E-41 rate-test point: current limit "
+                f"{p['amps']:,.0f} A at {p['rate_bwpd']:,.0f} BWPD, {p['hz']:g} Hz, "
+                f"{p['discharge_psi']:,.0f} psi from {p['suction_psi']:,.0f} psi suction "
+                f"(head condition {self.condition:.2f}). Other rates and headers are "
+                "the catalog curve derated to that point, not measured."
+            )
+        return (
+            "Catalog stage curve plus the Summit workbook's affinity sheet (as new); "
+            f"suction {self._suction:,.0f} psi. The installed unit's rate test is "
+            "applied only to the field-calibrated installed build."
+        )
+
     def curve_report(self, n_pumps: int | None = None) -> dict:
         """Station + machine curves for the E-Pad booster.
 
@@ -361,12 +410,7 @@ class EPadPlant(PadPlant):
                 "arrangement": "1 x VFD, HP/final stage into the PF header",
                 "speed": f"3,500 RPM at 60 Hz (VFD), capped {self.hz_max:.0f} Hz",
                 "source": str(build.spec["source"]),
-                "validated": (
-                    "NOT validated against live E-Pad SCADA - catalog stage curve "
-                    "plus the Summit workbook's affinity sheet. Suction "
-                    f"{self._suction:,.0f} psi is the workbook's cell, not a "
-                    "measured tag."
-                ),
+                "validated": self._validation_note(),
             },
             "station": {
                 "curves": curves,

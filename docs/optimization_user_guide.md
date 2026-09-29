@@ -92,12 +92,23 @@ clean replacements, including the same size when included in the pump grid.
 Legacy/unverified fits use visible reference assumptions until refitted and saved.
 Future wells borrow donor well properties with clean pump assumptions.
 
-Pad optimization defaults to **Maximize oil within capacity**. Uncheck it to
-enter a deliberate water price; that changes the objective to oil minus price
-times machine water. E/M machines handle total water; I/S use lift water. A
-separate frontier estimate describes the value of capacity, without charging
-for the constraint twice. Both allocation engines share valid candidates;
-installed pumps remain options even outside the replacement grid.
+The default run needs no settings: open the pad's tab and press **Run**. The
+result opens with one card: a status (Qualified, Conditional or Exploratory),
+the pump changes with their modeled gains, the header and the share of plant
+water capacity used, and a CSV export. Everything below it is supporting
+detail. If you change an input after a run, the result lists what changed and
+asks for a rerun; problems the server would reject are listed under the Run
+button before anything is sent. Each tab keeps its own settings.
+
+Pad optimization defaults to **Maximize oil within capacity**. Under
+**Advanced settings**, untick it to charge water a deliberate price, entered in
+BOPD per 1,000 BPD (the unit the results show); that changes the objective to
+oil minus price times machine water. E/M machines handle total water; I/S use
+lift water. A separate frontier estimate describes the value of capacity,
+without charging for the constraint twice. Both allocation engines share valid
+candidates; installed pumps remain options even outside the replacement grid.
+Each allocation has a wall-clock limit; a solve stopped there reports how
+close it is to the best possible plan.
 
 For a new-well study, add a unique future-well name and its donor on Pad review.
 New rows default to **Required online**. Leave that checked to require the

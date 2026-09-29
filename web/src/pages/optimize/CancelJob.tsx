@@ -9,8 +9,14 @@ import type { OptimizeJobStatus } from "../../api/types";
 import { WarnNote } from "../../components/ui";
 
 export function CancelJobButton({ jobId, running }: { jobId: string | null; running: boolean }) {
-  const cancel = useCancelOptimizeJob();
   if (!jobId || !running) return null;
+  // Keyed by job: a cancel of an earlier job must not leave this one's
+  // button stuck on "Cancelling...".
+  return <CancelButton key={jobId} jobId={jobId} />;
+}
+
+function CancelButton({ jobId }: { jobId: string }) {
+  const cancel = useCancelOptimizeJob();
   return (
     <button
       type="button"

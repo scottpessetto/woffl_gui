@@ -542,7 +542,8 @@ def test_machine_sheet_carries_the_wear_derate_when_one_is_modeled():
 
 def test_notes_carry_the_caveats_the_engineer_must_see():
     n = report()["notes"]
-    assert "TRANSFERRED ESTIMATE" in n["amps"]
+    # amps/BHP is the E-41 motor, calibrated in the rate test, and says so.
+    assert "E-41" in n["amps"] and "rate test" in n["amps"]
     assert "2,800 psi" in n["housing_pressure"] and "3,408" in n["housing_pressure"]
     assert any("housing pressure" in x for x in n["not_enforced"])
 
@@ -559,10 +560,12 @@ def test_request_defaults_do_not_drift_from_the_data_file():
     assert req.condition == d["condition"]
     assert req.hz_max == d["hz_max"]
     assert req.amps_per_bhp == d["amps_per_bhp"]
-    # No E-Pad motor nameplate exists, so nothing may seed an amp limit.
-    assert req.amp_limit_a is None
-    for spec in epb.meta()["pumps"].values():
-        assert spec["amp_limit_A"] is None
+    # The E-41 drive's measured current limit seeds the screen; the installed
+    # build carries it, the alternative has no motor of its own on record.
+    assert req.amp_limit_a == d["amp_limit_a"] == 889
+    pumps = epb.meta()["pumps"]
+    assert pumps["SM25000_26STG"]["amp_limit_A"] == 889
+    assert pumps["SN35000_18STG"]["amp_limit_A"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -576,11 +579,11 @@ def client() -> TestClient:
 
 
 def test_endpoint_validates_against_the_schema(client):
-    r = client.post("/api/optimize/e-pad-booster", json={"dp_psid": 600})
+    r = client.post("/api/optimize/e-pad-booster", json={"dp_psid": 696})
     assert r.status_code == 200
     body = schemas.EPadBoosterResponse.model_validate(r.json())
     assert body.pad == "E"
-    assert body.target.discharge_psi == 3400.0
+    assert body.target.discharge_psi == 3400.0  # 2,704 psi suction + 696
     assert body.target.header_default_psi == 3400.0
     assert len(body.candidates) == 2
     assert body.candidates[0].nameplate.installed is True

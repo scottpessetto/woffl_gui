@@ -25,6 +25,7 @@ def pump_curve(
     suction_psi: Optional[float] = None,
     hz_max: Optional[float] = None,
     max_header_psi: Optional[float] = None,
+    amp_limit_a: Optional[float] = None,
 ) -> dict[str, Any]:
     """Industry-format curve set for one pad's booster plant.
 
@@ -41,6 +42,8 @@ def pump_curve(
         suction_psi (float | None): E-Pad only - booster suction (psig).
         hz_max (float | None): E-Pad only - VFD speed cap (Hz).
         max_header_psi (float | None): E-Pad only - operational header cap.
+        amp_limit_a (float | None): E-Pad only - motor amp cap; None enforces
+            none. The run applies it, so the sheet must too.
 
     Returns:
         dict: curve_report payload; see schemas.PumpCurveResponse.
@@ -60,6 +63,7 @@ def pump_curve(
             suction_psi=suction_psi,
             hz_max=60.0 if hz_max is None else hz_max,
             max_header_psi=max_header_psi,
+            amp_limit=amp_limit_a,
         )
     else:
         plant = _pad_plant(pad)

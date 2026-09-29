@@ -5,8 +5,9 @@ This repo (`github.com/scottpessetto/woffl_gui`) is a **fork** of the upstream
 alone, but the four **library** packages — `woffl/pvt/`, `woffl/geometry/`,
 `woffl/flow/`, `woffl/assembly/` — are shared with upstream and published to PyPI.
 
-Current through **patch 46, 2026-09-12**. Later entries supersede earlier designs
-where noted: shared entry energy replaces the Mach adjustment, v2 updates fluid
+Current through **patch 51, 2026-09-24**. Later entries supersede earlier designs
+where noted (patches 47-48 amend the allocation runtime of 39, 40 and 46; 51 extends the
+per-well grids of `well_grids`): shared entry energy replaces the Mach adjustment, v2 updates fluid
 properties, and scoped pump candidates keep fitted losses off replacements.
 Read [the current handoff](session_learnings_2026-09-08.md) before applying an
 older entry in isolation. Current verification is recorded in
@@ -806,6 +807,10 @@ MIP gap. Integer quantization remains an existing distinction between engines.
 Guarded by: `tests/test_review_2026_09_07.py::test_milp_priced_tie_prefers_oil`
 and `test_mckp_priced_tie_prefers_oil`, plus the existing pricing/capacity suite.
 
+**Superseded by #48 (2026-09-24):** the second (equality-constrained) solve is
+gone; both engines resolve the same ties inside one solve. The two named tests
+still guard the observable oil preference.
+
 Fork-only follow-up to #13: connector writes now disable retries after execution
 starts, and cleanup errors never replay completed work. Reads retain their retry.
 Guarded by: `test_write_cleanup_does_not_replay_success` and
@@ -822,6 +827,11 @@ never imports the server. Child processes retain no-op host hooks.
 `optimization_algorithms.optimize` acquires the host CPU slot for allocation.
 HiGHS and CP-SAT use one native solver thread per allocation; HiGHS receives
 the forwarded `threads` option through SciPy. Solver objectives are unchanged.
+
+**Amended by #47 (2026-09-24):** the HiGHS `threads` option is removed. HiGHS
+keeps one process-wide scheduler, and a `threads` value differing from an
+earlier default-thread SciPy solve made every later allocation MILP fail.
+CP-SAT still runs `num_search_workers = 1`.
 
 Guarded by: `tests/test_medium_runtime.py::test_network_host_hook_avoids_new_executor_and_reuses_nodes`,
 `test_global_tokens_bound_overlapping_batches_and_allocation`,
@@ -1130,7 +1140,9 @@ is retained; every replacement still uses clean reference hardware.
 `test_candidate_lookup_failure_clears_previous_qualified_plan`,
 `test_cp_unknown_is_not_misreported_as_capacity_or_shutdown`,
 `test_milp_limit_preserves_qualified_incumbent_and_gap`,
-`test_failed_oil_tie_break_retains_qualified_primary_plan`,
+`test_priced_oil_tie_break_is_one_bounded_solve` (was
+`test_failed_oil_tie_break_retains_qualified_primary_plan` until #48 removed
+the secondary solve),
 `test_direct_api_retains_exactly_one_default_and_dataframe_status`,
 `test_concave_hull_shadow_price_does_not_buy_later_segment_first`,
 `test_installed_pump_outside_replacement_grid_is_always_an_option`, and
@@ -1150,8 +1162,8 @@ the local pytest-cache ACL warning. Root owns the final full-suite run.
 After the full-suite review, the capacity-dust, successful-duplicate accounting
 and obsolete skip-label corrections passed all 79 focused affected tests.
 
-**Remaining runtime limitation:** shared MILP and CP-SAT calls still have no
-wall-clock deadline. Both use one native thread and MILP capacity refinement has
+**Remaining runtime limitation (resolved by #47, 2026-09-24):** shared MILP and
+CP-SAT calls still have no wall-clock deadline. Both use one native thread and MILP capacity refinement has
 at most 20 attempts, but each primary/secondary native solve can run without a
 time bound. Fractional-resource CP requests may now take the MILP path for most
 physics-produced rates. No slow field allocation was demonstrated in the
@@ -1163,3 +1175,214 @@ solves together and preserve a qualified incumbent with its explicit gap.
 The audit's frozen pre-fix `allocation_probe.py`/`allocation_results.json` remain
 historical evidence; the named tests validate the new behavior. No deployment,
 database writes or commit was performed for this patch.
+
+---
+
+### 47. One wall-clock deadline per allocation; no HiGHS `threads` option (2026-09-24)
+
+**Files:** `woffl/assembly/network.py`, `optimization_algorithms.py`.
+
+Every allocation call now owns one `AllocationDeadline`. The default
+`DEFAULT_TIME_LIMIT_S` is 20 s. Callers can pass `time_limit_s=` to `optimize`,
+`milp_optimization`, `mckp_optimization`, `solve_milp_choices` and
+`optimize_jet_pumps`; otherwise `WOFFL_ALLOC_TIME_LIMIT_S` applies.
+`_allocate` starts the deadline before candidate building. The primary MILP,
+its capacity-refinement re-solves, CP-SAT and CP-SAT's original-unit MILP
+fallback all use it. HiGHS receives the remaining seconds as `time_limit` and
+CP-SAT as `max_time_in_seconds`. A spent budget still gives a solve 0.05 s to
+report its state.
+
+A timed-out solve with a capacity-qualified incumbent uses the existing status-1
+path. It reports `status="feasible"` with its bound and gap, plus
+`time_limit_reached=True` and `time_limit_s`. Without an incumbent, or when the
+budget ends during capacity refinement, it raises `AllocationError` with status
+`unknown` and `reason="time_limit"`. Before this patch, a strongly correlated
+30x50 instance ran for more than 300 s while holding the host CPU slot. It now
+returns `feasible` in 1.01 s with a 1 s budget and 20.01 s at the default. The
+gap is 2e-6 in both cases.
+
+The HiGHS `threads: 1` option (#40) is removed. HiGHS keeps one process-wide
+scheduler. After any earlier default-thread SciPy `milp` or `linprog` call, a
+different `threads` value made every later allocation MILP fail with
+"HiGHS Status 0: Not Set". The HiGHS default is half the logical CPUs, rounded
+up. That is one thread on the two-vCPU deployment. An error status now raises a
+clearer `AllocationError`: "no usable HiGHS result; no plan was produced", with
+`solver_message`. There is no CP-SAT fallback. Physics rates are fractional, so
+the fallback would cover only integer synthetic data and would switch engines
+silently.
+
+**Guarded by:** `tests/test_allocation_2026_09_24.py`:
+`test_deadline_returns_qualified_incumbent_as_feasible_with_gap`,
+`test_env_var_sets_the_allocation_budget_through_the_gui_adapter`,
+`test_milp_receives_remaining_budget_and_no_thread_option`,
+`test_milp_time_limit_without_incumbent_is_typed_unknown`,
+`test_cp_sat_and_its_milp_fallback_share_one_deadline`,
+`test_cp_sat_unknown_after_deadline_is_typed_time_limit`,
+`test_default_thread_highs_solve_first_does_not_poison_allocators` (fresh
+interpreter: a default `linprog` + `milp` first, then both allocators; fails if
+`threads: 1` is reinstated), and `test_milp_error_status_is_a_clear_typed_failure`.
+
+### 48. Tie-breaks inside one bounded solve (2026-09-24)
+
+**Files:** `woffl/assembly/network.py`.
+
+The priced MILP tie-break (#39) re-solved the full problem with a dense equality
+`c.x == primary`. It cost 4-7x the primary solve and changed 0 of 12 review
+plans. At price 0 there was no secondary objective, so equal-oil plans took
+arbitrary extra water.
+
+`solve_milp_choices` now makes one solve with objective `F + T`. `F` is oil
+minus price times water (BOPD). `T` has two levels. The first is
+`eps_oil*oil` when price > 0. At price 0 it is `-eps_water*water`, because `F`
+is already oil. The second level is `eps_installed*[installed]`.
+
+The scale is `S = sum_w max_k(|oil| + price*|water|)`, and
+`B = TIE_BREAK_REL * max(1, S)` with `TIE_BREAK_REL = 1e-6`. Over any plan, the
+oil/water level spans at most `B/2`. The installed level spans at most `B/4`
+and stays below half of any one well's smallest oil/water step.
+
+If `x*` maximizes `F` and `x^` maximizes `F + T`, then
+`F(x*) - F(x^) <= sum_w [max(0, max_k T_wk) - min(0, min_k T_wk)]`, which is at
+most `0.75 B`. That sum is returned as `tie_break_bound` (BOPD) with a
+`tie_break` label. The solver's own `mip_abs_gap` (1e-6) is additional.
+
+The reported `objective_bound` is HiGHS's dual bound minus the smallest possible
+tie total. It therefore remains a valid bound on `F`. The `gap` is recomputed
+as `(bound - objective) / max(1, |objective|)`, so an optimal MILP can report a
+gap of about `tie_break_bound / |objective|` instead of exactly 0. Tie
+differences below about `2e-6 * sum_w max_k|level| / B` level units might not
+resolve. For a pad with 5,000 BOPD and 100,000 BPD, that is about 40 BPD of
+water.
+
+CP-SAT has an integer objective, so it breaks ties exactly in one solve. The
+objective is `P*K1 + t`, where `P` is the existing quantized priced objective.
+`t` is the oil or water level times `K2`, plus the installed count. The level is
+`floor(100*oil)` when priced and `-100*water` at price 0. `K2` is
+`wells_with_installed + 1`, and `K1` is `K2*(level span + 1)`. Because `|t|`
+never reaches `K1`, `P` stays exact. The solver bound is decoded back to `P`.
+A level that would push the objective past 2^53 is dropped and named in
+`tie_break`. CP-SAT's `tie_break_bound` is 0.
+
+Review evidence, from local synthetic runs rather than hosted latency:
+
+| Case | Before | After | Result |
+|---|---:|---:|---|
+| r17: 12 seeds, 30 wells x 51 options, price 0.05 | 12.57 s | 2.64 s | Identical plans in all 12 |
+| r09: 30x51, price 0.05 | 1.20 s | 0.06 s | Same objective |
+| r09: 60x101, price 0.03 | 4.32 s | 0.54 s | Same objective |
+| r09: 30 cloned donor wells x 51, price 0.05 | 57.5 s | 0.61 s | Same objective |
+| r09: 30x51, price 0 | 0.20 s | 0.19 s | Same objective |
+
+For r02, 60 random 12x4 integer instances were checked at price 0. The metric is
+the number of plans using more water than the minimum for the maximum oil. MILP
+went from 8 to 1, where the remaining difference was 3 BPD and below the stated
+resolution. CP-SAT went from 13 to 0.
+
+**Guarded by:** `tests/test_allocation_2026_09_24.py`:
+`test_zero_price_equal_oil_prefers_least_water` (both engines, integral and
+fractional water), `test_equal_outcomes_keep_the_installed_pump`,
+`test_priced_tie_break_distortion_stays_within_reported_bound` (against an
+exact primary-only MILP), `test_cp_sat_tie_break_is_exact_and_single_solve`;
+`tests/test_allocation_qualification.py::test_priced_oil_tie_break_is_one_bounded_solve`
+and the updated `test_milp_limit_preserves_qualified_incumbent_and_gap`; and
+#39's `tests/test_review_2026_09_07.py` oil-preference tests.
+
+### 49. Linear candidate building; duplicate accounting separated (2026-09-24)
+
+**Files:** `woffl/assembly/optimization_algorithms.py`, `network.py`.
+
+`_allocation_candidates` called `get_pump_performance` for every valid row. Each
+call applied a whole-frame boolean mask, and the rows came from `iterrows`. That
+took 0.41 s of a 0.57 s allocation for 30 wells x 51 rows, repeated for each
+header trial of a pad run.
+
+When the lookup is `NetworkOptimizer`'s own bound method, `_performance_rows`
+rebuilds the same rows in one pass. It uses the same first matching row by
+nozzle/throat and `pump_state`. A `None` state prefers an installed match, and
+NaN never matches. It keeps the same finite nonnegative rate check, float/bool
+conversions and 0.0 for missing marginal ratios. Duck-typed optimizers with
+their own lookup keep the per-row calls.
+
+`solve_milp_choices` and the CP-SAT path read whole rate columns instead of one
+`.iloc` per record. In the same synthetic case, candidate building takes
+0.072 s and the full allocation takes 0.23 s.
+
+`excluded_candidates` again means invalid rows only: failed, nonfinite,
+negative, or without performance. The new `deduplicated_candidates` counts
+replacement rows dropped because they model exactly the installed pump's
+outcome. `_valid_configs(deduplicate=True)` is now
+`_deduplicate_configs(...)` over the same rows.
+
+**Guarded by:** `tests/test_allocation_2026_09_24.py::test_vectorized_candidates_match_the_per_row_lookup`.
+It checks identical tables, counts and MILP/CP-SAT plans at two prices. The
+frames include installed/clean duplicates, NaN/inf/negative rows, invalid first
+matches, `None` states, frames without `pump_state`, and empty and all-failed
+wells. The patch is also guarded by
+`test_real_network_optimizer_uses_the_vectorized_lookup` and
+`test_identical_installed_and_clean_outcomes_are_deduplicated_not_excluded`.
+
+### 50. A malformed installed identity skips only that candidate (2026-09-24)
+
+**Files:** `woffl/assembly/pump_candidates.py`, `network_optimizer.py`.
+
+`scoped_pumps` built the installed `JetPump` outside BatchPump's per-row error
+capture. A tracker identity such as "12.0"/B, 20E or 12F raised an exception
+and aborted every well in a multi-well batch.
+
+The installed candidate is now built defensively. On `ValueError`, `TypeError`,
+`KeyError` or `IndexError`, it is skipped and reported through the new optional
+`rejected` list. `_simulate_single_well` records it as a failed
+`pump_state="installed"` batch row with the reason in `error`. This uses the
+existing failed-solve mechanism, so reconciliation counts and explains it.
+Replacement options and other wells still run. The identity is not normalized:
+"12.0" is not silently read as 12.
+
+**Guarded by:** `tests/test_allocation_2026_09_24.py::test_malformed_installed_identity_is_skipped_with_a_reason`
+(12.0B, 20E, 12F) and `test_malformed_installed_identity_does_not_abort_the_batch`.
+
+**Patches 47-50 change no physics equations, calibration persistence or model
+version.** No deployment, database write or commit was performed.
+
+### 51. Candidate subsets and one solve for an identical installed twin (2026-09-24)
+
+**Files:** `woffl/assembly/network_optimizer.py`, `pump_candidates.py`.
+
+`_simulate_single_well` takes an optional fifth argument `pumps`: candidate keys
+`(nozzle, throat, pump_state)` (`pump_state` None for unscoped wells). Only
+those candidates of the grid are solved, in grid order; a malformed installed
+identity (patch 50) keeps its failed row only when its key is requested.
+`NetworkOptimizer.well_grids` values may carry the key list as a third element,
+and `simulate_jobs` pads mixed 4/5-element jobs for its process pool. Without
+`pumps`, jobs, results and host cache keys are unchanged.
+
+`scoped_pumps` returns the installed candidate and the clean replacement of
+the same size even when the installed pump has no fitted loss or area factor.
+They are then the same `JetPump` input for input. `identical_twins` (every
+instance attribute except `pump_state` equal) finds them, the model is solved
+once, and the row is copied to the twin's grid position with its own
+`pump_state`. Both hardware actions stay in the batch; any fitted `ken`, `kth`,
+`kdi` or area factor keeps the two solves independent. `pump_key` /
+`jetpump_key` normalize identities the way `JetPump` stores them.
+
+Fork-side users (not library): `woffl/gui/pad_optimize.py` solves only the
+row a single-pump caller reads (fixed-curve settle, choke forced-header ladder,
+fixed and existing scenario evaluators, with a union-grid re-run for a well
+whose reads all fail so the best-feasible fallback is unchanged) and prunes
+the pad header sweep (bracket dominance, 1% margin, ends and middle on the
+full grid, winner completed on the full grid; `WOFFL_SWEEP_PRUNE=0` restores
+the unpruned sweep). `server/surface_cache.py` adds the subset to a job's
+exact cache key; full-grid keys are unchanged.
+
+**Guarded by:** `tests/test_sweep_prune_2026_09_24.py::test_twin_is_solved_once_and_matches_separate_solves`
+(the collapsed batch frame and curve fits equal the two-solve batch),
+`test_identical_twins_require_every_physical_input_equal`,
+`test_fitted_installed_pump_is_still_solved_separately`,
+`test_subset_rows_equal_the_full_grid_rows` and
+`test_simulate_jobs_pads_mixed_job_arity_for_the_pool`. The sweep contract is
+guarded by `test_pruned_sweep_matches_the_unpruned_sweep_exactly` (S and I
+plants; default, manual price, CP-SAT and required-well runs) and
+`test_pruned_winner_is_rerun_on_the_full_grid`.
+
+**Patch 51 changes no physics equation, calibration persistence or model
+version.** Rows are the rows a full-grid solve produces. No deployment,
+database write or commit was performed.

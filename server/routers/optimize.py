@@ -49,8 +49,27 @@ def start_run(req: schemas.OptimizeRunRequest) -> Any:
     if req.kind == "pad" and req.pad is None:
         raise HTTPException(
             status_code=422,
-            detail={"error": "invalid", "message": "kind=pad requires pad (S, I or M)"},
+            detail={"error": "invalid", "message": "kind=pad requires pad (S, I, M or E)"},
         )
+    if req.kind == "pad" and req.n_pumps is not None:
+        # Checked here, not minutes into the job: a count the plant does not
+        # offer used to run (I/E fixed trains) or model a count S never runs.
+        options = [int(n) for n in optimizer_runs._pad_plant(req.pad).n_pump_options]
+        if req.n_pumps not in options:
+            raise HTTPException(status_code=422, detail={"error": "invalid", "message": (
+                f"{req.pad}-Pad runs a fixed pump train; leave pumps online unset" if not options else
+                f"{req.pad}-Pad offers {', '.join(map(str, options))} pumps online, not {req.n_pumps}")})
+    donors = sorted({f.match for f in req.future})
+    if donors:
+        try:
+            from server.services import wells as wells_svc
+            known = {w["name"] for w in wells_svc.list_wells()["wells"]}
+        except Exception:  # noqa: BLE001 - the job reports hydration failures itself
+            known = None
+        unknown = [d for d in donors if known is not None and d not in known]
+        if unknown:
+            raise HTTPException(status_code=422, detail={"error": "invalid", "message": (
+                "Unknown donor well" + ("s" if len(unknown) > 1 else "") + ": " + ", ".join(unknown))})
     return {"job_id": optimizer_runs.start_run(req)}
 
 
@@ -141,6 +160,7 @@ def pump_curve(
     suction_psi: Optional[float] = Query(None, ge=0.0, le=5000.0),
     hz_max: Optional[float] = Query(None, ge=30.0, le=60.0),
     max_header_psi: Optional[float] = Query(None, ge=1000.0, le=5000.0),
+    amp_limit_a: Optional[float] = Query(None, gt=0.0, le=5000.0),
 ) -> Any:
     """Industry-format booster-pump curves for one pad's plant: the station
     family of delivered header pressure vs total flow plus each machine's
@@ -161,6 +181,7 @@ def pump_curve(
         "suction_psi": suction_psi,
         "hz_max": hz_max,
         "max_header_psi": max_header_psi,
+        "amp_limit_a": amp_limit_a,
     }
     passed = [k for k, v in e_knobs.items() if v is not None]
     if pad != "E" and passed:

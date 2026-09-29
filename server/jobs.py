@@ -50,6 +50,19 @@ _JOB_SLOTS = threading.BoundedSemaphore(_MAX_JOBS)
 
 Runner = Callable[[dict[str, Any]], dict[str, Any]]
 
+# Jobs allowed to WAIT for a slot. Each waiting job is a thread and minutes
+# of future compute on the shared tier; past this, starts are refused with a
+# clear message instead of silently queueing (20 repeated POSTs used to make
+# 20 queued jobs).
+try:
+    _MAX_QUEUED = max(1, int(os.getenv("WOFFL_MAX_QUEUED_JOBS", "6")))
+except ValueError:
+    _MAX_QUEUED = 6
+
+
+class JobQueueFull(RuntimeError):
+    """Too many jobs are already waiting for a slot."""
+
 
 class JobCancelled(Exception):
     """Cooperative cancellation; an in-flight worker must finish before release."""
@@ -82,10 +95,14 @@ def cancel(job_id: str, kinds: tuple[str, ...]) -> bool:
 def _prune_jobs() -> None:
     now = time.monotonic()
     with _JOBS_LOCK:
+        # settled_mono == 0 means "settling right now": the status flips a
+        # moment before the settle time lands, and 0 would read as settled
+        # at boot - a just-finished result could be pruned before any poll.
         dead = [
             jid
             for jid, j in _JOBS.items()
-            if j["status"] != "running" and now - j["settled_mono"] > _JOB_TTL_SECONDS
+            if j["status"] != "running" and j["settled_mono"] > 0.0
+            and now - j["settled_mono"] > _JOB_TTL_SECONDS
         ]
         for jid in dead:
             del _JOBS[jid]
@@ -149,9 +166,21 @@ def start(kind: str, run: Runner, progress: str = "starting...") -> str:
         "started_mono": time.monotonic(),
         "settled_mono": 0.0,
         "cancel_event": threading.Event(),
+        "waiting": True,
     }
     with _JOBS_LOCK:
+        waiting = sum(1 for j in _JOBS.values() if j["status"] == "running" and j.get("waiting"))
+        if waiting >= _MAX_QUEUED:
+            raise JobQueueFull(
+                f"{waiting} jobs are already waiting for the compute slot; "
+                "wait for one to finish or cancel one, then try again"
+            )
         _JOBS[job_id] = job
+
+    def ahead() -> int:
+        with _JOBS_LOCK:
+            return sum(1 for j in _JOBS.values() if j is not job and j["status"] == "running"
+                       and j["started_mono"] <= job["started_mono"])
 
     def target() -> None:
         # Bounded concurrency: every pad run / match-health / event
@@ -165,10 +194,16 @@ def start(kind: str, run: Runner, progress: str = "starting...") -> str:
             check_cancelled(job)
             acquired = _JOB_SLOTS.acquire(blocking=False)
             if not acquired:
-                job["progress"] = f"queued - waiting for a job slot (max {_MAX_JOBS} at once)"
+                shown = -1
                 while not acquired:
                     check_cancelled(job)
+                    n = ahead()
+                    if n != shown:
+                        shown = n
+                        job["progress"] = (f"queued - {n} job{'' if n == 1 else 's'} ahead "
+                                           f"(max {_MAX_JOBS} running at once)")
                     acquired = _JOB_SLOTS.acquire(timeout=0.25)
+            job["waiting"] = False
             check_cancelled(job)
             from server import performance
             performance.record("job.queue", time.monotonic() - job["started_mono"])
@@ -176,17 +211,23 @@ def start(kind: str, run: Runner, progress: str = "starting...") -> str:
                 result = run(job)
                 check_cancelled(job)
                 job["result"] = result
+            # Settle time first, then status (see _prune_jobs).
+            job["settled_mono"] = time.monotonic()
             job["status"] = "done"
             job["progress"] = "done"
         except JobCancelled:
+            job["settled_mono"] = time.monotonic()
             job["status"] = "cancelled"
             job["progress"] = "cancelled"
         except Exception as exc:  # noqa: BLE001 - job surface, never crash the server
             log.exception("%s job %s failed", kind, job_id)
-            job["status"] = "error"
-            job["error"] = str(exc)
-        finally:
             job["settled_mono"] = time.monotonic()
+            job["error"] = str(exc)
+            job["status"] = "error"
+        finally:
+            job["waiting"] = False
+            if not job["settled_mono"]:
+                job["settled_mono"] = time.monotonic()
             if acquired:
                 _JOB_SLOTS.release()
 

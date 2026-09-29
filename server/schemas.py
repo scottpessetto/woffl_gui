@@ -488,16 +488,17 @@ class OptimizeRunRequest(BaseModel):
     # modeled as boosted on-pad at c_pad_pf_psi (the C-Pad treatment). POPs
     # incremental POPS routing is unqualified in this model: rejected.
     cfp_pads: list[str] = ["B", "G", "C", "J"]
-    # e-pad-run knobs. E-Pad's booster is the only plant whose configuration
-    # is NOT a measured tag: no E-Pad SCADA point, no motor nameplate, and no
-    # piping rating came with the vendor curve sheets, so every one of these
-    # is the engineer's to state. Defaults are the Summit workbook's cells
-    # (suction) and I-Pad's operational cap (header). Ignored on other pads.
+    # e-pad-run knobs. E-Pad's booster has no live SCADA tags, so a run states
+    # them. Suction and the amp limit default to the E-41 surface-kit rate
+    # test (2,704 psi CFP suction at the current-limited 889 A maximum; meta
+    # field_test); the header cap is I-Pad's operational cap pending an E-Pad
+    # piping number. An explicit null amp limit enforces none. Ignored on
+    # other pads.
     e_pad_build: Literal["SM25000_26STG", "SN35000_18STG"] = "SM25000_26STG"
-    e_pad_suction_psi: float = Field(2800.0, ge=0.0, le=5000.0)
+    e_pad_suction_psi: float = Field(2704.0, ge=0.0, le=5000.0)
     e_pad_hz_max: float = Field(60.0, ge=30.0, le=60.0)
     e_pad_max_header_psi: float = Field(3500.0, ge=1000.0, le=5000.0)
-    e_pad_amp_limit_a: Optional[float] = Field(None, gt=0.0, le=5000.0)
+    e_pad_amp_limit_a: Optional[float] = Field(889.0, gt=0.0, le=5000.0)
 
     @model_validator(mode="after")
     def _study_constraints(self):
@@ -511,9 +512,32 @@ class OptimizeRunRequest(BaseModel):
             raise ValueError("E-Pad suction must be below the header cap")
         if self.kind == "pad" and self.strategy == "choke" and any(f.nozzle is None for f in self.future):
             raise ValueError("Choose a planned nozzle and throat for each future well before a choke run")
+        if self.kind == "pad" and self.pad == "S" and self.strategy == "choke":
+            raise ValueError("S-Pad's header follows its flow, so it has no hold-pumps choke plan; run a resize")
+        # The replacement catalog. A resize or CFP run with an empty grid
+        # would finish "complete" having considered no replacement at all,
+        # and an unknown size used to fail minutes into the job.
+        self.nozzles = list(dict.fromkeys(n.strip() for n in self.nozzles if n.strip()))
+        self.throats = list(dict.fromkeys(t.strip().upper() for t in self.throats if t.strip()))
+        if not (self.kind == "pad" and self.strategy == "choke"):
+            if not self.nozzles or not self.throats:
+                raise ValueError("Select at least one nozzle and one throat size")
+            from woffl.geometry.jetpump import JetPump
+            bad = [n for n in self.nozzles if not (n.isdigit() and 1 <= int(n) <= len(JetPump.nozzle_dia))]
+            bad += [t for t in self.throats if t not in JetPump.area_code]
+            if bad:
+                raise ValueError("Unknown pump sizes: " + ", ".join(bad))
+        # A future well assigned to a pad outside the run used to be skipped
+        # with a note, turning the whole run into an incomplete study.
+        run_pads = {self.pad} if self.kind == "pad" else set(self.cfp_pads or ["B", "G", "C", "J"])
+        outside = [f.name for f in self.future if f.pad is not None and f.pad.strip().upper() not in run_pads]
+        if outside:
+            raise ValueError("Future wells belong to a pad outside this run: " + ", ".join(outside))
         for pad, pressure in self.cfp_pad_pf_psi.items():
             if pad not in {"B", "G", "J"} or not 1000 <= pressure <= 5000:
                 raise ValueError("Reference pad PF must be B/G/J pressures between 1000 and 5000 psi")
+            if self.kind == "cfp" and pressure > self.p0_psi:
+                raise ValueError(f"{pad}-Pad PF ({pressure:,.0f} psi) cannot exceed the reference discharge ({self.p0_psi:,.0f} psi)")
         return self
 
     @field_validator("cfp_pads")
@@ -686,16 +710,19 @@ class EPadBoosterRequest(BaseModel):
     it cannot exceed 1.
     """
 
-    dp_psid: float = Field(600.0, gt=0.0, le=4000.0)
-    suction_psi: float = Field(2800.0, ge=0.0, le=5000.0)
+    dp_psid: float = Field(696.0, gt=0.0, le=4000.0)
+    suction_psi: float = Field(2704.0, ge=0.0, le=5000.0)
     sg: float = Field(1.02, ge=0.90, le=1.30)
     # Head-only wear derate; 1.00 = as-new (the workbooks' "Condition" cell).
+    # The screen compares candidate builds as new; the installed unit
+    # measured about 0.77 in the rate test (e_pad_booster.field_calibration).
     condition: float = Field(1.0, gt=0.50, le=1.0)
     hz_max: float = Field(60.0, ge=30.0, le=60.0)
-    amps_per_bhp: float = Field(0.1435, gt=0.0, le=20.0)
-    # None = report amps, enforce no cap. There is no E-Pad motor nameplate in
-    # the vendor data, so a default limit would be invented.
-    amp_limit_a: Optional[float] = Field(None, gt=0.0, le=5000.0)
+    # The E-41 surface-kit motor, calibrated in the rate test (meta field_test).
+    amps_per_bhp: float = Field(1.4281, gt=0.0, le=20.0)
+    # The E-41 drive's measured current limit; None = report amps, no cap.
+    # A build on a different motor needs its own limit.
+    amp_limit_a: Optional[float] = Field(889.0, gt=0.0, le=5000.0)
 
 
 class EPadTarget(BaseModel):
@@ -2088,3 +2115,97 @@ class OiwSamplesResponse(BaseModel):
     sample_count: int  # samples at `location`, not rows in the sheet
     daily: list[OiwSampleDay] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+
+
+# ── Header page (production-header impact) ──────────────────────────────────
+
+
+class HeaderBoardRequest(BaseModel):
+    """Load every producer on the pads with its relation, IPR and correlation."""
+
+    pads: list[str] = Field(min_length=1)
+    fit_days: int = Field(120, ge=30, le=365)
+
+
+class HeaderWellChoice(BaseModel):
+    """Per-well run choice. None fields fall back to the board default."""
+
+    well: str
+    online: Optional[bool] = None
+    # True/False overrides the automatic gauge check; None keeps it.
+    gauge_bad: Optional[bool] = None
+    relation: Optional[Literal["auto", "saved", "measured", "correlation", "manual"]] = None
+    # Which BHP~WHP correlation group ("ESP schrader", "ESP", ...) to borrow.
+    corr_group: Optional[str] = Field(None, max_length=64)
+    slope: Optional[float] = Field(None, ge=0.0, le=1.5)
+    # "assumed" is the pre-2026-09-30 name for "correlation".
+    ipr: Optional[Literal["auto", "saved", "fit", "correlation", "assumed", "manual"]] = None
+    # Which reservoir IPR group ("L kuparuk", "schrader", ...) to borrow.
+    ipr_group: Optional[str] = Field(None, max_length=64)
+    qwf: Optional[float] = Field(None, gt=0.0)
+    pwf: Optional[float] = Field(None, gt=0.0)
+    pres: Optional[float] = Field(None, gt=0.0)
+
+
+class HeaderRunRequest(BaseModel):
+    """Production-header impact: a typed scenario or an observed event.
+
+    ``delta_by_pad`` is psi per pad (scenario mode). Event mode measures each
+    pad's header change between the pre and post windows (hours) around
+    ``event_time`` (YYYY-MM-DD or YYYY-MM-DDTHH:MM, historian local time) and
+    excludes ``event_well`` from the impact.
+    """
+
+    pads: list[str] = Field(min_length=1)
+    fit_days: int = Field(120, ge=30, le=365)
+    mode: Literal["scenario", "event"] = "scenario"
+    delta_by_pad: dict[str, float] = Field(default_factory=dict)
+    event_time: Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$")
+    pre_hours: int = Field(72, ge=6, le=720)
+    post_hours: int = Field(24, ge=3, le=720)
+    gap_hours: int = Field(6, ge=0, le=72)
+    event_well: Optional[str] = None
+    event_well_oil: Optional[float] = Field(None, ge=0.0)
+    wells: list[HeaderWellChoice] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check(self) -> "HeaderRunRequest":
+        for pad, dp in self.delta_by_pad.items():
+            if not -300.0 <= float(dp) <= 300.0:
+                raise ValueError(f"header change for pad {pad} must be within +/-300 psi")
+        if self.mode == "event" and not self.event_time:
+            raise ValueError("event mode needs event_time")
+        return self
+
+
+class HeaderSaveWell(BaseModel):
+    """What to save for one well; gauge/group choices resolve it like a run."""
+
+    well: str
+    relation: Optional[Literal["measured", "correlation", "manual"]] = None
+    corr_group: Optional[str] = Field(None, max_length=64)
+    slope: Optional[float] = Field(None, ge=0.0, le=1.5)
+    ipr: Optional[Literal["fit", "correlation", "assumed", "manual"]] = None
+    ipr_group: Optional[str] = Field(None, max_length=64)
+    gauge_bad: Optional[bool] = None
+    qwf: Optional[float] = Field(None, gt=0.0)
+    pwf: Optional[float] = Field(None, gt=0.0)
+    pres: Optional[float] = Field(None, gt=0.0)
+
+
+class HeaderSaveRequest(BaseModel):
+    """Save relations/IPRs from a completed board or run job (values resolved server-side)."""
+
+    board_job_id: str
+    wells: list[HeaderSaveWell] = Field(min_length=1, max_length=200)
+
+
+class HeaderJobStatus(BaseModel):
+    job_id: str
+    kind: Literal["header_board", "header_run"]
+    status: Literal["running", "done", "error", "cancelled"]
+    progress: Optional[str] = None
+    result: Optional[dict[str, Any]] = None
+    error: Optional[str] = None
+    started_at: Optional[str] = None
+    seconds: float = 0.0
