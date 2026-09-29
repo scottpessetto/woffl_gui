@@ -15,7 +15,7 @@ import type { HeaderBoard, HeaderBoardRow, HeaderWellChoice } from "../../api/ty
 import { Badge } from "../../components/ui";
 import { fmtNum } from "../../lib/format";
 import { useHeaderStore } from "../../state/header";
-import { corrGroupsFor, effective, iprGroupsFor, presLabel, savePlan } from "./model";
+import { corrGroupsFor, effective, gaugeBadDefault, iprGroupsFor, presLabel, savePlan } from "./model";
 
 /** The option list plus the group already selected, even if it was deduplicated away. */
 const withSelected = (keys: string[], selected: string | null) =>
@@ -34,6 +34,7 @@ function iprDefaultLabel(row: HeaderBoardRow, choice?: HeaderWellChoice): string
   const e = effective(row, { ...(choice ?? { well: row.well }), ipr: "auto" });
   if (!e.ipr.ipr) return e.ipr.reason ?? "none";
   if (e.ipr.kind === "saved") return "saved IPR";
+  if (e.ipr.kind === "fit") return `gauge fit (ResP ${fmtNum(e.ipr.ipr.pres, 0)})`;
   return `${presLabel(row)} @ ${e.gaugeOk ? "gauge BHP" : "ratio BHP"}`;
 }
 
@@ -56,13 +57,14 @@ export function GaugeCell({ row, choice }: { row: HeaderBoardRow; choice?: Heade
   const setChoice = useHeaderStore((s) => s.setChoice);
   if (!row.has_gauge) return <span className="text-xs text-slate-400">no BHP gauge</span>;
   const eff = effective(row, choice);
-  const overridden = choice?.gauge_bad !== undefined && choice.gauge_bad !== null && choice.gauge_bad !== row.gauge_auto_bad;
-  const note = row.gauge_auto_bad && !overridden
-    ? "(auto-flagged)"
-    : overridden && row.gauge_auto_bad
-      ? "(auto flag overridden)"
-      : overridden
-        ? "(marked by you)"
+  const unsaved = choice?.gauge_bad !== undefined && choice.gauge_bad !== null && choice.gauge_bad !== gaugeBadDefault(row);
+  const saved = row.gauge_saved;
+  const note = unsaved
+    ? "(not saved yet)"
+    : saved
+      ? `(saved ${(saved.at ?? "").slice(0, 10)}${saved.by ? ` by ${saved.by.split("@")[0]}` : ""})`
+      : row.gauge_auto_bad
+        ? "(auto-flagged)"
         : "";
   return (
     <label

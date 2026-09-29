@@ -54,7 +54,7 @@ export function correlationChart(
   if (!corr.points.length) return null;
   const c = corr.correlation;
   const borrowers = rows
-    .filter((r) => r.corr_group === key && (r.gauge_auto_bad || r.measured.status !== "measured") && r.corr_options[key] && r.liquid)
+    .filter((r) => r.corr_group === key && ((r.gauge_bad_default ?? r.gauge_auto_bad) || r.measured.status !== "measured") && r.corr_options[key] && r.liquid)
     .map((r) => ({ well: r.well, q: r.liquid as number, s: r.corr_options[key].slope }));
   const reservoirs = [...new Set(corr.points.map((p) => p.reservoir || "unknown"))].sort();
   const line: [number, number][] = [];

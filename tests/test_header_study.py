@@ -103,11 +103,24 @@ def test_window_delta_uses_medians_and_ignores_the_transition():
     assert m["n_pre"] == 72 and m["n_post"] == 18
 
 
-def test_run_status_levels():
-    base = {"online": True, "outcome": "modeled", "relation_source": "measured", "ipr_source": "fit"}
-    assert hm.run_status([base])["status"] == "complete"
-    assert hm.run_status([base, {**base, "well": "B", "ipr_source": "assumed"}])["status"] == "conditional"
-    assert hm.run_status([base, {**base, "well": "C", "outcome": "missing_inputs"}])["status"] == "incomplete"
+def test_run_status_levels_firm_means_own_data_or_a_saved_review():
+    base = {"well": "A", "online": True, "outcome": "modeled", "relation_source": "measured",
+            "ipr_source": "correlation", "pres_basis": "saved"}
+    assert hm.run_status([base])["status"] == "complete"          # measured slope + its own saved ResP
+    jp = {**base, "well": "J", "relation_source": "physics", "ipr_source": "jp"}
+    assert hm.run_status([jp])["status"] == "complete"
+    # A usable fit of the well's own gauged tests is firm.
+    assert hm.run_status([{**base, "ipr_source": "fit", "ipr_fit_usable": True}])["status"] == "complete"
+    # Not reviewed yet: default ResP, a borrowed correlation, a flagged fit or manual value.
+    for patch in ({"pres_basis": "default"}, {"relation_source": "correlation"},
+                  {"ipr_source": "fit"}, {"ipr_source": "manual"}, {"relation_source": "manual"}):
+        st = hm.run_status([base, {**base, "well": "B", **patch}])
+        assert st["status"] == "conditional" and st["soft"] == ["B"], patch
+    # Saving any of those after review makes the well firm.
+    reviewed = {**base, "well": "C", "relation_source": "correlation", "relation_saved": True,
+                "ipr_source": "correlation", "pres_basis": "default", "ipr_saved": True}
+    assert hm.run_status([base, reviewed])["status"] == "complete"
+    assert hm.run_status([base, {**base, "well": "D", "outcome": "missing_inputs"}])["status"] == "incomplete"
     assert hm.run_status([{**base, "online": False, "outcome": "offline"}])["status"] == "complete"
 
 
@@ -151,9 +164,11 @@ def _choice(**kw):
 def test_effective_defaults_follow_the_ladder():
     e = hs.effective(_row())
     assert e["rel"]["source"] == "measured" and (e["rel"]["lo"], e["rel"]["hi"]) == (0.5, 0.7)
-    # IPR default: the well's own ResP at today's rate and gauge BHP, not the pseudo-ResP fit.
-    assert e["ipr"]["source"] == "correlation" and e["gauge_ok"] and e["online"]
-    assert hs.effective(_row(), _choice(ipr="fit"))["ipr"]["source"] == "fit"
+    # IPR default: the well's own gauge data (a usable fit of its gauged tests) ...
+    assert e["ipr"]["source"] == "fit" and e["ipr"]["fit_usable"] and e["gauge_ok"] and e["online"]
+    # ... else its own ResP at today's rate and gauge BHP.
+    assert hs.effective(_row(ipr_fit=None))["ipr"]["source"] == "correlation"
+    assert hs.effective(_row(), _choice(gauge_bad=True))["ipr"]["source"] == "correlation"
     saved = _row(saved={"slope": 0.4, "whp_hdr": 1.0, "source": "correlation"},
                  saved_ipr={"qwf": 900.0, "pwf": 600.0, "pres": 2500.0, "source": "correlation"})
     s = hs.effective(saved)
@@ -290,12 +305,12 @@ def test_each_well_keeps_its_own_resp_and_groups_only_supply_bhp_for_gaugeless_w
     assert e["ipr"]["source"] == "correlation" and e["ipr"]["ipr"]["pres"] == 3000.0
     assert e["ipr"]["ipr"]["pwf"] == pytest.approx(round(g["ratio"]["med"] * 3000.0), abs=1)
     assert e["ipr"]["ipr"]["qwf"] == 700.0
-    # The gauge-test fit never becomes the default, even when usable.
+    # A usable gauge fit is the default (the well's own data); the well-ResP option stays available.
     fitted = _raw("L7", "kuparuk", 900, 0.6, pad="L", ipr_fit={"qwf": 900.0, "pwf": 600.0, "pres": 1400.0})
     fitted.update(pres_well=1800.0, pres_basis="default")
     hs._attach_options(fitted, corr, groups)
-    assert hs.effective(fitted)["ipr"]["ipr"]["pres"] == 1800.0
-    assert hs.effective(fitted, _choice(ipr="fit"))["ipr"]["ipr"]["pres"] == 1400.0
+    assert hs.effective(fitted)["ipr"]["ipr"]["pres"] == 1400.0
+    assert hs.effective(fitted, _choice(ipr="correlation"))["ipr"]["ipr"]["pres"] == 1800.0
 
 
 def test_range_brackets_the_base_and_orders_by_magnitude():
@@ -550,3 +565,41 @@ def test_well_route_validates_its_inputs(client, monkeypatch):
     assert client.get("/api/header/well/MPR-102?pads=R,l").json() == {"well": "MPR-102", "fit_days": 120, "pads": ["L", "R"]}
     assert client.get("/api/header/well/DROP TABLE").status_code == 422
     assert client.get("/api/header/well/MPR-102?fit_days=5").status_code == 422
+
+
+# ── saved gauge verdict (hdr_gauge_bad) ──────────────────────────────────────
+
+
+def test_a_saved_gauge_verdict_overrides_the_automatic_check_until_changed():
+    # Saved bad on a gauge the check thinks is fine.
+    bad = _row(gauge_saved={"bad": True, "at": "2026-09-29", "by": "x"}, gauge_bad_default=True)
+    e = hs.effective(bad)
+    assert not e["gauge_ok"] and e["rel"]["source"] == "correlation"
+    # Saved good on a gauge the check flagged (engineer overrode it).
+    good = _row(gauge_auto_bad=True, gauge_saved={"bad": False, "at": "2026-09-29", "by": "x"}, gauge_bad_default=False)
+    assert hs.effective(good)["gauge_ok"]
+    # A session choice still wins over the saved verdict (until it is saved).
+    assert hs.effective(bad, _choice(gauge_bad=False))["gauge_ok"]
+
+
+def test_saving_the_gauge_verdict_writes_hdr_gauge_bad_including_gauge_only_and_jp(monkeypatch):
+    from woffl.assembly import prop_hist_client
+
+    rows = [_row(), _row(well="MPF-107", lift="JP"), _row(well="MPR-142", has_gauge=False)]
+    monkeypatch.setattr(hs.jobs, "get", lambda jid, kinds: _board_job(rows))
+    monkeypatch.setattr(prop_hist_client, "resolve_entry_user", lambda: "t@x")
+    calls = []
+    monkeypatch.setattr(prop_hist_client, "push_props", lambda w, v, entry_user: calls.append((w, dict(v))) or len(v))
+    out = hs.save(schemas.HeaderSaveRequest(board_job_id="b", wells=[
+        schemas.HeaderSaveWell(well="MPF-01", gauge_bad=True),                       # gauge only
+        schemas.HeaderSaveWell(well="MPF-107", gauge_bad=False),                     # JP: gauge only is fine
+        schemas.HeaderSaveWell(well="MPR-142", gauge_bad=True),                      # no gauge to flag
+        schemas.HeaderSaveWell(well="MPF-01", gauge_bad=True, relation="correlation"),
+    ]))
+    assert calls[0] == ("MPF-01", {hs.HDR_GAUGE_BAD: 1.0})
+    assert calls[1] == ("MPF-107", {hs.HDR_GAUGE_BAD: 0.0})
+    # With the gauge marked bad the relation resolves to its correlation, saved alongside.
+    assert calls[2][1][hs.HDR_GAUGE_BAD] == 1.0 and calls[2][1][hs.HDR_REL_SOURCE] == 2.0
+    errs = {r["well"]: r["error"] for r in out["results"] if r["error"]}
+    assert "no BHP gauge" in errs["MPR-142"]
+    assert hs.HDR_GAUGE_BAD in hs.SAVED_PROP_IDS

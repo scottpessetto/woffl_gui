@@ -115,6 +115,7 @@ export function WellsTab({ dFor, writesOn }: { dFor: (pad: string) => number; wr
   const fitDays = useHeaderStore((s) => s.form.fitDays);
   const setForm = useHeaderStore((s) => s.setForm);
   const choices = useHeaderStore((s) => s.choices);
+  const setChoice = useHeaderStore((s) => s.setChoice);
   const resetChoices = useHeaderStore((s) => s.resetChoices);
   const boardJob = useHeaderStore((s) => s.boardJob);
   const setBoardJob = useHeaderStore((s) => s.setBoardJob);
@@ -131,7 +132,17 @@ export function WellsTab({ dFor, writesOn }: { dFor: (pad: string) => number; wr
   const pads = padsQ.data?.pads ?? [];
   const want = [...wellsPads].sort();
   const wantKey = `${want.join(",")}|${fitDays}`;
-  const board = boardQ.data?.status === "done" ? (boardQ.data.result as HeaderBoard) : null;
+  // Keep showing the last finished board (and save against ITS job) while a
+  // reload runs - after a save, or when pads change - so the cards never
+  // blank out mid-review.
+  const [shown, setShown] = useState<{ board: HeaderBoard; jobId: string } | null>(null);
+  useEffect(() => {
+    if (boardQ.data?.status === "done" && boardJob && boardQ.data.job_id === boardJob) {
+      setShown({ board: boardQ.data.result as HeaderBoard, jobId: boardJob });
+    }
+  }, [boardQ.data, boardJob]);
+  const board = shown?.board ?? null;
+  const shownJob = shown?.jobId ?? null;
   const boardKey = board ? `${board.pads.join(",")}|${board.fit_days}` : null;
   const running = boardQ.data?.status === "running";
   // Which request the current job belongs to (survives re-renders, not reloads).
@@ -171,6 +182,13 @@ export function WellsTab({ dFor, writesOn }: { dFor: (pad: string) => number; wr
 
   const afterSave = async (res: HeaderSaveResponse) => {
     setSaveResult(res);
+    // A saved well now defaults to what was saved: drop its overrides,
+    // including the gauge verdict (saved too). Online stays a session choice.
+    for (const r of res.results) {
+      if (r.saved) {
+        setChoice(r.well, { gauge_bad: null, relation: null, corr_group: null, slope: null, ipr: null, ipr_group: null, qwf: null, pwf: null, pres: null });
+      }
+    }
     if (res.saved_wells > 0 && board) {
       // Saved values become the board defaults: reload so the cards show them.
       requested.current = `${board.pads.join(",")}|${board.fit_days}`;
@@ -179,21 +197,21 @@ export function WellsTab({ dFor, writesOn }: { dFor: (pad: string) => number; wr
     }
   };
   const doSave = async () => {
-    if (!board || !boardJob) return;
+    if (!board || !shownJob) return;
     const wells = board.rows
       .filter((r) => saveSel.has(r.well))
       .map((r) => savePlan(r, choices[r.well]).entry)
       .filter((e): e is NonNullable<typeof e> => e !== null);
     if (!wells.length) return;
-    const res = await save.mutateAsync({ board_job_id: boardJob, wells });
+    const res = await save.mutateAsync({ board_job_id: shownJob!, wells });
     setSaveSel(new Set());
     await afterSave(res);
   };
   const doSaveOne = async (entry: HeaderSaveWell) => {
-    if (!board || !boardJob) return;
+    if (!board || !shownJob) return;
     setSavingWell(entry.well);
     try {
-      await afterSave(await save.mutateAsync({ board_job_id: boardJob, wells: [entry] }));
+      await afterSave(await save.mutateAsync({ board_job_id: shownJob, wells: [entry] }));
     } finally {
       setSavingWell(null);
     }
@@ -298,8 +316,10 @@ export function WellsTab({ dFor, writesOn }: { dFor: (pad: string) => number; wr
                 ))}
               </InfoNote>
             )}
-            {boardKey !== wantKey && want.length > 0 && (
-              <div className="text-xs text-slate-500">Showing {board.pads.join(", ")} while {want.join(", ")} loads...</div>
+            {running && (
+              <div className="text-xs text-slate-500">
+                {boardKey !== wantKey ? `Showing ${board.pads.join(", ")} while ${want.join(", ")} loads...` : "Refreshing in the background - keep working."}
+              </div>
             )}
             {view === "cards" ? (
               <WellCards board={board} dFor={dFor} onSave={(e) => void doSaveOne(e)} saving={savingWell} writesOn={writesOn} />

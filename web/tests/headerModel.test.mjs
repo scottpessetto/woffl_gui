@@ -51,13 +51,19 @@ test("defaults follow the ladder and JP runs the pump model", () => {
   const e = effective(row());
   assert.equal(e.rel.kind, "measured");
   assert.deepEqual([e.rel.lo, e.rel.hi], [0.5, 0.7]);
-  // Default IPR: the well's own ResP (saved, else default); the pseudo-ResP fit only when chosen.
-  assert.equal(e.ipr.kind, "correlation");
-  assert.equal(effective(row(), { well: "MPF-01", ipr: "fit" }).ipr.kind, "fit");
+  // Default IPR: the well's own gauge data (usable fit), else its own ResP.
+  assert.equal(e.ipr.kind, "fit");
+  assert.equal(effective(row({ ipr_fit: null })).ipr.kind, "correlation");
   assert.equal(effective(row({ lift: "JP" })).rel.kind, "physics");
   const saved = row({ saved: { slope: 0.4, whp_hdr: 1, source: "correlation", r2: 0, days: 0, at: null, by: null } });
   assert.equal(effective(saved).rel.kind, "saved");
-  assert.equal(effective(saved).rel.firm, false);
+  assert.equal(effective(saved).rel.firm, true);   // any saved relation: reviewed, so firm
+  // IPR on the default ResP is not firm; on the well's own saved ResP it is.
+  assert.equal(effective(row({ ipr_fit: null })).ipr.firm, false);
+  assert.equal(effective(row({ ipr_fit: null, pres_basis: "saved" })).ipr.firm, true);
+  assert.equal(effective(row()).ipr.firm, true); // usable gauge fit = own data
+  const flagged = row({ ipr_fit: null, ipr_fit_any: { qwf: 1051, pwf: 510, pres: 4200 } });
+  assert.equal(effective(flagged, { well: "MPF-01", ipr: "fit" }).ipr.firm, false);
 });
 
 test("a bad gauge (auto or marked) switches the well to its correlations", () => {
@@ -127,8 +133,8 @@ test("blockers name the fix", () => {
 });
 
 test("save plan carries groups and gauge state; never a JP or weak relation", () => {
-  assert.deepEqual(savePlan(row()).entry, { well: "MPF-01", relation: "measured", ipr: "correlation", ipr_group: "F kuparuk" });
-  assert.deepEqual(savePlan(row(), { well: "MPF-01", ipr: "fit" }).entry, { well: "MPF-01", relation: "measured", ipr: "fit" });
+  assert.deepEqual(savePlan(row()).entry, { well: "MPF-01", relation: "measured", ipr: "fit" });
+  assert.deepEqual(savePlan(row({ ipr_fit: null })).entry, { well: "MPF-01", relation: "measured", ipr: "correlation", ipr_group: "F kuparuk" });
   assert.equal(savePlan(row({ lift: "JP" })).entry, null);
   const dead = savePlan(row(), { well: "MPF-01", gauge_bad: true }).entry;
   assert.deepEqual(dead, { well: "MPF-01", relation: "correlation", corr_group: "ESP kuparuk", ipr: "correlation", ipr_group: "F kuparuk", gauge_bad: true });
@@ -190,4 +196,19 @@ test("review status: not saved, saved, and drift when the data has moved on", ()
   assert.equal(reviewState(row({ saved_ipr: { ...ipr, qwf: 1000 } })).status, "saved");
   // A bad gauge cannot say the saved slope drifted.
   assert.equal(reviewState(row({ saved, gauge_auto_bad: true, measured: { ...row().measured, slope: 0.1 } })).status, "saved");
+});
+
+test("a saved gauge verdict is the default; changing it is a (gauge-only) save", () => {
+  const savedBad = row({ gauge_saved: { bad: true, at: "2026-09-29", by: "x" }, gauge_bad_default: true });
+  assert.equal(effective(savedBad).gaugeOk, false);
+  assert.equal(effective(savedBad, { well: "MPF-01", gauge_bad: false }).gaugeOk, true);
+  // Ticking bad on a good gauge: saving writes the flag (with the correlations it implies).
+  const plan = savePlan(row(), { well: "MPF-01", gauge_bad: true }).entry;
+  assert.equal(plan.gauge_bad, true);
+  // Unticking a saved bad flag saves "good".
+  assert.equal(savePlan(savedBad, { well: "MPF-01", gauge_bad: false }).entry.gauge_bad, false);
+  // Jet pumps can save the gauge verdict alone.
+  assert.deepEqual(savePlan(row({ lift: "JP" }), { well: "MPF-01", gauge_bad: true }).entry, { well: "MPF-01", gauge_bad: true });
+  // Matching the saved verdict is not a change.
+  assert.equal(savePlan(savedBad, { well: "MPF-01", gauge_bad: true }).entry?.gauge_bad, undefined);
 });

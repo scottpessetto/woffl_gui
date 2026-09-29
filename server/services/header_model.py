@@ -353,25 +353,45 @@ def window_delta(series: Optional[pd.Series], win: dict[str, pd.Timestamp]) -> d
 
 # ── run status ───────────────────────────────────────────────────────────────
 
-# Relation / IPR sources a run can use without making the answer conditional.
-# A saved value keeps the source it was saved from (``*_saved`` flags ride
-# beside it), so a saved correlation is still a correlation.
+# Firm = rests on the well's own data or on an engineer's saved review
+# (user decision 2026-09-29), so "conditional" means "some wells nobody has
+# reviewed yet" and clears as wells are saved.
+#   relation: the pump model, the well's own measured slope, or ANY saved relation
+#   IPR:      the jet pump's Solver IPR, ANY saved IPR, a USABLE fit of the
+#             well's own gauged tests, or the well's own SAVED ResP
+# Unsaved correlations, default ResP (1,800 / 3,000), flagged gauge fits and
+# unsaved manual values stay conditional.
 FIRM_RELATIONS = {"physics", "measured"}
-FIRM_IPRS = {"jp", "fit"}
+
+
+def relation_firm(row: dict[str, Any]) -> bool:
+    return row.get("relation_source") in FIRM_RELATIONS or bool(row.get("relation_saved"))
+
+
+def ipr_firm(row: dict[str, Any]) -> bool:
+    if row.get("ipr_source") == "jp" or row.get("ipr_saved"):
+        return True
+    if row.get("ipr_source") == "fit":
+        return bool(row.get("ipr_fit_usable"))
+    return row.get("ipr_source") == "correlation" and row.get("pres_basis") == "saved"
+
+
+def is_firm(row: dict[str, Any]) -> bool:
+    return relation_firm(row) and ipr_firm(row)
 
 
 def run_status(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Coverage status of a run from its per-well rows.
 
-    ``complete``: every online well modeled from a firm relation and IPR.
-    ``conditional``: every online well modeled, some from a lift-group
-    correlation, an assumed IPR or a manual value.
+    ``complete``: every online well is modeled and firm (its own data or a
+    saved review, see :func:`is_firm`).
+    ``conditional``: every online well modeled, some not yet reviewed
+    (borrowed correlation, default ResP, unsaved fit or manual value).
     ``incomplete``: at least one online well has no estimate.
     """
     online = [r for r in rows if r.get("online")]
     missing = [r["well"] for r in online if r.get("outcome") != "modeled"]
-    soft = [r["well"] for r in online if r.get("outcome") == "modeled" and (
-        r.get("relation_source") not in FIRM_RELATIONS or r.get("ipr_source") not in FIRM_IPRS)]
+    soft = [r["well"] for r in online if r.get("outcome") == "modeled" and not is_firm(r)]
     if missing:
         status = "incomplete"
     elif soft:

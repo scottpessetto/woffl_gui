@@ -3,7 +3,11 @@
 Operating rules for coding agents in this repo. Read this before touching anything.
 Prose lives in `docs/`; this file is only the rules you will otherwise violate.
 
-Header page (2026-09-29, local): [delivery](docs/header_impact_delivery_2026-09-29.md).
+Header page (2026-09-29, local, not deployed): [handoff](docs/header_page_handoff_2026-09-29.md)
+(current state and open items; [delivery log](docs/header_impact_delivery_2026-09-29.md)).
+Each well runs on its own ResP (saved in prop_hist, else default); groups,
+fits and shut-in gauges never set it. `header/model.ts:effective` mirrors
+`header_study.effective`; keep them in step.
 "Header" there is the PRODUCTION header (wellhead back-pressure), never the PF
 header the pad optimizer sweeps. Its BHP~WHP slopes are closed-loop: never
 couple them to the IPR again. Six `hdr_*` ids were added to prop_xref; saves go

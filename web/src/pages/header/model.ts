@@ -107,7 +107,8 @@ function relationFor(row: HeaderBoardRow, choice: HeaderWellChoice | undefined, 
       lo = Math.min(s, isNum(m.q25) ? clip(m.q25) : s);
       hi = Math.max(s, isNum(m.q75) ? clip(m.q75) : s);
     }
-    return { kind: "saved", slope: s, lo, hi, source: row.saved.source, group: null, firm: row.saved.source === "measured" };
+    // Any saved relation is firm: an engineer reviewed it.
+    return { kind: "saved", slope: s, lo, hi, source: row.saved.source, group: null, firm: true };
   }
   if (kind === "measured" && isNum(m.slope)) {
     if (!gaugeOk) return none("the BHP gauge is marked bad, so its measured relation is not used");
@@ -132,9 +133,10 @@ function relationFor(row: HeaderBoardRow, choice: HeaderWellChoice | undefined, 
 function iprFor(row: HeaderBoardRow, choice: HeaderWellChoice | undefined, gaugeOk: boolean, iprKey: string | null): IprView {
   let kind: string = choice?.ipr ?? "auto";
   if (kind === "auto") {
-    // Each well keeps its own ResP (saved, else default); the pseudo-ResP
-    // gauge-test fit is used only when chosen.
+    // Saved IPR, then the well's own gauge data (a usable fit of its gauged
+    // tests), then its own ResP (saved, else default). Flagged fits only when chosen.
     if (row.saved_ipr) kind = "saved";
+    else if (gaugeOk && row.ipr_fit) kind = "fit";
     else if (iprKey) kind = "correlation";
     else kind = "none";
   }
@@ -148,11 +150,12 @@ function iprFor(row: HeaderBoardRow, choice: HeaderWellChoice | undefined, gauge
     const { qwf, pwf, pres } = row.saved_ipr;
     ipr = { qwf, pwf, pres };
     source = row.saved_ipr.source;
-    firm = source === "fit" || source === "jp";
+    firm = true; // any saved IPR: an engineer reviewed it
   } else if (kind === "fit" && gaugeOk && (row.ipr_fit || row.ipr_fit_any)) {
-    // Explicitly chosen, a flagged fit is allowed (the engineer reviewed it).
+    // A usable fit is the well's own data (firm); a flagged one is allowed
+    // when chosen but stays conditional until saved.
     ipr = row.ipr_fit ?? row.ipr_fit_any;
-    firm = true;
+    firm = Boolean(row.ipr_fit);
   } else if (kind === "correlation" && iprKey) {
     const v = row.ipr_options[iprKey]?.[gaugeOk ? "gauge" : "nogauge"];
     if (v) {
@@ -160,6 +163,7 @@ function iprFor(row: HeaderBoardRow, choice: HeaderWellChoice | undefined, gauge
       lo = v.pres_lo;
       hi = v.pres_hi;
       group = iprKey;
+      firm = row.pres_basis === "saved"; // the well's own saved ResP
     }
   } else if (kind === "manual") {
     ipr = { qwf: choice?.qwf ?? null, pwf: choice?.pwf ?? null, pres: choice?.pres ?? null };
@@ -172,9 +176,14 @@ function iprFor(row: HeaderBoardRow, choice: HeaderWellChoice | undefined, gauge
   };
 }
 
+/** The gauge verdict with no session choice: saved, else the automatic check. */
+export function gaugeBadDefault(row: HeaderBoardRow): boolean {
+  return row.gauge_bad_default ?? row.gauge_auto_bad;
+}
+
 /** The gauge state, relation and IPR a well runs with (mirrors the server). */
 export function effective(row: HeaderBoardRow, choice?: HeaderWellChoice): EffectiveWell {
-  const gaugeBad = choice?.gauge_bad ?? row.gauge_auto_bad;
+  const gaugeBad = choice?.gauge_bad ?? gaugeBadDefault(row);
   const gaugeOk = row.has_gauge && !gaugeBad;
   const online = choice?.online ?? (row.age_ok && (!row.looks_down || gaugeBad));
   if (row.lift === "JP") {
@@ -241,7 +250,7 @@ export function choicesForRequest(
       used = true;
     };
     if (c.online !== undefined && c.online !== null && (!row || c.online !== row.online_default)) set("online", c.online);
-    if (c.gauge_bad !== undefined && c.gauge_bad !== null && (!row || c.gauge_bad !== row.gauge_auto_bad)) set("gauge_bad", c.gauge_bad);
+    if (c.gauge_bad !== undefined && c.gauge_bad !== null && (!row || c.gauge_bad !== gaugeBadDefault(row))) set("gauge_bad", c.gauge_bad);
     if (row?.lift === "JP") {
       if (used) out.push(entry);
       continue;
@@ -323,7 +332,14 @@ export function savePlan(
   row: HeaderBoardRow,
   choice?: HeaderWellChoice,
 ): { entry: HeaderSaveWell | null; why: string | null } {
-  if (row.lift === "JP") return { entry: null, why: "Jet pumps use the pump model; save their IPR in Solver." };
+  const gaugeChange = choice?.gauge_bad !== undefined && choice.gauge_bad !== null && row.has_gauge &&
+    (choice.gauge_bad !== gaugeBadDefault(row) || !row.gauge_saved)
+    ? choice.gauge_bad
+    : null;
+  if (row.lift === "JP") {
+    if (gaugeChange !== null) return { entry: { well: row.well, gauge_bad: gaugeChange }, why: null };
+    return { entry: null, why: "Jet pumps use the pump model; save their IPR in Solver." };
+  }
   const eff = effective(row, choice);
   const { rel, ipr } = eff;
   const entry: HeaderSaveWell = { well: row.well };
@@ -345,12 +361,12 @@ export function savePlan(
     entry.pwf = ipr.ipr.pwf;
     entry.pres = ipr.ipr.pres;
   }
-  if (!entry.relation && !entry.ipr) {
+  if (gaugeChange !== null) entry.gauge_bad = gaugeChange;
+  if (!entry.relation && !entry.ipr && entry.gauge_bad === undefined) {
     if (rel.kind === "saved" && ipr.kind === "saved") return { entry: null, why: "Already saved." };
     if (rel.kind === "weak_measured") return { entry: null, why: "Measured relation is weak - pick a correlation or a manual slope." };
     return { entry: null, why: "Nothing new to save." };
   }
-  if (choice?.gauge_bad !== undefined && choice.gauge_bad !== null) entry.gauge_bad = choice.gauge_bad;
   return { entry, why: null };
 }
 
@@ -358,10 +374,10 @@ export type StatusTone = "good" | "fair" | "poor";
 
 export function statusView(status: HeaderRunResult["status"]["status"]): { label: string; tone: StatusTone; text: string } {
   if (status === "complete") {
-    return { label: "Measured", tone: "good", text: "Every online well uses its own measured relation (or the jet-pump model) and a fitted IPR." };
+    return { label: "Firm", tone: "good", text: "Every online well rests on its own data or a saved review." };
   }
   if (status === "conditional") {
-    return { label: "Conditional", tone: "fair", text: "Some wells borrow a correlation (relation or reservoir IPR) or use a manual value." };
+    return { label: "Conditional", tone: "fair", text: "Some wells are not reviewed yet: a borrowed correlation, a default ResP, or an unsaved fit or manual value. Save them on the Wells tab." };
   }
   return { label: "Incomplete", tone: "poor", text: "Some online wells have no estimate; the total leaves them out." };
 }
@@ -493,7 +509,7 @@ export function reviewState(row: HeaderBoardRow): ReviewState {
   const notes: string[] = [];
   const s = row.saved;
   const m = row.measured;
-  const gaugeOk = row.has_gauge && !row.gauge_auto_bad;
+  const gaugeOk = row.has_gauge && !gaugeBadDefault(row);
   if (s && gaugeOk && m.status === "measured" && isNum(m.slope)) {
     const band = Math.max(0.15, isNum(m.q75) && isNum(m.q25) ? m.q75 - m.q25 : 0);
     if (Math.abs(s.slope - m.slope) > band) {

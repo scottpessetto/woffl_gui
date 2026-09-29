@@ -1,5 +1,9 @@
 # Header page: production-header pressure impact (delivery, 2026-09-29)
 
+> **Start with the [handoff](header_page_handoff_2026-09-29.md)** for the
+> current state. This file is the chronological log of the five rounds; its
+> earlier numbers and the J/q reservoir groups (round two) are superseded.
+
 Request: after MPL-20 was brought on line, the production header at F, L and R
 rose about 10 psi. Estimate the cost per well and pad in an Optimize-style
 workflow. Every well has a saved or correlated WHP-to-BHP relation and a saved

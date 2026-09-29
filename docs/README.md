@@ -1,10 +1,18 @@
 # Documentation index
 
-The [Header page delivery](header_impact_delivery_2026-09-29.md) (2026-09-29,
-local) adds a production-header pressure impact page: per-well closed-loop
-BHP~WHP relations, lift + reservoir correlations for gaugeless wells, IPR
-ladder, jet pumps on the optimizer's saved models, scenario and observed-event
-runs with gauge validation, and six new `hdr_*` prop_xref ids for saving.
+The [Header page handoff](header_page_handoff_2026-09-29.md) (2026-09-29,
+local, not deployed) is the current state of the production-header impact
+page (Impact and Wells tabs). It covers:
+- per-well closed-loop BHP~WHP relations, and lift + reservoir correlations
+  for wells without a working gauge;
+- per-well ResP (saved, else default);
+- jet pumps on the optimizer's saved models;
+- estimates with range and response curve, and observed events with gauge
+  validation;
+- review cards with per-well Save to six new `hdr_*` prop_hist ids;
+- open items.
+
+The [delivery log](header_impact_delivery_2026-09-29.md) keeps the round-by-round record.
 
 The [September 24 optimization review](optimization_review_2026-09-24.md)
 records a full review of pad, choke and CFP runs, the allocators, the job

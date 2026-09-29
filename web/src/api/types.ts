@@ -2357,6 +2357,10 @@ export interface HeaderBoardRow {
   has_gauge: boolean;
   gauge_auto_bad: boolean;
   gauge_note: string | null;
+  /** Engineer's saved gauge verdict (hdr_gauge_bad), or null when never saved. */
+  gauge_saved?: { bad: boolean; at: string | null; by: string | null } | null;
+  /** The gauge verdict with no session choice: saved, else the automatic check. */
+  gauge_bad_default?: boolean;
   resvr_press: number | null;
   /** This well's reservoir pressure: saved in prop_hist, else the documented default. */
   pres_well: number | null;
@@ -2489,12 +2493,16 @@ export interface HeaderRunRow {
   gauge_bad?: boolean;
   pump: string | null;
   measured_slope: number | null;
+  pres_well?: number | null;
+  pres_basis?: "saved" | "default" | null;
   relation_source?: string;
   relation_saved?: boolean;
   relation_group?: string | null;
   ipr_source?: string;
   ipr_saved?: boolean;
   ipr_group?: string | null;
+  /** The fit used passed the usable checks (only meaningful when ipr_source is "fit"). */
+  ipr_fit_usable?: boolean;
   slope?: number | null;
   whp_hdr?: number | null;
   ipr?: HeaderIpr | null;

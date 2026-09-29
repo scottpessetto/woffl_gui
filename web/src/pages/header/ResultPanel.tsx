@@ -49,16 +49,22 @@ const CSV_COLUMNS = [
 function SoftNote({ rows, soft }: { rows: HeaderRunRow[]; soft: string[] }) {
   const set = new Set(soft);
   const pick = (f: (r: HeaderRunRow) => boolean) => rows.filter((r) => set.has(r.well) && f(r)).map((r) => r.well);
+  const unsavedRel = (r: HeaderRunRow) => !r.relation_saved;
+  const unsavedIpr = (r: HeaderRunRow) => !r.ipr_saved;
   const groups: [string, string[]][] = [
-    ["BHP~WHP correlation", pick((r) => r.relation_source === "correlation")],
-    ["Weak measured relation", pick((r) => r.relation_source === "weak_measured")],
-    ["Manual relation", pick((r) => r.relation_source === "manual")],
-    ["Well ResP not reviewed (saved or default ResP at today's rate, no saved IPR)", pick((r) => r.ipr_source === "correlation")],
-    ["Manual IPR", pick((r) => r.ipr_source === "manual")],
+    ["Borrowed BHP~WHP correlation (not saved)", pick((r) => r.relation_source === "correlation" && unsavedRel(r))],
+    ["Weak measured relation (not saved)", pick((r) => r.relation_source === "weak_measured" && unsavedRel(r))],
+    ["Manual relation (not saved)", pick((r) => r.relation_source === "manual" && unsavedRel(r))],
+    ["Default ResP - none saved for the well", pick((r) => r.ipr_source === "correlation" && r.pres_basis !== "saved" && unsavedIpr(r))],
+    ["Flagged gauge fit (not saved)", pick((r) => r.ipr_source === "fit" && !r.ipr_fit_usable && unsavedIpr(r))],
+    ["Manual IPR (not saved)", pick((r) => r.ipr_source === "manual" && unsavedIpr(r))],
   ];
   return (
     <InfoNote>
-      <div>{soft.length} well{soft.length > 1 ? "s rest" : " rests"} on borrowed or manual inputs - the total is conditional on them:</div>
+      <div>
+        {soft.length} well{soft.length > 1 ? "s are" : " is"} not reviewed yet - the total is conditional on them. Saving a well on
+        the Wells tab makes it firm:
+      </div>
       <ul className="mt-1 space-y-0.5 text-xs">
         {groups.filter(([, w]) => w.length).map(([label, w]) => (
           <li key={label}><span className="font-medium">{label} ({w.length}):</span> {w.join(", ")}</li>

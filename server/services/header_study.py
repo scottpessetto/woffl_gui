@@ -53,7 +53,10 @@ HDR_R2 = "hdr_fit_r2"
 HDR_DAYS = "hdr_fit_days"
 HDR_REL_SOURCE = "hdr_rel_source"
 HDR_IPR_SOURCE = "hdr_ipr_source"
-HDR_PROP_IDS = (HDR_SLOPE, HDR_WHP_HDR, HDR_R2, HDR_DAYS, HDR_REL_SOURCE, HDR_IPR_SOURCE)
+# Engineer's gauge verdict (1 bad, 0 good; added 2026-09-29). Latest row wins
+# and overrides the automatic check until someone saves the other value.
+HDR_GAUGE_BAD = "hdr_gauge_bad"
+HDR_PROP_IDS = (HDR_SLOPE, HDR_WHP_HDR, HDR_R2, HDR_DAYS, HDR_REL_SOURCE, HDR_IPR_SOURCE, HDR_GAUGE_BAD)
 # The well's one IPR lives in the existing curve props.
 IPR_PROP_IDS = ("ipr_qwf_liq", "ipr_pwf", "resvr_press")
 SAVED_PROP_IDS = HDR_PROP_IDS + IPR_PROP_IDS
@@ -329,12 +332,20 @@ def build_board(pads: list[str], fit_days: int = FIT_DAYS_DEFAULT,
         gauge_note = hm.gauge_problem(bhp_now, whp_now, reservoir,
                                       _recent(df["BHP"]) if df is not None and "BHP" in df else None)
 
+        sv = saved.get(well, {})
+        gauge_saved = None
+        if sv.get(HDR_GAUGE_BAD, {}).get("value") is not None:
+            gs = sv[HDR_GAUGE_BAD]
+            gauge_saved = {"bad": gs["value"] >= 0.5, "at": gs["at"], "by": gs["by"]}
+        # A saved verdict beats the automatic check; with none, the check decides.
+        gauge_bad = gauge_saved["bad"] if gauge_saved else gauge_note is not None
+
         rel = _relation_fit(df, "BHP", "WHP")
         whp_hdr = _relation_fit(df, "WHP", "HeaderP")
 
         # Gauge-test Vogel fit (non-JP wells; JP wells use their Solver IPR).
         ipr_fit_stats = None
-        if lift != "JP" and gauge_note is None and tests is not None and not tests.empty:
+        if lift != "JP" and not gauge_bad and tests is not None and not tests.empty:
             tw = tests[(tests["well"] == well)].copy()
             tw = tw[(pd.to_numeric(tw["BHP"], errors="coerce") > 50)
                     & (pd.to_numeric(tw["WtTotalFluid"], errors="coerce") > 0)]
@@ -357,7 +368,7 @@ def build_board(pads: list[str], fit_days: int = FIT_DAYS_DEFAULT,
         # The default ladder uses only a usable fit; an engineer who has looked
         # at the test points can still pick (and save) the flagged one.
         ipr_fit = fit_anchor if ipr_fit_stats and ipr_fit_stats["usable"] else None
-        looks_down = gauge_note is None and _looks_down(bhp_now, t.get("bhp"))
+        looks_down = not gauge_bad and _looks_down(bhp_now, t.get("bhp"))
         # Each well's own reservoir pressure: the latest prop_hist value
         # (a Solver save, a header-page save or a bulk load), else the
         # documented default for its reservoir.
@@ -389,6 +400,9 @@ def build_board(pads: list[str], fit_days: int = FIT_DAYS_DEFAULT,
             "header_now": _r(hdr_now, 0),
             "has_gauge": bhp_now is not None,
             "gauge_auto_bad": gauge_note is not None,
+            "gauge_saved": gauge_saved,
+            # What the gauge counts as with no session choice: saved verdict, else the check.
+            "gauge_bad_default": gauge_bad,
             "gauge_note": gauge_note,
             "resvr_press": _r(o.get("resvr_press"), 0),
             "pres_well": _r(pres_saved if pres_saved else hm.default_pres(reservoir), 0),
@@ -465,6 +479,13 @@ def _saved_ipr(sv: dict[str, Any], lift: str) -> Optional[dict[str, Any]]:
     }
 
 
+def _gauge_bad(r: dict[str, Any]) -> bool:
+    """The gauge verdict with no session choice: saved, else the automatic check."""
+    if "gauge_bad_default" in r:
+        return bool(r["gauge_bad_default"])
+    return bool(r.get("gauge_auto_bad"))
+
+
 def _looks_down(bhp_now: Optional[float], bhp_test: Optional[float]) -> bool:
     """True when the gauge has built far above the latest flowing test."""
     if bhp_now is None or bhp_test is None or bhp_test <= 0:
@@ -509,7 +530,7 @@ def _correlations(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _measured_ok(r: dict[str, Any]) -> bool:
-    return not r["gauge_auto_bad"] and r["measured"]["status"] == "measured"
+    return not _gauge_bad(r) and r["measured"]["status"] == "measured"
 
 
 def _group_correlation(lift: str, reservoir: Optional[str], members: list[dict[str, Any]]) -> dict[str, Any]:
@@ -527,7 +548,7 @@ def _group_correlation(lift: str, reservoir: Optional[str], members: list[dict[s
 
 def _ratio_ok(r: dict[str, Any]) -> bool:
     """A flowing well whose plausible gauge can say where BHP sits vs its ResP."""
-    return bool(r["bhp_now"]) and not r["gauge_auto_bad"] and r.get("age_ok") and not r.get("looks_down") \
+    return bool(r["bhp_now"]) and not _gauge_bad(r) and r.get("age_ok") and not r.get("looks_down") \
         and r["pres_well"] and r["bhp_now"] < r["pres_well"]
 
 
@@ -587,7 +608,7 @@ def _shut_in_readings(rows: list[dict[str, Any]], res: str, pad: Optional[str] =
     """
     out = []
     for r in rows:
-        if r["reservoir"] != res or (pad and r["pad"] != pad) or not r["bhp_now"] or r["gauge_auto_bad"]:
+        if r["reservoir"] != res or (pad and r["pad"] != pad) or not r["bhp_now"] or _gauge_bad(r):
             continue
         if r.get("looks_down") or not r.get("age_ok"):
             out.append({"well": r["well"], "bhp": r["bhp_now"]})
@@ -648,7 +669,7 @@ def effective(r: dict[str, Any], ch: Any = None) -> dict[str, Any]:
     IPR saved > gauge-test fit (working gauge) > reservoir correlation.
     """
     gb = _ch(ch, "gauge_bad")
-    gauge_bad = bool(gb) if gb is not None else bool(r.get("gauge_auto_bad"))
+    gauge_bad = bool(gb) if gb is not None else _gauge_bad(r)
     gauge_ok = bool(r.get("has_gauge")) and not gauge_bad
     online = _ch(ch, "online")
     if online is None:
@@ -716,12 +737,15 @@ def _resolve_ipr(r: dict[str, Any], choice: Optional[str], manual: Optional[dict
     if choice == "assumed":  # pre-2026-09-30 name for the reservoir correlation
         choice = "correlation"
     if choice == "auto":
-        # Each well keeps its own ResP: a saved IPR, else its saved ResP (or
-        # the default) at today's rate and BHP. A gauge-test fit backs out a
-        # pseudo-ResP, so it is used only when chosen (and saving it sets
-        # that well's ResP).
+        # Saved IPR first; then the well's own gauge data - a usable fit of
+        # its gauged tests (user, 2026-09-29: "default to the gauge data if
+        # it exists"); else its own ResP (saved, else default) at today's
+        # rate and BHP. A flagged fit (pinned at the cap, narrow spread) is
+        # only used when chosen.
         if r.get("saved_ipr"):
             choice = "saved"
+        elif gauge_ok and r.get("ipr_fit"):
+            choice = "fit"
         elif ipr_key:
             choice = "correlation"
         else:
@@ -746,17 +770,18 @@ def _resolve_ipr(r: dict[str, Any], choice: Optional[str], manual: Optional[dict
         lo = lo if lo is not None else float(ipr["pres"])
         hi = hi if hi is not None else float(ipr["pres"])
     return {"ipr": ipr if reason is None else None, "pres_lo": lo, "pres_hi": hi,
-            "source": source, "saved": saved, "group": group, "reason": reason}
+            "source": source, "saved": saved, "group": group, "reason": reason,
+            "fit_usable": choice == "fit" and bool(r.get("ipr_fit"))}
 
 
 # Legacy single-choice helpers (tests and callers that pass a bare choice).
 def resolve_relation(row: dict[str, Any], choice: Optional[str], manual: Optional[float]) -> dict[str, Any]:
-    gauge_ok = bool(row.get("has_gauge", True)) and not row.get("gauge_auto_bad")
+    gauge_ok = bool(row.get("has_gauge", True)) and not _gauge_bad(row)
     return _resolve_relation(row, choice, manual, gauge_ok, row.get("corr_group"))
 
 
 def resolve_ipr(row: dict[str, Any], choice: Optional[str], manual: Optional[dict[str, Any]]) -> dict[str, Any]:
-    gauge_ok = bool(row.get("has_gauge", True)) and not row.get("gauge_auto_bad")
+    gauge_ok = bool(row.get("has_gauge", True)) and not _gauge_bad(row)
     return _resolve_ipr(row, choice, manual, gauge_ok, row.get("ipr_group"))
 
 
@@ -954,6 +979,7 @@ def run_impact(req: Any, progress: ProgressFn = _noop) -> dict[str, Any]:
                "online": bool(online), "d_header": deltas.get(r["pad"]), "oil": r["oil"],
                "liquid": r["liquid"], "wc": r["wc"], "whp_now": r["whp_now"], "bhp_now": eff["bhp_now"],
                "gauge_bad": eff["gauge_bad"], "pump": r["pump"], "measured_slope": r["measured"]["slope"],
+               "pres_well": r.get("pres_well"), "pres_basis": r.get("pres_basis"),
                "outcome": "event_well" if is_event else "offline"}
         rows.append(out)
         if not online:
@@ -1047,6 +1073,7 @@ def _nonjp_row(out: dict[str, Any], r: dict[str, Any], eff: dict[str, Any]) -> N
     rel, ip = eff["rel"], eff["ipr"]
     out.update(relation_source=rel["source"], relation_saved=rel["saved"], relation_group=rel["group"],
                ipr_source=ip["source"], ipr_saved=ip["saved"], ipr_group=ip["group"],
+               ipr_fit_usable=bool(ip.get("fit_usable")),
                slope=rel["slope"], whp_hdr=rel["whp_hdr"], ipr=ip["ipr"])
     reason = None
     if rel["slope"] is None:
@@ -1264,14 +1291,18 @@ def save(req: Any) -> dict[str, Any]:
 
 
 def _save_values(r: dict[str, Any], w: Any) -> dict[str, float]:
+    values: dict[str, float] = {}
+    if getattr(w, "gauge_bad", None) is not None:
+        if not r.get("has_gauge"):
+            raise ValueError("this well has no BHP gauge to flag")
+        values[HDR_GAUGE_BAD] = 1.0 if w.gauge_bad else 0.0
     if r["lift"] == "JP":
         if w.relation:
             raise ValueError("jet-pump wells use the pump model; no relation is saved")
         if w.ipr:
             raise ValueError("jet-pump IPRs are saved in Solver with the pump model")
-        return {}
+        return values
     eff = effective(r, w)
-    values: dict[str, float] = {}
     if w.relation:
         rel = eff["rel"]
         if rel["slope"] is None:
