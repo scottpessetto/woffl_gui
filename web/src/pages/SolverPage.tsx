@@ -344,7 +344,17 @@ function Workbench({ well }: { well: string }) {
             compareTest={compareTest}
             formWc={params.form_wc}
             ppfSurf={params.ppf_surf}
-            footer={<CalibrateBar well={well} compareTest={compareTest} />}
+            footer={
+              <CalibrateBar
+                well={well}
+                compareTest={compareTest}
+                tests={sortedTests}
+                onSelectTest={(t) => {
+                  setCompareKey(testKey(t));
+                  setDecouple(true);
+                }}
+              />
+            }
           />
           <PumpScope />
           <WcUncertaintyCard well={well} params={effective} enabled={simActive} />

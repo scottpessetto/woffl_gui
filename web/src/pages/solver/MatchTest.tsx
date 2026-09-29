@@ -15,6 +15,11 @@
  * matchNote - the same provenance channel the sensitivity study uses - so
  * IprControls shows WHERE the BHP came from and prefills the save comment
  * with it. An inferred BHP that reaches prop_hist has to say it is inferred.
+ *
+ * The result is cross-checked (gaugelessMatch.ts): an inferred BHP far from
+ * a gauge reading on the same pump is flagged as likely nozzle wear, and a
+ * test late in the pump's life points at the earliest matchable test on that
+ * pump, where the nozzle is closest to its catalog area.
  */
 
 import { Crosshair } from "lucide-react";
@@ -26,6 +31,14 @@ import { Button } from "../../components/ui";
 import { fmtDate, fmtNum } from "../../lib/format";
 import { changedWellInputs, wellInputProblem, wellInputValues } from "../../lib/wellInputs";
 import { useParamsStore } from "../../state/params";
+
+import {
+  daysIntoPump,
+  EARLY_LIFE_DAYS,
+  earlierTestInPumpLife,
+  gaugeGapFlagged,
+  nearestGaugeBhp,
+} from "./gaugelessMatch";
 
 /** The sidebar values "Apply to inputs" lays down, in sidebar units. */
 function matchedValues(result: MatchTestResponse): Partial<SimParams> {
@@ -163,10 +176,94 @@ const QUALITY_TONE: Record<MatchTestResponse["match_quality"], string> = {
   failed: "border-red-200 bg-red-50 text-red-800",
 };
 
-function ResultBlock({ well, result, test }: { well: string; result: MatchTestResponse; test: WellTestRow }) {
+/**
+ * Wear cross-checks under a match: the gauge disagreement (when this pump has
+ * a gauge reading nearby) and the earlier-test suggestion. Returns whether the
+ * gauge gap was flagged, so the caller can soften the Apply button.
+ */
+function WearNotes({
+  result,
+  test,
+  tests,
+  dateSet,
+  onSelectTest,
+}: {
+  result: MatchTestResponse;
+  test: WellTestRow;
+  tests: WellTestRow[];
+  dateSet: string | null;
+  onSelectTest: (t: WellTestRow) => void;
+}) {
+  const pwf = result.pwf;
+  const gauge = nearestGaugeBhp(tests, test, dateSet);
+  const gap = pwf !== null && gauge !== null && gaugeGapFlagged(pwf, gauge.bhp, result.bhp_resolution_psi);
+  const earlier = earlierTestInPumpLife(tests, test, dateSet);
+  const age = daysIntoPump(test, dateSet);
+  const late = age !== null && age > EARLY_LIFE_DAYS;
+  if (!gap && !earlier) return null;
+
+  const months = (d: number) => `${fmtNum(d / 30.4, 0)} months`;
+  const earlierAge = earlier ? daysIntoPump(earlier, dateSet) : null;
+  return (
+    <div className="space-y-1 rounded border border-amber-300 bg-white/70 px-2 py-1.5 text-xs text-amber-900">
+      {gap && gauge && pwf !== null && (
+        <p>
+          <span className="font-semibold">Check before applying:</span> the gauge read {fmtNum(gauge.bhp)} psi
+          on {fmtDate(gauge.date)} on this same pump, {fmtNum(Math.abs(gauge.bhp - pwf))} psi{" "}
+          {pwf < gauge.bhp ? "above" : "below"} this inferred {fmtNum(pwf)} psi.{" "}
+          {pwf < gauge.bhp
+            ? "A gap this large usually means the nozzle is worn - it passes more power fluid, so the BHP " +
+              "reads low - not that the BHP dropped. Applying it makes the well look pumped-off and pushes " +
+              "pump sizing toward smaller pumps."
+            : "A gap this large usually means the test-day PF rate or PF pressure is off, or the pump in the " +
+              "hole differs from the tracker. Check those before applying."}
+        </p>
+      )}
+      {earlier && (
+        <p className="flex flex-wrap items-center gap-2">
+          <span>
+            This test is {age !== null ? months(age) : "late"} into the pump's life
+            {dateSet ? ` (set ${fmtDate(dateSet)})` : ""}. Nozzle wear builds over a pump's life and makes the
+            inferred BHP read low - match an early test instead: the {fmtDate(earlier.date)} test
+            {earlierAge !== null ? `, ${fmtNum(earlierAge, 0)} days after set,` : ""} is the earliest on this pump
+            in the loaded window.
+          </span>
+          <Button size="sm" variant="secondary" onClick={() => onSelectTest(earlier)}>
+            Use the {fmtDate(earlier.date)} test
+          </Button>
+        </p>
+      )}
+      {gap && !earlier && late && (
+        <p>
+          No earlier gaugeless test on this pump is in the loaded window. Widen the lookback in the
+          sidebar to find a test from early in the pump's life, or rely on the gauge.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ResultBlock({
+  well,
+  result,
+  test,
+  tests,
+  dateSet,
+  onSelectTest,
+}: {
+  well: string;
+  result: MatchTestResponse;
+  test: WellTestRow;
+  tests: WellTestRow[];
+  dateSet: string | null;
+  onSelectTest: (t: WellTestRow) => void;
+}) {
   const setMany = useParamsStore((s) => s.setMany);
   const setMatchNote = useParamsStore((s) => s.setMatchNote);
   const failed = result.match_quality === "failed" || result.pwf === null;
+  const gauge = failed ? null : nearestGaugeBhp(tests, test, dateSet);
+  const gaugeGap = gauge !== null && result.pwf !== null &&
+    gaugeGapFlagged(result.pwf, gauge.bhp, result.bhp_resolution_psi);
   const unreachable = !failed && !result.pf_reachable;
   const tone = QUALITY_TONE[unreachable ? "poor" : result.match_quality];
   // Provenance for the save comment: an inferred BHP must never reach
@@ -191,6 +288,9 @@ function ResultBlock({ well, result, test }: { well: string; result: MatchTestRe
     <div className={`basis-full space-y-1 rounded-md border px-2.5 py-2 ${tone}`}>
       <p className="text-xs">{headline}</p>
       {!failed && !unreachable && result.message && <p className="text-xs opacity-90">{result.message}</p>}
+      {!failed && (
+        <WearNotes result={result} test={test} tests={tests} dateSet={dateSet} onSelectTest={onSelectTest} />
+      )}
       {unreachable && (
         <p className="text-xs opacity-90">
           Closest point: BHP {fmtNum(result.pwf)} psi, model PF {fmtNum(result.modeled_pf)} vs {fmtNum(test.lift_wat)} BWPD
@@ -222,7 +322,7 @@ function ResultBlock({ well, result, test }: { well: string; result: MatchTestRe
             setMatchNote(note);
           }}
         >
-          {unreachable ? "Apply the closest point anyway" : "Apply to inputs"}
+          {unreachable ? "Apply the closest point anyway" : gaugeGap ? "Apply anyway" : "Apply to inputs"}
         </Button>
       )}
       {!failed && <SaveMatch well={well} result={result} test={test} note={note} />}
@@ -230,8 +330,19 @@ function ResultBlock({ well, result, test }: { well: string; result: MatchTestRe
   );
 }
 
-export function MatchTest({ well, compareTest }: { well: string; compareTest: WellTestRow | null }) {
+export function MatchTest({
+  well,
+  compareTest,
+  tests,
+  onSelectTest,
+}: {
+  well: string;
+  compareTest: WellTestRow | null;
+  tests: WellTestRow[];
+  onSelectTest: (t: WellTestRow) => void;
+}) {
   const params = useParamsStore((s) => s.params);
+  const dateSet = useParamsStore((s) => s.context?.pump?.date_set ?? null);
   const mut = useMatchTest();
   const [result, setResult] = useState<{ key: string; body: MatchTestResponse; test: WellTestRow } | null>(null);
 
@@ -247,7 +358,8 @@ export function MatchTest({ well, compareTest }: { well: string; compareTest: We
       : !hasPf
         ? "The selected test has no power-fluid rate - the PF rate is what stands in for the gauge."
         : "Infer the flowing BHP from this test's power-fluid rate and fit the throat / diffuser " +
-          "losses so the pump reproduces the test's oil and PF. For wells without a downhole gauge.";
+          "losses so the pump reproduces the test's oil and PF. For tests without a gauge BHP. " +
+          "Nozzle wear makes the inferred BHP read low, so a test early in the pump's life matches best.";
 
   const testKey = `${well}:${compareTest?.wt_uid ?? compareTest?.date ?? ""}`;
   const shown = result && result.key === testKey ? result : null;
@@ -285,7 +397,10 @@ export function MatchTest({ well, compareTest }: { well: string; compareTest: We
       {mut.isError && (
         <span className="basis-full text-xs text-amber-700">Could not match: {mut.error.message}</span>
       )}
-      {shown && <ResultBlock well={well} result={shown.body} test={shown.test} />}
+      {shown && (
+        <ResultBlock well={well} result={shown.body} test={shown.test} tests={tests} dateSet={dateSet}
+          onSelectTest={onSelectTest} />
+      )}
     </>
   );
 }
