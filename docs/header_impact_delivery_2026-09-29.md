@@ -442,3 +442,52 @@ Menu clean-up after the user's review:
   Without one it offers each same-reservoir BHP-ratio group
   ("BHP = 0.39 × ResP (R schrader)"), deduplicated the same way.
 - A group already selected always stays listed.
+
+## Final changes (2026-09-29, evening)
+
+These followed the user's own testing. The
+[handoff](header_page_handoff_2026-09-29.md) describes the resulting state.
+
+1. **"Default" labels and menu dedupe** (recorded above under the tabs).
+2. **Firm vs conditional** (user: "do it"). A well is firm when it rests on
+   its own data or a saved review:
+   - **relation:** the pump model, its measured slope, or any saved relation;
+   - **IPR:** the Solver IPR, any saved IPR, a usable gauge fit, or its own
+     saved ResP.
+
+   The chip label "Measured" became **Firm**. "Conditional" now means "not
+   reviewed yet", and the result note lists unreviewed wells by reason. The
+   same rule drives the amber colouring and the needs-review filter
+   (`header_model.is_firm`, `model.ts:relationFor/iprFor`).
+3. **Kuparuk default ResP stays 3,000** (user). Schrader stays 1,800.
+4. **First live saves** (user, 21:09 and 21:11):
+   - MPF-01: measured 0.620 plus its gauge-fit IPR, ResP 1,365;
+   - MPF-05: measured 0.493 plus a manual IPR, ResP 1,500.
+
+   Read back: each is 9 rows, one statement, one timestamp, user-stamped.
+5. **Wells tab no longer blanks out after a save.** It keeps the last
+   finished board on screen while the reload runs ("Refreshing in the
+   background - keep working"), saves against that board's job id, and
+   clears a saved well's dropdown overrides so it shows as saved.
+6. **The IPR default uses the gauge data when it exists** (user). The ladder
+   is now:
+   1. saved IPR;
+   2. the well's **usable** gauge-test fit, which counts as firm;
+   3. its own ResP (saved, else default) at the gauge (or ratio) BHP.
+
+   Flagged fits remain an explicit, conditional choice.
+7. **Bad gauge is saved** (user: "should save until it is unchecked and
+   saved").
+   - A seventh prop_xref id, `hdr_gauge_bad` (1 bad, 0 good), was inserted
+     through the gated writer and read back.
+   - The latest saved value overrides the automatic check for every user.
+   - Session ticks show "not saved yet" until saved.
+   - Gauge-only saves are allowed, jet pumps included.
+   - The board uses the saved verdict everywhere it used the automatic one:
+     fits, down detection, correlations, BHP ratios and shut-in evidence.
+
+Verification after these changes:
+- Python: 2,420 passed (36 header tests).
+- Frontend: 63 passed (11 header tests).
+- `tsc` and the production build are clean.
+- The local server must be restarted to pick up the server-side changes.

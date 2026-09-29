@@ -220,8 +220,8 @@ the same day):
 Route and nav: `web/src/App.tsx`, `layout/Topbar.tsx` ("Header"), and
 `layout/Layout.tsx` (no sidebar).
 
-**Tests:** `tests/test_header_study.py` (34) and
-`web/tests/headerModel.test.mjs` (10).
+**Tests:** `tests/test_header_study.py` (36) and
+`web/tests/headerModel.test.mjs` (11).
 
 ## Latest live numbers (read-only, F/L/R, 120-day fits)
 
@@ -240,8 +240,8 @@ Route and nav: `web/src/App.tsx`, `layout/Topbar.tsx` ("Header"), and
 
 ## Verification at handoff
 
-- Python: 2,418 passed (full suite, run after the last backend change).
-- Frontend: 62 node tests, `tsc` clean, production build clean.
+- Python: 2,420 passed (full suite, run after the last backend change).
+- Frontend: 63 node tests, `tsc` clean, production build clean.
 - Chrome (Playwright, read-only local server): no console errors across:
   - an Estimate from a cold page;
   - an event run;
