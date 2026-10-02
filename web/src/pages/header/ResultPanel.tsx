@@ -28,12 +28,28 @@ const signed = (v: number | null | undefined, dp = 1) =>
 function sourceText(row: HeaderRunRow): string {
   const rel = `${SOURCE_TEXT[row.relation_source ?? ""] ?? row.relation_source ?? "-"}${row.relation_group ? ` ${row.relation_group}` : ""}`;
   const ipr = row.ipr_source === "correlation" ? "well ResP" : (SOURCE_TEXT[row.ipr_source ?? ""] ?? row.ipr_source ?? "-");
-  return `${rel}${row.relation_saved ? " (saved)" : ""} / ${ipr}${row.ipr_saved ? " (saved)" : ""}`;
+  const text = `${rel}${row.relation_saved ? " (saved)" : ""} / ${ipr}${row.ipr_saved ? " (saved)" : ""}`;
+  // A jet pump on the relation says so; "pump model" already names the other method.
+  return row.jp_method === "empirical" ? `BHP~WHP ${text}` : text;
+}
+
+/** "Jet pumps: 5 on the BHP~WHP relation, 2 on the WOFFL model (no relation)", or null. */
+function jpMethodText(rows: HeaderRunRow[]): string | null {
+  const jp = rows.filter((r) => r.lift === "JP" && r.online);
+  if (!jp.length) return null;
+  const n = (f: (r: HeaderRunRow) => boolean) => jp.filter(f).length;
+  const parts = [
+    [n((r) => r.jp_method === "empirical"), "on the BHP~WHP relation"],
+    [n((r) => r.jp_method !== "empirical" && !r.jp_fallback), "on the WOFFL model"],
+    [n((r) => Boolean(r.jp_fallback)), "on the WOFFL model for want of a relation"],
+  ] as const;
+  return `Jet pumps: ${parts.filter(([k]) => k > 0).map(([k, t]) => `${k} ${t}`).join(", ")}`;
 }
 
 const CSV_COLUMNS = [
   { key: "well", label: "Well" }, { key: "pad", label: "Pad" }, { key: "lift", label: "Lift" },
   { key: "online", label: "Online" }, { key: "outcome", label: "Outcome" }, { key: "reason", label: "Reason" },
+  { key: "jp_method", label: "JP method" },
   { key: "gauge_bad", label: "Gauge bad" },
   { key: "d_header", label: "Header change (psi)" }, { key: "whp_hdr", label: "dWHP/dHeader" },
   { key: "slope", label: "dBHP/dWHP" }, { key: "relation_source", label: "Relation source" },
@@ -85,6 +101,7 @@ export function ResultPanel({ result }: { result: HeaderRunResult }) {
   const missing = result.rows.filter((r) => r.online && r.outcome === "missing_inputs");
   const modeled = result.rows.filter((r) => r.outcome === "modeled");
   const total = rangeText(result.totals.d_oil_lo, result.totals.d_oil_hi);
+  const jpText = jpMethodText(result.rows);
 
   return (
     <div className="space-y-4">
@@ -110,6 +127,11 @@ export function ResultPanel({ result }: { result: HeaderRunResult }) {
               </div>
             )}
             <div className="mt-0.5 text-xs text-slate-500">{status.text}</div>
+            {jpText && (
+              <div className="mt-0.5 text-xs text-slate-500" title="Set for the run on the Impact form; single wells can be set otherwise on the Wells tab">
+                {jpText}.
+              </div>
+            )}
           </div>
           <Button
             size="sm"
@@ -159,7 +181,8 @@ export function ResultPanel({ result }: { result: HeaderRunResult }) {
           <ChartPanel option={curve} height={320} zoom={{ xAxisIndex: [0], yAxisIndex: [0] }} />
           <p className="mt-1 text-xs text-slate-500">
             Same change applied to every selected pad, on today's inputs and choices. Read any header change off the line; the
-            shaded band is the range. Jet pumps are solved at -30, -10, +10, +20 and +40 psi and interpolated.
+            shaded band is the range. Jet pumps on the WOFFL model are solved at -30, -10, +10, +20 and +40 psi and
+            interpolated; those on the BHP~WHP relation are exact like other wells.
           </p>
         </Section>
       )}

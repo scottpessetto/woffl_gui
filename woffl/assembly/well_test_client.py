@@ -29,6 +29,7 @@ SELECT
     vwt.well_name,
     vwt.wt_uid,
     vwt.wt_date,
+    vwt.allocated,
     vwt.whp,
     vwt.form_oil AS oil_rate,
     vwt.form_wat AS fwat_rate,
@@ -60,9 +61,56 @@ LEFT JOIN (
     AND to_date(vwt.wt_date) = vpd.sample_date
 WHERE vwt.well_name IN ({well_list})
     AND vwt.wt_date BETWEEN '{start_date}' AND '{end_date}'
-    AND vwt.allocated = True
 ORDER BY vwt.well_name, vwt.wt_date
 """
+
+# Rates that identify one physical test. FDC allocates a test by COPYING the
+# info-only SCADA row to a new wt_uid stamped at midnight of the same wt_date
+# day, and SCADA itself re-sends a share of its rows, so identical rates on one
+# well-day are one test (probe 2026-10-02, 24 months: 7,484 of 7,647 allocated
+# tests had a same-day info-only twin; 2,025 info-only rows repeated another).
+_SAME_TEST_COLUMNS = ("WtOilVol", "WtWaterVol", "lift_wat")
+
+
+def allocated_only(df: pd.DataFrame) -> pd.DataFrame:
+    """Only the tests FDC accepted for allocation ("Info Only = No").
+
+    The allocated test is the one an engineer reviewed; info-only tests are
+    unscreened SCADA tests. Anything that picks or fits tests without a person
+    choosing them belongs on this subset. A frame with no ``allocated`` column
+    (older cached frames, synthetic test data) is returned unchanged.
+    """
+    if df is None or df.empty or "allocated" not in df.columns:
+        return df
+    return df[df["allocated"].astype(bool)]
+
+
+def _collapse_duplicate_tests(df: pd.DataFrame) -> pd.DataFrame:
+    """One row per physical test, the allocated copy winning.
+
+    Rows of one well sharing a wt_date day and identical rates collapse to a
+    single row: the allocated one when there is one (saved IPR pins key on its
+    wt_uid), else the latest. The wt_uids that were folded away ride on the
+    surviving row as the ``dup_wt_uids`` tuple, so a pin saved against an
+    info-only test still resolves after FDC allocates that test.
+    """
+    key_cols = [c for c in _SAME_TEST_COLUMNS if c in df.columns]
+    if df.empty or "allocated" not in df.columns or not key_cols:
+        return df
+    df = df.copy()
+    df["_day"] = df["WtDate"].dt.normalize()
+    key = ["well", "_day", *key_cols]
+    df = df.sort_values(["allocated", "WtDate"], ascending=[False, False])
+    folded = df.duplicated(key, keep="first")
+    kept = df[~folded].copy()
+    # A tuple on rows that absorbed a copy, missing (None/NaN) everywhere else.
+    kept["dup_wt_uids"] = None
+    if folded.any() and "wt_uid" in df.columns:
+        pairs = df[folded].merge(kept[key + ["wt_uid"]], on=key, suffixes=("", "_kept"))
+        pairs = pairs.dropna(subset=["wt_uid", "wt_uid_kept"])
+        aliases = pairs.groupby("wt_uid_kept")["wt_uid"].agg(tuple).to_dict()
+        kept["dup_wt_uids"] = kept["wt_uid"].map(aliases)
+    return kept.drop(columns="_day")
 
 
 def _denormalize_well_name(name: str) -> str:
@@ -143,6 +191,12 @@ def fetch_milne_well_tests(
     start_date: str, end_date: str, well_names: list[str] | None = None
 ) -> tuple[pd.DataFrame, list[str]]:
     """Query Databricks for Milne Point production well tests with BHP.
+
+    Returns EVERY test, allocated and info-only, one row per physical test
+    (see ``_collapse_duplicate_tests``), flagged by the boolean ``allocated``
+    column. Until 2026-10-02 the query kept allocated tests only, which hid a
+    well's tests for the weeks between monthly allocation passes. Use
+    ``allocated_only`` wherever tests are picked without a person choosing.
 
     Args:
         start_date: Start date string in 'YYYY-MM-DD' format.
@@ -254,6 +308,12 @@ def fetch_milne_well_tests(
     ]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Allocated and info-only tests both come back; a missing flag reads as
+    # info-only. Copies of one test are folded before anything counts rows.
+    if "allocated" in df.columns:
+        df["allocated"] = df["allocated"].eq(True)
+        df = _collapse_duplicate_tests(df)
 
     # Resolve the test-day power-fluid pressure from the vw_pressure_daily
     # join (annulus for reverse circ, tubing when tubing > annulus = forward

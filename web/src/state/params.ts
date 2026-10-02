@@ -143,6 +143,10 @@ interface ParamsState {
    * it drops ownership of the seeded fields first, so the fit wins and keeps
    * winning until the next hand edit. */
   applyIprSeeds: (seeds: Partial<SimParams>, release?: boolean) => void;
+  /** Put the loaded (saved) values of `keys` back. Trying anchors is a session
+   *  preview; this is the way out of it. Fields outside `keys` - the pump on
+   *  the bench, the other session settings - are left alone. */
+  revertToLoaded: (keys: ReadonlyArray<keyof SimParams>) => void;
   run: () => void;
 }
 
@@ -294,6 +298,19 @@ export const useParamsStore = create<ParamsState>((set) => ({
         matchNote: null,
         commonIprIntent: false,
       };
+    }),
+
+  revertToLoaded: (keys) =>
+    set((s) => {
+      if (!s.context || s.context.well !== s.well) return s;
+      const seeded: Record<string, unknown> = { ...mergeClamped({ ...DEFAULT_PARAMS }, s.context.seeds) };
+      const params: Record<string, unknown> = { ...s.params };
+      const manual = new Set(s.manualFields);
+      for (const key of keys) {
+        params[key] = seeded[key];
+        manual.delete(key);
+      }
+      return { params: params as unknown as SimParams, manualFields: manual, matchNote: null, commonIprIntent: false };
     }),
 
   run: () => set({ simActive: true }),

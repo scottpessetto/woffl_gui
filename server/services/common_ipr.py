@@ -149,6 +149,6 @@ def fit_frame(req, tracker, frame, as_of, source="fixture"):
 def run(req: schemas.CommonOilIprRequest):
     tracker, source = datasources.jp_history()
     tracker = tracker[tracker["Well Name"] == req.well].copy()
-    frame = tests.fetch_all_well_tests(max(24, req.months))
+    frame = tests.allocated_only(tests.fetch_all_well_tests(max(24, req.months)))
     frame = frame[frame["well"] == req.well].copy()
     return fit_frame(req, tracker, frame, datetime.now(timezone.utc).isoformat(), source)

@@ -44,7 +44,7 @@ def capture(path):
         b.bhp_cln_value, b.bhp_esp_value, b.bhp_other_value FROM mpu.wells.vw_bhp_daily_clean b
         WHERE b.tag_date >= date_sub(current_date(),365) AND b.tag_date < current_date()
         AND EXISTS (SELECT 1 FROM mpu.wells.vw_well_header h WHERE h.enthid=b.enthid AND h.field='MPU')"""))
-    take("tests", lambda: tests.fetch_all_well_tests(24))
+    take("tests", lambda: tests.allocated_only(tests.fetch_all_well_tests(24)))
     take("pressure", evidence._fleet_pressure_daily)
     take("pf_volume", calibration_points._fleet_pf_volume)
     take("chars", lambda: datasources.well_chars()[0])

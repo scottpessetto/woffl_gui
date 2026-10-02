@@ -3,15 +3,19 @@ import { useState } from "react";
 import { useMeta, useSaveIpr, useWellInputWritePending } from "../api/hooks";
 import type { AnchorMode, IprPinResponse, WellTestRow } from "../api/types";
 import { fmtNum } from "../lib/format";
-import { changedWellInputs, wellInputProblem, wellInputValues } from "../lib/wellInputs";
+import { changedWellInputs, WELL_INPUT_KEYS, wellInputProblem, wellInputValues } from "../lib/wellInputs";
 import { savedSessionOnlyModelInputs, sessionOnlyWellModelEdits } from "../lib/wellModel";
+import { manualTestNote, useManualTestStore } from "../state/manualTest";
 import { useParamsStore } from "../state/params";
 import { Button, Card } from "./ui";
 
 /** A visible save action shared by the Solver and historical-edit workbench. */
-export function SaveWellInputs({ well, anchor }: {
+export function SaveWellInputs({ well, anchor, onRevert }: {
   well: string;
   anchor?: { mode: AnchorMode; test: WellTestRow | null; pin: IprPinResponse | null };
+  /** Put the page's own preview state (the Solver's IPR anchor) back to what
+   *  the well opened with; the sidebar's well inputs are reverted here. */
+  onRevert?: () => void;
 }) {
   const meta = useMeta();
   const save = useSaveIpr(well);
@@ -25,12 +29,20 @@ export function SaveWellInputs({ well, anchor }: {
   const problem = wellInputProblem(params);
   // What the IPR anchor part of this save does, in words.
   const anchorTest = anchor?.test ?? null;
+  // The engineer's own (LRS / typed) test has no FDC test id to pin, so the
+  // curve it anchors is saved the way a manual point is: values, no pin, and
+  // the test recorded in the save note.
+  const ownTest = useManualTestStore((s) => s.byWell[well]);
+  const ownAnchor = anchor?.mode !== "manual" && anchorTest?.manual === true;
+  const unpinned = anchor?.mode === "manual" || ownAnchor;
+  const ownNote = ownAnchor && ownTest ? manualTestNote(ownTest) : null;
   const anchorSaved = anchor?.pin?.status === "applied" && anchorTest?.wt_uid != null && anchor.pin.wt_uid === anchorTest.wt_uid;
   const anchorText = commonIprIntent ? "a common oil curve (clears the pinned test)"
     : anchor?.mode === "manual" ? "a manual point, not tied to a test"
+    : ownAnchor && anchorTest ? `your own ${anchorTest.date.slice(0, 10)} test (not in FDC, so it is saved as a manual point with the test in the note)`
     : anchorTest ? `the ${anchorTest.date.slice(0, 10)} test${anchorSaved ? " (already the saved anchor)" : ""}`
     : null;
-  const anchorChanged = !!anchor && !commonIprIntent && (anchor.mode === "manual"
+  const anchorChanged = !!anchor && !commonIprIntent && (unpinned
     ? anchor.pin?.status === "applied"
     : anchorTest?.wt_uid != null && !anchorSaved);
   const blocked = !ready ? "Select a well and wait for its saved inputs to load." :
@@ -44,10 +56,10 @@ export function SaveWellInputs({ well, anchor }: {
     setNotice(null);
     save.mutate({
       ...wellInputValues(current, baseline?.seeds),
-      comment: (comment ?? matchNote ?? "").trim() || null,
-      pin_wt_uid: commonCurve ? null : (anchor?.test?.wt_uid ?? null),
-      pin_date: commonCurve ? null : (anchor?.test?.date ?? null),
-      unpin: commonCurve || (anchor?.mode === "manual" && anchor.pin?.status !== "none"),
+      comment: (comment ?? matchNote ?? ownNote ?? "").trim().slice(0, 500) || null,
+      pin_wt_uid: commonCurve || unpinned ? null : (anchor?.test?.wt_uid ?? null),
+      pin_date: commonCurve || unpinned ? null : (anchor?.test?.date ?? null),
+      unpin: commonCurve || (unpinned && anchor?.pin?.status !== "none"),
     }, {
       onSuccess: (r) => {
         const warning = r.pin_message && !r.pinned && !r.pin_skipped ? `${r.pin_message} ` : "";
@@ -76,9 +88,20 @@ export function SaveWellInputs({ well, anchor }: {
           {changes.length ? ` Changed now: ${changes.join(", ")}.` : ""}
         </p>}
       </div>
-      <Button variant="primary" disabled={!!blocked || writePending} busy={save.isPending}
-        title={blocked ?? `Save ${well}'s IPR anchor and curve, and the fluid inputs, for reopening and for future optimization runs`}
-        onClick={onSave}>Save well inputs</Button>
+      <div className="flex items-center gap-2">
+        {ready && <Button variant="secondary" disabled={writePending}
+          title={`Put ${well}'s saved well inputs${onRevert ? " and IPR anchor" : ""} back. Nothing is written: trying an anchor or editing an input only changes this session until you save.`}
+          onClick={() => {
+            // Everything this save writes, plus what an anchor's fit lays over
+            // the sidebar (PF pressure, circulation direction).
+            useParamsStore.getState().revertToLoaded([...WELL_INPUT_KEYS, "ppf_surf", "jpump_direction"]);
+            onRevert?.();
+            setNotice({ ok: true, text: `Back to the saved well inputs${onRevert ? " and anchor" : ""}. Nothing was written.` });
+          }}>Revert to saved</Button>}
+        <Button variant="primary" disabled={!!blocked || writePending} busy={save.isPending}
+          title={blocked ?? `Save ${well}'s IPR anchor and curve, and the fluid inputs, for reopening and for future optimization runs`}
+          onClick={onSave}>Save well inputs</Button>
+      </div>
     </div>
     {blocked && <p className="text-xs text-slate-500">{blocked}</p>}
     {sessionOnly.length > 0 && <div className="space-y-1 text-xs text-amber-700">
@@ -99,7 +122,7 @@ export function SaveWellInputs({ well, anchor }: {
           WC {fmtNum(100 * params.form_wc, 1)}%; GOR {fmtNum(params.form_gor)} scf/STB; WHP {fmtNum(params.surf_pres)} psi.</p>
         <p>Changed temperature ({fmtNum(params.form_temp)} °F) and bubble point ({fmtNum(params.bubble_point)} psi) are also saved.
           Pump coefficients and the hydraulic model are saved through installed-pump calibration. Other sidebar settings remain session inputs.</p>
-        <input type="text" aria-label="Well save note" value={comment ?? matchNote ?? ""}
+        <input type="text" aria-label="Well save note" value={comment ?? matchNote ?? ownNote ?? ""}
           maxLength={500} disabled={save.isPending} onChange={(e) => setComment(e.target.value)}
           placeholder="Why these values? (optional)"
           className="h-8 w-full rounded border border-slate-300 px-2 text-sm" />

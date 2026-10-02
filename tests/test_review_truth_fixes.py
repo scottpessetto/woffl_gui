@@ -209,7 +209,7 @@ class TestReservoirPressureProvenance:
 
         # Max test BHP within 10 psi of the Schrader 1,800 cap: no RP room.
         df = self._tests([1795.0, 1700.0, 1600.0], [400.0, 900.0, 1300.0])
-        monkeypatch.setattr(ipr_svc.tests, "tests_for_well", lambda well, months, cap: df)
+        monkeypatch.setattr(ipr_svc.tests, "tests_for_well", lambda well, months, cap, include_info=False: df)
         monkeypatch.setattr(datasources, "well_chars_safe", lambda: (pd.DataFrame({"Well": ["MPX-02"], "is_sch": [True]}), "csv_fallback"))
         out = ipr_svc.fit(schemas.IprFitRequest(well="MPX-02", anchor_mode="recent"))
         assert out["coeffs"]["rp_source"] == "floor_fallback"
@@ -222,7 +222,7 @@ class TestReservoirPressureProvenance:
 
         # The same tests on a KUPARUK well have 1,200 psi of search room.
         df = self._tests([1795.0, 1700.0, 1600.0], [400.0, 900.0, 1300.0])
-        monkeypatch.setattr(ipr_svc.tests, "tests_for_well", lambda well, months, cap: df)
+        monkeypatch.setattr(ipr_svc.tests, "tests_for_well", lambda well, months, cap, include_info=False: df)
         monkeypatch.setattr(datasources, "well_chars_safe", lambda: (pd.DataFrame({"Well": ["MPX-02"], "is_sch": [False]}), "csv_fallback"))
         out = ipr_svc.fit(schemas.IprFitRequest(well="MPX-02", anchor_mode="recent", field_model="Kuparuk"))
         assert out["coeffs"]["rp_source"] == "fit"
@@ -320,7 +320,7 @@ class TestAnchorSeedCarriesTestDayPf:
         from server.services import ipr as ipr_svc
 
         monkeypatch.setattr(
-            ipr_svc.tests, "tests_for_well", lambda well, months, cap: self._frame()
+            ipr_svc.tests, "tests_for_well", lambda well, months, cap, include_info=False: self._frame()
         )
         req = schemas.IprFitRequest(well="MPX-01", anchor_mode="specific", anchor_date="2026-06-15")
         out = ipr_svc.fit(req)
@@ -333,7 +333,7 @@ class TestAnchorSeedCarriesTestDayPf:
 
         df = self._frame()
         df.loc[1, "pf_press"] = 0.0  # dead gauge on the anchor day
-        monkeypatch.setattr(ipr_svc.tests, "tests_for_well", lambda well, months, cap: df)
+        monkeypatch.setattr(ipr_svc.tests, "tests_for_well", lambda well, months, cap, include_info=False: df)
         req = schemas.IprFitRequest(well="MPX-01", anchor_mode="specific", anchor_date="2026-06-15")
         out = ipr_svc.fit(req)
         assert "ppf_surf" not in out["seeds"]

@@ -241,6 +241,10 @@ export interface WellContext {
 export interface WellTestRow {
   wt_uid: number | null;
   date: string; // YYYY-MM-DD
+  /** false = info-only test (FDC "Info Only = Yes": not reviewed for allocation). */
+  allocated?: boolean | null;
+  /** The engineer's own test (state/manualTest): built in the browser, never from Databricks. */
+  manual?: boolean;
   oil: number | null; // BOPD
   water: number | null; // BWPD formation
   gas: number | null; // MCF/D
@@ -1393,12 +1397,50 @@ export interface GaugeParseResponse {
   sample_count: number;
 }
 
+/** POST /lrs/parse - one LRS portable-separator test (no BHP on the sheet). */
+export interface LrsTestResponse {
+  filename: string;
+  well: string | null;
+  well_raw: string | null;
+  test_date: string | null; // YYYY-MM-DD
+  hours: number | null;
+  location: string | null;
+  oil: number; // BOPD
+  water: number; // BWPD formation
+  total_fluid: number; // BLPD
+  form_wc: number; // fraction
+  gor: number | null; // scf/stb
+  whp: number | null; // psi
+  pf_rate: number | null; // BWPD
+  pf_press: number | null; // psi
+  missing: string[];
+}
+
+/** server.schemas.ManualTestRow - the engineer's own test inside a fit request. */
+export interface ManualTestFitRow {
+  date: string; // YYYY-MM-DD
+  total_fluid: number; // BLPD formation
+  water: number; // BWPD formation
+  bhp: number; // psi
+  fgor: number | null; // scf/stb
+  whp: number | null; // psi
+  pf_press: number | null; // psi
+}
+
 export interface IprFitRequest {
   /** Tests excluded as bad data (server.schemas.IprFitRequest.exclude_wt_uids). */
   exclude_wt_uids?: number[];
   well: string;
   anchor_mode: AnchorMode;
   anchor_date: string | null;
+  /** The specific test itself - a well-day can hold several tests. */
+  anchor_wt_uid?: number | null;
+  /** Info-only tests join the fit: they move ResP and recent/median may anchor on them. */
+  include_info_only?: boolean;
+  /** The engineer's own (LRS / typed) test, counted like an allocated one. */
+  manual_test?: ManualTestFitRow | null;
+  /** Anchor on `manual_test` (it has no wt_uid to name it by). */
+  anchor_manual?: boolean;
   field_model: FieldModel;
   months: number;
   cap: number;
@@ -1418,6 +1460,9 @@ export interface IprCoeffs {
   most_recent_date: string | null;
   anchor_label: string | null;
   anchor_date: string | null;
+  anchor_wt_uid?: number | null;
+  /** The fit anchored on the request's manual_test. */
+  anchor_manual?: boolean;
   /** "fit" | "floor_fallback" - the latter is max BHP + 50, not a fitted RP; always reported weak. */
   rp_source?: "fit" | "floor_fallback" | string;
 }
@@ -2304,6 +2349,9 @@ export interface HarnessRunResult {
 
 export type HeaderRelationChoice = "auto" | "saved" | "measured" | "correlation" | "manual";
 export type HeaderIprChoice = "auto" | "saved" | "fit" | "correlation" | "manual";
+/** How a jet pump turns a WHP change into a BHP change: the WOFFL pump model
+ *  or the empirical closed-loop BHP~WHP relation (measured, else JP group). */
+export type HeaderJpMethod = "model" | "empirical";
 
 export interface HeaderRelationFit {
   slope: number | null;
@@ -2451,6 +2499,8 @@ export interface HeaderWellChoice {
   online?: boolean | null;
   /** true/false overrides the automatic gauge check; null keeps it. */
   gauge_bad?: boolean | null;
+  /** Jet pumps only; null follows the run's jp_method. */
+  jp_method?: HeaderJpMethod | null;
   relation?: HeaderRelationChoice | null;
   corr_group?: string | null;
   slope?: number | null;
@@ -2465,6 +2515,7 @@ export interface HeaderRunRequest {
   pads: string[];
   fit_days: number;
   mode: "scenario" | "event";
+  jp_method?: HeaderJpMethod;
   delta_by_pad: Record<string, number>;
   event_time?: string | null;
   pre_hours?: number;
@@ -2495,6 +2546,12 @@ export interface HeaderRunRow {
   measured_slope: number | null;
   pres_well?: number | null;
   pres_basis?: "saved" | "default" | null;
+  /** Jet pumps: the method this well ran with; null for other lift types. */
+  jp_method?: HeaderJpMethod | null;
+  /** Jet pumps: set to the relation but had none, so the pump model ran. */
+  jp_fallback?: boolean;
+  /** Jet pumps: where the pump model's IPR came from (saved, vogel, single_test...). */
+  jp_ipr_source?: string | null;
   relation_source?: string;
   relation_saved?: boolean;
   relation_group?: string | null;
@@ -2551,6 +2608,8 @@ export interface HeaderCurveSeries {
 
 export interface HeaderRunResult {
   mode: "scenario" | "event";
+  /** The run's jet-pump method (wells may override it). */
+  jp_method?: HeaderJpMethod;
   pads: HeaderPadResult[];
   rows: HeaderRunRow[];
   totals: {

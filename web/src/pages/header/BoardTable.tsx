@@ -5,25 +5,28 @@
  * Any well without a working gauge can be assigned a BHP~WHP correlation
  * (lift type + reservoir, or lift type) and a reservoir IPR correlation
  * (pad + reservoir, or reservoir). "Default" follows the ladder: saved >
- * measured / gauge fit > correlation. Jet pumps always run the pump model.
+ * measured / gauge fit > correlation. Jet pumps run the same BHP~WHP ladder
+ * from jet-pump groups (the pump model when they have none), or - per run or
+ * per well - the WOFFL pump model; either way on their pump model's IPR.
  */
 
 import clsx from "clsx";
 import { useMemo, useState } from "react";
 
-import type { HeaderBoard, HeaderBoardRow, HeaderWellChoice } from "../../api/types";
+import type { HeaderBoard, HeaderBoardRow, HeaderJpMethod, HeaderWellChoice } from "../../api/types";
 import { Badge } from "../../components/ui";
 import { fmtNum } from "../../lib/format";
 import { useHeaderStore } from "../../state/header";
-import { corrGroupsFor, effective, gaugeBadDefault, iprGroupsFor, presLabel, savePlan } from "./model";
+import { corrGroupsFor, effective, gaugeBadDefault, iprGroupsFor, plausible, presLabel, savePlan } from "./model";
 
 /** The option list plus the group already selected, even if it was deduplicated away. */
 const withSelected = (keys: string[], selected: string | null) =>
   selected && !keys.includes(selected) ? [...keys, selected] : keys;
 
 /** What "Default" resolves to for this well's relation, e.g. "measured 0.62". */
-function relDefaultLabel(row: HeaderBoardRow, choice?: HeaderWellChoice): string {
-  const r = effective(row, { ...(choice ?? { well: row.well }), relation: "auto" }).rel;
+function relDefaultLabel(row: HeaderBoardRow, choice: HeaderWellChoice | undefined, jpMethod: HeaderJpMethod): string {
+  const r = effective(row, { ...(choice ?? { well: row.well }), relation: "auto" }, jpMethod).rel;
+  if (r.kind === "physics") return "none - pump model";
   if (r.slope === null) return "none";
   const kind = r.kind === "correlation" ? `correlation ${r.group}` : r.kind.replace("_", " ");
   return `${kind} ${fmtNum(r.slope, 2)}`;
@@ -81,17 +84,38 @@ export function GaugeCell({ row, choice }: { row: HeaderBoardRow; choice?: Heade
   );
 }
 
+export const JP_METHOD_TEXT: Record<HeaderJpMethod, string> = { model: "pump model", empirical: "BHP~WHP relation" };
+
+/** A jet pump's method: follow the run's setting, or pin this well to one. */
+function JpMethodSelect({ row, choice, runMethod }: { row: HeaderBoardRow; choice?: HeaderWellChoice; runMethod: HeaderJpMethod }) {
+  const setChoice = useHeaderStore((s) => s.setChoice);
+  return (
+    <select
+      className={clsx(INPUT, "max-w-[11rem]")}
+      value={choice?.jp_method ?? "run"}
+      onChange={(e) => setChoice(row.well, { jp_method: e.target.value === "run" ? null : (e.target.value as HeaderJpMethod) })}
+      title="How this jet pump turns the WHP change into a BHP change. The BHP~WHP relation uses its saved or measured closed-loop slope, else the JP group correlation, and falls back to the pump model when it has none. The pump model solves the installed pump at both wellhead pressures with PF held. Both use the pump model's IPR."
+    >
+      <option value="run">Run setting: {JP_METHOD_TEXT[runMethod]}</option>
+      <option value="model">WOFFL pump model</option>
+      <option value="empirical">BHP~WHP relation</option>
+    </select>
+  );
+}
+
 export function RelationCell({ row, choice }: { row: HeaderBoardRow; choice?: HeaderWellChoice }) {
   const setChoice = useHeaderStore((s) => s.setChoice);
-  if (row.lift === "JP") {
-    return <span className="text-xs text-slate-500" title="Jet pumps are solved with the WOFFL model at both wellhead pressures">pump model</span>;
-  }
-  const eff = effective(row, choice);
+  const runMethod = useHeaderStore((s) => s.form.jpMethod) ?? "model";
+  const eff = effective(row, choice, runMethod);
+  // The relation picker shows whenever the well is set to its relation, even
+  // when it has none yet (a manual slope or a gauge verdict can supply one).
+  if (eff.jpMethod === "model" && !eff.jpFallback) return <JpMethodSelect row={row} choice={choice} runMethod={runMethod} />;
   const view = eff.rel;
   const value =
     choice?.relation === "correlation" ? `corr:${view.group ?? row.corr_group ?? ""}` : (choice?.relation ?? "auto");
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex flex-wrap items-center gap-1">
+      {eff.jpMethod !== null && <JpMethodSelect row={row} choice={choice} runMethod={runMethod} />}
       <select
         className={clsx(INPUT, "max-w-[11rem]")}
         value={value}
@@ -101,10 +125,13 @@ export function RelationCell({ row, choice }: { row: HeaderBoardRow; choice?: He
           else setChoice(row.well, { relation: v as HeaderWellChoice["relation"] });
         }}
       >
-        <option value="auto">Default: {relDefaultLabel(row, choice)}</option>
+        <option value="auto">Default: {relDefaultLabel(row, choice, eff.jpMethod ?? "model")}</option>
         {row.saved && <option value="saved">Saved {fmtNum(row.saved.slope, 2)}</option>}
         {row.measured.slope !== null && eff.gaugeOk && (
-          <option value="measured">Measured {fmtNum(row.measured.slope, 2)}{row.measured.status !== "measured" ? " (weak)" : ""}</option>
+          <option value="measured">
+            Measured {fmtNum(row.measured.slope, 2)}
+            {!plausible(row.measured.slope) ? " (implausible)" : row.measured.status !== "measured" ? " (weak)" : ""}
+          </option>
         )}
         {withSelected(corrGroupsFor(row), view.kind === "correlation" ? view.group : null).map((k) => (
           <option key={k} value={`corr:${k}`}>Correlation {k} {fmtNum(row.corr_options[k].slope, 2)}</option>
@@ -127,7 +154,7 @@ export function RelationCell({ row, choice }: { row: HeaderBoardRow; choice?: He
         className={clsx("text-xs whitespace-nowrap tabular-nums", view.kind === "none" ? "text-red-600" : view.firm ? "text-slate-700" : "text-amber-700")}
         title={view.reason ?? `Runs with the ${view.kind.replace("_", " ")} relation${view.group ? ` (${view.group})` : ""}${view.source ? `, saved from ${view.source}` : ""}`}
       >
-        {view.slope !== null ? `${fmtNum(view.slope, 2)}${range(view.lo, view.hi, 2)}` : "none"}
+        {view.slope !== null ? `${fmtNum(view.slope, 2)}${range(view.lo, view.hi, 2)}` : view.kind === "physics" ? "pump model" : "none"}
       </span>
     </div>
   );
@@ -136,7 +163,7 @@ export function RelationCell({ row, choice }: { row: HeaderBoardRow; choice?: He
 export function IprCell({ row, choice }: { row: HeaderBoardRow; choice?: HeaderWellChoice }) {
   const setChoice = useHeaderStore((s) => s.setChoice);
   if (row.lift === "JP") {
-    return <span className="text-xs text-slate-500" title="Jet pumps use the IPR saved with their pump model (Solver)">Solver IPR</span>;
+    return <span className="text-xs text-slate-500" title="Jet pumps use the IPR their pump model runs on (Solver), with either method">Solver IPR</span>;
   }
   const eff = effective(row, choice);
   const view = eff.ipr;

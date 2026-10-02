@@ -26,14 +26,20 @@ from server.services import frames
 def fetch_all_well_tests(months: int) -> pd.DataFrame:
     """Fleet-wide well tests for the trailing ``months`` window.
 
+    EVERY test, allocated and info-only (``allocated`` column). Only what a
+    person picks from reads this frame whole; anything that selects or fits
+    tests on its own takes ``allocated_only`` of it, as ``tests_for_well``
+    does by default.
+
     Raises on Databricks failure so a blip is never cached.
 
     Args:
         months: lookback window in calendar months (relativedelta).
 
     Returns:
-        Frame with well, wt_uid, WtDate, WtOilVol, WtWaterVol, WtGasVol,
-        WtTotalFluid, form_wc, BHP, fgor, lift_wat, whp, pf_press, pf_source.
+        Frame with well, wt_uid, WtDate, allocated, WtOilVol, WtWaterVol,
+        WtGasVol, WtTotalFluid, form_wc, BHP, fgor, lift_wat, whp, pf_press,
+        pf_source, dup_wt_uids.
     """
     from dateutil.relativedelta import relativedelta
 
@@ -94,7 +100,16 @@ def _longest_cached_window(months: int) -> Optional[int]:
     return None
 
 
-def tests_for_well(well: str, months: int, cap: int = 0) -> Optional[pd.DataFrame]:
+def allocated_only(df: pd.DataFrame) -> pd.DataFrame:
+    """The allocated tests of a fleet/well frame (see well_test_client)."""
+    from woffl.assembly.well_test_client import allocated_only as _allocated_only
+
+    return _allocated_only(df)
+
+
+def tests_for_well(
+    well: str, months: int, cap: int = 0, include_info: bool = False
+) -> Optional[pd.DataFrame]:
     """One well's tests from the shared fleet cache, newest kept under a cap.
 
     Soft-fail: Databricks down or no rows -> None (v1 drops the gauge and
@@ -104,6 +119,8 @@ def tests_for_well(well: str, months: int, cap: int = 0) -> Optional[pd.DataFram
         well: GUI well name, e.g. "MPB-28".
         months: lookback window in months.
         cap: keep only the N most recent tests; 0 = no cap.
+        include_info: also return info-only (unallocated) tests. Off by
+            default: only a list the engineer picks from should carry them.
 
     Returns:
         Copy of the sliced frame, or None when the well has no tests.
@@ -116,7 +133,10 @@ def tests_for_well(well: str, months: int, cap: int = 0) -> Optional[pd.DataFram
         return None
     if all_tests is None or all_tests.empty:
         return None
-    sliced = all_tests[all_tests["well"] == well].copy()
+    sliced = all_tests[all_tests["well"] == well]
+    if not include_info:
+        sliced = allocated_only(sliced)
+    sliced = sliced.copy()
     if sliced.empty:
         return None
     if cap > 0 and "WtDate" in sliced.columns and len(sliced) > cap:
@@ -132,6 +152,7 @@ def tests_for_well(well: str, months: int, cap: int = 0) -> Optional[pd.DataFram
 _TEST_COLUMNS: dict[str, str] = {
     "wt_uid": "wt_uid",
     "WtDate": "date",
+    "allocated": "allocated",
     "WtOilVol": "oil",
     "WtWaterVol": "water",
     "WtGasVol": "gas",
@@ -146,9 +167,15 @@ _TEST_COLUMNS: dict[str, str] = {
 }
 
 
-def tests_json(well: str, months: int, cap: int = 0) -> list[dict[str, Any]]:
-    """JSON-safe test rows, newest first. [] when the well has none."""
-    df = tests_for_well(well, months, cap)
+def tests_json(
+    well: str, months: int, cap: int = 0, include_info: bool = False
+) -> list[dict[str, Any]]:
+    """JSON-safe test rows, newest first. [] when the well has none.
+
+    ``allocated`` is false on an info-only row and null on a frame that never
+    carried the flag.
+    """
+    df = tests_for_well(well, months, cap, include_info)
     if df is None or df.empty:
         return []
     if "WtDate" in df.columns:

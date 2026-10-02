@@ -88,6 +88,69 @@ def _apply_bhp_overrides(df: pd.DataFrame, overrides: list[schemas.GaugeDay]) ->
     return apply_to_well_tests(df, SimpleNamespace(daily_df=daily))  # type: ignore[arg-type]
 
 
+def _fit_tests(df: pd.DataFrame, req: schemas.IprFitRequest) -> pd.DataFrame:
+    """The tests one fit runs on: the allocated tests, plus an info-only test
+    only when the engineer named it as the specific anchor - or every test
+    when the engineer switched info-only tests into the fit.
+
+    Info-only tests are unscreened SCADA tests, so by default no mode may pick
+    one on its own and none may pull the reservoir-pressure fit; a chosen one
+    joins as the anchor. ``include_info_only`` is the engineer's explicit
+    opt-in: they then count like allocated tests in the reservoir-pressure
+    fit and in the recent/median anchor choice.
+    """
+    if "allocated" not in df.columns or req.include_info_only:
+        return df
+    keep = df["allocated"].astype(bool)
+    # An anchor on the engineer's own test names no Databricks row to add.
+    if req.anchor_mode == "specific" and not req.anchor_manual:
+        chosen = pd.Series(False, index=df.index)
+        if req.anchor_wt_uid is not None and "wt_uid" in df.columns:
+            chosen = pd.to_numeric(df["wt_uid"], errors="coerce") == float(req.anchor_wt_uid)
+        if not chosen.any() and req.anchor_date is not None:
+            target = pd.to_datetime(req.anchor_date, errors="coerce")
+            if pd.notna(target):
+                on_day = pd.to_datetime(df["WtDate"], errors="coerce").dt.normalize() == target.normalize()
+                # An allocated test that day already is the date's anchor.
+                if not (on_day & keep).any():
+                    chosen = on_day
+        keep = keep | chosen
+    return df[keep]
+
+
+# In-frame wt_uid of the engineer's own test for the length of one fit. Real
+# wt_uids span about -3.6M..+3.1M, so this can never name a Databricks test.
+_MANUAL_TEST_UID = 9.0e12
+
+
+def _with_manual_test(df: pd.DataFrame, well: str, test: schemas.ManualTestRow) -> pd.DataFrame:
+    """The fit frame plus the engineer's own test (an LRS portable-separator
+    test, or one typed in). It counts like an allocated test: the engineer put
+    it there, so it shapes the reservoir pressure and any mode may anchor on it.
+    """
+    water = float(test.water)
+    extra = pd.DataFrame(
+        [
+            {
+                "well": well,
+                "wt_uid": _MANUAL_TEST_UID,
+                "WtDate": pd.Timestamp(test.date),
+                "allocated": True,
+                "WtTotalFluid": float(test.total_fluid),
+                "WtWaterVol": water,
+                "WtOilVol": float(test.total_fluid) - water,
+                "BHP": float(test.bhp),
+                "fgor": test.fgor if test.fgor is not None else float("nan"),
+                "whp": test.whp if test.whp is not None else float("nan"),
+                "pf_press": test.pf_press if test.pf_press is not None else float("nan"),
+            }
+        ]
+    )
+    if df.empty:
+        return extra
+    return pd.concat([df, extra], ignore_index=True)
+
+
 def fit(req: schemas.IprFitRequest) -> dict[str, Any]:
     """Fit a Vogel IPR for one well (IprFitResponse shape).
 
@@ -101,14 +164,25 @@ def fit(req: schemas.IprFitRequest) -> dict[str, Any]:
         ValueError: fewer than 2 usable (BHP + WtTotalFluid) tests, or the
             fit itself failed (router maps to 422 "invalid").
     """
-    df = tests.tests_for_well(req.well, req.months, req.cap)
-    if df is None or df.empty:
+    df = tests.tests_for_well(req.well, req.months, req.cap, include_info=True)
+    if (df is None or df.empty) and req.manual_test is None:
         raise ValueError(_FIT_ERROR)
+    if df is None:
+        df = pd.DataFrame()
     if req.exclude_wt_uids and "wt_uid" in df.columns:
         drop = {float(u) for u in req.exclude_wt_uids}
         df = df[~pd.to_numeric(df["wt_uid"], errors="coerce").isin(drop)]
-    if req.bhp_overrides:
+    if not df.empty:
+        df = _fit_tests(df, req)
+    if req.bhp_overrides and not df.empty:
         df = _apply_bhp_overrides(df, req.bhp_overrides)
+    # The engineer's own test joins last: a memory gauge never overrides the
+    # BHP they entered for it.
+    anchor_wt_uid = req.anchor_wt_uid
+    if req.manual_test is not None:
+        df = _with_manual_test(df, req.well, req.manual_test)
+        if req.anchor_manual:
+            anchor_wt_uid = _MANUAL_TEST_UID
     usable = df.dropna(subset=["BHP", "WtTotalFluid"])
     if len(usable) < 2:
         raise ValueError(_FIT_ERROR)
@@ -122,6 +196,7 @@ def fit(req: schemas.IprFitRequest) -> dict[str, Any]:
             well_name=req.well,
             anchor_mode=req.anchor_mode,
             anchor_date=req.anchor_date,
+            anchor_wt_uid=anchor_wt_uid,
             field_max_rp=field_max_rp,
         )
         if row is None:
@@ -191,6 +266,20 @@ def fit(req: schemas.IprFitRequest) -> dict[str, Any]:
             if src in ("tubing", "annulus"):
                 seeds["jpump_direction"] = "forward" if src == "tubing" else "reverse"
 
+    anchor_uid = frames.opt_float(
+        row.get("anchor_wt_uid") if row.get("anchor_wt_uid") is not None
+        else (anchor_row.get("wt_uid") if anchor_row is not None else None)
+    )
+    # The engineer's own test has no Databricks wt_uid: it is reported by flag,
+    # and its in-frame marker never leaves the server.
+    anchor_manual = anchor_uid == _MANUAL_TEST_UID
+    if anchor_manual:
+        anchor_uid = None
+        # A test with no measured GOR (an LRS sheet without a gas rate) must
+        # not push the 250 default over the well's GOR.
+        if req.manual_test is not None and req.manual_test.fgor is None:
+            seeds.pop("form_gor", None)
+
     coeffs_out = {
         "res_p": float(res_p),
         "qmax": qmax,
@@ -203,6 +292,10 @@ def fit(req: schemas.IprFitRequest) -> dict[str, Any]:
         "most_recent_date": frames.json_value(row.get("most_recent_date")),
         "anchor_label": row.get("anchor_label"),
         "anchor_date": frames.json_value(row.get("anchor_date")),
+        # The anchored fit names its row; the recent fit's is matched back by
+        # its (qwf, pwf) pair above.
+        "anchor_wt_uid": anchor_uid,
+        "anchor_manual": anchor_manual,
         # "fit" | "floor_fallback": the latter is RP = max BHP + 50 (or the
         # field cap), not a fitted pressure - it manufactures a 10-30x qmax
         # and is always reported WEAK so the engineer decides RP (SOLV-F5).
@@ -264,6 +357,15 @@ def _saved_ipr(well: str) -> Optional[dict[str, Any]]:
     return ipr_anchor.load_saved_ipr(well)
 
 
+def _folded_test_row(df: Optional[pd.DataFrame], wt_uid: float) -> Optional[pd.Series]:
+    """The surviving row of a test whose own wt_uid was folded into it as a
+    duplicate copy (well_test_client's ``dup_wt_uids``), else None."""
+    if df is None or df.empty or "dup_wt_uids" not in df.columns:
+        return None
+    hit = df["dup_wt_uids"].map(lambda uids: isinstance(uids, tuple) and wt_uid in uids)
+    return df[hit].iloc[0] if hit.any() else None
+
+
 def pin(well: str) -> dict[str, Any]:
     """Saved IPR-anchor pin status for one well (IprPinResponse shape).
 
@@ -307,12 +409,17 @@ def pin(well: str) -> dict[str, Any]:
     pin_at = saved.get("pin_at")
     entry_datetime = None if pin_at is None or pd.isna(pin_at) else str(pin_at)
 
-    df = tests.tests_for_well(well, 6, 0)
+    # Info-only tests included: the engineer may have pinned one.
+    df = tests.tests_for_well(well, 6, 0, include_info=True)
     match = ipr_anchor.find_test_row_by_wt_uid(df, int(float(pin_value)))
+    if match is None:
+        match = _folded_test_row(df, float(pin_value))
     if match is not None:
         return {
             "status": "applied",
-            "wt_uid": float(pin_value),
+            # The row now standing for the pinned test: the allocated copy
+            # when FDC allocated an info-only test after it was pinned.
+            "wt_uid": frames.opt_float(match.get("wt_uid")) or float(pin_value),
             "date_token": frames.json_value(match.get("WtDate")),
             "entry_user": entry_user,
             "entry_datetime": entry_datetime,

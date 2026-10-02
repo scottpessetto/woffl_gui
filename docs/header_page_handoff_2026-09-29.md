@@ -71,6 +71,67 @@ dOil = dLiq × (1 − WC)   WC from the latest test; oil derived once
   - If the pump model fails, the well falls back to its own measured
     relation on the pump model's IPR.
   - If there is no measured relation either, it gets no estimate.
+- **Jet-pump method (added 2026-09-30; user decisions the same day):**
+  - **Default: the BHP~WHP relation.** A jet pump uses its saved relation,
+    else its own measured slope, else the JP group correlation. Only when it
+    has none of these does it fall back to the WOFFL model; the result row
+    carries `jp_fallback` and a note saying so. The Impact form's **Jet
+    pumps: BHP~WHP relation | WOFFL model** toggle (`jp_method`, default
+    `empirical`) and the per-well override on the Wells tab
+    (`HeaderWellChoice.jp_method`) stay.
+  - **Groups:** JP groups only. `JP` was added to `LIFT_GROUPS`; ESP
+    correlations are never offered to a jet pump.
+  - **IPR:** the one the pump model runs on (`_jp_iprs`: the same
+    `_build_configs` hydration, with no solve), so the methods differ only in
+    the WHP→BHP link. It is exempt from the page's 300 psi rule and needs
+    only ResP > BHP (MPF-107's Solver IPR has 274 psi).
+  - **Saving:** jet-pump relations save like ESP ones, through the same
+    `push_props` path and the same `hdr_*` ids, and are then the well's
+    default. A JP IPR is still refused; it stays in Solver. Saving is verified
+    with mocks only; no JP relation has been saved live.
+  - **Implausible slopes:** a measured slope outside 0–1.2
+    (`header_model.slope_plausible`) is never a default, never feeds a
+    correlation, and never saves as "measured". MPM-62 read −3.1: clipped to
+    0, it was "firm" at 0 BOPD, and it tilted the M-Pad JP trend. This
+    applies to every lift type. It is not the old [0.2, 1.5] band: 0.05 ESP
+    slopes still count.
+  - **Results:** each row carries `jp_method`. The basis reads "BHP~WHP
+    measured / Solver" or "pump model / Solver". The answer card counts jet
+    pumps by method, including fallbacks; the CSV has a "JP method" column.
+  - **Correlation scope applies to JP groups too** (see open item 3). A
+    group is built from the pads on the board:
+    - M alone: 9 measured JPs.
+    - F alone: 1 (MPF-107).
+    - C, G or J alone: none, so gaugeless jet pumps there fall back to the
+      model.
+    - All 14 pads together: 29 wells. A board for all 14 pads took about 28 s.
+  - **Live read-only checks, 2026-09-30, +10 psi:**
+    - **M-Pad alone:** −85.9 BOPD, 16 of 16 online wells modeled.
+      - 9 wells use their own slope: MPM-10/14/16/20/28/30/43/45/64.
+      - 7 use JP schrader (median 0.55 ± 0.29): MPM-12/32/34 (weak or
+        implausible own slope), MPM-22/24 (no gauge data), MPM-60 (no
+        data), MPM-62 (implausible).
+    - **All 14 pads:** −465.4 BOPD, 121 of 131 wells modeled. Every online
+      JP ran on the relation; none fell back to the model. Four S-Pad JPs
+      (MPS-05/12/17/25) have no estimate: their gauges all read about
+      3,035 psi, above the IPR ResP. This looks like the MPL-20 PF-reading
+      pattern, under the 3,200 Schrader auto-flag limit. MPS-05's 1.11 slope
+      also feeds the JP group. Review S-Pad gauges.
+    - **F/L/R, before the default changed:** model −31.8 BOPD (43 of 45);
+      relation −44.2 (44 of 45).
+      - MPL-06: model 0.0 (sonic); relation −5.2 (measured 1.02).
+      - MPF-107: model −3.6; relation −2.5.
+      - MPF-73: relation only, −8.3; its pump-model IPR has ResP 573 psi.
+  - **MPL-20 gauge (not yet saved):** it reads 4,371 psi, PF pressure under
+    the 4,500 Kuparuk limit. A gauge-only save writes one row,
+    `hdr_gauge_bad` = 1.0. Refitting the F/L/R JP group with MPL-20 excluded
+    moves it from a median of 0.79 (n = 4, MAD 0.14) to 0.83 (n = 3, MAD 0.19:
+    MPF-107, MPL-06 and MPR-111).
+  - **MPR-111:** its latest test is 181 days old (shut in), yet it gives a
+    "measured" 0.83. That is probably static-column tracking, not a flowing
+    relation. Recommended rule, not implemented: a correlation point needs
+    an online-age test and must not look shut in, like the BHP/ResP ratio
+    groups (`_ratio_ok`).
 
 **Relation ladder ("Default"):**
 1. The saved relation.
@@ -171,8 +232,8 @@ the same day):
 - **How Save writes:** one `push_props` per well. Values come from the
   board/run job on the server, resolved by the same `effective()` as the run.
   Only manual numbers come from the client.
-- **What Save refuses:** jet-pump IPRs (those stay in Solver) and a weak
-  measured relation.
+- **What Save refuses:** jet-pump IPRs (those stay in Solver) and a weak or
+  implausible measured relation. Jet-pump relations save since 2026-09-30.
 - **First live saves, 2026-09-29 21:09 and 21:11, by the user, read back.**
   - MPF-01: measured 0.620; gauge-fit IPR, ResP 1,365.
   - MPF-05: measured 0.493; manual IPR, ResP 1,500.
@@ -196,9 +257,9 @@ the same day):
 | File | Contents |
 |---|---|
 | `server/services/header_model.py` | Pure math. Relation summary; correlation fit and prediction; Vogel rate and PI; pseudo-Pr fit wrapper; `nonjp_delta`; `range_delta`; `gauge_problem`; event windows and medians; `run_status`; defaults and caps. |
-| `server/services/header_study.py` | The board: overview, tests, historian, saved props; per-well rows with `pres_well` / `pres_basis`; correlations; BHP-ratio groups; `_attach_options`. `effective()` resolves choices for run and save. Also `run_impact` (with range, curve and validation), `_jp_solve`, `_pop_candidates`, `well_detail`, `save`, and the jobs. |
+| `server/services/header_study.py` | The board: overview, tests, historian, saved props; per-well rows with `pres_well` / `pres_basis`; correlations; BHP-ratio groups; `_attach_options`. `effective()` resolves choices for run and save. Also `run_impact` (with range, curve and validation), `_jp_solve`, `_jp_iprs` / `_jp_empirical` (JPs on the BHP~WHP relation), `_pop_candidates`, `well_detail`, `save`, and the jobs. |
 | `server/routers/header.py` | `GET /api/header/pads`; `POST /board` and `POST /run` (jobs); `GET/DELETE /job/{id}`; `GET /well/{well}?pads=&fit_days=` (reuses the board's cached historian pull); `POST /save` (403 unless `ALLOW_DATABRICKS_WRITES`). |
-| `server/schemas.py` (end of file) | `HeaderBoardRequest`, `HeaderWellChoice` (online, gauge_bad, relation, corr_group, slope, ipr, ipr_group, manual qwf/pwf/pres), `HeaderRunRequest`, `HeaderSaveWell`, `HeaderSaveRequest`, `HeaderJobStatus`. |
+| `server/schemas.py` (end of file) | `HeaderBoardRequest`, `HeaderWellChoice` (online, gauge_bad, jp_method, relation, corr_group, slope, ipr, ipr_group, manual qwf/pwf/pres), `HeaderRunRequest` (with `jp_method`), `HeaderSaveWell`, `HeaderSaveRequest`, `HeaderJobStatus`. |
 | `server/services/tools/header_trend.py` | R header tag `MPU_PI_4661` added. |
 | `server/main.py` | Router registered. |
 
@@ -220,8 +281,9 @@ the same day):
 Route and nav: `web/src/App.tsx`, `layout/Topbar.tsx` ("Header"), and
 `layout/Layout.tsx` (no sidebar).
 
-**Tests:** `tests/test_header_study.py` (36) and
-`web/tests/headerModel.test.mjs` (11).
+**Tests:** `tests/test_header_study.py` (45) and
+`web/tests/headerModel.test.mjs` (13). The 2026-09-30 JP-method tests are
+at the end of each file.
 
 ## Latest live numbers (read-only, F/L/R, 120-day fits)
 
@@ -264,7 +326,17 @@ Route and nav: `web/src/App.tsx`, `layout/Topbar.tsx` ("Header"), and
 3. **Correlation scope.** Groups are built from the pads on the board, so the
    Impact and Wells tabs can differ for unsaved wells when their pad sets
    differ. Saved values are unaffected. Fleet-wide groups would remove this,
-   at a historian-cost trade-off.
+   at a historian-cost trade-off. JP groups feel it most: C, G or J alone has
+   no measured jet pump (their gaugeless JPs fall back to the model), and F
+   alone has one. A board for all 14 pads took about 28 s on 2026-09-30.
+   - **Decision pending:** the 300 psi drawdown rule
+     (`header_model.MIN_DRAWDOWN_PSI`, from review EVID-F17). On 2026-09-30
+     it refused three non-JP wells: MPJ-40 and MPL-46 have gauges above the
+     1,800 default ResP, and MPJ-27 has a saved ResP of 645 at 484 psi BHP.
+     Jet pumps are exempt.
+   - **Pending:** save MPL-20's gauge as bad; review the S-Pad JP gauges,
+     which all read about 3,035 psi; the correlation-point freshness rule
+     for MPR-111.
 4. **Commit and deploy.** The working tree also holds the uncommitted
    2026-09-24 optimization work, so separate or commit it deliberately.
    Rebuild `web/dist`, deploy, and measure on Medium.

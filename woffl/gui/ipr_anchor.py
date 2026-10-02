@@ -340,12 +340,14 @@ def clear_ipr_pin(well_name: str) -> tuple[bool, str]:
 
 
 def _resolve_anchor_row(
-    df: pd.DataFrame, anchor_mode: str, anchor_date
+    df: pd.DataFrame, anchor_mode: str, anchor_date, anchor_wt_uid=None
 ) -> tuple[pd.Series, str]:
     """Pick the anchor row and a human label for the given mode.
 
-    Falls back to the most-recent test if a 'specific' date doesn't match any
-    row (e.g. the picked test was filtered out by a tighter lookback).
+    A 'specific' anchor is the row with ``anchor_wt_uid`` when one is given
+    and present (a well-day can hold several tests), else the newest row on
+    ``anchor_date``. Falls back to the most-recent test if neither matches
+    (e.g. the picked test was filtered out by a tighter lookback).
     """
     by_date_desc = df.sort_values("__date", ascending=False)
     recent_row = by_date_desc.iloc[0]
@@ -367,6 +369,11 @@ def _resolve_anchor_row(
         row = df.iloc[pos]
         return row, _label(row, "median-liquid test")
 
+    if anchor_mode == "specific" and anchor_wt_uid is not None:
+        row = find_test_row_by_wt_uid(df, anchor_wt_uid)
+        if row is not None:
+            return row, _label(row, "selected test")
+
     if anchor_mode == "specific" and anchor_date is not None:
         target = pd.to_datetime(anchor_date, errors="coerce")
         if pd.notna(target):
@@ -384,6 +391,7 @@ def compute_anchored_vogel(
     well_name: str | None = None,
     anchor_mode: str = "median",
     anchor_date=None,
+    anchor_wt_uid=None,
     field_max_rp: float = 1800,
     resp_modifier: int = 0,
 ) -> dict | None:
@@ -397,6 +405,7 @@ def compute_anchored_vogel(
             (median-liquid-rate test), ``"specific"`` (needs ``anchor_date``),
             or ``"recent"``.
         anchor_date: the test date to anchor on when ``anchor_mode='specific'``.
+        anchor_wt_uid: the specific test's ``wt_uid``; outranks ``anchor_date``.
         field_max_rp: upper bound for the RP sweep (Schrader ~1800, Kuparuk ~3000).
         resp_modifier: psi added to the fitted RP (parity with ipr_analyzer).
 
@@ -413,7 +422,9 @@ def compute_anchored_vogel(
     bhp_values = df["BHP"].values.astype(float)
     fluid_values = df["WtTotalFluid"].values.astype(float)
 
-    anchor_row, anchor_label = _resolve_anchor_row(df, anchor_mode, anchor_date)
+    anchor_row, anchor_label = _resolve_anchor_row(
+        df, anchor_mode, anchor_date, anchor_wt_uid
+    )
     anchor_bhp = float(anchor_row["BHP"])
     anchor_fluid = float(anchor_row["WtTotalFluid"])
 
@@ -461,6 +472,7 @@ def compute_anchored_vogel(
         "R2": round(r2, 3),
         "anchor_label": anchor_label,
         "anchor_date": anchor_date_val if pd.notna(anchor_date_val) else None,
+        "anchor_wt_uid": _anchor_row_wt_uid(anchor_row),
         # "fit" | "floor_fallback" - the latter is max BHP + 50, not a fitted
         # reservoir pressure; the server reports it WEAK (SOLV-F5).
         "RP_source": rp_source,

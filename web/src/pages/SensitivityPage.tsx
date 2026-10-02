@@ -31,10 +31,11 @@ import type { SensitivityKnob, SensitivityResponse, WcBasis, WellTestRow } from 
 import { ErrorNote, InfoNote, WarnNote } from "../components/ui";
 import { fmtDate } from "../lib/format";
 import { useDebounced } from "../lib/useDebounced";
+import { MANUAL_TEST_KEY, manualTestRow, useManualTestStore } from "../state/manualTest";
 import { effectiveParams, useParamsStore } from "../state/params";
 import { DEFAULT_VIEW, NO_BOUNDS, useSensitivityStore } from "../state/sensitivity";
 import { withBound } from "./sensitivity/bounds";
-import { testKey } from "./solver/selection";
+import { allocatedTests, testKey } from "./solver/selection";
 import { CombinePanel } from "./sensitivity/CombinePanel";
 import { DetailSweep } from "./sensitivity/DetailSweep";
 import { KnobTable } from "./sensitivity/KnobTable";
@@ -98,15 +99,20 @@ export default function SensitivityPage() {
   // recent test. Scoring "Match Sensitivities" against a different test than
   // the one on the Solver page was a silent mismatch (review WEB-15).
   const compareKey = useSensitivityStore((s) => s.compareKey[well] ?? null);
+  const manual = useManualTestStore((s) => s.byWell[well]);
   const latestTest = useMemo<WellTestRow | null>(() => {
+    // The Solver compared against the engineer's manual test: score that.
+    if (compareKey === MANUAL_TEST_KEY && manual) return manualTestRow(manual);
     const rows = testsQ.data?.tests ?? [];
     if (rows.length === 0) return null;
     if (compareKey !== null) {
       const picked = rows.find((t) => testKey(t) === compareKey);
       if (picked) return picked;
     }
-    return [...rows].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))[0];
-  }, [testsQ.data, compareKey]);
+    // No Solver pick: the newest allocated test, the Solver's own default.
+    const newest = [...rows].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    return allocatedTests(newest)[0] ?? newest[0];
+  }, [testsQ.data, compareKey, manual]);
   const targetIsSolverPick = compareKey !== null && latestTest !== null && testKey(latestTest) === compareKey;
 
   const targets = useMemo(

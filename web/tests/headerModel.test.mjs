@@ -47,14 +47,14 @@ const board = (rows) => ({
   header_now: { F: 412, L: 404 }, defaults: { res_pres: {}, online_max_test_age_days: 45 },
 });
 
-test("defaults follow the ladder and JP runs the pump model", () => {
+test("defaults follow the ladder; a JP set to the model runs the pump model", () => {
   const e = effective(row());
   assert.equal(e.rel.kind, "measured");
   assert.deepEqual([e.rel.lo, e.rel.hi], [0.5, 0.7]);
   // Default IPR: the well's own gauge data (usable fit), else its own ResP.
   assert.equal(e.ipr.kind, "fit");
   assert.equal(effective(row({ ipr_fit: null })).ipr.kind, "correlation");
-  assert.equal(effective(row({ lift: "JP" })).rel.kind, "physics");
+  assert.equal(effective(row({ lift: "JP" }), undefined, "model").rel.kind, "physics");
   const saved = row({ saved: { slope: 0.4, whp_hdr: 1, source: "correlation", r2: 0, days: 0, at: null, by: null } });
   assert.equal(effective(saved).rel.kind, "saved");
   assert.equal(effective(saved).rel.firm, true);   // any saved relation: reviewed, so firm
@@ -112,7 +112,9 @@ test("only choices that differ from the default go into the request, and Estimat
     "MPF-14": { well: "MPF-14", online: true, gauge_bad: true },
     "MPF-107": { well: "MPF-107", relation: "manual", slope: 0.5 },
   };
-  assert.deepEqual(choicesForRequest(b, choices), [{ well: "MPF-14", online: true, gauge_bad: true }]);
+  assert.deepEqual(choicesForRequest(b, choices, "model"), [{ well: "MPF-14", online: true, gauge_bad: true }]);
+  // On the relation (the default) a jet pump's relation choice travels too.
+  assert.deepEqual(choicesForRequest(b, choices).map((c) => c.well), ["MPF-107", "MPF-14"]);
   const req = buildRunRequest({ ...DEFAULT_HEADER_FORM, pads: ["L", "F"], deltas: { F: 12 } }, b, choices);
   assert.deepEqual(req.pads, ["F", "L"]);
   assert.deepEqual(req.delta_by_pad, { F: 12, L: 10 });
@@ -135,7 +137,11 @@ test("blockers name the fix", () => {
 test("save plan carries groups and gauge state; never a JP or weak relation", () => {
   assert.deepEqual(savePlan(row()).entry, { well: "MPF-01", relation: "measured", ipr: "fit" });
   assert.deepEqual(savePlan(row({ ipr_fit: null })).entry, { well: "MPF-01", relation: "measured", ipr: "correlation", ipr_group: "F kuparuk" });
-  assert.equal(savePlan(row({ lift: "JP" })).entry, null);
+  // A jet pump saves its relation (never an IPR); one with none has nothing to save.
+  assert.deepEqual(savePlan(row({ lift: "JP" })).entry, { well: "MPF-01", relation: "measured" });
+  const bare = row({ lift: "JP", measured: { ...row().measured, status: "no_data", slope: null }, corr_options: {}, corr_group: null });
+  assert.equal(savePlan(bare).entry, null);
+  assert.match(savePlan(bare).why, /pump model/);
   const dead = savePlan(row(), { well: "MPF-01", gauge_bad: true }).entry;
   assert.deepEqual(dead, { well: "MPF-01", relation: "correlation", corr_group: "ESP kuparuk", ipr: "correlation", ipr_group: "F kuparuk", gauge_bad: true });
   const weak = row({ measured: { ...row().measured, status: "weak" }, saved_ipr: { qwf: 1, pwf: 1, pres: 400, source: "fit", at: null, by: null } });
@@ -208,7 +214,64 @@ test("a saved gauge verdict is the default; changing it is a (gauge-only) save",
   // Unticking a saved bad flag saves "good".
   assert.equal(savePlan(savedBad, { well: "MPF-01", gauge_bad: false }).entry.gauge_bad, false);
   // Jet pumps can save the gauge verdict alone.
-  assert.deepEqual(savePlan(row({ lift: "JP" }), { well: "MPF-01", gauge_bad: true }).entry, { well: "MPF-01", gauge_bad: true });
+  const jpNoGroup = row({ lift: "JP", corr_options: {}, corr_group: null });
+  assert.deepEqual(savePlan(jpNoGroup, { well: "MPF-01", gauge_bad: true }).entry, { well: "MPF-01", gauge_bad: true });
   // Matching the saved verdict is not a change.
   assert.equal(savePlan(savedBad, { well: "MPF-01", gauge_bad: true }).entry?.gauge_bad, undefined);
+});
+
+test("jet pumps: BHP~WHP relation by default, pump model with none or when picked", () => {
+  const jp = row({
+    well: "MPF-107", lift: "JP", ipr_fit: null, ipr_options: {}, ipr_group: null, corr_group: "JP",
+    corr_options: { JP: { slope: 0.75, lo: 0.6, hi: 0.9, same_lift: true }, ESP: { slope: 0.3, lo: 0.2, hi: 0.4, same_lift: false } },
+  });
+  assert.equal(effective(row()).jpMethod, null);
+  assert.equal(effective(jp, undefined, "model").jpMethod, "model");
+  assert.equal(effective(jp, undefined, "model").rel.kind, "physics");
+  const emp = effective(jp);
+  assert.equal(emp.jpMethod, "empirical");
+  assert.equal(emp.rel.kind, "measured");
+  assert.equal(emp.rel.slope, 0.62);
+  assert.equal(emp.ipr.kind, "jp");                       // the pump model's IPR, resolved by the server
+  assert.equal(effective(jp, { well: "MPF-107", jp_method: "model" }, "empirical").rel.kind, "physics");
+  assert.equal(effective(jp, { well: "MPF-107", jp_method: "empirical" }, "model").rel.kind, "measured");
+  // No relation at all: the pump model, flagged as a fallback.
+  const none = effective(row({ ...jp, corr_options: {}, corr_group: null }), { well: "MPF-107", gauge_bad: true });
+  assert.equal(none.jpMethod, "model");
+  assert.equal(none.jpFallback, true);
+  assert.match(none.rel.reason, /pump model used/);
+  const dead = effective(jp, { well: "MPF-107", gauge_bad: true }, "empirical");
+  assert.equal(dead.rel.kind, "correlation");
+  assert.equal(dead.rel.group, "JP");                     // never an ESP group
+  assert.deepEqual(corrGroupsFor(jp), ["JP"]);
+
+  // Relation choices travel only when the well runs on the relation.
+  const b = board([jp]);
+  const manual = { "MPF-107": { well: "MPF-107", relation: "manual", slope: 0.5, ipr: "manual", qwf: 1 } };
+  assert.deepEqual(choicesForRequest(b, manual, "model"), []);
+  assert.deepEqual(choicesForRequest(b, manual), [{ well: "MPF-107", relation: "manual", slope: 0.5 }]);
+  const pinned = { "MPF-107": { well: "MPF-107", jp_method: "model", relation: "manual", slope: 0.5 } };
+  assert.deepEqual(choicesForRequest(b, pinned, "empirical"), [{ well: "MPF-107", jp_method: "model" }]);
+  const form = { ...DEFAULT_HEADER_FORM, pads: ["F", "L"], jpMethod: "empirical" };
+  const req = buildRunRequest(form, b, manual);
+  assert.equal(req.jp_method, "empirical");
+  assert.deepEqual(req.wells, [{ well: "MPF-107", relation: "manual", slope: 0.5 }]);
+  assert.equal(buildRunRequest(DEFAULT_HEADER_FORM, null, {}).jp_method, "empirical");
+  // A bad manual slope blocks only a jet pump on the relation.
+  const badSlope = { "MPF-107": { well: "MPF-107", relation: "manual", slope: 3 } };
+  assert.deepEqual(runBlockers({ ...form, jpMethod: "model" }, b, badSlope), []);
+  assert.match(runBlockers(form, b, badSlope)[0], /MPF-107: manual slope/);
+  // Save writes the relation even when the well is pinned to the model; never its IPR.
+  assert.deepEqual(savePlan(jp, { well: "MPF-107", jp_method: "model" }).entry, { well: "MPF-107", relation: "measured" });
+  assert.deepEqual(savePlan(jp, { well: "MPF-107", gauge_bad: true }).entry,
+    { well: "MPF-107", relation: "correlation", corr_group: "JP", gauge_bad: true });
+});
+
+test("an implausible measured slope (outside 0-1.2) is never the default or a measured save", () => {
+  const odd = row({ measured: { ...row().measured, slope: -3.1, q25: -4, q75: -1 } });
+  assert.equal(effective(odd).rel.kind, "correlation");
+  const picked = effective(odd, { well: "MPF-01", relation: "measured" }).rel;
+  assert.equal(picked.kind, "weak_measured");
+  assert.equal(picked.firm, false);
+  assert.match(savePlan(odd, { well: "MPF-01", relation: "measured", ipr: "saved" }).why ?? "", /implausible/);
 });

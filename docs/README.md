@@ -1,5 +1,10 @@
 # Documentation index
 
+The [info-only tests and manual (LRS) test record](well_tests_info_only_manual_2026-10-02.md)
+(2026-10-02, local, not deployed) explains why the Solver's test list lagged
+FDC, how allocated and info-only tests are fetched and de-duplicated, which
+paths stay on allocated tests, and the manual test with its LRS sheet loader.
+
 The [Header page handoff](header_page_handoff_2026-09-29.md) (2026-09-29,
 local, not deployed) is the current state of the production-header impact
 page (Impact and Wells tabs). It covers:

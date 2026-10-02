@@ -54,7 +54,7 @@ def _build_scan_input(months_back: int) -> Optional[pd.DataFrame]:
     """Latest lift_wat-bearing test per current-JP well, ready to calibrate."""
     from woffl.assembly.jp_history import get_current_pump, get_pump_at_date
 
-    raw = tests_svc.fetch_all_well_tests(months_back)
+    raw = tests_svc.allocated_only(tests_svc.fetch_all_well_tests(months_back))
     if raw is None or raw.empty or "lift_wat" not in raw.columns:
         return None
     valid = raw.dropna(subset=["lift_wat"]).copy()

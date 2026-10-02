@@ -277,7 +277,8 @@ class WellContext(BaseModel):
 class WellTestsResponse(BaseModel):
     well: str
     tests: list[dict[str, Any]]
-    # rows: wt_uid, date (YYYY-MM-DD), oil (BOPD), water (BWPD), gas,
+    # rows: wt_uid, date (YYYY-MM-DD), allocated (false = info-only test),
+    # oil (BOPD), water (BWPD), gas,
     # total_fluid (BLPD), form_wc (fraction, unclamped), bhp (psi|null),
     # fgor (scf/bbl), lift_wat (BWPD), whp (psi), pf_press, pf_source
 
@@ -1251,10 +1252,34 @@ class GaugeDay(BaseModel):
     bhp: float
 
 
+class ManualTestRow(BaseModel):
+    """The engineer's own well test, sent with a fit: an LRS portable-separator
+    test or one typed in. It has no Databricks wt_uid and is never stored."""
+
+    date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    total_fluid: float = Field(..., gt=0.0, le=50_000.0)  # BLPD, formation
+    water: float = Field(..., ge=0.0, le=50_000.0)  # BWPD, formation
+    bhp: float = Field(..., gt=0.0, le=5_000.0)  # psi
+    fgor: Optional[float] = Field(None, ge=0.0, le=20_000.0)  # scf/stb
+    whp: Optional[float] = Field(None, ge=0.0, le=5_000.0)  # psi
+    pf_press: Optional[float] = Field(None, ge=0.0, le=10_000.0)  # psi
+
+
 class IprFitRequest(BaseModel):
     well: str
     anchor_mode: Literal["recent", "median", "median_liq", "specific"] = "recent"
     anchor_date: Optional[str] = None  # YYYY-MM-DD, required for "specific"
+    # The specific test itself. A well-day can hold several tests, so the date
+    # alone is ambiguous; it stays as the fallback for a row with no wt_uid.
+    anchor_wt_uid: Optional[float] = None
+    # The Solver's "use info-only tests in the IPR fit" toggle: info-only tests
+    # join the fit like allocated ones, so they move the fitted reservoir
+    # pressure and the recent/median modes may anchor on them.
+    include_info_only: bool = False
+    # The engineer's own test, counted like an allocated one; ``anchor_manual``
+    # makes it the specific anchor (it has no wt_uid to name it by).
+    manual_test: Optional[ManualTestRow] = None
+    anchor_manual: bool = False
     field_model: Literal["Schrader", "Kuparuk"] = "Schrader"
     # le=60: a memory-gauge window can reach years back, past the sidebar's
     # 24-month cap (the client widens months to cover the gauge coverage).
@@ -1297,6 +1322,27 @@ class GaugeParseResponse(BaseModel):
     sample_count: int
 
 
+class LrsTestResponse(BaseModel):
+    """One LRS portable-separator test read from its summary sheet. The sheet
+    has no bottom-hole pressure; rates are per day."""
+
+    filename: str
+    well: Optional[str] = None  # app name ("MPE-48") when the sheet names one
+    well_raw: Optional[str] = None
+    test_date: Optional[str] = None  # YYYY-MM-DD
+    hours: Optional[float] = None
+    location: Optional[str] = None  # e.g. "LRS Unit 6"
+    oil: float  # BOPD
+    water: float  # BWPD formation
+    total_fluid: float  # BLPD
+    form_wc: float  # fraction
+    gor: Optional[float] = None  # scf/stb
+    whp: Optional[float] = None  # psi
+    pf_rate: Optional[float] = None  # BWPD
+    pf_press: Optional[float] = None  # psi
+    missing: list[str] = []
+
+
 class IprCoeffs(BaseModel):
     res_p: float  # psi
     qmax: Optional[float] = None  # BLPD at bhp=0
@@ -1309,6 +1355,8 @@ class IprCoeffs(BaseModel):
     most_recent_date: Optional[str] = None
     anchor_label: Optional[str] = None
     anchor_date: Optional[str] = None
+    anchor_wt_uid: Optional[float] = None
+    anchor_manual: bool = False  # anchored on the request's manual_test
 
 
 class IprFitResponse(BaseModel):
@@ -2134,6 +2182,9 @@ class HeaderWellChoice(BaseModel):
     online: Optional[bool] = None
     # True/False overrides the automatic gauge check; None keeps it.
     gauge_bad: Optional[bool] = None
+    # Jet pumps only: "model" (WOFFL pump model) or "empirical" (BHP~WHP
+    # relation); None follows the run's ``jp_method``.
+    jp_method: Optional[Literal["model", "empirical"]] = None
     relation: Optional[Literal["auto", "saved", "measured", "correlation", "manual"]] = None
     # Which BHP~WHP correlation group ("ESP schrader", "ESP", ...) to borrow.
     corr_group: Optional[str] = Field(None, max_length=64)
@@ -2154,11 +2205,19 @@ class HeaderRunRequest(BaseModel):
     pad's header change between the pre and post windows (hours) around
     ``event_time`` (YYYY-MM-DD or YYYY-MM-DDTHH:MM, historian local time) and
     excludes ``event_well`` from the impact.
+
+    ``jp_method`` is how jet pumps turn the WHP change into a BHP change:
+    ``empirical`` (default) uses the well's closed-loop BHP~WHP relation
+    (saved, measured, else the JP group correlation) on the pump model's IPR,
+    and falls back to the model for a well with no relation; ``model`` solves
+    the installed pump at both wellhead pressures. A well's own
+    ``jp_method`` overrides it.
     """
 
     pads: list[str] = Field(min_length=1)
     fit_days: int = Field(120, ge=30, le=365)
     mode: Literal["scenario", "event"] = "scenario"
+    jp_method: Literal["model", "empirical"] = "empirical"
     delta_by_pad: dict[str, float] = Field(default_factory=dict)
     event_time: Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$")
     pre_hours: int = Field(72, ge=6, le=720)

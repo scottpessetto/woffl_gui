@@ -50,8 +50,11 @@ def get_well_tests(
     months: int = Query(6, ge=1, le=60),
     cap: int = Query(0, ge=0, le=50),
 ) -> dict[str, Any]:
-    """JSON-safe well-test rows, newest first ([] when the well has none)."""
-    return {"well": name, "tests": tests_svc.tests_json(name, months, cap)}
+    """JSON-safe well-test rows, newest first ([] when the well has none).
+
+    The one list that carries info-only tests: the engineer picks from it.
+    """
+    return {"well": name, "tests": tests_svc.tests_json(name, months, cap, include_info=True)}
 
 
 @router.get("/wells/{name}/profile", response_model=WellProfileResponse)

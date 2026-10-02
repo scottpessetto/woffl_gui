@@ -11,10 +11,11 @@ Three operations, each a small layer over :mod:`header_model` (the math):
 ``run_impact``
     The oil/liquid response to a production-header change per pad, either a
     typed scenario or one measured around an observed event (a bring-online).
-    Jet pumps are solved with the WOFFL model at both wellhead pressures from
-    the same saved inputs an optimization run uses; every other lift type uses
-    its relation and IPR. Event runs also compare predicted and measured BHP
-    changes on gauged wells.
+    Jet pumps use their BHP~WHP relation on the IPR their pump model runs on;
+    one with no relation, or a run (or well) set to the model, is solved with
+    the WOFFL model at both wellhead pressures from the same saved inputs an
+    optimization run uses. Every other lift type uses its relation and IPR. Event runs also compare predicted and measured
+    BHP changes on gauged wells.
 
 ``save``
     Persists chosen relations and IPRs to ``mpu.wells.prop_hist`` through the
@@ -82,6 +83,10 @@ IPR_GROUP_MIN = 3
 DEFAULT_BHP_RATIO = 0.35
 # A well without a saved ResP runs on the documented default +/- this band.
 DEFAULT_PRES_BAND = 0.20
+NO_RELATION = "no saved relation, no measured slope from a working gauge and no correlation for its lift type"
+# Jet pumps default to their BHP~WHP relation; with none, the pump model
+# (user decision 2026-09-30).
+JP_METHOD_DEFAULT = "empirical"
 # Board cache: long enough for a string of "what if" runs, cleared on save.
 BOARD_TTL = 900.0
 # Response curve: uniform header change on every selected pad (psi). Jet
@@ -303,7 +308,7 @@ def build_board(pads: list[str], fit_days: int = FIT_DAYS_DEFAULT,
     wells = sorted(ov["well"].astype(str))
     jp_hist, _ = datasources.jp_history_safe()
     reservoirs = _reservoirs()
-    tests = tests_svc.fetch_all_well_tests(TEST_MONTHS)
+    tests = tests_svc.allocated_only(tests_svc.fetch_all_well_tests(TEST_MONTHS))
     latest = _latest_tests(tests, wells)
     today = date.today()
 
@@ -530,7 +535,8 @@ def _correlations(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _measured_ok(r: dict[str, Any]) -> bool:
-    return not _gauge_bad(r) and r["measured"]["status"] == "measured"
+    m = r["measured"]
+    return not _gauge_bad(r) and m["status"] == "measured" and hm.slope_plausible(m["slope"])
 
 
 def _group_correlation(lift: str, reservoir: Optional[str], members: list[dict[str, Any]]) -> dict[str, Any]:
@@ -622,11 +628,13 @@ def _attach_options(r: dict[str, Any], correlations: dict[str, Any], ipr_groups:
     same numbers through :func:`effective`. The IPR option always uses the
     well's own ResP (saved, else default +/-20%) and its test rate; the group
     only supplies BHP when the well has no working gauge.
+
+    Jet pumps get the BHP~WHP options too (for runs that put them on the
+    empirical relation) but no IPR options: they always use the IPR their
+    pump model runs on.
     """
     r["corr_options"], r["ipr_options"] = {}, {}
     r["corr_group"] = r["ipr_group"] = None
-    if r["lift"] == "JP":
-        return
     for key, g in correlations.items():
         corr = g.get("correlation")
         s = hm.predict_slope(corr, r["liquid"])
@@ -637,6 +645,8 @@ def _attach_options(r: dict[str, Any], correlations: dict[str, Any], ipr_groups:
                                   "hi": _r(hm.clip_slope(s + mad), 3), "same_lift": g["lift"] == r["lift"]}
     own = f"{r['lift']} {r['reservoir']}"
     r["corr_group"] = own if own in r["corr_options"] else (r["lift"] if r["lift"] in r["corr_options"] else None)
+    if r["lift"] == "JP":
+        return
     pres = r["pres_well"]
     band = 0.0 if r["pres_basis"] == "saved" else DEFAULT_PRES_BAND
     for key, g in ipr_groups.items():
@@ -661,12 +671,20 @@ def _ch(ch: Any, name: str) -> Any:
     return getattr(ch, name, None) if ch is not None else None
 
 
-def effective(r: dict[str, Any], ch: Any = None) -> dict[str, Any]:
+def effective(r: dict[str, Any], ch: Any = None, jp_method: Optional[str] = None) -> dict[str, Any]:
     """The relation, IPR and gauge state a well runs with, given a choice.
 
     One resolver for the run, the save and (mirrored in web/src) the table.
     Defaults: relation saved > measured (working gauge) > correlation;
     IPR saved > gauge-test fit (working gauge) > reservoir correlation.
+
+    For a jet pump, ``jp_method`` (the run's setting, overridden by the
+    well's choice) says whether the pump model or the relation is used. The
+    relation resolves on the same ladder, from JP groups; its IPR is the pump
+    model's, filled in by the run, so ``ipr`` is only a placeholder here.
+    "empirical" (the default, user 2026-09-30) falls back to the pump model
+    when the well has no relation at all - no saved one, no measured slope
+    from a working gauge and no JP correlation - and says so in ``jp_note``.
     """
     gb = _ch(ch, "gauge_bad")
     gauge_bad = bool(gb) if gb is not None else _gauge_bad(r)
@@ -680,11 +698,22 @@ def effective(r: dict[str, Any], ch: Any = None) -> dict[str, Any]:
     ipr_key = _ch(ch, "ipr_group")
     ipr_key = ipr_key if ipr_key in (r.get("ipr_options") or {}) else r.get("ipr_group")
     rel = _resolve_relation(r, _ch(ch, "relation"), _ch(ch, "slope"), gauge_ok, corr_key)
-    ipr_choice = _ch(ch, "ipr")
-    manual = ({k: _ch(ch, k) for k in ("qwf", "pwf", "pres")} if ipr_choice == "manual" else None)
-    ipr = _resolve_ipr(r, ipr_choice, manual, gauge_ok, ipr_key)
+    method, jp_note = None, None
+    if r["lift"] == "JP":
+        method = _ch(ch, "jp_method") or jp_method or JP_METHOD_DEFAULT
+        method = method if method in hm.JP_METHODS else JP_METHOD_DEFAULT
+        if method == "empirical" and rel["slope"] is None:
+            method = "model"
+            jp_note = f"no BHP~WHP relation ({rel.get('reason') or 'none'}); pump model used"
+        ipr = {"ipr": None, "pres_lo": None, "pres_hi": None, "source": "jp", "saved": False,
+               "group": None, "reason": None, "fit_usable": False}
+    else:
+        ipr_choice = _ch(ch, "ipr")
+        manual = ({k: _ch(ch, k) for k in ("qwf", "pwf", "pres")} if ipr_choice == "manual" else None)
+        ipr = _resolve_ipr(r, ipr_choice, manual, gauge_ok, ipr_key)
     return {"gauge_ok": gauge_ok, "gauge_bad": gauge_bad, "online": bool(online),
-            "bhp_now": r.get("bhp_now") if gauge_ok else None, "rel": rel, "ipr": ipr}
+            "bhp_now": r.get("bhp_now") if gauge_ok else None, "rel": rel, "ipr": ipr,
+            "jp_method": method, "jp_note": jp_note}
 
 
 def _resolve_relation(r: dict[str, Any], choice: Optional[str], manual: Optional[float],
@@ -695,7 +724,7 @@ def _resolve_relation(r: dict[str, Any], choice: Optional[str], manual: Optional
     if choice == "auto":
         if r.get("saved"):
             choice = "saved"
-        elif gauge_ok and m["status"] == "measured":
+        elif gauge_ok and m["status"] == "measured" and hm.slope_plausible(m["slope"]):
             choice = "measured"
         elif corr_key:
             choice = "correlation"
@@ -719,14 +748,15 @@ def _resolve_relation(r: dict[str, Any], choice: Optional[str], manual: Optional
             return out
         s = hm.clip_slope(m["slope"])
         out.update(slope=s, lo=min(s, hm.clip_slope(m["q25"]) or s), hi=max(s, hm.clip_slope(m["q75"]) or s),
-                   source="measured" if m["status"] == "measured" else "weak_measured")
+                   source="measured" if m["status"] == "measured" and hm.slope_plausible(m["slope"])
+                   else "weak_measured")
     elif choice == "correlation" and corr_key and corr_key in r.get("corr_options", {}):
         o = r["corr_options"][corr_key]
         out.update(slope=o["slope"], lo=o["lo"], hi=o["hi"], source="correlation", group=corr_key)
     elif choice == "manual" and manual is not None and 0.0 <= manual <= 1.5:
         out.update(slope=float(manual), lo=float(manual), hi=float(manual), source="manual")
     else:
-        out["reason"] = f"no {choice} relation for this well"
+        out["reason"] = (NO_RELATION if choice == "none" else f"no {choice} relation for this well")
     return out
 
 
@@ -963,13 +993,16 @@ def run_impact(req: Any, progress: ProgressFn = _noop) -> dict[str, Any]:
     deltas, event = _pad_deltas(req, board, progress)
     choices = {c.well: c for c in req.wells}
     event_well = (req.event_well or "").strip().upper() or None
+    jp_default = getattr(req, "jp_method", None) or JP_METHOD_DEFAULT
 
     rows: list[dict[str, Any]] = []
-    jp_rows: list[dict[str, Any]] = []
+    jp_rows: list[dict[str, Any]] = []   # jet pumps on the pump model
+    jp_emp: list[dict[str, Any]] = []    # jet pumps on the BHP~WHP relation
+    # What each well actually ran with; the response curve reuses it.
     eff_by: dict[str, dict[str, Any]] = {}
     for r in board["rows"]:
         ch = choices.get(r["well"])
-        eff = effective(r, ch)
+        eff = effective(r, ch, jp_default)
         eff_by[r["well"]] = eff
         online = eff["online"]
         is_event = bool(event_well and r["well"].upper() == event_well)
@@ -980,6 +1013,7 @@ def run_impact(req: Any, progress: ProgressFn = _noop) -> dict[str, Any]:
                "liquid": r["liquid"], "wc": r["wc"], "whp_now": r["whp_now"], "bhp_now": eff["bhp_now"],
                "gauge_bad": eff["gauge_bad"], "pump": r["pump"], "measured_slope": r["measured"]["slope"],
                "pres_well": r.get("pres_well"), "pres_basis": r.get("pres_basis"),
+               "jp_method": eff["jp_method"], "jp_fallback": bool(eff["jp_note"]),
                "outcome": "event_well" if is_event else "offline"}
         rows.append(out)
         if not online:
@@ -988,7 +1022,7 @@ def run_impact(req: Any, progress: ProgressFn = _noop) -> dict[str, Any]:
             out.update(outcome="missing_inputs", reason=f"no header change for pad {r['pad']}")
             continue
         if r["lift"] == "JP":
-            jp_rows.append(r)
+            (jp_rows if eff["jp_method"] == "model" else jp_emp).append(r)
             continue
         _nonjp_row(out, r, eff)
 
@@ -997,11 +1031,15 @@ def run_impact(req: Any, progress: ProgressFn = _noop) -> dict[str, Any]:
         scenarios[dh] = {p: float(dh) for p in board["pads"]}
     jp, jp_oil, notes = _jp_solve(board["pads"], jp_rows, scenarios, progress)
     by_well = {o["well"]: o for o in rows}
+    emp = _jp_iprs(board["pads"], jp_emp, notes, progress)
+    for r in jp_emp:
+        res = emp.get(r["well"]) or {"error": "not loaded"}
+        eff_by[r["well"]] = _jp_empirical(by_well[r["well"]], r, eff_by[r["well"]], res)
     for r in jp_rows:
         out = by_well[r["well"]]
         res = jp.get(r["well"]) or {"error": "not solved"}
         if "error" in res:
-            _jp_fallback(out, r, eff_by[r["well"]], res)
+            eff_by[r["well"]] = _jp_fallback(out, r, eff_by[r["well"]], res)
             continue
         d_oil = _r(res["d_oil"], 1)
         out.update(
@@ -1013,6 +1051,8 @@ def run_impact(req: Any, progress: ProgressFn = _noop) -> dict[str, Any]:
             ipr=res["ipr"], jp_ipr_source=res.get("ipr_source"),
             pump_calibration=res.get("pump_calibration"), hydraulics=res.get("hydraulics"),
         )
+        if eff_by[r["well"]].get("jp_note"):  # wanted the relation, had none
+            out["note"] = eff_by[r["well"]]["jp_note"]
 
     validation = _validation(rows, event) if event else None
     curve = _curve(board, rows, eff_by, jp_oil)
@@ -1036,6 +1076,7 @@ def run_impact(req: Any, progress: ProgressFn = _noop) -> dict[str, Any]:
     status = hm.run_status(rows)
     return {
         "mode": req.mode,
+        "jp_method": jp_default,
         "pads": pads_out,
         "rows": rows,
         "totals": {
@@ -1060,8 +1101,10 @@ def run_impact(req: Any, progress: ProgressFn = _noop) -> dict[str, Any]:
             "Header change passes to WHP by each well's measured WHP~Header slope (1.0 when not "
             "measured). Non-JP wells: dBHP = closed-loop BHP~WHP slope x dWHP (already includes the "
             "rate response); liquid change from the Vogel IPR at current BHP; oil = liquid x (1 - WC) "
-            "at the latest test. Jet pumps: installed pump solved at the model WHP and WHP + dWHP "
-            "with saved inputs and PF held. The range pairs each well's slope spread (measured IQR "
+            "at the latest test. Jet pumps on the BHP~WHP relation (the default): the non-JP chain "
+            "(saved relation, own measured slope, else the JP group correlation) on the IPR their "
+            "pump model uses. Jet pumps on the pump model (chosen, or no relation available): "
+            "installed pump solved at the model WHP and WHP + dWHP with saved inputs and PF held. The range pairs each well's slope spread (measured IQR "
             "or correlation scatter) with its reservoir-correlation ResP spread, all wells at the "
             "same end together - an envelope, not a confidence interval."
         ),
@@ -1097,15 +1140,16 @@ def _nonjp_row(out: dict[str, Any], r: dict[str, Any], eff: dict[str, Any]) -> N
                bhp_basis="gauge" if eff["bhp_now"] else "IPR anchor")
 
 
-def _jp_fallback(out: dict[str, Any], r: dict[str, Any], eff: dict[str, Any], res: dict[str, Any]) -> None:
+def _jp_fallback(out: dict[str, Any], r: dict[str, Any], eff: dict[str, Any], res: dict[str, Any]) -> dict[str, Any]:
     """A jet pump whose model failed: its own MEASURED relation on the pump
-    model's IPR, never a weak slope or an ESP correlation."""
+    model's IPR, never a weak slope or an ESP correlation. Returns the
+    relation/IPR it ran with (the response curve reuses it)."""
     err = res["error"]
     m = r["measured"]
-    if not (eff["gauge_ok"] and m["status"] == "measured"):
+    if not (eff["gauge_ok"] and m["status"] == "measured" and hm.slope_plausible(m["slope"])):
         out.update(outcome="missing_inputs", relation_source="none", ipr_source="jp",
                    reason=f"jet-pump model: {err}; no measured BHP~WHP relation to fall back on")
-        return
+        return eff
     s = hm.clip_slope(m["slope"])
     rel = {"slope": s, "lo": min(s, hm.clip_slope(m["q25"]) or s), "hi": max(s, hm.clip_slope(m["q75"]) or s),
            "whp_hdr": eff["rel"]["whp_hdr"], "source": "measured", "saved": False, "group": None}
@@ -1113,20 +1157,78 @@ def _jp_fallback(out: dict[str, Any], r: dict[str, Any], eff: dict[str, Any], re
     if hm.ipr_valid(ipr):
         out.update(outcome="missing_inputs", relation_source="measured", ipr_source="jp",
                    reason=f"jet-pump model: {err}; its IPR is not usable either")
-        return
+        return eff
     ip = {"ipr": ipr, "pres_lo": ipr["pres"], "pres_hi": ipr["pres"], "source": "jp", "saved": False,
           "group": None, "reason": None}
-    _nonjp_row(out, r, {**eff, "rel": rel, "ipr": ip})
+    used = {**eff, "rel": rel, "ipr": ip}
+    _nonjp_row(out, r, used)
     if out["outcome"] == "modeled":
         out["note"] = f"jet-pump model: {err}; measured relation used"
+    return used
+
+
+def _jp_iprs(pads: list[str], jp_rows: list[dict[str, Any]], notes: list[str],
+             progress: ProgressFn) -> dict[str, dict[str, Any]]:
+    """The IPR each jet pump's model runs on, hydrated exactly like the
+    pump-model path (``optimizer_runs._build_configs``) but not solved.
+
+    Jet pumps on the empirical relation use it so the two methods differ only
+    in the WHP->BHP link. Neither the installed pump nor PF is needed.
+    """
+    if not jp_rows:
+        return {}
+    from server.services.optimizer_runs import _build_configs
+
+    progress(f"loading the IPR of {len(jp_rows)} jet pumps on the BHP~WHP relation")
+    prov: dict[str, dict[str, Any]] = {}
+    configs = _build_configs(pads, set(), [], notes, prov=prov, only={r["well"] for r in jp_rows})
+    by_name = {c.well_name: c for c in configs}
+    out: dict[str, dict[str, Any]] = {}
+    for r in jp_rows:
+        c = by_name.get(r["well"])
+        if c is None:
+            out[r["well"]] = {"error": "jet-pump inputs could not be loaded"}
+            continue
+        out[r["well"]] = {"ipr": {"qwf": _f(c.qwf), "pwf": _f(c.pwf), "pres": _f(c.res_pres)},
+                          "ipr_source": prov.get(c.well_name, {}).get("ipr_source")}
+    return out
+
+
+def _jp_empirical(out: dict[str, Any], r: dict[str, Any], eff: dict[str, Any], res: dict[str, Any]) -> dict[str, Any]:
+    """A jet pump on its BHP~WHP relation instead of the pump model.
+
+    The non-JP chain: the relation ``eff`` resolved (saved > own measured
+    slope > JP group correlation, or the engineer's pick) on the IPR the
+    pump model uses (``res`` from :func:`_jp_iprs`, no ResP band). Returns
+    the relation/IPR it ran with.
+    """
+    rel = eff["rel"]
+    if rel["slope"] is None and rel["source"] == "none":
+        rel = {**rel, "reason": "no measured BHP~WHP relation from a working gauge and no jet-pump "
+                                "correlation - use the pump model or a manual slope"}
+    ipr = res.get("ipr")
+    # The pump model runs on this IPR as it is; the page's 300 psi drawdown
+    # rule is for its own assumed IPRs, so only ResP above BHP is required.
+    reason = res.get("error") or hm.ipr_valid(ipr, min_drawdown=0.0)
+    ip = {"ipr": None if reason else ipr, "pres_lo": None, "pres_hi": None, "source": "jp",
+          "saved": res.get("ipr_source") == "saved", "group": None,
+          "reason": f"pump-model IPR: {reason}" if reason else None}
+    if not reason:
+        ip["pres_lo"] = ip["pres_hi"] = float(ipr["pres"])
+    used = {**eff, "rel": rel, "ipr": ip}
+    _nonjp_row(out, r, used)
+    out["jp_ipr_source"] = res.get("ipr_source")
+    return used
 
 
 def _curve(board: dict[str, Any], rows: list[dict[str, Any]], eff_by: dict[str, dict[str, Any]],
            jp_oil: dict[Any, dict[str, float]]) -> dict[str, Any]:
     """Oil change vs a uniform header change on every selected pad.
 
-    Non-JP wells are exact on the grid (arithmetic). Jet pumps are solved on
-    CURVE_JP_GRID and interpolated linearly, through zero at zero.
+    Wells on a relation (every non-JP well, and jet pumps on the empirical
+    relation or the model-failure fallback) are exact on the grid, using the
+    relation and IPR recorded in ``eff_by``. Jet pumps on the pump model are
+    solved on CURVE_JP_GRID and interpolated linearly, through zero at zero.
     """
     grid = list(CURVE_GRID)
     by_row = {r["well"]: r for r in board["rows"]}
@@ -1150,11 +1252,6 @@ def _curve(board: dict[str, Any], rows: list[dict[str, Any]], eff_by: dict[str, 
         r = by_row[o["well"]]
         eff = eff_by[o["well"]]
         rel, ip = eff["rel"], eff["ipr"]
-        if o.get("note"):  # JP fallback on its measured relation
-            m = r["measured"]
-            s = hm.clip_slope(m["slope"])
-            rel = {**rel, "slope": s, "lo": s, "hi": s}
-            ip = {**ip, "ipr": o["ipr"], "pres_lo": o["ipr"]["pres"], "pres_hi": o["ipr"]["pres"]}
         bhp = o["bhp_used"]
         wc = r["wc"] if r["wc"] is not None else 0.0
         for i, dh in enumerate(grid):
@@ -1296,22 +1393,21 @@ def _save_values(r: dict[str, Any], w: Any) -> dict[str, float]:
         if not r.get("has_gauge"):
             raise ValueError("this well has no BHP gauge to flag")
         values[HDR_GAUGE_BAD] = 1.0 if w.gauge_bad else 0.0
-    if r["lift"] == "JP":
-        if w.relation:
-            raise ValueError("jet-pump wells use the pump model; no relation is saved")
-        if w.ipr:
-            raise ValueError("jet-pump IPRs are saved in Solver with the pump model")
-        return values
-    eff = effective(r, w)
+    jp = r["lift"] == "JP"
+    if jp and w.ipr:
+        raise ValueError("jet-pump IPRs are saved in Solver with the pump model")
+    # A jet pump's relation saves like an ESP's (same hdr_* ids, user
+    # 2026-09-30), resolved as if the well ran on its relation; its IPR never.
+    eff = effective(r, w, "empirical" if jp else None)
     if w.relation:
         rel = eff["rel"]
         if rel["slope"] is None:
             raise ValueError(rel.get("reason") or "no relation to save")
         if w.relation == "measured":
             m = r["measured"]
-            if m["status"] != "measured" or not eff["gauge_ok"]:
-                raise ValueError("measured relation is weak, missing or from a bad gauge - "
-                                 "use the correlation or a manual value")
+            if m["status"] != "measured" or not eff["gauge_ok"] or not hm.slope_plausible(m["slope"]):
+                raise ValueError("measured relation is weak, implausible (outside 0-1.2), missing or "
+                                 "from a bad gauge - use the correlation or a manual value")
             r2, days = m["r2"] or 0.0, float(m["n_fit"])
         else:
             r2, days = 0.0, 0.0
@@ -1383,7 +1479,7 @@ def well_detail(well: str, fit_days: int = FIT_DAYS_DEFAULT,
                                      "r2": _r(dr["r2"], 3), "n": int(dr["n"]),
                                      "x_min": _r(dr["x_min"], 0), "x_max": _r(dr["x_max"], 0)})
     tests_out: list[dict[str, Any]] = []
-    tests = tests_svc.fetch_all_well_tests(TEST_MONTHS)
+    tests = tests_svc.allocated_only(tests_svc.fetch_all_well_tests(TEST_MONTHS))
     if tests is not None and not tests.empty and "well" in tests:
         tw = tests[tests["well"] == well].sort_values("WtDate")
         for _, t in tw.iterrows():

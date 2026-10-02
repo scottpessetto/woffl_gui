@@ -354,7 +354,7 @@ def test_scenario_totals_ranges_curve_and_failed_jp(monkeypatch):
                     "ipr_source": "saved"},
         "MPL-06": {"error": "did not solve", "ipr": {"qwf": 900.0, "pwf": 1600.0, "pres": 2600.0}},
     }))
-    req = schemas.HeaderRunRequest(pads=["F", "L"], delta_by_pad={"F": 10, "L": 10})
+    req = schemas.HeaderRunRequest(pads=["F", "L"], delta_by_pad={"F": 10, "L": 10}, jp_method="model")
     res = hs.run_impact(req)
     by = {r["well"]: r for r in res["rows"]}
     assert by["MPF-01"]["outcome"] == "modeled" and by["MPF-01"]["d_oil"] < 0
@@ -603,3 +603,197 @@ def test_saving_the_gauge_verdict_writes_hdr_gauge_bad_including_gauge_only_and_
     errs = {r["well"]: r["error"] for r in out["results"] if r["error"]}
     assert "no BHP gauge" in errs["MPR-142"]
     assert hs.HDR_GAUGE_BAD in hs.SAVED_PROP_IDS
+
+
+# ── jet pumps: pump model or empirical BHP~WHP relation ──────────────────────
+
+
+def _jp(**kw):
+    base = dict(well="MPF-107", lift="JP", pump="12B",
+                measured={**_row()["measured"], "slope": 0.8, "q25": 0.7, "q75": 0.9},
+                corr_options={"JP": {"slope": 0.75, "lo": 0.6, "hi": 0.9, "same_lift": True}},
+                corr_group="JP", ipr_options={}, ipr_group=None, ipr_fit=None)
+    return _row(**{**base, **kw})
+
+
+def test_jp_wells_borrow_only_jp_correlations_and_get_no_ipr_options():
+    rows = ([_raw(f"E{i}", "kuparuk", q, s) for i, (q, s) in enumerate([(800, 0.8), (1500, 0.6), (2500, 0.4)])]
+            + [_raw(f"J{i}", "kuparuk", q, s, lift="JP") for i, (q, s) in enumerate([(600, 0.9), (900, 0.85)])]
+            + [_raw("J-nog", "kuparuk", 700, None, "no_data", bhp=None, lift="JP")])
+    corr = hs._correlations(rows)
+    assert set(corr) == {"ESP", "JP"}
+    assert sorted(corr["JP"]["correlation"]["wells"]) == ["J0", "J1"]    # ESP slopes never feed the JP group
+    groups = hs._ipr_groups(rows)
+    for r in rows:
+        hs._attach_options(r, corr, groups)
+    by = {r["well"]: r for r in rows}
+    assert by["J-nog"]["corr_group"] == "JP" and by["J-nog"]["ipr_options"] == {}
+    assert by["J-nog"]["corr_options"]["JP"]["slope"] == pytest.approx(0.875)
+    assert by["E0"]["corr_group"] == "ESP"                              # ESP defaults unchanged
+
+
+def test_jp_method_follows_the_run_unless_the_well_overrides_it():
+    jp = _jp()
+    # Default (user 2026-09-30): the relation when the well has one.
+    assert hs.effective(jp)["jp_method"] == "empirical" and hs.effective(jp)["jp_note"] is None
+    assert schemas.HeaderRunRequest(pads=["F"]).jp_method == "empirical"
+    assert hs.effective(jp, None, "model")["jp_method"] == "model"
+    assert hs.effective(jp, None, "empirical")["jp_method"] == "empirical"
+    assert hs.effective(jp, _choice(well="MPF-107", jp_method="model"), "empirical")["jp_method"] == "model"
+    assert hs.effective(jp, _choice(well="MPF-107", jp_method="empirical"))["jp_method"] == "empirical"
+    assert hs.effective(_row(), None, "empirical")["jp_method"] is None   # not a jet pump
+    # The relation ladder is the ESP one: own measured slope, else the JP group.
+    e = hs.effective(jp, None, "empirical")
+    assert e["rel"]["source"] == "measured" and e["rel"]["slope"] == 0.8
+    assert e["ipr"]["ipr"] is None and e["ipr"]["source"] == "jp"         # filled by the run
+    bad = hs.effective(jp, _choice(well="MPF-107", gauge_bad=True), "empirical")
+    assert bad["rel"]["source"] == "correlation" and bad["rel"]["group"] == "JP"
+    # No relation at all (no saved, no usable gauge, no JP group): the pump model.
+    none = hs.effective(_jp(corr_options={}, corr_group=None), _choice(well="MPF-107", gauge_bad=True))
+    assert none["jp_method"] == "model" and "pump model used" in none["jp_note"]
+    # A saved relation comes first.
+    saved = _jp(saved={"slope": 0.55, "whp_hdr": 1.0, "source": "measured"})
+    assert hs.effective(saved)["rel"]["slope"] == 0.55 and hs.effective(saved)["rel"]["saved"]
+
+
+def test_run_puts_jet_pumps_on_the_chosen_method(monkeypatch):
+    esp = _row()
+    jp_meas = _jp()                                                   # measured slope 0.8
+    jp_model = _jp(well="MPL-06", pad="L")                            # this well stays on the model
+    jp_corr = _jp(well="MPF-73", gauge_auto_bad=True)                 # bad gauge: JP correlation
+    jp_none = _jp(well="MPL-20", pad="L", corr_options={}, corr_group=None,
+                  measured={**_row()["measured"], "status": "no_data", "slope": None})
+    monkeypatch.setattr(hs, "build_board", lambda pads, fit_days, progress: _board([esp, jp_meas, jp_model, jp_corr, jp_none]))
+    seen = {}
+
+    def fake_solve(pads, jp_rows, scenarios, progress):
+        seen["model"] = sorted(r["well"] for r in jp_rows)
+        solved = {"d_whp": 9.8, "d_bhp": 5.0, "d_oil": -3.0, "d_liq": -10.0, "oil_base": 200.0,
+                  "sonic": False, "pf": 3400, "whp_model": 420,
+                  "ipr": {"qwf": 700, "pwf": 800, "pres": 1800}, "ipr_source": "saved"}
+        return _fake_jp({"MPL-06": solved, "MPL-20": {**solved, "d_oil": -1.0}})(pads, jp_rows, scenarios, progress)
+
+    ipr = {"qwf": 900.0, "pwf": 700.0, "pres": 2600.0}
+
+    def fake_iprs(pads, jp_rows, notes, progress):
+        seen["empirical"] = sorted(r["well"] for r in jp_rows)
+        return {r["well"]: {"ipr": dict(ipr), "ipr_source": "saved"} for r in jp_rows}
+
+    monkeypatch.setattr(hs, "_jp_solve", fake_solve)
+    monkeypatch.setattr(hs, "_jp_iprs", fake_iprs)
+    req = schemas.HeaderRunRequest(pads=["F", "L"], delta_by_pad={"F": 10, "L": 10}, jp_method="empirical",
+                                   wells=[_choice(well="MPL-06", jp_method="model")])
+    res = hs.run_impact(req)
+    by = {r["well"]: r for r in res["rows"]}
+    assert seen == {"model": ["MPL-06", "MPL-20"], "empirical": ["MPF-107", "MPF-73"]}
+    assert res["jp_method"] == "empirical"
+    # Empirical: closed-loop slope x dWHP on the pump model's IPR, from the gauge BHP.
+    m = by["MPF-107"]
+    assert m["jp_method"] == "empirical" and m["relation_source"] == "measured" and m["ipr_source"] == "jp"
+    expected = hm.nonjp_delta(10.0, 0.98, 0.8, ipr, 600.0, 0.9)
+    assert m["d_bhp"] == pytest.approx(round(expected["d_bhp"], 1))
+    assert m["d_oil"] == pytest.approx(round(expected["d_oil"], 1))
+    assert abs(m["d_oil_lo"]) <= abs(m["d_oil"]) <= abs(m["d_oil_hi"])   # measured IQR 0.7-0.9
+    assert m["ipr_saved"] and m["jp_ipr_source"] == "saved"
+    # The well override stays on the pump model.
+    assert by["MPL-06"]["jp_method"] == "model" and by["MPL-06"]["relation_source"] == "physics"
+    assert by["MPL-06"]["d_oil"] == -3.0
+    # Bad gauge: the JP correlation, on the IPR anchor's BHP (no gauge reading).
+    c = by["MPF-73"]
+    assert c["relation_source"] == "correlation" and c["relation_group"] == "JP" and c["bhp_basis"] == "IPR anchor"
+    # No relation at all: the pump model instead, said plainly (never an ESP correlation).
+    l20 = by["MPL-20"]
+    assert l20["jp_method"] == "model" and l20["jp_fallback"] and l20["relation_source"] == "physics"
+    assert l20["d_oil"] == -1.0 and "pump model used" in l20["note"]
+    assert not by["MPL-06"]["jp_fallback"]                            # chosen, not a fallback
+    # Firm: own measured slope + the pump model's IPR. Borrowed JP correlation: conditional.
+    assert "MPF-107" not in res["status"]["soft"] and "MPF-73" in res["status"]["soft"]
+    # The curve reproduces the run at +10 psi with both methods in it.
+    cv = res["curve"]
+    assert cv["total"]["base"][cv["grid"].index(10)] == pytest.approx(res["totals"]["d_oil"], abs=0.3)
+
+
+def test_empirical_jp_without_a_usable_pump_ipr_has_no_estimate(monkeypatch):
+    monkeypatch.setattr(hs, "build_board", lambda pads, fit_days, progress: _board([_jp()]))
+    monkeypatch.setattr(hs, "_jp_solve", _fake_jp({}))
+    monkeypatch.setattr(hs, "_jp_iprs", lambda pads, rows, notes, progress: {"MPF-107": {"error": "jet-pump inputs could not be loaded"}})
+    res = hs.run_impact(schemas.HeaderRunRequest(pads=["F"], delta_by_pad={"F": 10}, jp_method="empirical"))
+    row = res["rows"][0]
+    assert row["outcome"] == "missing_inputs" and "pump-model IPR" in row["reason"]
+    assert row["relation_source"] == "measured"
+
+
+def test_run_route_validates_the_jp_method(client, monkeypatch):
+    monkeypatch.setattr(hs, "start_run", lambda req: req.jp_method)
+    ok = client.post("/api/header/run", json={"pads": ["F"], "delta_by_pad": {"F": 10}, "jp_method": "empirical",
+                                              "wells": [{"well": "MPF-107", "jp_method": "model"}]})
+    assert ok.json() == {"job_id": "empirical"}
+    assert client.post("/api/header/run", json={"pads": ["F"], "jp_method": "vogel"}).status_code == 422
+    assert client.post("/api/header/run", json={"pads": ["F"], "wells": [{"well": "A", "jp_method": "x"}]}).status_code == 422
+
+
+def test_empirical_jp_accepts_the_pump_models_own_ipr_inside_300_psi(monkeypatch):
+    # MPF-107 live, 2026-09-30: its pump-model IPR is 729 BLPD at 857 psi with
+    # ResP 1,131 (274 psi drawdown). The page's 300 psi rule is for its own
+    # assumed IPRs; the pump model runs on this one, so the relation may too.
+    ipr = {"qwf": 729.0, "pwf": 857.0, "pres": 1131.0}
+    assert "within 300" in hm.ipr_valid(ipr)
+    assert hm.ipr_valid(ipr, min_drawdown=0.0) is None
+    assert "not above" in hm.ipr_valid({**ipr, "pres": 850.0}, min_drawdown=0.0)
+    jp = _jp(bhp_now=860.0, wc=0.95)
+    monkeypatch.setattr(hs, "build_board", lambda pads, fit_days, progress: _board([jp]))
+    monkeypatch.setattr(hs, "_jp_solve", _fake_jp({}))
+    monkeypatch.setattr(hs, "_jp_iprs", lambda pads, rows, notes, progress: {"MPF-107": {"ipr": dict(ipr), "ipr_source": "vogel"}})
+    res = hs.run_impact(schemas.HeaderRunRequest(pads=["F"], delta_by_pad={"F": 10}, jp_method="empirical"))
+    row = res["rows"][0]
+    assert row["outcome"] == "modeled" and row["d_oil"] < 0 and not row["ipr_saved"]
+    # No ResP band on a pump-model IPR, and the 300 psi floor never lifts ResP above it.
+    assert abs(row["d_oil_lo"]) <= abs(row["d_oil"]) <= abs(row["d_oil_hi"])
+    lo, hi = hm.range_delta(10.0, 0.98, ipr, 860.0, 0.95, 0.8, 0.8, 1131.0, 1131.0)
+    assert lo == pytest.approx(hi) == pytest.approx(hm.nonjp_delta(10.0, 0.98, 0.8, ipr, 860.0, 0.95)["d_oil"])
+
+
+def test_jet_pump_relations_save_like_esp_ones_but_never_their_ipr(monkeypatch):
+    from woffl.assembly import prop_hist_client
+
+    rows = [_jp(), _jp(well="MPL-06", pad="L", measured={**_row()["measured"], "slope": 1.0, "status": "weak"})]
+    monkeypatch.setattr(hs.jobs, "get", lambda jid, kinds: _board_job(rows))
+    monkeypatch.setattr(prop_hist_client, "resolve_entry_user", lambda: "t@x")
+    calls = []
+    monkeypatch.setattr(prop_hist_client, "push_props", lambda w, v, entry_user: calls.append((w, dict(v))) or len(v))
+    out = hs.save(schemas.HeaderSaveRequest(board_job_id="b", wells=[
+        schemas.HeaderSaveWell(well="MPF-107", relation="measured"),
+        schemas.HeaderSaveWell(well="MPL-06", relation="measured"),                     # weak -> refused
+        schemas.HeaderSaveWell(well="MPL-06", relation="correlation", corr_group="JP"),
+        schemas.HeaderSaveWell(well="MPF-107", relation="manual", slope=0.5, ipr="manual", qwf=1, pwf=1, pres=900),
+    ]))
+    assert [c[0] for c in calls] == ["MPF-107", "MPL-06"]
+    v1 = calls[0][1]
+    assert v1 == {hs.HDR_SLOPE: 0.8, hs.HDR_WHP_HDR: 0.98, hs.HDR_R2: 0.8, hs.HDR_DAYS: 30.0, hs.HDR_REL_SOURCE: 1.0}
+    v2 = calls[1][1]
+    assert v2[hs.HDR_SLOPE] == 0.75 and v2[hs.HDR_REL_SOURCE] == 2.0 and v2[hs.HDR_R2] == 0.0
+    assert not any(k in v for _, v in calls for k in hs.IPR_PROP_IDS)          # never a JP IPR
+    errs = [r["error"] for r in out["results"] if r["error"]]
+    assert any("weak" in e for e in errs) and any("Solver" in e for e in errs)
+
+
+def test_an_implausible_measured_slope_is_never_a_default_a_correlation_point_or_a_measured_save(monkeypatch):
+    # MPM-62, 2026-09-30: 15 good days whose median slope is -3.1 (a tag artefact,
+    # not a flowing relation). Clipped to 0 it said "the header does not reach
+    # this well" as firm data, and it tilted the M-Pad JP trend.
+    assert hm.slope_plausible(0.05) and hm.slope_plausible(1.2)
+    assert not hm.slope_plausible(-3.1) and not hm.slope_plausible(1.5) and not hm.slope_plausible(None)
+    odd = _jp(well="MPM-62", measured={**_row()["measured"], "slope": -3.1, "q25": -4.0, "q75": -1.0})
+    e = hs.effective(odd)
+    assert e["rel"]["source"] == "correlation" and e["rel"]["group"] == "JP"
+    assert hs.effective(odd, _choice(well="MPM-62", relation="measured"))["rel"]["source"] == "weak_measured"
+    rows = [_raw(f"M{i}", "schrader", q, s, lift="JP") for i, (q, s) in enumerate([(600, 0.8), (900, 0.6), (1400, 0.4)])]
+    rows.append(_raw("MPM-62", "schrader", 2000, -3.1, lift="JP"))
+    assert "MPM-62" not in hs._correlations(rows)["JP"]["correlation"]["wells"]
+    from woffl.assembly import prop_hist_client
+
+    monkeypatch.setattr(hs.jobs, "get", lambda jid, kinds: _board_job([odd]))
+    monkeypatch.setattr(prop_hist_client, "resolve_entry_user", lambda: "t@x")
+    monkeypatch.setattr(prop_hist_client, "push_props", lambda w, v, entry_user: pytest.fail("must not write"))
+    out = hs.save(schemas.HeaderSaveRequest(board_job_id="b", wells=[schemas.HeaderSaveWell(well="MPM-62", relation="measured")]))
+    assert "implausible" in out["results"][0]["error"]

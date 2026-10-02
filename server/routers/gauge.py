@@ -37,6 +37,36 @@ def parse_gauge(files: list[UploadFile] = File(...)) -> Any:
         return _parse_gauges(files)
 
 
+lrs_router = APIRouter(prefix="/lrs", tags=["lrs"])
+
+# The summary sheet is a one-page form; a multi-MB upload is something else.
+_MAX_LRS_BYTES = 10 * 1024 * 1024
+
+
+@lrs_router.post("/parse", response_model=schemas.LrsTestResponse)
+def parse_lrs(file: UploadFile = File(...)) -> Any:
+    """Read one LRS WELL TEST SUMMARY workbook into a manual test.
+
+    Stateless like /gauge/parse: the client holds the result and lays it over
+    the sidebar. 422 with the reason when the sheet cannot be read.
+    """
+    from server.services.lrs_test import parse_lrs_sheet
+
+    name = file.filename or "lrs_test.xlsx"
+    blob = file.file.read(_MAX_LRS_BYTES + 1)
+    if len(blob) > _MAX_LRS_BYTES:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid", "message": f"{name}: file exceeds {_MAX_LRS_BYTES // (1024 * 1024)} MB"},
+        )
+    try:
+        return parse_lrs_sheet(blob, name)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422, detail={"error": "invalid", "message": f"{name}: {exc}"}
+        ) from exc
+
+
 def _parse_gauges(files: list[UploadFile]) -> Any:
     from woffl.gui.memory_gauge import MemoryGaugeData, parse_xlsx
 

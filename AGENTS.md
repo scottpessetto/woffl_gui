@@ -3,6 +3,19 @@
 Operating rules for coding agents in this repo. Read this before touching anything.
 Prose lives in `docs/`; this file is only the rules you will otherwise violate.
 
+Well tests (2026-10-02, local, not deployed): [record](docs/well_tests_info_only_manual_2026-10-02.md).
+The fleet test frame now holds allocated AND info-only tests (`allocated`
+column), de-duplicated. Anything that picks or fits tests without a person
+choosing takes `tests.allocated_only` / the `tests_for_well` default; only the
+Solver's test list and the pin lookup pass `include_info=True`; the Solver's
+per-well toggle (`include_info_only`, default off) is the only way info-only
+tests enter the reservoir-pressure fit and the automatic anchors. A specific
+anchor is a `wt_uid`, never just a date. The engineer's own test (LRS sheet via
+`POST /api/lrs/parse`, or typed) holds its own numbers, is session-only, rides
+in the fit request as `manual_test` and can be the anchor (`anchor_manual`);
+it has no `wt_uid`, so saving it stores a manual point, never a pin. Anchor
+changes are previews; "Revert to saved" restores the loaded well inputs.
+
 Header page (2026-09-29, local, not deployed): [handoff](docs/header_page_handoff_2026-09-29.md)
 (current state and open items; [delivery log](docs/header_impact_delivery_2026-09-29.md)).
 Each well runs on its own ResP (saved in prop_hist, else default); groups,
@@ -130,8 +143,8 @@ escapes, rather than line-slicing/reconstructing source through the shell.
 
 (`tests/test_joint_match_sweep.py` was deleted; the old `--deselect` of it is a no-op and was dropped from the command on 2026-09-02.)
 
-Latest recorded green baseline: **2,384 Python tests and 52 frontend tests passed**
-(2026-09-24 optimization review), plus the TypeScript/Vite production build.
+Latest recorded green baseline: **2,461 Python tests and 75 frontend tests passed**
+(2026-10-02 well-test record), plus the TypeScript/Vite production build.
 See [the review record](docs/optimization_review_2026-09-24.md). The
 [recovered review](docs/recovered_review_2026-09-11.md) records the prior fixes.
 Earlier counts in dated reports are milestones, not the current baseline.

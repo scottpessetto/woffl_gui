@@ -60,29 +60,35 @@ function performanceOption(
   const waterLabel = xMode === "formation" ? "Formation Water" : "Total Water";
   const xTitle = `${xMode === "formation" ? "Formation" : "Total"} Water Rate (BWPD)`;
 
+  const rowLines = (r: BatchRow): string[] => [
+    `Oil: ${fmtNum(r.qoil_std)} BOPD`,
+    `${waterLabel}: ${fmtNum(r[waterKey])} BWPD`,
+    `Suction P: ${fmtNum(r.psu_solv)} psig`,
+    `Mach: ${fmtNum(r.mach_te, 3)}`,
+    `Form Water: ${fmtNum(r.form_wat)} BWPD`,
+  ];
+
   const tooltipFormatter = (raw: unknown): string => {
     const p = raw as { seriesName?: string; data?: unknown; value?: unknown };
     const d = p.data as Partial<ScatterDatum> | undefined;
-    if (d?.row) {
-      const r = d.row;
-      const suffix = p.seriesName === "Semi-Finalist" ? " (Semi-Finalist)" : "";
-      return [
-        `<b>${d.name ?? ""}</b>${suffix}`,
-        `Oil: ${fmtNum(r.qoil_std)} BOPD`,
-        `${waterLabel}: ${fmtNum(r[waterKey])} BWPD`,
-        `Suction P: ${fmtNum(r.psu_solv)} psig`,
-        `Mach: ${fmtNum(r.mach_te, 3)}`,
-        `Form Water: ${fmtNum(r.form_wat)} BWPD`,
-      ].join("<br/>");
-    }
     if (d?.rec) {
       const rec = d.rec;
+      // The recommendation carries no suction/Mach; show its sweep row.
+      const lines = d.row
+        ? rowLines(d.row)
+        : [
+            `Oil: ${fmtNum(rec.qoil_std)} BOPD`,
+            `${waterLabel}: ${fmtNum(rec.water_rate)} BWPD`,
+          ];
       return [
-        `<b>Recommended: ${pumpCode(rec.nozzle, rec.throat)}</b>`,
-        `Oil: ${fmtNum(rec.qoil_std)} BOPD`,
-        `${waterLabel}: ${fmtNum(rec.water_rate)} BWPD`,
+        `<b>Recommended: ${d.name ?? pumpCode(rec.nozzle, rec.throat)}</b>`,
+        ...lines,
         `Marginal WC: ${fmtNum(rec.marginal_ratio, 3)}`,
       ].join("<br/>");
+    }
+    if (d?.row) {
+      const suffix = p.seriesName === "Semi-Finalist" ? " (Semi-Finalist)" : "";
+      return [`<b>${d.name ?? ""}</b>${suffix}`, ...rowLines(d.row)].join("<br/>");
     }
     const v = Array.isArray(p.value) ? (p.value as number[]) : null;
     if (v) return `Oil: ${fmtNum(v[1])} BOPD<br/>${waterLabel}: ${fmtNum(v[0])} BWPD`;
@@ -120,6 +126,8 @@ function performanceOption(
       type: "scatter",
       symbol: "diamond",
       symbolSize: 12,
+      // Above the fit curve, which runs through these points.
+      z: 5,
       itemStyle: { color: CRIMSON, borderColor: "#0f172a", borderWidth: 1 },
       label: {
         show: true,
@@ -139,6 +147,10 @@ function performanceOption(
       name: "Exp. Curve Fit",
       type: "line",
       showSymbol: false,
+      // Hovering the curve would otherwise steal the semi-finalists' tooltip
+      // with bare oil/water; the curve is not a pump, so it stays silent.
+      silent: true,
+      tooltip: { show: false },
       lineStyle: { color: CRIMSON, width: 2, type: "dashed" },
       itemStyle: { color: CRIMSON },
       data: fitCurve.x.map((x, i) => [x, fitCurve.y[i]]),
@@ -146,9 +158,16 @@ function performanceOption(
   }
 
   if (recommended) {
+    const recRow = rows.find(
+      (r) =>
+        r.nozzle === recommended.nozzle &&
+        r.throat === recommended.throat &&
+        (recommended.pump_state == null || r.pump_state === recommended.pump_state),
+    );
     const rec: ScatterDatum = {
       value: [recommended.water_rate, recommended.qoil_std],
       name: pumpCode(recommended.nozzle, recommended.throat),
+      row: recRow,
       rec: recommended,
     };
     series.push({

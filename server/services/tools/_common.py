@@ -144,9 +144,10 @@ def well_chars_map() -> dict[str, dict]:
 
 
 def _fleet_tests(months_back: int) -> pd.DataFrame:
-    """The cached fleet well-test frame. Warmed for the config windows."""
+    """The cached fleet well-test frame, allocated tests only. Warmed for the
+    config windows."""
     try:
-        return tests_svc.fetch_all_well_tests(months_back)
+        return tests_svc.allocated_only(tests_svc.fetch_all_well_tests(months_back))
     except Exception:  # noqa: BLE001 - tools degrade, they do not 500
         log.warning("tools: fleet well tests unavailable", exc_info=True)
         return pd.DataFrame()

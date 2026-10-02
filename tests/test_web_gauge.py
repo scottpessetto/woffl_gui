@@ -109,7 +109,7 @@ def _test_frame() -> pd.DataFrame:
 def test_fit_uses_gauge_bhp(monkeypatch):
     """Without overrides the frame has ONE usable test (fit impossible);
     gauge coverage makes all three usable and anchors on gauge BHP."""
-    monkeypatch.setattr(ipr_svc.tests, "tests_for_well", lambda well, months, cap: _test_frame())
+    monkeypatch.setattr(ipr_svc.tests, "tests_for_well", lambda well, months, cap, include_info=False: _test_frame())
 
     req = schemas.IprFitRequest(well="MPX-01", anchor_mode="specific", anchor_date="2026-06-02")
     with pytest.raises(ValueError):
@@ -132,7 +132,7 @@ def test_fit_uses_gauge_bhp(monkeypatch):
 
 def test_fit_gauge_wins_inside_coverage(monkeypatch):
     """A test WITH a feed BHP still takes the gauge value when covered."""
-    monkeypatch.setattr(ipr_svc.tests, "tests_for_well", lambda well, months, cap: _test_frame())
+    monkeypatch.setattr(ipr_svc.tests, "tests_for_well", lambda well, months, cap, include_info=False: _test_frame())
     req = schemas.IprFitRequest(
         well="MPX-01",
         anchor_mode="specific",
@@ -168,7 +168,7 @@ def test_fit_median_liq_anchors_on_median_liquid_test(monkeypatch):
             "whp": [200.0, 200.0, 200.0],
         }
     )
-    monkeypatch.setattr(ipr_svc.tests, "tests_for_well", lambda well, months, cap: frame)
+    monkeypatch.setattr(ipr_svc.tests, "tests_for_well", lambda well, months, cap, include_info=False: frame)
 
     out = ipr_svc.fit(schemas.IprFitRequest(well="MPX-01", anchor_mode="median_liq"))
     assert out["coeffs"]["qwf"] == 1000.0
@@ -196,7 +196,7 @@ def test_fit_drops_excluded_tests_so_no_anchor_mode_can_pick_them(monkeypatch):
             "whp": [200.0, 200.0, 200.0],
         }
     )
-    monkeypatch.setattr(ipr_svc.tests, "tests_for_well", lambda well, months, cap: frame)
+    monkeypatch.setattr(ipr_svc.tests, "tests_for_well", lambda well, months, cap, include_info=False: frame)
     kept = ipr_svc.fit(schemas.IprFitRequest(well="MPX-01", anchor_mode="recent"))
     dropped = ipr_svc.fit(schemas.IprFitRequest(well="MPX-01", anchor_mode="recent", exclude_wt_uids=[3.0]))
     assert kept["coeffs"]["qwf"] == 5000.0

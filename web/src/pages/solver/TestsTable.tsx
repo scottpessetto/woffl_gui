@@ -13,10 +13,17 @@ import type { Column } from "../../components/ui";
 import { DataTable, Section } from "../../components/ui";
 import { fmtDate, fmtNum } from "../../lib/format";
 
-import { testKey } from "./selection";
+import { isInfoOnly, testKey, testKind } from "./selection";
 
 const COLUMNS: Column<WellTestRow>[] = [
   { key: "date", label: "Test Date", render: (r) => fmtDate(r.date) },
+  {
+    key: "allocated",
+    label: "Type",
+    // Info-only = FDC has not accepted the test for allocation (unreviewed);
+    // Manual = the engineer's own test under a Manual point anchor.
+    render: (r) => testKind(r),
+  },
   { key: "oil", label: "Oil (BOPD)", align: "right", render: (r) => fmtNum(r.oil) },
   { key: "water", label: "Water (BWPD)", align: "right", render: (r) => fmtNum(r.water) },
   { key: "total_fluid", label: "Total Fluid (BPD)", align: "right", render: (r) => fmtNum(r.total_fluid) },
@@ -74,8 +81,9 @@ export function TestsTable({
       ]
     : COLUMNS;
   const n = tests.filter((t) => excluded.has(testKey(t))).length;
+  const info = tests.filter(isInfoOnly).length;
   return (
-    <Section title={`Well Test Data (${tests.length} tests${n ? `, ${n} excluded` : ""})`}>
+    <Section title={`Well Test Data (${tests.length} tests${info ? `, ${info} info only` : ""}${n ? `, ${n} excluded` : ""})`}>
       <DataTable
         columns={columns}
         rows={tests}

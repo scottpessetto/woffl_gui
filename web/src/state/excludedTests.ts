@@ -46,6 +46,47 @@ export const useExcludedTests = create<ExcludedTestsState>((set) => ({
     }),
 }));
 
+// --- info-only tests in the IPR fit -----------------------------------------
+//
+// Off by default: info-only tests are unscreened SCADA tests, and the
+// optimizer seeds a well from its allocated tests, so the Solver opens on the
+// same curve. Switching it on for a well is the same kind of call as an
+// exclusion - one engineer's judgement about that well's data - and persists
+// the same way.
+
+const INFO_FIT_KEY = "woffl.infoOnlyInFit";
+
+function restoreInfoFit(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(INFO_FIT_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, boolean>) : {};
+  } catch {
+    return {};
+  }
+}
+
+interface InfoFitState {
+  byWell: Record<string, boolean>;
+  setInfoInFit: (well: string, on: boolean) => void;
+}
+
+export const useInfoOnlyInFit = create<InfoFitState>((set) => ({
+  byWell: restoreInfoFit(),
+  setInfoInFit: (well, on) =>
+    set((s) => {
+      const byWell = { ...s.byWell };
+      if (on) byWell[well] = true;
+      else delete byWell[well];
+      try {
+        localStorage.setItem(INFO_FIT_KEY, JSON.stringify(byWell));
+      } catch {
+        // storage unavailable: the choice still applies for this session
+      }
+      return { byWell };
+    }),
+}));
+
 const EMPTY: string[] = [];
 
 /** The excluded test keys for one well (stable empty array when none). */

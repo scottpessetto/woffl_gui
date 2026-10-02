@@ -17,8 +17,11 @@ falling as BHP rises (for an ESP at fixed speed, ``s = 1 / (1 + PI * k)`` with
 IPR a second time. High-PI ESPs therefore show small slopes and still lose the
 most liquid: ``dLiq = -PI * s * dWHP``.
 
-Jet pumps do not use this chain; ``header_study`` solves them with the WOFFL
-model at both wellhead pressures.
+Jet pumps run this same chain by default - their saved relation, else their
+own measured slope, else the jet-pump group correlation - on the IPR their
+pump model uses. A jet pump with no relation, or a run (or well) set to the
+pump model, is solved with the WOFFL model at both wellhead pressures
+instead; ``header_study`` owns that choice.
 """
 
 from __future__ import annotations
@@ -29,8 +32,12 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
-# Lift groups that carry an empirical relation. JP wells are solved physically.
-LIFT_GROUPS = ("ESP", "gas-lift", "flowing")
+# Lift groups that carry an empirical relation. The JP group is only borrowed
+# by jet pumps a run puts on the empirical relation instead of the pump model.
+LIFT_GROUPS = ("ESP", "gas-lift", "flowing", "JP")
+# How a jet pump turns a WHP change into a BHP change: the WOFFL pump model or
+# the empirical closed-loop BHP~WHP relation (the default when it exists).
+JP_METHODS = ("model", "empirical")
 
 # Documented reservoir-pressure fallbacks (psig) when nothing is saved or
 # fitted - the same numbers the JP IPR estimator caps at (ipr_analyzer).
@@ -134,6 +141,18 @@ def summarize_daily(daily: Optional[pd.DataFrame], r2_min: float = R2_DAY_MIN) -
     return out
 
 
+def slope_plausible(s: Optional[float]) -> bool:
+    """A measured slope that can be a flowing closed-loop relation.
+
+    Not a band on real low slopes (0.05 is a genuine high-rate ESP): only
+    the physical clip. A negative median (MPM-62 read -3.1 on 2026-09-30)
+    or one far above 1 is a gauge or tag artefact; it is never a default,
+    never feeds a correlation and never saves as "measured".
+    """
+    v = _finite(s)
+    return v is not None and SLOPE_CLIP[0] <= v <= SLOPE_CLIP[1]
+
+
 def clip_slope(s: Optional[float]) -> Optional[float]:
     v = _finite(s)
     if v is None:
@@ -205,8 +224,13 @@ def vogel_factor(r: float) -> float:
     return 1.0 - 0.2 * r - 0.8 * r * r
 
 
-def ipr_valid(ipr: Optional[dict[str, Any]]) -> Optional[str]:
-    """None when the IPR anchor is usable, else the reason it is not."""
+def ipr_valid(ipr: Optional[dict[str, Any]], min_drawdown: float = MIN_DRAWDOWN_PSI) -> Optional[str]:
+    """None when the IPR anchor is usable, else the reason it is not.
+
+    ``min_drawdown`` guards the page's own assumed and fitted IPRs. A jet
+    pump on the empirical relation passes 0: it uses the IPR its pump model
+    already runs on, which then only needs ResP above the anchor BHP.
+    """
     if not ipr:
         return "no IPR"
     qwf, pwf, pres = (_finite(ipr.get(k)) for k in ("qwf", "pwf", "pres"))
@@ -216,8 +240,9 @@ def ipr_valid(ipr: Optional[dict[str, Any]]) -> Optional[str]:
         return "IPR rate must be positive"
     if pwf <= 0:
         return "IPR flowing pressure must be positive"
-    if pres - pwf < MIN_DRAWDOWN_PSI:
-        return f"reservoir pressure within {MIN_DRAWDOWN_PSI:.0f} psi of BHP"
+    if pres - pwf < min_drawdown or pres <= pwf:
+        return (f"reservoir pressure within {min_drawdown:.0f} psi of BHP" if min_drawdown > 0
+                else "reservoir pressure is not above the IPR's flowing BHP")
     return None
 
 
@@ -438,9 +463,10 @@ def range_delta(d_header: float, whp_hdr: Optional[float], ipr: dict[str, Any], 
 
     Lower ResP through the same anchor means a steeper IPR, so the largest
     loss pairs the high slope with the low ResP. Both ends keep the 300 psi
-    drawdown rule.
+    drawdown rule, but never above the anchor's own ResP (a jet pump's
+    pump-model IPR may sit closer than 300 psi and carries no ResP band).
     """
-    floor = float(ipr["pwf"]) + MIN_DRAWDOWN_PSI
+    floor = min(float(ipr["pwf"]) + MIN_DRAWDOWN_PSI, float(ipr["pres"]))
     a = nonjp_delta(d_header, whp_hdr, slope_lo, {**ipr, "pres": max(pres_hi, floor)}, bhp_now, wc)["d_oil"]
     b = nonjp_delta(d_header, whp_hdr, slope_hi, {**ipr, "pres": max(pres_lo, floor)}, bhp_now, wc)["d_oil"]
     return (a, b) if abs(a) <= abs(b) else (b, a)

@@ -110,8 +110,9 @@ export default function HeaderPage() {
       <>
       <Section title="Header pressure impact">
         <p className="mb-3 max-w-4xl text-sm text-slate-600">
-          What a production-header pressure change costs each well and pad. Jet pumps are solved with the WOFFL model at
-          both wellhead pressures. ESP, gas-lift and flowing wells use their measured closed-loop BHP~WHP slope (the rate
+          What a production-header pressure change costs each well and pad. Jet pumps use their BHP~WHP relation (saved,
+          measured, else the jet-pump group correlation) on their pump model's IPR; one with no relation - or every jet
+          pump, if you pick it - is solved with the WOFFL model at both wellhead pressures. ESP, gas-lift and flowing wells use their measured closed-loop BHP~WHP slope (the rate
           response is already in it) and their IPR; wells without a working gauge borrow their lift type's and reservoir's
           correlations.
         </p>
@@ -151,6 +152,21 @@ export default function HeaderPage() {
                     className={clsx("px-3 py-1.5 text-sm", form.mode === m ? "bg-blue-600 text-white" : "bg-white text-slate-700 hover:bg-slate-50")}
                   >
                     {m === "scenario" ? "Header change" : "Observed event"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div title="How jet pumps turn the wellhead-pressure change into a BHP change. The BHP~WHP relation uses each well's saved or measured closed-loop slope, else the jet-pump group correlation, and falls back to the WOFFL model for a well with none. The WOFFL model solves the installed pump at both pressures with PF held. Both use the pump model's IPR. Single wells can be set otherwise on the Wells tab.">
+              <div className="text-xs text-slate-500">Jet pumps</div>
+              <div className="mt-1 inline-flex overflow-hidden rounded-md border border-slate-300">
+                {([["empirical", "BHP~WHP relation"], ["model", "WOFFL model"]] as const).map(([m, label]) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setForm({ jpMethod: m })}
+                    className={clsx("px-3 py-1.5 text-sm", (form.jpMethod ?? "empirical") === m ? "bg-blue-600 text-white" : "bg-white text-slate-700 hover:bg-slate-50")}
+                  >
+                    {label}
                   </button>
                 ))}
               </div>

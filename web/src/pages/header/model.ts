@@ -5,12 +5,19 @@
  * IPR and gauge state a well runs with, given the engineer's choice. The
  * table shows it, the run and save send the choice, and the server resolves
  * the same numbers from its own board.
+ *
+ * Jet pumps run their empirical BHP~WHP relation by default (user
+ * 2026-09-30): the same ladder as other wells, from jet-pump groups, on the
+ * IPR the pump model uses (resolved by the server). One with no relation
+ * falls back to the WOFFL pump model, and the run's `jpMethod` (or a well's
+ * own `jp_method`) can put jet pumps on the model outright.
  */
 
 import type {
   HeaderBoard,
   HeaderBoardRow,
   HeaderIpr,
+  HeaderJpMethod,
   HeaderRunRequest,
   HeaderRunResult,
   HeaderRunRow,
@@ -22,6 +29,8 @@ export interface HeaderForm {
   pads: string[];
   fitDays: number;
   mode: "scenario" | "event";
+  /** Jet pumps: WOFFL pump model or the empirical BHP~WHP relation. */
+  jpMethod: HeaderJpMethod;
   deltas: Record<string, number>;
   eventTime: string;
   preHours: number;
@@ -35,6 +44,7 @@ export const DEFAULT_HEADER_FORM: HeaderForm = {
   pads: [],
   fitDays: 120,
   mode: "scenario",
+  jpMethod: "empirical",
   deltas: {},
   eventTime: "",
   preHours: 72,
@@ -74,12 +84,19 @@ export interface EffectiveWell {
   gaugeOk: boolean;
   gaugeBad: boolean;
   online: boolean;
+  /** Jet pumps: the method this well runs with; null for other lift types. */
+  jpMethod: HeaderJpMethod | null;
+  /** Jet pumps: set to the relation but it has none, so the pump model runs. */
+  jpFallback: boolean;
   rel: RelationView;
   ipr: IprView;
 }
 
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const clip = (v: number) => Math.min(Math.max(v, 0), 1.2);
+/** A measured slope that can be a flowing closed-loop relation (mirrors the
+ *  server's slope_plausible): inside the physical clip, not a gauge artefact. */
+export const plausible = (v: number | null | undefined): v is number => isNum(v) && v >= 0 && v <= 1.2;
 
 /** Why an IPR anchor cannot be used, mirroring the server's 300 psi rule. */
 export function iprProblem(ipr: HeaderIpr | null): string | null {
@@ -94,7 +111,7 @@ function relationFor(row: HeaderBoardRow, choice: HeaderWellChoice | undefined, 
   let kind: string = choice?.relation ?? "auto";
   if (kind === "auto") {
     if (row.saved) kind = "saved";
-    else if (gaugeOk && m.status === "measured") kind = "measured";
+    else if (gaugeOk && m.status === "measured" && plausible(m.slope)) kind = "measured";
     else if (corrKey) kind = "correlation";
     else kind = "none";
   }
@@ -114,9 +131,9 @@ function relationFor(row: HeaderBoardRow, choice: HeaderWellChoice | undefined, 
     if (!gaugeOk) return none("the BHP gauge is marked bad, so its measured relation is not used");
     const s = clip(m.slope);
     return {
-      kind: m.status === "measured" ? "measured" : "weak_measured", slope: s,
+      kind: m.status === "measured" && plausible(m.slope) ? "measured" : "weak_measured", slope: s,
       lo: Math.min(s, isNum(m.q25) ? clip(m.q25) : s), hi: Math.max(s, isNum(m.q75) ? clip(m.q75) : s),
-      group: null, firm: m.status === "measured",
+      group: null, firm: m.status === "measured" && plausible(m.slope),
     };
   }
   if (kind === "correlation" && corrKey && row.corr_options[corrKey]) {
@@ -127,7 +144,9 @@ function relationFor(row: HeaderBoardRow, choice: HeaderWellChoice | undefined, 
     const s = choice!.slope as number;
     return { kind: "manual", slope: s, lo: s, hi: s, group: null, firm: false };
   }
-  return none(`no ${kind} relation for this well`);
+  return none(kind === "none"
+    ? "no saved relation, no measured slope from a working gauge and no correlation for its lift type"
+    : `no ${kind} relation for this well`);
 }
 
 function iprFor(row: HeaderBoardRow, choice: HeaderWellChoice | undefined, gaugeOk: boolean, iprKey: string | null): IprView {
@@ -181,21 +200,38 @@ export function gaugeBadDefault(row: HeaderBoardRow): boolean {
   return row.gauge_bad_default ?? row.gauge_auto_bad;
 }
 
-/** The gauge state, relation and IPR a well runs with (mirrors the server). */
-export function effective(row: HeaderBoardRow, choice?: HeaderWellChoice): EffectiveWell {
+/** A jet pump's method: its own choice, else the run's; null for other lifts. */
+export function jpMethodFor(row: HeaderBoardRow, choice: HeaderWellChoice | undefined, runMethod: HeaderJpMethod = "empirical"): HeaderJpMethod | null {
+  if (row.lift !== "JP") return null;
+  return choice?.jp_method ?? runMethod;
+}
+
+/** The gauge state, relation and IPR a well runs with (mirrors the server).
+ *  ``jpMethod`` is the run's jet-pump setting (a well's choice overrides it). */
+export function effective(row: HeaderBoardRow, choice?: HeaderWellChoice, jpMethod: HeaderJpMethod = "empirical"): EffectiveWell {
   const gaugeBad = choice?.gauge_bad ?? gaugeBadDefault(row);
   const gaugeOk = row.has_gauge && !gaugeBad;
   const online = choice?.online ?? (row.age_ok && (!row.looks_down || gaugeBad));
-  if (row.lift === "JP") {
-    return {
-      gaugeOk, gaugeBad, online,
-      rel: { kind: "physics", slope: null, lo: null, hi: null, group: null, firm: true },
-      ipr: { kind: "jp", ipr: null, presLo: null, presHi: null, group: null, firm: true, reason: null },
-    };
-  }
   const corrKey = choice?.corr_group && row.corr_options[choice.corr_group] ? choice.corr_group : row.corr_group;
+  const method = jpMethodFor(row, choice, jpMethod);
+  if (method !== null) {
+    // Both methods use the pump model's IPR (Solver), resolved by the server.
+    const ipr: IprView = { kind: "jp", ipr: null, presLo: null, presHi: null, group: null, firm: true, reason: null };
+    const physics: RelationView = { kind: "physics", slope: null, lo: null, hi: null, group: null, firm: true };
+    if (method === "model") return { gaugeOk, gaugeBad, online, jpMethod: "model", jpFallback: false, rel: physics, ipr };
+    const rel = relationFor(row, choice, gaugeOk, corrKey);
+    if (rel.slope === null) {
+      // No saved relation, no measured slope from a working gauge, no JP group.
+      const reason = `no BHP~WHP relation (${rel.reason ?? "none"}); pump model used`;
+      return { gaugeOk, gaugeBad, online, jpMethod: "model", jpFallback: true, rel: { ...physics, reason }, ipr };
+    }
+    return { gaugeOk, gaugeBad, online, jpMethod: "empirical", jpFallback: false, rel, ipr };
+  }
   const iprKey = choice?.ipr_group && row.ipr_options[choice.ipr_group] ? choice.ipr_group : row.ipr_group;
-  return { gaugeOk, gaugeBad, online, rel: relationFor(row, choice, gaugeOk, corrKey), ipr: iprFor(row, choice, gaugeOk, iprKey) };
+  return {
+    gaugeOk, gaugeBad, online, jpMethod: null, jpFallback: false,
+    rel: relationFor(row, choice, gaugeOk, corrKey), ipr: iprFor(row, choice, gaugeOk, iprKey),
+  };
 }
 
 export function isOnline(row: HeaderBoardRow, choice?: HeaderWellChoice): boolean {
@@ -234,10 +270,12 @@ export function iprGroupsFor(row: HeaderBoardRow): string[] {
   return dedupe(keys, (k) => String(row.ipr_options[k].nogauge!.pwf));
 }
 
-/** Choices worth sending: anything the engineer set that differs from the default. */
+/** Choices worth sending: anything the engineer set that differs from the default.
+ *  A jet pump's relation choices go only when it runs on the relation. */
 export function choicesForRequest(
   board: HeaderBoard | null,
   choices: Record<string, HeaderWellChoice>,
+  jpMethod: HeaderJpMethod = "empirical",
 ): HeaderWellChoice[] {
   const rows = new Map((board?.rows ?? []).map((r) => [r.well, r]));
   const out: HeaderWellChoice[] = [];
@@ -251,7 +289,9 @@ export function choicesForRequest(
     };
     if (c.online !== undefined && c.online !== null && (!row || c.online !== row.online_default)) set("online", c.online);
     if (c.gauge_bad !== undefined && c.gauge_bad !== null && (!row || c.gauge_bad !== gaugeBadDefault(row))) set("gauge_bad", c.gauge_bad);
-    if (row?.lift === "JP") {
+    const isJp = row?.lift === "JP";
+    if (isJp && c.jp_method) set("jp_method", c.jp_method);
+    if (isJp && (c.jp_method ?? jpMethod) === "model") {
       if (used) out.push(entry);
       continue;
     }
@@ -260,6 +300,10 @@ export function choicesForRequest(
       if (c.relation === "manual") set("slope", c.slope ?? null);
     }
     if (c.corr_group && c.corr_group !== row?.corr_group) set("corr_group", c.corr_group);
+    if (isJp) {
+      if (used) out.push(entry);
+      continue;
+    }
     if (c.ipr && c.ipr !== "auto") {
       set("ipr", c.ipr);
       if (c.ipr === "manual") {
@@ -280,12 +324,14 @@ export function buildRunRequest(
   choices: Record<string, HeaderWellChoice>,
 ): HeaderRunRequest {
   const pads = [...form.pads].sort();
+  const jpMethod = form.jpMethod ?? "empirical";
   const req: HeaderRunRequest = {
     pads,
     fit_days: form.fitDays,
     mode: form.mode,
+    jp_method: jpMethod,
     delta_by_pad: Object.fromEntries(pads.map((p) => [p, form.deltas[p] ?? DEFAULT_DELTA_PSI])),
-    wells: choicesForRequest(board && board.pads.join(",") === pads.join(",") ? board : null, choices),
+    wells: choicesForRequest(board && board.pads.join(",") === pads.join(",") ? board : null, choices, jpMethod),
   };
   if (form.mode === "event") {
     req.event_time = form.eventTime || null;
@@ -315,11 +361,12 @@ export function runBlockers(
   }
   for (const row of board?.rows ?? []) {
     const c = choices[row.well];
-    if (!c || row.lift === "JP" || !isOnline(row, c)) continue;
+    const method = jpMethodFor(row, c, form.jpMethod ?? "empirical");
+    if (!c || method === "model" || !isOnline(row, c)) continue;
     if (c.relation === "manual" && !(isNum(c.slope) && c.slope >= 0 && c.slope <= 1.5)) {
       out.push(`${row.well}: manual slope must be between 0 and 1.5.`);
     }
-    if (c.ipr === "manual") {
+    if (method === null && c.ipr === "manual") {
       const p = iprProblem({ qwf: c.qwf ?? null, pwf: c.pwf ?? null, pres: c.pres ?? null });
       if (p) out.push(`${row.well}: manual IPR - ${p}.`);
     }
@@ -336,11 +383,10 @@ export function savePlan(
     (choice.gauge_bad !== gaugeBadDefault(row) || !row.gauge_saved)
     ? choice.gauge_bad
     : null;
-  if (row.lift === "JP") {
-    if (gaugeChange !== null) return { entry: { well: row.well, gauge_bad: gaugeChange }, why: null };
-    return { entry: null, why: "Jet pumps use the pump model; save their IPR in Solver." };
-  }
-  const eff = effective(row, choice);
+  const isJp = row.lift === "JP";
+  // A jet pump saves its relation as if it ran on it (whatever the run's
+  // method), never an IPR - that stays in Solver with the pump model.
+  const eff = isJp ? effective(row, { ...(choice ?? { well: row.well }), jp_method: "empirical" }) : effective(row, choice);
   const { rel, ipr } = eff;
   const entry: HeaderSaveWell = { well: row.well };
   if (rel.kind === "measured") entry.relation = "measured";
@@ -363,8 +409,9 @@ export function savePlan(
   }
   if (gaugeChange !== null) entry.gauge_bad = gaugeChange;
   if (!entry.relation && !entry.ipr && entry.gauge_bad === undefined) {
-    if (rel.kind === "saved" && ipr.kind === "saved") return { entry: null, why: "Already saved." };
-    if (rel.kind === "weak_measured") return { entry: null, why: "Measured relation is weak - pick a correlation or a manual slope." };
+    if (rel.kind === "saved" && (isJp || ipr.kind === "saved")) return { entry: null, why: "Already saved." };
+    if (isJp && rel.kind === "physics") return { entry: null, why: "No BHP~WHP relation to save; the pump model is used. Save its IPR in Solver." };
+    if (rel.kind === "weak_measured") return { entry: null, why: "Measured relation is weak or implausible - pick a correlation or a manual slope." };
     return { entry: null, why: "Nothing new to save." };
   }
   return { entry, why: null };
@@ -504,7 +551,8 @@ export const IPR_RATE_DRIFT = 0.25;
 
 /** Has this well been reviewed and saved, and does the saved value still
  *  match what its data says today? Only the header page's own review applies
- *  (relation + IPR); jet pumps are reviewed in Solver. */
+ *  (relation + IPR); a jet pump's IPR is reviewed in Solver, so only its
+ *  relation counts here. */
 export function reviewState(row: HeaderBoardRow): ReviewState {
   const notes: string[] = [];
   const s = row.saved;
@@ -516,7 +564,8 @@ export function reviewState(row: HeaderBoardRow): ReviewState {
       notes.push(`saved slope ${s.slope.toFixed(2)}, now measures ${m.slope.toFixed(2)} - speed change or pump swap?`);
     }
   }
-  const si = row.saved_ipr;
+  // A jet pump's IPR is reviewed in Solver with its pump model.
+  const si = row.lift === "JP" ? null : row.saved_ipr;
   if (si && isNum(si.qwf) && si.qwf > 0 && isNum(row.liquid)) {
     const move = row.liquid / si.qwf - 1;
     if (Math.abs(move) > IPR_RATE_DRIFT) {

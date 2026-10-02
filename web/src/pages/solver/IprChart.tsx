@@ -16,10 +16,14 @@ import { Card, Spinner, WarnNote } from "../../components/ui";
 import { fmtDate, fmtNum, daysAgo } from "../../lib/format";
 import { iprCurveFromAnchor, vogelQmax } from "../../lib/vogel";
 
-import { pumpLabelAt } from "./selection";
+import { isInfoOnly, pumpLabelAt, testKind } from "./selection";
 
-/** [plotted rate, bhp, daysAgo, date, oil, pumpLabel, total_fluid] */
-type TestPoint = [number, number, number, string, number | null, string | null, number];
+/** [plotted rate, bhp, daysAgo, date, oil, pumpLabel, total_fluid, kind] */
+type TestPoint = [number, number, number, string, number | null, string | null, number, string];
+
+/** Allocated tests are circles; an info-only test (listed, selectable, not in
+ *  the automatic fit) is a smaller triangle; the manual test is a square. */
+const KIND_SYMBOL: Record<string, [string, number]> = { "Info only": ["triangle", 8], Manual: ["rect", 13] };
 
 /** X-axis quantity. Oil mode answers "what is this well actually making?"
  *  without water-cut arithmetic in the engineer's head. */
@@ -32,6 +36,9 @@ const RATE_MODES: { id: RateMode; label: string }[] = [
 
 export function IprChart({
   tests,
+  infoInFit = false,
+  onInfoInFit,
+  fitRuns = true,
   fit,
   params,
   solve,
@@ -41,6 +48,12 @@ export function IprChart({
   preferOil = false,
 }: {
   tests: WellTestRow[];
+  /** Info-only tests are part of the IPR fit (the engineer's per-well toggle,
+   *  set from the checkbox in this card's header). */
+  infoInFit?: boolean;
+  onInfoInFit?: (on: boolean) => void;
+  /** False under a Manual point anchor: there is no test fit to feed. */
+  fitRuns?: boolean;
   fit: IprFitResponse | null;
   params: SimParams;
   solve: SolveResult | null;
@@ -56,6 +69,12 @@ export function IprChart({
   // Old GUI: checkbox "Show JP label inside each test point"
   // (mva_show_jp_labels_{well}); per-well because the workbench remounts.
   const [showJpLabels, setShowJpLabels] = useState(false);
+  // Info-only tests on the plot: display only, independent of the fit. A
+  // test the fit uses is always drawn, so the curve never leans on a point
+  // that is not on screen.
+  const [showInfoOnly, setShowInfoOnly] = useState(true);
+  const infoCount = useMemo(() => tests.filter(isInfoOnly).length, [tests]);
+  const infoShown = showInfoOnly || (infoInFit && fitRuns);
   // X-axis quantity: total liquid (the fitted curve's native rate) or oil.
   const [rateMode, setRateMode] = useState<RateMode>(preferOil ? "oil" : "liquid");
   useEffect(() => { if (preferOil) setRateMode("oil"); }, [preferOil]);
@@ -83,10 +102,11 @@ export function IprChart({
     const points: TestPoint[] = [];
     for (const t of tests) {
       if (t.total_fluid === null || t.bhp === null) continue;
+      if (!infoShown && isInfoOnly(t)) continue;
       // A test with no reported oil has nothing to plot in oil mode.
       const x = oilMode ? t.oil : t.total_fluid;
       if (x === null) continue;
-      points.push([x, t.bhp, daysAgo(t.date) ?? 0, t.date, t.oil, pumpLabelAt(installs, t.date), t.total_fluid]);
+      points.push([x, t.bhp, daysAgo(t.date) ?? 0, t.date, t.oil, pumpLabelAt(installs, t.date), t.total_fluid, testKind(t)]);
     }
     const maxDays = Math.max(1, ...points.map((p) => p[2]));
 
@@ -155,7 +175,13 @@ export function IprChart({
         {
           name: "Test Data",
           type: "scatter",
-          symbolSize: showJpLabels ? 26 : 11,
+          symbol: (value: unknown) => KIND_SYMBOL[(value as TestPoint)[7]]?.[0] ?? "circle",
+          // An info-only test the fit uses draws at full size.
+          symbolSize: (value: unknown) => {
+            const kind = (value as TestPoint)[7];
+            if (showJpLabels) return 26;
+            return kind === "Info only" && infoInFit && fitRuns ? 11 : (KIND_SYMBOL[kind]?.[1] ?? 11);
+          },
           itemStyle: { borderColor: "#0f172a", borderWidth: 1 },
           // No animation: zoom filtering animates leaving points, and label
           // formatters run on those transitional elements with value
@@ -188,7 +214,7 @@ export function IprChart({
               const p = raw as { value: TestPoint };
               const v = p.value;
               return [
-                `<b>${fmtDate(v[3])}</b>`,
+                `<b>${fmtDate(v[3])}</b>${v[7] in KIND_SYMBOL ? ` (${v[7].toLowerCase()} test${v[7] === "Info only" ? (infoInFit && fitRuns ? ", in the fit" : ", not in the fit") : ""})` : ""}`,
                 `Fluid: ${fmtNum(v[6])} BPD`,
                 `Oil: ${v[4] !== null ? `${fmtNum(v[4])} BOPD` : "-"}`,
                 `BHP: ${fmtNum(v[1])} psi`,
@@ -230,7 +256,7 @@ export function IprChart({
         },
       ],
     });
-  }, [tests, params, solve, installs, showJpLabels, rateMode]);
+  }, [tests, params, solve, installs, showJpLabels, rateMode, infoInFit, infoShown, fitRuns]);
 
 
   return (
@@ -274,6 +300,43 @@ export function IprChart({
               </label>
             </div>
           </div>
+          {infoCount > 0 && (
+            <div className="mb-1 flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
+              <label
+                className="flex cursor-pointer items-center gap-2 text-xs text-slate-600"
+                title="Draw the info-only tests (triangles) on this chart. Display only - it does not change the fit. Tests the fit uses are always drawn."
+              >
+                <input
+                  type="checkbox"
+                  checked={infoShown}
+                  disabled={infoInFit && fitRuns}
+                  onChange={(e) => setShowInfoOnly(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 accent-blue-600 disabled:opacity-50"
+                />
+                Show info-only tests ({infoCount})
+              </label>
+              {onInfoInFit && (
+                <label
+                  className="flex cursor-pointer items-center gap-2 text-xs text-slate-600"
+                  title="Let the info-only tests set the fitted reservoir pressure, and let Most recent and the medians anchor on them. Off: the fit uses allocated tests only. They are unreviewed - exclude a bad one in the test table."
+                >
+                  <input
+                    type="checkbox"
+                    checked={infoInFit}
+                    onChange={(e) => onInfoInFit(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 accent-blue-600"
+                  />
+                  Use info-only tests in the IPR fit
+                </label>
+              )}
+            </div>
+          )}
+          {infoCount > 0 && infoInFit && !fitRuns && (
+            <p className="mb-1 text-right text-[11px] text-slate-500">
+              The anchor is a Manual point, so no fit runs. Choose Most recent, a median or a
+              specific test under IPR Anchor for the info-only tests to set the reservoir pressure.
+            </p>
+          )}
           <ChartPanel option={option} height={520} zoom={{ xAxisIndex: [0], yAxisIndex: [0] }} />
           {fit?.weak && curveIsFit && (
             <WarnNote className="mt-2">

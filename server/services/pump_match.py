@@ -332,7 +332,7 @@ def load_history(well, request):
     tracker = tracker[tracker["Well Name"] == well].copy()
     if tracker.empty:
         raise ValueError("No dated pump history for this well.")
-    fleet_tests = tests.fetch_all_well_tests(max(24, request.months))
+    fleet_tests = tests.allocated_only(tests.fetch_all_well_tests(max(24, request.months)))
     if fleet_tests is None or fleet_tests.empty:
         raise ValueError("No recorded well tests are available in this history window.")
     test_frame = fleet_tests[fleet_tests["well"] == well].copy()

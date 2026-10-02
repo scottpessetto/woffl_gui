@@ -76,8 +76,8 @@ function Correlations({ board }: { board: HeaderBoard }) {
             <p className="max-w-4xl text-xs text-slate-500">
               BHP~WHP: measured closed-loop slopes by lift type and reservoir. At fixed speed an ESP's slope is about
               1/(1 + PI x pump-curve steepness), so high-rate wells barely move BHP yet lose the most liquid. Wells without a
-              usable gauge take their group's line at their test rate (hollow markers). Groups are built from the wells on the
-              pads loaded here.
+              usable gauge take their group's line at their test rate (hollow markers). The JP group is used only by jet pumps
+              set to the BHP~WHP relation. Groups are built from the wells on the pads loaded here.
             </p>
             <div className="grid gap-4 lg:grid-cols-2">
               {Object.entries(board.correlations)

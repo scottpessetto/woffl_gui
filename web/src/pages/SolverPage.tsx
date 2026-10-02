@@ -13,7 +13,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiError } from "../api/client";
 import { useIprFit, useIprPin, useJpHistory, useSolve, useWellTests } from "../api/hooks";
-import type { AnchorMode, WellTestRow } from "../api/types";
+import type { AnchorMode, IprFitResponse, WellTestRow } from "../api/types";
 import { ProductionHistory } from "../components/ProductionHistory";
 import { SaveWellInputs } from "../components/SaveWellInputs";
 import { Button, Card, ErrorNote, Spinner, WarnNote } from "../components/ui";
@@ -21,8 +21,9 @@ import { Welcome } from "../layout/Welcome";
 import { useDebounced } from "../lib/useDebounced";
 import { vogelQmax } from "../lib/vogel";
 import { gaugeMonths, useGaugeStore } from "../state/gauge";
+import { manualFitRow, manualTestRow, useManualTestStore } from "../state/manualTest";
 import { effectiveParams, useParamsStore } from "../state/params";
-import { useExcludedKeys, useExcludedTests } from "../state/excludedTests";
+import { useExcludedKeys, useExcludedTests, useInfoOnlyInFit } from "../state/excludedTests";
 import { useSensitivityStore } from "../state/sensitivity";
 
 import { PumpScope } from "./solver/PumpScope";
@@ -33,7 +34,7 @@ import { IprChart } from "./solver/IprChart";
 import { IprControls } from "./solver/IprControls";
 import { RateCalculator } from "./solver/RateCalculator";
 import { ResponseDiagnostic } from "./solver/ResponseDiagnostic";
-import { resolveAnchorTest, testKey } from "./solver/selection";
+import { resolveAnchorTest, testKey, type AnchorPick } from "./solver/selection";
 import { TestsTable } from "./solver/TestsTable";
 import { VerdictBar } from "./solver/VerdictBar";
 import { WcUncertaintyCard } from "./solver/WcUncertaintyCard";
@@ -46,6 +47,12 @@ export default function SolverPage() {
   // key={well}: all anchor/comparison selections are per-well UI state, so a
   // well switch remounts the workbench with fresh defaults.
   return <Workbench key={well} well={well} />;
+}
+
+/** The anchor the fit response settled on, as a pick the resolver can match. */
+function fitAnchorOf(fit: IprFitResponse | null): AnchorPick | null {
+  if (!fit) return null;
+  return { date: fit.coeffs.anchor_date, uid: fit.coeffs.anchor_wt_uid ?? null, manual: fit.coeffs.anchor_manual === true };
 }
 
 function Workbench({ well }: { well: string }) {
@@ -71,7 +78,8 @@ function Workbench({ well }: { well: string }) {
 
   // --- local UI state: IPR anchor + comparison selection -------------------
   const [anchorMode, setAnchorMode] = useState<AnchorMode>(commonIprIntent ? "manual" : "recent");
-  const [anchorDate, setAnchorDate] = useState<string | null>(null);
+  // The specific anchor test: its wt_uid, with the date as the fallback key.
+  const [anchorPick, setAnchorPick] = useState<AnchorPick | null>(null);
   const sensitivityComparison = useRef(useSensitivityStore.getState().pendingComparison[well] ?? null);
   const [decouple, setDecouple] = useState(sensitivityComparison.current !== null);
   const [compareKey, setCompareKey] = useState<string | null>(sensitivityComparison.current);
@@ -88,7 +96,7 @@ function Workbench({ well }: { well: string }) {
   // automatically, replacing the old "Apply IPR to inputs" click.
   const anchorPicked = useRef(false);
   useEffect(() => {
-    if (commonIprIntent) { setAnchorMode("manual"); setAnchorDate(null); pinSeeded.current = true; }
+    if (commonIprIntent) { setAnchorMode("manual"); setAnchorPick(null); pinSeeded.current = true; }
   }, [commonIprIntent]);
   useEffect(() => {
     const pin = pinQ.data;
@@ -99,7 +107,7 @@ function Workbench({ well }: { well: string }) {
     pinSeeded.current = true;
     if (pin.status === "applied" && pin.date_token) {
       setAnchorMode("specific");
-      setAnchorDate(pin.date_token);
+      setAnchorPick({ date: pin.date_token, uid: pin.wt_uid });
     } else if (context.ipr_source === "manual") {
       setAnchorMode("manual");
     }
@@ -107,8 +115,12 @@ function Workbench({ well }: { well: string }) {
 
   const excludedKeys = useExcludedKeys(well);
   const setExcluded = useExcludedTests((s) => s.setExcluded);
-  // Every test in the window, newest first - the table shows all of them.
-  const allTests = useMemo<WellTestRow[]>(() => {
+  // Info-only tests in the fit (reservoir pressure + automatic anchors): the
+  // engineer's per-well opt-in, off unless they switch it on.
+  const infoInFit = useInfoOnlyInFit((s) => s.byWell[well] === true);
+  const setInfoInFit = useInfoOnlyInFit((s) => s.setInfoInFit);
+  // Every Databricks test in the window, newest first.
+  const fieldTests = useMemo<WellTestRow[]>(() => {
     const rows = testsQ.data?.tests ?? [];
     const sorted = [...rows].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
     if (!gauge) return sorted;
@@ -120,6 +132,19 @@ function Workbench({ well }: { well: string }) {
       return bhp === undefined ? t : { ...t, bhp };
     });
   }, [testsQ.data, gauge]);
+  // The engineer's own test (an LRS sheet or typed in). It holds its own
+  // numbers and is a test like any other: a row in the table, a point on the
+  // chart, a choice in the anchor picker, and part of the fit.
+  const manual = useManualTestStore((s) => s.byWell[well]);
+  const manualRow = useMemo<WellTestRow | null>(() => (manual ? manualTestRow(manual) : null), [manual]);
+  // The table shows all of them, newest first (their own test leads its day).
+  const allTests = useMemo<WellTestRow[]>(
+    () =>
+      manualRow
+        ? [manualRow, ...fieldTests].sort((a, b) => (a.date.slice(0, 10) < b.date.slice(0, 10) ? 1 : a.date.slice(0, 10) > b.date.slice(0, 10) ? -1 : 0))
+        : fieldTests,
+    [manualRow, fieldTests],
+  );
   // What the anchor, comparison, fit and chart use: excluded tests removed.
   const sortedTests = useMemo<WellTestRow[]>(
     () => (excludedKeys.length ? allTests.filter((t) => !excludedKeys.includes(testKey(t))) : allTests),
@@ -128,6 +153,13 @@ function Workbench({ well }: { well: string }) {
   const excludedUids = useMemo(
     () => allTests.filter((t) => t.wt_uid !== null && excludedKeys.includes(testKey(t))).map((t) => t.wt_uid as number),
     [allTests, excludedKeys],
+  );
+
+  // Their own test as the fit sees it: only once it has a rate and a BHP, and
+  // never when they excluded it.
+  const manualFit = useMemo(
+    () => (manual && manualRow && sortedTests.includes(manualRow) ? manualFitRow(manual) : null),
+    [manual, manualRow, sortedTests],
   );
 
   // A manual anchor IS the sidebar's qwf/pwf, so there is nothing to fit: the
@@ -143,7 +175,11 @@ function Workbench({ well }: { well: string }) {
     {
       well,
       anchor_mode: anchorMode === "manual" ? "recent" : anchorMode,
-      anchor_date: anchorMode === "specific" ? anchorDate : null,
+      anchor_date: anchorMode === "specific" ? (anchorPick?.date ?? null) : null,
+      anchor_wt_uid: anchorMode === "specific" ? (anchorPick?.uid ?? null) : null,
+      include_info_only: infoInFit,
+      manual_test: manualFit,
+      anchor_manual: anchorMode === "specific" && anchorPick?.manual === true && manualFit !== null,
       field_model: params.field_model,
       months: effectiveMonths,
       cap,
@@ -161,12 +197,13 @@ function Workbench({ well }: { well: string }) {
     // Synced (default): the comparison test follows the IPR anchor - the
     // FIT's own anchor_date when it has landed (the server resolves median/
     // recent, so the UI can never disagree with the drawn curve), else the
-    // local mirror. A manual anchor has no test, but the engineer still
-    // needs something to judge the match against, so the comparison falls
-    // back to the most recent test.
-    const fitAnchor = anchorMode === "manual" ? null : (iprFitQ.data?.coeffs.anchor_date ?? null);
-    return resolveAnchorTest(sortedTests, anchorMode, anchorDate, fitAnchor) ?? sortedTests[0];
-  }, [sortedTests, decouple, compareKey, anchorMode, anchorDate, iprFitQ.data]);
+    // local mirror. A manual anchor has no test behind it, but the engineer
+    // still needs something to judge the match against, so the comparison
+    // falls back to their own test when they made one, else the most recent.
+    if (anchorMode === "manual" && manualRow && sortedTests.includes(manualRow)) return manualRow;
+    const fitAnchor = anchorMode === "manual" ? null : fitAnchorOf(iprFitQ.data ?? null);
+    return resolveAnchorTest(sortedTests, anchorMode, anchorPick, fitAnchor, infoInFit) ?? sortedTests[0];
+  }, [sortedTests, decouple, compareKey, anchorMode, anchorPick, iprFitQ.data, infoInFit, manualRow]);
 
   // Publish the comparison test so the Sensitivity page scores against the
   // SAME test the engineer is looking at here (review 2026-09-01, WEB-15).
@@ -213,14 +250,17 @@ function Workbench({ well }: { well: string }) {
   // replaces hand edits and applied permutations of the seeded fields (the
   // old Apply button did the same). Field locks still hold (applyIprSeeds).
   // The query key carries the anchor and there is no placeholder data, so
-  // this data is the NEW anchor's fit.
+  // this data is the NEW anchor's fit. The anchor itself is a dependency: a
+  // Manual point shares the "recent" query key, so Manual -> Most recent
+  // brings back the SAME cached fit object and nothing else would re-run
+  // this (the sidebar kept the manual point under a "Most recent" label).
   useEffect(() => {
     const f = iprFitQ.data;
-    if (!anchorPicked.current || !f || iprFitQ.isFetching) return;
+    if (!anchorPicked.current || anchorMode === "manual" || !f || iprFitQ.isFetching) return;
     anchorPicked.current = false;
     useParamsStore.getState().applyIprSeeds(f.seeds, true);
     useParamsStore.getState().markFitApplied(well);
-  }, [iprFitQ.data, iprFitQ.isFetching, well]);
+  }, [iprFitQ.data, iprFitQ.isFetching, well, anchorMode, anchorPick, infoInFit]);
 
   // First-load settle gate for the IPR chart: hold it greyed until every
   // input series has arrived ONCE (tests, installs/pump labels, pin, the
@@ -286,7 +326,20 @@ function Workbench({ well }: { well: string }) {
   return (
     <div className="space-y-4">
       <SaveWellInputs well={well} anchor={{ mode: anchorMode, pin: pinQ.data ?? null,
-        test: resolveAnchorTest(sortedTests, anchorMode, anchorDate, fit?.coeffs.anchor_date ?? null) }} />
+        test: resolveAnchorTest(sortedTests, anchorMode, anchorPick, fitAnchorOf(fit), infoInFit) }}
+        onRevert={() => {
+          // Back to the anchor the well opened on (the pin-seeding rule above);
+          // the sidebar is already back on its saved values, so no fit is applied.
+          const pin = pinQ.data;
+          anchorPicked.current = false;
+          if (pin?.status === "applied" && pin.date_token) {
+            setAnchorMode("specific");
+            setAnchorPick({ date: pin.date_token, uid: pin.wt_uid });
+          } else {
+            setAnchorMode(context?.ipr_source === "manual" ? "manual" : "recent");
+            setAnchorPick(null);
+          }
+        }} />
       <VerdictBar
         well={well}
         nozzle={params.nozzle_no}
@@ -324,6 +377,14 @@ function Workbench({ well }: { well: string }) {
           <IprChart
             preferOil={commonIprIntent}
             tests={sortedTests}
+            infoInFit={infoInFit}
+            fitRuns={anchorMode !== "manual"}
+            onInfoInFit={(on) => {
+              // A different set of tests is a different fit: lay it over the
+              // sidebar like an anchor change (a manual point has no fit).
+              anchorPicked.current = anchorMode !== "manual";
+              setInfoInFit(well, on);
+            }}
             fit={fit}
             params={params}
             solve={solve}
@@ -361,21 +422,30 @@ function Workbench({ well }: { well: string }) {
           <IprControls
             anchorMode={anchorMode}
             well={well}
-            anchorDate={anchorDate}
-            onAnchorChange={(mode, date) => {
+            anchorPick={anchorPick}
+            onAnchorChange={(mode, pick) => {
               useParamsStore.getState().setCommonIprIntent(false);
               anchorPicked.current = mode !== "manual";
               setAnchorMode(mode);
-              setAnchorDate(date);
+              setAnchorPick(pick);
             }}
             tests={sortedTests}
+            infoInFit={infoInFit}
             installs={installs}
+            bhpDaily={stripData?.bhp_daily ?? []}
             fit={fit}
             pin={pinQ.data ?? null}
             decouple={decouple}
             onDecouple={setDecouple}
             compareKey={compareKey}
             onCompareChange={setCompareKey}
+            onManualTestEdited={() => {
+              // Their test is the anchor: the corrected numbers are a new fit,
+              // laid over the sidebar like an anchor change.
+              if (anchorMode !== "manual" && (anchorPick?.manual || fit?.coeffs.anchor_manual)) {
+                anchorPicked.current = true;
+              }
+            }}
           />
         </div>
       </div>

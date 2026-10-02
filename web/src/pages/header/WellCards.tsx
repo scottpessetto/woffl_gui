@@ -47,9 +47,13 @@ function useSeen<T extends Element>(): [React.RefObject<T | null>, boolean] {
   return [ref, seen];
 }
 
-/** Does this well need an engineer's look? (Borrowed inputs, bad gauge, no estimate.) */
+/** Does this well need an engineer's look? (Borrowed inputs, bad gauge, no estimate.)
+ *  A jet pump set to the pump model is reviewed in Solver; one on (or wanting)
+ *  its BHP~WHP relation is judged on that relation (its IPR is the pump model's). */
 export function needsReview(row: HeaderBoardRow, eff: ReturnType<typeof effective>): boolean {
-  if (row.lift === "JP") return false;
+  // Chosen pump model: reviewed in Solver. Fell back for want of a relation: worth a look.
+  if (eff.jpMethod === "model") return eff.jpFallback;
+  if (eff.jpMethod === "empirical") return eff.gaugeBad || !eff.rel.firm || reviewState(row).status === "drift";
   return eff.gaugeBad || !eff.rel.firm || !eff.ipr.firm || eff.rel.slope === null || !eff.ipr.ipr ||
     reviewState(row).status === "drift";
 }
@@ -66,9 +70,10 @@ function WellCard({
 }) {
   const choice = useHeaderStore((s) => s.choices[row.well]);
   const setChoice = useHeaderStore((s) => s.setChoice);
+  const runMethod = useHeaderStore((s) => s.form.jpMethod) ?? "model";
   const [ref, seen] = useSeen<HTMLDivElement>();
   const detail = useHeaderWell(row.well, board.pads, board.fit_days, seen);
-  const eff = effective(row, choice);
+  const eff = effective(row, choice, runMethod);
   const impact = wellImpact(row, choice, dHeader);
   const plan = savePlan(row, choice);
   const review = reviewState(row);
@@ -132,7 +137,7 @@ function WellCard({
           <span className="w-16 pt-1 text-slate-500">BHP~WHP</span>
           <div className="space-y-0.5">
             <RelationCell row={row} choice={choice} />
-            {row.lift !== "JP" && (
+            {(eff.jpMethod !== "model" || eff.jpFallback) && (
               <div className="text-[11px] text-slate-400">
                 measured {row.measured.slope !== null ? fmtNum(row.measured.slope, 2) : "-"} ({row.measured.status.replace("_", " ")},{" "}
                 {row.measured.n_fit}/{row.measured.n_days} days)
@@ -159,10 +164,21 @@ function WellCard({
           </div>
         )}
         {review.notes.map((n) => <div key={n} className="text-[11px] text-amber-700">Drift: {n}</div>)}
-        {row.lift === "JP" && <div className="text-[11px] text-slate-500">Jet pump: solved with its saved pump model in the run. Review its fit in Solver.</div>}
+        {eff.jpMethod === "model" && (
+          <div className="text-[11px] text-slate-500">
+            {eff.jpFallback ? "Jet pump with no BHP~WHP relation: " : "Jet pump: "}solved with its saved pump model in the run. Review
+            its fit in Solver.
+          </div>
+        )}
+        {eff.jpMethod === "empirical" && (
+          <div className="text-[11px] text-slate-500">
+            Jet pump on its BHP~WHP relation: the run applies this slope on the IPR its pump model uses (Solver). Save stores the
+            relation, never the IPR.
+          </div>
+        )}
         <div className="flex items-center justify-between gap-2 pt-1">
           <span className="text-[11px] text-slate-500">
-            {row.lift === "JP" ? null : review.status === "not_saved" ? (
+            {review.status === "not_saved" ? (
               <Badge tone="neutral">not saved</Badge>
             ) : (
               <>
@@ -209,6 +225,7 @@ export function WellCards({
   writesOn: boolean;
 }) {
   const choices = useHeaderStore((s) => s.choices);
+  const runMethod = useHeaderStore((s) => s.form.jpMethod) ?? "model";
   const [pad, setPad] = useState("all");
   const [lift, setLift] = useState("all");
   const [status, setStatus] = useState<"all" | "review" | "not_saved" | "saved" | "drift">("all");
@@ -218,8 +235,8 @@ export function WellCards({
     if (pad !== "all" && r.pad !== pad) return false;
     if (lift === "nonjp" ? r.lift === "JP" : lift !== "all" && r.lift !== lift) return false;
     if (q && !r.well.toLowerCase().includes(q.toLowerCase())) return false;
-    if (status === "review" && !needsReview(r, effective(r, choices[r.well]))) return false;
-    if ((status === "not_saved" || status === "saved" || status === "drift") && (r.lift === "JP" || reviewState(r).status !== status)) return false;
+    if (status === "review" && !needsReview(r, effective(r, choices[r.well], runMethod))) return false;
+    if ((status === "not_saved" || status === "saved" || status === "drift") && reviewState(r).status !== status) return false;
     return true;
   });
   const chip = (active: boolean) =>
