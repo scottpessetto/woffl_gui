@@ -1,6 +1,10 @@
 # Info-only well tests and the manual (LRS) test - 2026-10-02
 
-Local, not deployed. No production property record was written.
+Built and checked locally on 2026-10-02, then committed (12e81a0) and deployed by
+the user the same day. Every check below ran against a local read-only server:
+hosted behaviour and timings were not verified in-session, and no production
+property record was written while building it. Not exercised with a real
+write: Save well inputs with the engineer's own (LRS) test as the anchor.
 
 ## Why
 
@@ -117,7 +121,8 @@ pump on the bench and other session settings are left alone.
 
 Limits: `.xlsx` / `.xlsm` only (no `.xls` reader is installed). The parser was
 written from a screenshot of the MPE-48 sheet of 2026-10-02 and checked
-against a workbook built to that layout, not against a real LRS file.
+against a workbook built to that layout. The user then loaded a real LRS sheet
+in the local build on 2026-10-02 and confirmed it read correctly (one sheet).
 
 ## Checks
 

@@ -3,7 +3,7 @@
 Operating rules for coding agents in this repo. Read this before touching anything.
 Prose lives in `docs/`; this file is only the rules you will otherwise violate.
 
-Well tests (2026-10-02, local, not deployed): [record](docs/well_tests_info_only_manual_2026-10-02.md).
+Well tests (2026-10-02; committed in 12e81a0 and deployed by the user on 2026-10-02; hosted behaviour was not verified in-session): [record](docs/well_tests_info_only_manual_2026-10-02.md).
 The fleet test frame now holds allocated AND info-only tests (`allocated`
 column), de-duplicated. Anything that picks or fits tests without a person
 choosing takes `tests.allocated_only` / the `tests_for_well` default; only the
@@ -16,7 +16,7 @@ in the fit request as `manual_test` and can be the anchor (`anchor_manual`);
 it has no `wt_uid`, so saving it stores a manual point, never a pin. Anchor
 changes are previews; "Revert to saved" restores the loaded well inputs.
 
-Header page (2026-09-29, local, not deployed): [handoff](docs/header_page_handoff_2026-09-29.md)
+Header page (2026-09-29; went out in the same 12e81a0 commit and deploy on 2026-10-02): [handoff](docs/header_page_handoff_2026-09-29.md)
 (current state and open items; [delivery log](docs/header_impact_delivery_2026-09-29.md)).
 Each well runs on its own ResP (saved in prop_hist, else default); groups,
 fits and shut-in gauges never set it. `header/model.ts:effective` mirrors
